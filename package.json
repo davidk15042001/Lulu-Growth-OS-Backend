@@ -15,6 +15,11 @@
   "type": "module",
   "main": "src/server.ts",
   "scripts": {
+    "dev": "nodemon --config nodemon.json",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "migrate": "tsx src/database/run.ts",
+    "start": "tsx src/server.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "dependencies": {
