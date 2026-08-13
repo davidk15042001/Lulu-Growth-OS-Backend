@@ -7,6 +7,11 @@ import {
   recordParamsSchema,
 } from '../src/modules/records/record.validator.js';
 import { registerSchema } from '../src/modules/auth/auth.validator.js';
+import {
+  createSavedViewSchema,
+  inviteMemberSchema,
+  updateSavedViewSchema,
+} from '../src/modules/workspace-app/workspace-app.validator.js';
 
 describe('request validators', () => {
   it('normalizes registration email and enforces strong passwords', () => {
@@ -56,5 +61,20 @@ describe('request validators', () => {
     });
     assert.equal(record.currency, 'EUR');
     assert.equal(record.valueAmount, 12000.5);
+  });
+
+  it('validates invitations and saved workspace views', () => {
+    const invitation = inviteMemberSchema.parse({ email: ' ADMIN@Example.com ', role: 'admin' });
+    const view = createSavedViewSchema.parse({
+      resourceType: 'crm_contacts',
+      name: 'Active enterprise contacts',
+      filters: { status: 'active', tags: ['enterprise'] },
+    });
+
+    assert.equal(invitation.email, 'admin@example.com');
+    assert.equal(view.isShared, false);
+    assert.equal(view.isDefault, false);
+    assert.equal(createSavedViewSchema.safeParse({ resourceType: 'not_real', name: 'Invalid' }).success, false);
+    assert.equal(updateSavedViewSchema.safeParse({}).success, false);
   });
 });

@@ -52,3 +52,28 @@ export async function sendResetEmail(to: string, code: string) {
   const html = `<p>Use this code to reset your password:</p><h2>${code}</h2><p>This code expires soon.</p>`;
   await sendMail(to, 'Password Reset', html);
 }
+
+function escapeHtml(value: string) {
+  return value.replace(/[&<>'"]/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;',
+  })[character]!);
+}
+
+export async function sendWorkspaceInvitationEmail(
+  to: string,
+  workspaceName: string,
+  invitationUrl: string
+) {
+  const safeWorkspaceName = escapeHtml(workspaceName);
+  const safeUrl = escapeHtml(invitationUrl);
+  const html = [
+    `<p>You have been invited to join <strong>${safeWorkspaceName}</strong> in Lulu AI.</p>`,
+    `<p><a href="${safeUrl}">Accept workspace invitation</a></p>`,
+    '<p>This invitation expires in seven days.</p>',
+  ].join('');
+  await sendMail(to, `Join ${workspaceName} in Lulu AI`, html);
+}

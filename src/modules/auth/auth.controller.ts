@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
-import { isProd } from '../../config/env.js';
+import { env, isProd } from '../../config/env.js';
 import * as service from './auth.service.js';
 import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
 import { jsonError } from '../../utils/response.js';
@@ -15,11 +15,12 @@ import {
 } from './auth.validator.js';
 
 const RT_COOKIE_NAME = 'rt';
+const refreshCookieSameSite = env.REFRESH_COOKIE_SAME_SITE ?? (isProd ? 'none' : 'lax');
 const RT_COOKIE_OPTS = { 
   httpOnly: true, 
-  sameSite: isProd ? 'strict' as const : 'lax' as const, 
+  sameSite: refreshCookieSameSite,
   secure: isProd, 
-  maxAge: 30 * 24 * 60 * 60 * 1000, 
+  maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   path: '/' 
 };
 

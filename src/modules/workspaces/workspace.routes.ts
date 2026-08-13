@@ -12,6 +12,8 @@ import metricRoutes from '../metrics/metric.routes.js';
 import notificationRoutes from '../notifications/notification.routes.js';
 import conversationRoutes from '../ai/conversation.routes.js';
 import approvalRoutes from '../approvals/approval.routes.js';
+import workspaceAppRoutes from '../workspace-app/workspace-app.routes.js';
+import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 
 const router = Router();
 
@@ -22,11 +24,16 @@ router.route('/')
   .post(controller.create)
   .all(methodNotAllowed);
 
+router.route('/invitations/:token/accept')
+  .post(acceptInvitation)
+  .all(methodNotAllowed);
+
 router.route('/:workspaceId')
   .get(requireWorkspaceMember, controller.get)
   .patch(requireWorkspaceAdmin, controller.update)
   .all(methodNotAllowed);
 
+router.use('/:workspaceId', workspaceAppRoutes);
 router.use('/:workspaceId/onboarding', onboardingRoutes);
 router.use('/:workspaceId/records', recordRoutes);
 router.use('/:workspaceId/metrics', metricRoutes);

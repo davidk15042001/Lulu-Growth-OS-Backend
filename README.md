@@ -5,12 +5,13 @@ Multi-tenant TypeScript/Express API and PostgreSQL data layer for the Lulu Growt
 ## Included
 
 - Email/password authentication, OTP verification, refresh-token rotation and password reset
-- Workspace isolation with `owner`, `admin`, `member` and `viewer` roles
+- Workspace isolation with `owner`, `admin`, `member` and `viewer` roles, invitations and member management
 - Complete onboarding persistence for company data, offerings, platforms and AI preferences
 - 98 typed resource categories covering CRM, Sales, Marketing, Advertising, Ecommerce, Finance, Intelligence and AI
 - Searchable, paginated records with optimistic version checks, audit history and soft delete
 - Metric definitions and time-series points for dashboards and intelligence views
 - Notifications, AI conversations, approval requests, background jobs, integration sync runs and webhooks
+- Workspace bootstrap summaries, saved views, audit feeds, subscription state, usage counters and idempotency storage
 - Optional OpenAI Responses API adapter with non-persisted provider requests
 - PostgreSQL migrations with transaction and deployment locking
 - Automated HTTP, validation, catalog, OpenAI adapter and migration contract tests
@@ -69,6 +70,10 @@ All application routes are below `/api/v1`.
 | API metadata | `GET /`, `GET /resource-types` |
 | Auth | `/auth/register`, `/auth/verify-otp`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me` |
 | Workspaces | `GET/POST /workspaces`, `GET/PATCH /workspaces/:workspaceId` |
+| Workspace bootstrap | `GET /workspaces/:workspaceId/bootstrap` |
+| Members and invitations | `/workspaces/:workspaceId/members`, `POST /workspaces/invitations/:token/accept` |
+| Saved views and audit | `/workspaces/:workspaceId/saved-views`, `GET /workspaces/:workspaceId/audit` |
+| Billing and integration sync | `GET /workspaces/:workspaceId/billing`, `POST /workspaces/:workspaceId/integrations/:platformId/sync` |
 | Onboarding | `/workspaces/:workspaceId/onboarding/*` |
 | Typed records | `/workspaces/:workspaceId/records/:resourceType` |
 | Metrics | `/workspaces/:workspaceId/metrics` |
@@ -145,4 +150,4 @@ Provider requests use the Responses API, `store: false`, configured reasoning ef
 
 ## Deployment
 
-Set all production environment variables, especially `DATABASE_URL`, `DATABASE_SSL=true`, `JWT_SECRET`, `CORS_ORIGIN`, `RESEND_API_KEY` and optionally `OPENAI_API_KEY`. Migrations are serialized with a PostgreSQL advisory lock. Set `RUN_MIGRATIONS_ON_STARTUP=false` only when migrations run in a separate release step.
+Set all production environment variables, especially `DATABASE_URL`, `DATABASE_SSL=true`, `JWT_SECRET`, `CORS_ORIGIN`, `RESEND_API_KEY` and optionally `OPENAI_API_KEY`. Set `REFRESH_COOKIE_SAME_SITE=none` when the HTTPS frontend and API are hosted on different sites; use `lax` when they share a site. Migrations are serialized with a PostgreSQL advisory lock. Set `RUN_MIGRATIONS_ON_STARTUP=false` only when migrations run in a separate release step.

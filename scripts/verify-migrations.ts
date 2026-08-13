@@ -36,6 +36,10 @@ async function main() {
       'users',
       'workspaces',
       'workspace_members',
+      'workspace_invitations',
+      'workspace_subscriptions',
+      'workspace_usage_counters',
+      'idempotency_keys',
       'workspace_offerings',
       'workspace_platforms',
       'workspace_ai_preferences',
@@ -88,6 +92,30 @@ async function main() {
       `INSERT INTO workspace_members (workspace_id, user_id, role)
        VALUES ($1, $2, 'owner')`,
       [workspaceId, userId]
+    );
+    await database.query(
+      `INSERT INTO workspace_subscriptions (
+         workspace_id, trial_ends_at, current_period_starts_at, current_period_ends_at
+       ) VALUES ($1, NOW() + INTERVAL '14 days', NOW(), NOW() + INTERVAL '1 month')`,
+      [workspaceId]
+    );
+    await database.query(
+      `INSERT INTO workspace_invitations (
+         workspace_id, email, role, token_hash, invited_by, expires_at
+       ) VALUES ($1, 'invitee@example.com', 'member', 'migration-test-token-hash', $2, NOW() + INTERVAL '7 days')`,
+      [workspaceId, userId]
+    );
+    await database.query(
+      `INSERT INTO workspace_usage_counters (
+         workspace_id, metric_key, period_start, period_end, quantity
+       ) VALUES ($1, 'ai_input_tokens', CURRENT_DATE, CURRENT_DATE + 30, 42)`,
+      [workspaceId]
+    );
+    await database.query(
+      `INSERT INTO idempotency_keys (
+         workspace_id, key, request_hash, expires_at
+       ) VALUES ($1, 'migration-request', 'sha256-placeholder', NOW() + INTERVAL '1 day')`,
+      [workspaceId]
     );
     await database.query(
       `INSERT INTO workspace_offerings (workspace_id, name, offering_type)

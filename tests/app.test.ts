@@ -42,6 +42,19 @@ describe('HTTP application', () => {
     assert.ok(Array.isArray(response.body.error.details));
   });
 
+  it('protects workspace application and invitation routes', async () => {
+    const workspaceId = '0f7e4f08-a041-4aa5-bf32-b823295b7864';
+    const bootstrap = await request(createApp()).get(`/api/v1/workspaces/${workspaceId}/bootstrap`);
+    const invitation = await request(createApp())
+      .post(`/api/v1/workspaces/invitations/${'a'.repeat(32)}/accept`)
+      .send({});
+
+    assert.equal(bootstrap.status, 401);
+    assert.equal(bootstrap.body.error.code, 'UNAUTHORIZED');
+    assert.equal(invitation.status, 401);
+    assert.equal(invitation.body.error.code, 'UNAUTHORIZED');
+  });
+
   it('returns 404 for unknown routes', async () => {
     const response = await request(createApp()).get('/does-not-exist');
     assert.equal(response.status, 404);

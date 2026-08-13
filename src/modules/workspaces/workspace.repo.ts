@@ -75,6 +75,16 @@ export async function createWorkspace(
       client
     );
 
+    await query(
+      `INSERT INTO workspace_subscriptions (
+         workspace_id, plan_key, status, seats, trial_ends_at,
+         current_period_starts_at, current_period_ends_at
+       ) VALUES ($1, 'starter', 'trialing', 1, NOW() + INTERVAL '14 days', NOW(), NOW() + INTERVAL '1 month')
+       ON CONFLICT (workspace_id) DO NOTHING`,
+      [workspaceId],
+      client
+    );
+
     const workspace = await findWorkspaceForUser(workspaceId, userId, client);
     if (!workspace) throw new Error('Created workspace could not be loaded');
     return workspace;
