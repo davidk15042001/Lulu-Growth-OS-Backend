@@ -45,6 +45,7 @@ export const rateLimiter = rateLimit({
   max: 200,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  handler: (_req, res) => tooManyRequests(res),
 });
 
 export const authLimiter = rateLimit({
@@ -52,6 +53,7 @@ export const authLimiter = rateLimit({
   max: 10,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  handler: (_req, res) => tooManyRequests(res),
 });
 
 export const otpLimiter = rateLimit({
@@ -59,4 +61,5 @@ export const otpLimiter = rateLimit({
   max: 20,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  handler: (_req, res) => tooManyRequests(res),
 });

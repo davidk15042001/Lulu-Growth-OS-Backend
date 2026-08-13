@@ -1,0 +1,122 @@
+import { badRequest, notFoundError } from '../../utils/app-error.js';
+import * as workspaceService from '../workspaces/workspace.service.js';
+import * as repo from './onboarding.repo.js';
+import type {
+  AiPreferencesInput,
+  BusinessDescriptionInput,
+  CompanyInformationInput,
+  CreateOfferingInput,
+  CreatePlatformInput,
+  UpdateOfferingInput,
+  UpdatePlatformInput,
+} from './onboarding.validator.js';
+
+export async function getSnapshot(workspaceId: string, userId: string) {
+  const [workspace, offerings, platforms, aiPreferences, completion] = await Promise.all([
+    workspaceService.getWorkspace(workspaceId, userId),
+    repo.listOfferings(workspaceId),
+    repo.listPlatforms(workspaceId),
+    repo.getAiPreferences(workspaceId),
+    repo.getCompletionState(workspaceId),
+  ]);
+
+  return { workspace, offerings, platforms, aiPreferences: aiPreferences ?? null, completion };
+}
+
+export async function saveCompanyInformation(
+  workspaceId: string,
+  userId: string,
+  input: CompanyInformationInput
+) {
+  await repo.saveCompanyInformation(workspaceId, input);
+  return workspaceService.getWorkspace(workspaceId, userId);
+}
+
+export async function saveBusinessDescription(
+  workspaceId: string,
+  userId: string,
+  input: BusinessDescriptionInput
+) {
+  await repo.saveBusinessDescription(workspaceId, input);
+  return workspaceService.getWorkspace(workspaceId, userId);
+}
+
+export function listOfferings(workspaceId: string) {
+  return repo.listOfferings(workspaceId);
+}
+
+export async function createOffering(workspaceId: string, input: CreateOfferingInput) {
+  const offering = await repo.createOffering(workspaceId, input);
+  await repo.setOnboardingStep(workspaceId, 'existing_platforms');
+  return offering;
+}
+
+export async function updateOffering(
+  workspaceId: string,
+  offeringId: string,
+  input: UpdateOfferingInput
+) {
+  const offering = await repo.updateOffering(workspaceId, offeringId, input);
+  if (!offering) throw notFoundError('Offering not found');
+  return offering;
+}
+
+export async function archiveOffering(workspaceId: string, offeringId: string) {
+  if (!(await repo.archiveOffering(workspaceId, offeringId))) {
+    throw notFoundError('Offering not found');
+  }
+}
+
+export function listPlatforms(workspaceId: string) {
+  return repo.listPlatforms(workspaceId);
+}
+
+export async function createPlatform(workspaceId: string, input: CreatePlatformInput) {
+  const platform = await repo.createPlatform(workspaceId, input);
+  await repo.setOnboardingStep(workspaceId, 'ai_preferences');
+  return platform;
+}
+
+export async function updatePlatform(
+  workspaceId: string,
+  platformId: string,
+  input: UpdatePlatformInput
+) {
+  const platform = await repo.updatePlatform(workspaceId, platformId, input);
+  if (!platform) throw notFoundError('Platform not found');
+  return platform;
+}
+
+export async function archivePlatform(workspaceId: string, platformId: string) {
+  if (!(await repo.archivePlatform(workspaceId, platformId))) {
+    throw notFoundError('Platform not found');
+  }
+}
+
+export async function getAiPreferences(workspaceId: string) {
+  return (await repo.getAiPreferences(workspaceId)) ?? null;
+}
+
+export async function saveAiPreferences(workspaceId: string, input: AiPreferencesInput) {
+  const preferences = await repo.saveAiPreferences(workspaceId, input);
+  await repo.setOnboardingStep(workspaceId, 'setup_complete');
+  return preferences;
+}
+
+export async function completeOnboarding(workspaceId: string) {
+  const state = await repo.getCompletionState(workspaceId);
+  if (!state) throw notFoundError('Workspace not found');
+
+  const missing: string[] = [];
+  if (!state.hasCompanyInformation) missing.push('companyInformation');
+  if (!state.hasBusinessDescription) missing.push('businessDescription');
+  if (state.offeringCount < 1) missing.push('offerings');
+  if (!state.hasAiPreferences) missing.push('aiPreferences');
+
+  if (missing.length > 0) {
+    throw badRequest('Onboarding is incomplete', { missing });
+  }
+
+  await repo.completeOnboarding(workspaceId);
+  return { completed: true, completedAt: new Date().toISOString() };
+}

@@ -1,92 +1,47 @@
 import 'dotenv/config';
-import express, { type Request, type Response } from 'express';
-import cors from 'cors';
-import cookieParser from 'cookie-parser';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import pinoHttpPkg from 'pino-http';
-import { env, isProd } from './config/env.js';
-
-const pinoHttp = (pinoHttpPkg as any).default ?? (pinoHttpPkg as any);
+import app from './app.js';
+import { env, hasDb } from './config/env.js';
 import { logger } from './config/logger.js';
 import { ensureMigrations } from './database/migrate.js';
-import v1Routes from './modules/v1.routes.js';
-import { notFound } from './middlewares/notFound.middleware.js';
-import { errorHandler } from './middlewares/error.middleware.js';
+import { pool } from './db/pool.js';
+import { syncResourceCatalog } from './modules/resources/resource-catalog.repo.js';
 
 async function bootstrap() {
-  // Ensure migrations are run on startup
-  logger.info('Running migrations...');
-  await ensureMigrations();
-  logger.info('Migrations complete');
+  if (env.RUN_MIGRATIONS_ON_STARTUP) {
+    await ensureMigrations();
+  }
 
-  // Create app
-  const app = express();
+  if (hasDb) {
+    await syncResourceCatalog();
+  }
 
-  // Middleware stack
-  app.use(
-    pinoHttp({
-      logger,
-      level: env.LOG_LEVEL,
-      transport: isProd ? undefined : { target: 'pino-pretty' },
-      autoLogging: {
-        ignore: (req: Request) => req.url === '/health',
-      },
-    })
-  );
-  app.use(helmet());
-  const allowedOrigins = env.CORS_ORIGIN
-    ? env.CORS_ORIGIN.split(',').map((s) => s.trim())
-    : [];
-  app.use(
-    cors({
-      origin: (origin, callback) => {
-        if (!origin || allowedOrigins.length === 0) {
-          return callback(null, origin ?? true);
-        }
-        if (allowedOrigins.includes(origin)) {
-          return callback(null, origin);
-        }
-        return callback(null, false);
-      },
-      credentials: true,
-    })
-  );
-  app.use(express.json({ limit: '10mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-  app.use(cookieParser());
+  if (process.env.VERCEL) {
+    return;
+  }
 
-  // Rate limiting
-  const limiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: isProd ? 100 : 1000, // 100 requests per IP in production, more in dev
-    standardHeaders: true,
-    legacyHeaders: false,
-  });
-  app.use('/api', limiter);
-
-  // Health check
-  app.get('/health', (_req: Request, res: Response) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString(), env: env.NODE_ENV });
+  const server = app.listen(env.PORT, () => {
+    logger.info({ port: env.PORT, environment: env.NODE_ENV }, 'Lulu Growth OS API listening');
   });
 
-  // API routes
-  app.use('/api/v1', v1Routes);
+  const shutdown = (signal: string) => {
+    logger.info({ signal }, 'Shutting down API');
+    server.close(async () => {
+      if (hasDb) {
+        await pool.end();
+      }
+      process.exit(0);
+    });
+  };
 
-  // Error handling
-  app.use(notFound);
-  app.use(errorHandler);
-  // app.all('/*', methodNotAllowed);
-
-  // Start server
-  const port = env.PORT;
-  app.listen(port, () => {
-    logger.info(`Server listening on port ${port} in ${env.NODE_ENV} mode`);
-  });
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
 
-// Bootstrap and handle errors
-bootstrap().catch((err) => {
-  logger.fatal({ err }, 'Failed to bootstrap server');
+try {
+  await bootstrap();
+} catch (error: unknown) {
+  logger.fatal({ error }, 'Failed to bootstrap API');
   process.exit(1);
-});
+}
+
+export default app;

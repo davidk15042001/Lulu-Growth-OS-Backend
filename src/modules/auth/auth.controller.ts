@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { isProd } from '../../config/env.js';
 import * as service from './auth.service.js';
 import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
+import { jsonError } from '../../utils/response.js';
 import {
   registerSchema,
   verifyOtpSchema,
@@ -9,7 +10,8 @@ import {
   refreshSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
-  resendOtpSchema
+  resendOtpSchema,
+  updateProfileSchema,
 } from './auth.validator.js';
 
 const RT_COOKIE_NAME = 'rt';
@@ -26,7 +28,7 @@ export async function register(req: Request, res: Response, next: NextFunction) 
     const body = registerSchema.parse(req.body);
     const result = await service.registerUser(body.email, body.password, body.first_name, body.last_name);
     if ('conflict' in result) {
-      return res.status(409).json({ error: 'Email already in use', errorMessage: 'Email already in use' });
+      return jsonError(res, 409, 'EMAIL_IN_USE', 'Email already in use');
     }
     
     if (!isProd && result.code) {
@@ -44,10 +46,10 @@ export async function verifyOtp(req: Request, res: Response, next: NextFunction)
     const body = verifyOtpSchema.parse(req.body);
     const result = await service.verifyEmailOtp(body.email, body.code);
     
-    if ('notFound' in result) return res.status(404).json({ error: 'User not found', errorMessage: 'Account not found' });
-    if ('invalid' in result) return res.status(400).json({ error: 'Invalid code', errorMessage: 'Invalid verification code' });
-    if ('used' in result) return res.status(400).json({ error: 'Code already used', errorMessage: 'Code already used' });
-    if ('expired' in result) return res.status(400).json({ error: 'Code expired', errorMessage: 'Verification code expired' });
+    if ('notFound' in result) return jsonError(res, 404, 'ACCOUNT_NOT_FOUND', 'Account not found');
+    if ('invalid' in result) return jsonError(res, 400, 'INVALID_OTP', 'Invalid verification code');
+    if ('used' in result) return jsonError(res, 400, 'OTP_USED', 'Code already used');
+    if ('expired' in result) return jsonError(res, 400, 'OTP_EXPIRED', 'Verification code expired');
     
     return res.json({ success: true, message: 'Account verified' });
   } catch (e) {
@@ -61,8 +63,8 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
     const result = await service.loginUser(body.email, body.password, { userAgent, ipAddress: req.ip ?? null });
     
-    if ('invalid' in result) return res.status(401).json({ error: 'Invalid credentials', errorMessage: 'Invalid email or password' });
-    if ('unverified' in result) return res.status(403).json({ error: 'Account not verified', errorMessage: 'Verify your email to continue' });
+    if ('invalid' in result) return jsonError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password');
+    if ('unverified' in result) return jsonError(res, 403, 'ACCOUNT_UNVERIFIED', 'Verify your email to continue');
     
     res.cookie(RT_COOKIE_NAME, result.refreshToken, RT_COOKIE_OPTS);
     
@@ -83,13 +85,13 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
   try {
     const body = refreshSchema.parse(req.body);
     const refreshToken = body.refresh_token || (req.cookies?.[RT_COOKIE_NAME] as string);
-    if (!refreshToken) return res.status(401).json({ error: 'Missing token', errorMessage: 'Please sign in' });
+    if (!refreshToken) return jsonError(res, 401, 'MISSING_REFRESH_TOKEN', 'Please sign in');
     
     const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
     const result = await service.refreshAccessToken(refreshToken, { userAgent, ipAddress: req.ip ?? null });
     
-    if ('invalid' in result) return res.status(401).json({ error: 'Invalid token', errorMessage: 'Please sign in' });
-    if ('expired' in result) return res.status(401).json({ error: 'Expired token', errorMessage: 'Please sign in' });
+    if ('invalid' in result) return jsonError(res, 401, 'INVALID_REFRESH_TOKEN', 'Please sign in');
+    if ('expired' in result) return jsonError(res, 401, 'REFRESH_TOKEN_EXPIRED', 'Please sign in');
     
     res.cookie(RT_COOKIE_NAME, result.refreshToken, RT_COOKIE_OPTS);
     
@@ -120,7 +122,7 @@ export async function logout(req: Request, res: Response, next: NextFunction) {
 export async function logoutAll(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     const userId = req.user?.id;
-    if (!userId) return res.status(401).json({ error: 'Unauthorized', errorMessage: 'Please sign in' });
+    if (!userId) return jsonError(res, 401, 'UNAUTHORIZED', 'Please sign in');
     
     await service.logoutAll(userId);
     res.clearCookie(RT_COOKIE_NAME, RT_COOKIE_OPTS);
@@ -157,11 +159,50 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
     const body = resetPasswordSchema.parse(req.body);
     const result = await service.resetPasswordWithOtp(body.email, body.code, body.password);
     
-    if ('invalid' in result) return res.status(400).json({ error: 'Invalid code', errorMessage: 'Invalid reset code' });
-    if ('expired' in result) return res.status(400).json({ error: 'Expired code', errorMessage: 'Reset code expired' });
+    if ('invalid' in result) return jsonError(res, 400, 'INVALID_RESET_CODE', 'Invalid reset code');
+    if ('expired' in result) return jsonError(res, 400, 'RESET_CODE_EXPIRED', 'Reset code expired');
     
     return res.json({ success: true, message: 'Password updated' });
   } catch (e) {
     next(e);
+  }
+}
+
+export async function me(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const user = await service.getCurrentUser(req.user!.id);
+    if (!user) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
+    return res.json({
+      success: true,
+      data: {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateMe(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const input = updateProfileSchema.parse(req.body);
+    const user = await service.updateCurrentUser(req.user!.id, input);
+    return res.json({
+      success: true,
+      message: 'Profile updated',
+      data: user ? {
+        id: user.id,
+        email: user.email,
+        firstName: user.first_name,
+        lastName: user.last_name,
+        role: user.role,
+      } : null,
+    });
+  } catch (error) {
+    next(error);
   }
 }

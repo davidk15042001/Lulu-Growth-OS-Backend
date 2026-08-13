@@ -7,8 +7,11 @@ type ApiEnvelope<T = unknown> = {
 };
 
 type ErrorEnvelope = {
-  error: string;
-  errorMessage: string;
+  success: false;
+  error: {
+    code: string;
+    message: string;
+  };
 };
 
 export function sendResponse<T>(res: Response, status: number, message: string, data: T | null = null) {
@@ -29,26 +32,26 @@ export function createdResponse<T>(res: Response, message: string, data: T | nul
 }
 
 export function errorResponse(res: Response, status: number, message: string) {
-  return sendResponse(res, status, message);
+  return jsonError(res, status, 'REQUEST_ERROR', message);
 }
 
-export function jsonError(res: Response, status: number, error: string, errorMessage: string) {
-  const body: ErrorEnvelope = { error, errorMessage };
+export function jsonError(res: Response, status: number, code: string, message: string) {
+  const body: ErrorEnvelope = { success: false, error: { code, message } };
   return res.status(status).json(body);
 }
 
 export function unauthorized(res: Response, errorMessage = 'Authentication required') {
-  return jsonError(res, 401, 'Unauthorized', errorMessage);
+  return jsonError(res, 401, 'UNAUTHORIZED', errorMessage);
 }
 
 export function forbidden(res: Response, errorMessage = 'Forbidden') {
-  return jsonError(res, 403, 'Forbidden', errorMessage);
+  return jsonError(res, 403, 'FORBIDDEN', errorMessage);
 }
 
 export function notFoundError(res: Response, errorMessage = 'Resource not found') {
-  return jsonError(res, 404, 'Not Found', errorMessage);
+  return jsonError(res, 404, 'NOT_FOUND', errorMessage);
 }
 
 export function tooManyRequests(res: Response, errorMessage = 'Too many requests') {
-  return jsonError(res, 429, 'Too Many Requests', errorMessage);
+  return jsonError(res, 429, 'TOO_MANY_REQUESTS', errorMessage);
 }

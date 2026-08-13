@@ -8,7 +8,7 @@ export type JwtPayload = {
   role?: 'user' | 'admin';
 };
 
-export function signToken(payload: JwtPayload, expiresIn: string | number = '24h') {
+export function signToken(payload: JwtPayload, expiresIn: string | number = env.ACCESS_TOKEN_TTL) {
   return jwt.sign(payload, env.JWT_SECRET, { expiresIn } as jwt.SignOptions);
 }
 

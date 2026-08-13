@@ -2,19 +2,20 @@ import { Router } from 'express';
 import * as controller from './auth.controller.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
+import { authLimiter, otpLimiter } from '../../middlewares/rateLimit.middleware.js';
 
 const router = Router();
 
 router.route('/register')
-  .post(controller.register)
+  .post(authLimiter, controller.register)
   .all(methodNotAllowed);
 
 router.route('/verify-otp')
-  .post(controller.verifyOtp)
+  .post(otpLimiter, controller.verifyOtp)
   .all(methodNotAllowed);
 
 router.route('/login')
-  .post(controller.login)
+  .post(authLimiter, controller.login)
   .all(methodNotAllowed);
 
 router.route('/refresh')
@@ -30,15 +31,20 @@ router.route('/logout-all')
   .all(methodNotAllowed);
 
 router.route('/forgot-password')
-  .post(controller.forgotPassword)
+  .post(authLimiter, controller.forgotPassword)
   .all(methodNotAllowed);
 
 router.route('/resend-otp')
-  .post(controller.resendOtp)
+  .post(otpLimiter, controller.resendOtp)
   .all(methodNotAllowed);
 
 router.route('/reset-password')
-  .post(controller.resetPassword)
+  .post(otpLimiter, controller.resetPassword)
+  .all(methodNotAllowed);
+
+router.route('/me')
+  .get(requireAuth, controller.me)
+  .patch(requireAuth, controller.updateMe)
   .all(methodNotAllowed);
 
 export default router;

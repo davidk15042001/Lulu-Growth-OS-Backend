@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { query } from '../db/pool.js';
-import { unauthorized } from '../utils/response.js';
+import { forbidden, unauthorized } from '../utils/response.js';
 import { logger } from '../config/logger.js';
 import { extractBearerToken, verifyToken, type JwtPayload } from '../utils/jwt.js';
 
@@ -25,7 +25,7 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
     // Added curly braces to guard blocks properly
     if (deleted_at) {
       logger.error('Account disabled');
-      return res.status(403).json({ error: 'Forbidden', errorMessage: 'Account disabled' });
+      return forbidden(res, 'Account disabled');
     }
 
     if ((payload.tv ?? 0) !== token_version) {
@@ -41,7 +41,7 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
   }
 }
 
-export async function fakeAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+export async function fakeAuth(req: AuthedRequest, _res: Response, next: NextFunction) {
   const token = extractBearerToken(req.headers.authorization as string | undefined);
 
   if (token) {

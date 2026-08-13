@@ -11,7 +11,7 @@ export async function registerUser(email: string, password: string, firstName: s
   const existingUser = await repo.getUserByEmail(email);
   if (existingUser) return { conflict: true };
 
-  const passwordHash = await bcrypt.hash(password, 10);
+  const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
   const user = await repo.createUser(email, passwordHash, firstName, lastName);
   if (!user) throw new Error('Failed to create user');
 
@@ -88,30 +88,21 @@ export async function refreshAccessToken(rawToken: string, options?: { userAgent
   const [selector, validator] = parts;
   if (!selector || !validator) return { invalid: true };
 
-  const refreshToken = await repo.getRefreshTokenBySelector(selector);
-  if (!refreshToken) return { invalid: true };
-  if (new Date(refreshToken.expires_at) < new Date()) return { expired: true };
-
-  const ok = await bcrypt.compare(validator, refreshToken.token_hash);
-  if (!ok) {
-    await repo.revokeRefreshTokenBySelector(selector);
-    return { invalid: true };
-  }
-
-  await repo.revokeRefreshTokenBySelector(selector);
-  const { token: newRefreshToken } = await repo.createRefreshToken(refreshToken.user_id, {
+  const rotated = await repo.rotateRefreshToken(selector, validator, {
     userAgent: options?.userAgent ?? null,
     ipAddress: options?.ipAddress ?? null,
   });
+  if (rotated.status === 'invalid') return { invalid: true };
+  if (rotated.status === 'expired') return { expired: true };
 
-  const user = await repo.getUserById(refreshToken.user_id);
+  const user = await repo.getUserById(rotated.userId);
   if (!user) return { invalid: true };
   const token = signToken({ sub: user.id, email: user.email, tv: user.token_version });
 
   return {
     ok: true, 
     token, 
-    refreshToken: newRefreshToken, 
+    refreshToken: rotated.refreshToken,
     user: { 
       id: user.id, 
       email: user.email, 
@@ -175,8 +166,8 @@ export async function resetPasswordWithOtp(email: string, code: string, password
     const ok = await bcrypt.compare(code, otp.otp_hash);
     if (ok) {
       await repo.markOtpAsUsed(otp.id);
-      const hash = await bcrypt.hash(password, 10);
-      await repo.updateUserPassword(user.id, hash);
+      const hash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
+      await repo.resetPasswordAndRevokeSessions(user.id, hash);
       logger.info({ email }, 'Password reset with OTP');
       return { ok: true };
     } else {
@@ -185,4 +176,15 @@ export async function resetPasswordWithOtp(email: string, code: string, password
   }
   
   return { invalid: true };
+}
+
+export async function getCurrentUser(userId: string) {
+  return repo.getUserById(userId);
+}
+
+export async function updateCurrentUser(
+  userId: string,
+  input: { firstName?: string | undefined; lastName?: string | undefined }
+) {
+  return repo.updateUserProfile(userId, input);
 }
