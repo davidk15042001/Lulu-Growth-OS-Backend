@@ -41,7 +41,7 @@ export type ResponsesClient = {
 
 let openAIClient: OpenAI | undefined;
 
-function defaultResponsesClient(): ResponsesClient {
+export function getOpenAIResponsesClient(): ResponsesClient {
   if (!hasOpenAI) {
     throw new AppError(503, 'AI_NOT_CONFIGURED', 'OPENAI_API_KEY is not configured');
   }
@@ -77,7 +77,7 @@ export async function generateAssistantResponse(
     turns: ConversationTurn[];
     model?: string | null;
   },
-  client: ResponsesClient = defaultResponsesClient()
+  client: ResponsesClient = getOpenAIResponsesClient()
 ) {
   const response = await client.create({
     model: input.model || env.OPENAI_MODEL,

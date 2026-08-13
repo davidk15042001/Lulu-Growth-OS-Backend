@@ -63,3 +63,11 @@ export const otpLimiter = rateLimit({
   legacyHeaders: false,
   handler: (_req, res) => tooManyRequests(res),
 });
+
+export const translationLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req, res) => tooManyRequests(res, 'Too many translation requests'),
+});

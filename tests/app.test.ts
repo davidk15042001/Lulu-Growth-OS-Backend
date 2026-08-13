@@ -42,6 +42,16 @@ describe('HTTP application', () => {
     assert.ok(Array.isArray(response.body.error.details));
   });
 
+  it('validates public translation batches before contacting the provider', async () => {
+    const response = await request(createApp())
+      .post('/api/v1/translations')
+      .send({ targetLanguage: 'unsupported', strings: ['Dashboard'] });
+
+    assert.equal(response.status, 422);
+    assert.equal(response.body.success, false);
+    assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+  });
+
   it('protects workspace application and invitation routes', async () => {
     const workspaceId = '0f7e4f08-a041-4aa5-bf32-b823295b7864';
     const bootstrap = await request(createApp()).get(`/api/v1/workspaces/${workspaceId}/bootstrap`);
