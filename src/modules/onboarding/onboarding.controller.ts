@@ -8,6 +8,7 @@ import {
   companyInformationSchema,
   createOfferingSchema,
   createPlatformSchema,
+  onboardingDocumentParamsSchema,
   onboardingRecordParamsSchema,
   updateOfferingSchema,
   updatePlatformSchema,
@@ -25,6 +26,15 @@ export async function snapshot(req: WorkspaceRequest, res: Response, next: NextF
     next(error);
   }
 }
+
+const MAX_DOCUMENT_SIZE = 25 * 1024 * 1024;
+const allowedMimeTypes = new Set([
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+  'application/pdf', 'text/plain', 'text/csv',
+  'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
 
 export async function companyInformation(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
@@ -149,6 +159,66 @@ export async function complete(req: WorkspaceRequest, res: Response, next: NextF
   try {
     const result = await service.completeOnboarding(workspaceId(req));
     return successResponse(res, 'Onboarding completed', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listDocuments(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingDocumentParamsSchema.parse(req.params);
+    const documents = await service.listOnboardingDocuments(params.workspaceId);
+    return successResponse(res, 'Onboarding documents loaded', { items: documents });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function uploadDocument(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingDocumentParamsSchema.parse(req.params);
+    const file = req.file;
+    if (!file) return res.status(400).json({ success: false, error: { code: 'FILE_REQUIRED', message: 'A file is required' } });
+    if (file.size <= 0 || file.size > MAX_DOCUMENT_SIZE) {
+      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be between 1 byte and 25 MB' } });
+    }
+    if (!allowedMimeTypes.has(file.mimetype)) {
+      return res.status(415).json({ success: false, error: { code: 'UNSUPPORTED_FILE_TYPE', message: 'This file type is not supported' } });
+    }
+    const document = await service.createOnboardingDocument({
+      workspaceId: params.workspaceId,
+      uploadedBy: req.user!.id,
+      fileName: file.originalname.trim().slice(0, 255),
+      mimeType: file.mimetype,
+      sizeBytes: file.size,
+      content: file.buffer,
+    });
+    return createdResponse(res, 'Onboarding document uploaded', document);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function documentContent(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingDocumentParamsSchema.parse(req.params);
+    const document = await service.getOnboardingDocumentContent(params.workspaceId, params.documentId!);
+    res.setHeader('Content-Type', document.mimeType);
+    res.setHeader('Content-Length', String(document.sizeBytes));
+    res.setHeader('Content-Disposition', `inline; filename="${document.fileName.replace(/["]+/g, '')}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    return res.send(document.content);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function deleteDocument(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingDocumentParamsSchema.parse(req.params);
+    await service.deleteOnboardingDocument(params.workspaceId, params.documentId!);
+    return successResponse(res, 'Onboarding document deleted');
   } catch (error) {
     next(error);
   }

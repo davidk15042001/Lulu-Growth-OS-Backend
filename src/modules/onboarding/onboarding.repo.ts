@@ -406,3 +406,69 @@ export async function setOnboardingStep(workspaceId: string, step: string) {
     [workspaceId, step]
   );
 }
+
+
+export type OnboardingDocument = {
+  id: string;
+  workspaceId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  createdAt: string;
+};
+
+const onboardingDocumentSelect = `
+  id,
+  workspace_id AS "workspaceId",
+  file_name AS "fileName",
+  mime_type AS "mimeType",
+  size_bytes AS "sizeBytes",
+  created_at AS "createdAt"
+`;
+
+export async function listOnboardingDocuments(workspaceId: string) {
+  const { rows } = await query<OnboardingDocument>(
+    `SELECT ${onboardingDocumentSelect}
+     FROM onboarding_documents
+     WHERE workspace_id = $1
+     ORDER BY created_at DESC`,
+    [workspaceId],
+  );
+  return rows;
+}
+
+export async function createOnboardingDocument(input: {
+  workspaceId: string;
+  uploadedBy: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  content: Buffer;
+}) {
+  const { rows } = await query<OnboardingDocument>(
+    `INSERT INTO onboarding_documents (workspace_id, uploaded_by, file_name, mime_type, size_bytes, content)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING ${onboardingDocumentSelect}`,
+    [input.workspaceId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.content],
+  );
+  return rows[0];
+}
+
+export async function getOnboardingDocumentContent(workspaceId: string, documentId: string) {
+  const { rows } = await query<{ fileName: string; mimeType: string; sizeBytes: number; content: Buffer }>(
+    `SELECT file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", content
+     FROM onboarding_documents
+     WHERE workspace_id = $1 AND id = $2`,
+    [workspaceId, documentId],
+  );
+  return rows[0];
+}
+
+export async function deleteOnboardingDocument(workspaceId: string, documentId: string) {
+  const { rowCount } = await query(
+    `DELETE FROM onboarding_documents
+     WHERE workspace_id = $1 AND id = $2`,
+    [workspaceId, documentId],
+  );
+  return rowCount > 0;
+}

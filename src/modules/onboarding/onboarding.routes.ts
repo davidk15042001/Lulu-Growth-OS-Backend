@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import {
   requireWorkspaceEditor,
   requireWorkspaceMember,
@@ -7,6 +8,7 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './onboarding.controller.js';
 
 const router = Router({ mergeParams: true });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
 router.route('/')
   .get(requireWorkspaceMember, controller.snapshot)
@@ -18,6 +20,19 @@ router.route('/company-information')
 
 router.route('/business-description')
   .patch(requireWorkspaceEditor, controller.businessDescription)
+  .all(methodNotAllowed);
+
+router.route('/documents')
+  .get(requireWorkspaceMember, controller.listDocuments)
+  .post(requireWorkspaceEditor, upload.single('file'), controller.uploadDocument)
+  .all(methodNotAllowed);
+
+router.route('/documents/:documentId/content')
+  .get(requireWorkspaceMember, controller.documentContent)
+  .all(methodNotAllowed);
+
+router.route('/documents/:documentId')
+  .delete(requireWorkspaceEditor, controller.deleteDocument)
   .all(methodNotAllowed);
 
 router.route('/offerings')

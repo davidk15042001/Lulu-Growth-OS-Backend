@@ -120,3 +120,31 @@ export async function completeOnboarding(workspaceId: string) {
   await repo.completeOnboarding(workspaceId);
   return { completed: true, completedAt: new Date().toISOString() };
 }
+
+
+export function listOnboardingDocuments(workspaceId: string) {
+  return repo.listOnboardingDocuments(workspaceId);
+}
+
+export function createOnboardingDocument(input: {
+  workspaceId: string;
+  uploadedBy: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  content: Buffer;
+}) {
+  return repo.createOnboardingDocument(input);
+}
+
+export async function getOnboardingDocumentContent(workspaceId: string, documentId: string) {
+  const document = await repo.getOnboardingDocumentContent(workspaceId, documentId);
+  if (!document) throw notFoundError('Onboarding document not found');
+  return document;
+}
+
+export async function deleteOnboardingDocument(workspaceId: string, documentId: string) {
+  if (!(await repo.deleteOnboardingDocument(workspaceId, documentId))) {
+    throw notFoundError('Onboarding document not found');
+  }
+}

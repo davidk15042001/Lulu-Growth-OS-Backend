@@ -136,6 +136,11 @@ export const onboardingRecordParamsSchema = z.object({
   platformId: z.string().uuid().optional(),
 });
 
+export const onboardingDocumentParamsSchema = z.object({
+  workspaceId: z.string().uuid(),
+  documentId: z.string().uuid().optional(),
+});
+
 export type CompanyInformationInput = z.infer<typeof companyInformationSchema>;
 export type BusinessDescriptionInput = z.infer<typeof businessDescriptionSchema>;
 export type CreateOfferingInput = z.infer<typeof createOfferingSchema>;
