@@ -8,7 +8,7 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './onboarding.controller.js';
 
 const router = Router({ mergeParams: true });
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5000 * 1024, files: 1 } });
 
 function uploadDiagnostic(req: Request) {
   return {
@@ -23,7 +23,7 @@ function parseDocumentUpload(req: Request, res: Response, next: NextFunction) {
     if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
       const diagnostics = uploadDiagnostic(req);
       res.setHeader('X-Request-ID', diagnostics.requestId);
-      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be smaller than 25 MB', diagnostics } });
+      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be smaller than 5,000 KB', diagnostics } });
     }
     if (error) return next(error);
     return next();

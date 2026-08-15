@@ -27,7 +27,7 @@ export async function snapshot(req: WorkspaceRequest, res: Response, next: NextF
   }
 }
 
-const MAX_DOCUMENT_SIZE = 25 * 1024 * 1024;
+const MAX_DOCUMENT_SIZE = 5000 * 1024;
 const allowedMimeTypes = new Set([
   'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
   'application/pdf', 'text/plain', 'text/csv',
@@ -193,7 +193,7 @@ export async function uploadDocument(req: WorkspaceRequest, res: Response, next:
     const file = req.file;
     if (!file) return documentError(req, res, 400, 'FILE_REQUIRED', 'A file is required');
     if (file.size <= 0 || file.size > MAX_DOCUMENT_SIZE) {
-      return documentError(req, res, 413, 'FILE_TOO_LARGE', 'The file must be between 1 byte and 25 MB', { maxBytes: MAX_DOCUMENT_SIZE });
+      return documentError(req, res, 413, 'FILE_TOO_LARGE', 'The file must be between 1 byte and 5,000 KB', { maxBytes: MAX_DOCUMENT_SIZE });
     }
     if (!allowedMimeTypes.has(file.mimetype)) {
       return documentError(req, res, 415, 'UNSUPPORTED_FILE_TYPE', 'This file type is not supported', { mimeType: file.mimetype });
