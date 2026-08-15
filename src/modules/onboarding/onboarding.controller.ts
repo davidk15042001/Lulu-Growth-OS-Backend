@@ -185,10 +185,14 @@ export async function uploadDocument(req: WorkspaceRequest, res: Response, next:
     if (!allowedMimeTypes.has(file.mimetype)) {
       return res.status(415).json({ success: false, error: { code: 'UNSUPPORTED_FILE_TYPE', message: 'This file type is not supported' } });
     }
+    const fileName = file.originalname.replace(/[\\u0000-\\u001f\\u007f]/g, '').trim().slice(0, 255);
+    if (!fileName) {
+      return res.status(400).json({ success: false, error: { code: 'FILE_NAME_REQUIRED', message: 'The file name is required' } });
+    }
     const document = await service.createOnboardingDocument({
       workspaceId: params.workspaceId,
       uploadedBy: req.user!.id,
-      fileName: file.originalname.trim().slice(0, 255),
+      fileName,
       mimeType: file.mimetype,
       sizeBytes: file.size,
       content: file.buffer,

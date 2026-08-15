@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import {
   requireWorkspaceEditor,
@@ -9,6 +9,16 @@ import * as controller from './onboarding.controller.js';
 
 const router = Router({ mergeParams: true });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
+
+function parseDocumentUpload(req: Request, res: Response, next: NextFunction) {
+  upload.single('file')(req, res, (error: unknown) => {
+    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be smaller than 25 MB' } });
+    }
+    if (error) return next(error);
+    return next();
+  });
+}
 
 router.route('/')
   .get(requireWorkspaceMember, controller.snapshot)
@@ -24,7 +34,7 @@ router.route('/business-description')
 
 router.route('/documents')
   .get(requireWorkspaceMember, controller.listDocuments)
-  .post(requireWorkspaceEditor, upload.single('file'), controller.uploadDocument)
+  .post(requireWorkspaceEditor, parseDocumentUpload, controller.uploadDocument)
   .all(methodNotAllowed);
 
 router.route('/documents/:documentId/content')
