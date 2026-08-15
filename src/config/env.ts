@@ -29,6 +29,12 @@ const EnvSchema = z
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     CORS_ORIGIN: z.string().optional(),
     TRUST_PROXY: booleanString.default(false),
+    AWS_REGION: z.string().min(1).default('eu-central-1'),
+    AWS_S3_BUCKET: z.string().min(1).optional(),
+    AWS_S3_ENDPOINT: z.string().url().optional(),
+    AWS_S3_FORCE_PATH_STYLE: booleanString.default(false),
+    AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
+    AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;

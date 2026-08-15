@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { deleteObject, getObject, onboardingDocumentKey, putObject } from '../../storage/s3.service.js';
 import { badRequest, notFoundError } from '../../utils/app-error.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as repo from './onboarding.repo.js';
@@ -126,7 +128,7 @@ export function listOnboardingDocuments(workspaceId: string) {
   return repo.listOnboardingDocuments(workspaceId);
 }
 
-export function createOnboardingDocument(input: {
+export async function createOnboardingDocument(input: {
   workspaceId: string;
   uploadedBy: string;
   fileName: string;
@@ -134,17 +136,38 @@ export function createOnboardingDocument(input: {
   sizeBytes: number;
   content: Buffer;
 }) {
-  return repo.createOnboardingDocument(input);
+  const id = randomUUID();
+  const storageKey = onboardingDocumentKey(input.workspaceId, id);
+  await putObject({ key: storageKey, content: input.content, mimeType: input.mimeType, fileName: input.fileName });
+  try {
+    return await repo.createOnboardingDocument({
+      id,
+      workspaceId: input.workspaceId,
+      uploadedBy: input.uploadedBy,
+      fileName: input.fileName,
+      mimeType: input.mimeType,
+      sizeBytes: input.sizeBytes,
+      storageKey,
+    });
+  } catch (error) {
+    await deleteObject(storageKey).catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function getOnboardingDocumentContent(workspaceId: string, documentId: string) {
   const document = await repo.getOnboardingDocumentContent(workspaceId, documentId);
   if (!document) throw notFoundError('Onboarding document not found');
-  return document;
+  const content = document.storageKey
+    ? await getObject(document.storageKey)
+    : document.content;
+  if (!content) throw new Error('Onboarding document content is unavailable');
+  return { ...document, content };
 }
 
 export async function deleteOnboardingDocument(workspaceId: string, documentId: string) {
-  if (!(await repo.deleteOnboardingDocument(workspaceId, documentId))) {
-    throw notFoundError('Onboarding document not found');
-  }
+  const document = await repo.getOnboardingDocumentContent(workspaceId, documentId);
+  if (!document) throw notFoundError('Onboarding document not found');
+  if (document.storageKey) await deleteObject(document.storageKey);
+  await repo.deleteOnboardingDocument(workspaceId, documentId);
 }

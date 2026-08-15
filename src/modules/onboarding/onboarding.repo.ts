@@ -438,25 +438,32 @@ export async function listOnboardingDocuments(workspaceId: string) {
 }
 
 export async function createOnboardingDocument(input: {
+  id: string;
   workspaceId: string;
   uploadedBy: string;
   fileName: string;
   mimeType: string;
   sizeBytes: number;
-  content: Buffer;
+  storageKey: string;
 }) {
   const { rows } = await query<OnboardingDocument>(
-    `INSERT INTO onboarding_documents (workspace_id, uploaded_by, file_name, mime_type, size_bytes, content)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO onboarding_documents (id, workspace_id, uploaded_by, file_name, mime_type, size_bytes, storage_key, content)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
      RETURNING ${onboardingDocumentSelect}`,
-    [input.workspaceId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.content],
+    [input.id, input.workspaceId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.storageKey],
   );
   return rows[0];
 }
 
 export async function getOnboardingDocumentContent(workspaceId: string, documentId: string) {
-  const { rows } = await query<{ fileName: string; mimeType: string; sizeBytes: number; content: Buffer }>(
-    `SELECT file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", content
+  const { rows } = await query<{
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    storageKey: string | null;
+    content: Buffer | null;
+  }>(
+    `SELECT file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", storage_key AS "storageKey", content
      FROM onboarding_documents
      WHERE workspace_id = $1 AND id = $2`,
     [workspaceId, documentId],
