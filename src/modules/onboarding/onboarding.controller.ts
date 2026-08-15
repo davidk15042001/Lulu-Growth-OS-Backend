@@ -36,6 +36,19 @@ const allowedMimeTypes = new Set([
   'application/vnd.ms-powerpoint', 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ]);
 
+function documentError(req: WorkspaceRequest, res: Response, status: number, code: string, message: string, details?: unknown) {
+  const diagnostics = {
+    requestId: String(req.id || 'request-id-unavailable'),
+    endpoint: `${req.method} ${req.originalUrl}`,
+    timestamp: new Date().toISOString(),
+  };
+  res.setHeader('X-Request-ID', diagnostics.requestId);
+  return res.status(status).json({
+    success: false,
+    error: { code, message, ...(details === undefined ? {} : { details }), diagnostics },
+  });
+}
+
 export async function companyInformation(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const input = companyInformationSchema.parse(req.body);
@@ -178,16 +191,16 @@ export async function uploadDocument(req: WorkspaceRequest, res: Response, next:
   try {
     const params = onboardingDocumentParamsSchema.parse(req.params);
     const file = req.file;
-    if (!file) return res.status(400).json({ success: false, error: { code: 'FILE_REQUIRED', message: 'A file is required' } });
+    if (!file) return documentError(req, res, 400, 'FILE_REQUIRED', 'A file is required');
     if (file.size <= 0 || file.size > MAX_DOCUMENT_SIZE) {
-      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be between 1 byte and 25 MB' } });
+      return documentError(req, res, 413, 'FILE_TOO_LARGE', 'The file must be between 1 byte and 25 MB', { maxBytes: MAX_DOCUMENT_SIZE });
     }
     if (!allowedMimeTypes.has(file.mimetype)) {
-      return res.status(415).json({ success: false, error: { code: 'UNSUPPORTED_FILE_TYPE', message: 'This file type is not supported' } });
+      return documentError(req, res, 415, 'UNSUPPORTED_FILE_TYPE', 'This file type is not supported', { mimeType: file.mimetype });
     }
     const fileName = file.originalname.replace(/[\\u0000-\\u001f\\u007f]/g, '').trim().slice(0, 255);
     if (!fileName) {
-      return res.status(400).json({ success: false, error: { code: 'FILE_NAME_REQUIRED', message: 'The file name is required' } });
+      return documentError(req, res, 400, 'FILE_NAME_REQUIRED', 'The file name is required');
     }
     const document = await service.createOnboardingDocument({
       workspaceId: params.workspaceId,

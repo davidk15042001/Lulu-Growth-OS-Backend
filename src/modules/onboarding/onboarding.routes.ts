@@ -10,10 +10,20 @@ import * as controller from './onboarding.controller.js';
 const router = Router({ mergeParams: true });
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024, files: 1 } });
 
+function uploadDiagnostic(req: Request) {
+  return {
+    requestId: String(req.id || 'request-id-unavailable'),
+    endpoint: `${req.method} ${req.originalUrl}`,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 function parseDocumentUpload(req: Request, res: Response, next: NextFunction) {
   upload.single('file')(req, res, (error: unknown) => {
     if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be smaller than 25 MB' } });
+      const diagnostics = uploadDiagnostic(req);
+      res.setHeader('X-Request-ID', diagnostics.requestId);
+      return res.status(413).json({ success: false, error: { code: 'FILE_TOO_LARGE', message: 'The file must be smaller than 25 MB', diagnostics } });
     }
     if (error) return next(error);
     return next();
