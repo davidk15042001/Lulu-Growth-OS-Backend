@@ -48,13 +48,9 @@ export const rateLimiter = rateLimit({
   handler: (_req, res) => tooManyRequests(res),
 });
 
-export const authLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 10,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  handler: (_req, res) => tooManyRequests(res),
-});
+// TEST MODE: authentication requests are intentionally unrestricted for now.
+// Restore the production limiter before exposing this environment publicly.
+export const authLimiter = (_req: Request, _res: Response, next: NextFunction) => next();
 
 export const otpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
