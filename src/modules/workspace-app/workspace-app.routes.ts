@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  requireOnboardingComplete,
   requireWorkspaceAdmin,
   requireWorkspaceEditor,
   requireWorkspaceMember,
@@ -8,6 +9,7 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './workspace-app.controller.js';
 
 const router = Router({ mergeParams: true });
+router.use(requireOnboardingComplete);
 
 router.route('/bootstrap')
   .get(requireWorkspaceMember, controller.bootstrap)
