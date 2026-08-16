@@ -40,6 +40,7 @@ router.route('/audit')
 
 router.route('/billing')
   .get(requireWorkspaceAdmin, controller.billing)
+  .post(requireWorkspaceAdmin, controller.createBillingCheckout)
   .all(methodNotAllowed);
 
 router.route('/integrations/:platformId/sync')

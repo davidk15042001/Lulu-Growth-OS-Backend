@@ -107,7 +107,7 @@ export async function saveBusinessDescription(workspaceId: string, input: Busine
          target_market = $4,
          short_brand_description = $5,
          positioning_tags = $6,
-         onboarding_step = 'products_services'
+         onboarding_step = 'existing_platforms'
      WHERE id = $1 AND deleted_at IS NULL`,
     [
       workspaceId,
@@ -376,12 +376,20 @@ export async function getCompletionState(workspaceId: string) {
     hasBusinessDescription: boolean;
     offeringCount: number;
     hasAiPreferences: boolean;
+    hasBillingConfirmation: boolean;
   }>(
     `SELECT
        (w.name IS NOT NULL AND trim(w.name) <> '') AS "hasCompanyInformation",
        (w.business_description IS NOT NULL AND trim(w.business_description) <> '') AS "hasBusinessDescription",
        (SELECT count(*)::int FROM workspace_offerings o WHERE o.workspace_id = w.id AND o.deleted_at IS NULL) AS "offeringCount",
-       EXISTS (SELECT 1 FROM workspace_ai_preferences p WHERE p.workspace_id = w.id) AS "hasAiPreferences"
+       EXISTS (SELECT 1 FROM workspace_ai_preferences p WHERE p.workspace_id = w.id) AS "hasAiPreferences",
+       EXISTS (
+         SELECT 1 FROM workspace_subscriptions s
+         WHERE s.workspace_id = w.id
+           AND s.status IN ('active', 'trialing')
+           AND s.provider IN ('internal', 'airwallex')
+           AND s.plan_key IN ('explorer', 'starter', 'ai')
+       ) AS "hasBillingConfirmation"
      FROM workspaces w
      WHERE w.id = $1 AND w.deleted_at IS NULL`,
     [workspaceId]

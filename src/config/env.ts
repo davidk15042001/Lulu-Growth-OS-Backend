@@ -59,6 +59,15 @@ const EnvSchema = z
     SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
     SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
     SHOPIFY_SCOPES: z.string().default('read_products,read_content'),
+    AIRWALLEX_CLIENT_ID: z.string().min(1).optional(),
+    AIRWALLEX_API_KEY: z.string().min(1).optional(),
+    AIRWALLEX_BASE_URL: z.string().url().default('https://api.sandbox.airwallex.com'),
+    AIRWALLEX_LEGAL_ENTITY_ID: z.string().min(1).optional(),
+    AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID: z.string().min(1).optional(),
+    AIRWALLEX_STARTER_PRICE_ID: z.string().min(1).optional(),
+    AIRWALLEX_AI_PRICE_ID: z.string().min(1).optional(),
+    AIRWALLEX_WEBHOOK_SECRET: z.string().min(1).optional(),
+    AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;

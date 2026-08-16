@@ -4,6 +4,7 @@ import workspaceRoutes from './workspaces/workspace.routes.js';
 import translationRoutes from './translations/translation.routes.js';
 import oauthRoutes from './onboarding/oauth.routes.js';
 import { RESOURCE_CATALOG, RESOURCE_DOMAINS } from '../domain/resource-catalog.js';
+import billingRoutes from './billing/billing.routes.js';
 
 const router = Router();
 
@@ -25,6 +26,7 @@ router.get('/resource-types', (_req, res) => {
 router.use('/auth', authRoutes);
 router.use('/translations', translationRoutes);
 router.use('/onboarding/oauth', oauthRoutes);
+router.use('/billing', billingRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;

@@ -1,7 +1,9 @@
 import type { NextFunction, Response } from 'express';
+import { z } from 'zod';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
+import { createCheckout, type BillingPlanKey } from '../billing/airwallex.service.js';
 import {
   createSavedViewSchema,
   inviteMemberSchema,
@@ -100,6 +102,18 @@ export async function audit(req: WorkspaceRequest, res: Response, next: NextFunc
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'Audit trail loaded', await service.listAudit(workspaceId, listAuditQuerySchema.parse(req.query)));
+  } catch (error) { next(error); }
+}
+
+export async function createBillingCheckout(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const input = z.object({
+      planKey: z.enum(['explorer', 'starter', 'ai']),
+      successUrl: z.string().url(),
+      backUrl: z.string().url(),
+    }).parse(req.body);
+    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl }));
   } catch (error) { next(error); }
 }
 

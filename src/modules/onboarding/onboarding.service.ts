@@ -76,7 +76,7 @@ export function listPlatforms(workspaceId: string) {
 
 export async function createPlatform(workspaceId: string, input: CreatePlatformInput) {
   const platform = await repo.createPlatform(workspaceId, input);
-  await repo.setOnboardingStep(workspaceId, 'ai_preferences');
+  await repo.setOnboardingStep(workspaceId, 'billing');
   return platform;
 }
 
@@ -113,6 +113,7 @@ export async function completeOnboarding(workspaceId: string) {
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
   if (!state.hasBusinessDescription) missing.push('businessDescription');
+  if (!state.hasBillingConfirmation) missing.push('billing');
 
   if (missing.length > 0) {
     throw badRequest('Onboarding is incomplete', { missing });
