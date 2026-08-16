@@ -4,7 +4,7 @@ import { encryptSecret } from '../../utils/secret-box.js';
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './onboarding.repo.js';
 
-export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'meta' | 'linkedin' | 'webflow' | 'wordpress' | 'shopify';
+export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'google-analytics' | 'meta' | 'linkedin' | 'webflow' | 'wordpress' | 'shopify';
 
 type ProviderConfig = {
   clientId: string;
@@ -30,6 +30,7 @@ const providerNames: Record<OAuthProvider, string> = {
   pipedrive: 'Pipedrive',
   hubspot: 'HubSpot',
   'google-ads': 'Google Ads',
+  'google-analytics': 'Google Analytics',
   meta: 'Meta Marketing',
   linkedin: 'LinkedIn Ads',
   webflow: 'Webflow',
@@ -42,6 +43,7 @@ const providerCategories: Record<OAuthProvider, string> = {
   pipedrive: 'crm',
   hubspot: 'crm',
   'google-ads': 'marketing',
+  'google-analytics': 'analytics',
   meta: 'marketing',
   linkedin: 'marketing',
   webflow: 'digital-appearance',
@@ -58,6 +60,7 @@ const providerScopes: Record<OAuthProvider, string[]> = {
   pipedrive: ['base'],
   hubspot: ['oauth', 'crm.objects.contacts.read'],
   'google-ads': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/adwords'],
+  'google-analytics': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/analytics.readonly'],
   meta: ['ads_read', 'business_management'],
   linkedin: ['openid', 'profile', 'email', 'r_ads_reporting'],
   webflow: ['sites:read'],
@@ -84,6 +87,9 @@ function providerConfig(provider: OAuthProvider): ProviderConfig {
       return { ...common, clientId: env.HUBSPOT_CLIENT_ID, clientSecret: env.HUBSPOT_CLIENT_SECRET, authorizationUrl: 'https://app.hubspot.com/oauth/authorize', tokenUrl: 'https://api.hubapi.com/oauth/v1/token' };
     case 'google-ads':
       if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_ADS_DEVELOPER_TOKEN) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Ads OAuth credentials or developer token are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN'] }, 500);
+      return { ...common, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' };
+    case 'google-analytics':
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Analytics OAuth credentials are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] }, 500);
       return { ...common, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' };
     case 'meta':
       if (!env.META_CLIENT_ID || !env.META_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Meta OAuth credentials are missing on the server', { requiredEnv: ['META_CLIENT_ID', 'META_CLIENT_SECRET'] }, 500);
@@ -136,8 +142,8 @@ export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: stri
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', state);
   url.searchParams.set('scope', config.scopes.join(' '));
-  if (provider === 'google-ads') url.searchParams.set('access_type', 'offline');
-  if (provider === 'google-ads') url.searchParams.set('prompt', 'consent');
+  if (provider === 'google-ads' || provider === 'google-analytics') url.searchParams.set('access_type', 'offline');
+  if (provider === 'google-ads' || provider === 'google-analytics') url.searchParams.set('prompt', 'consent');
   return url.toString();
 }
 
@@ -159,7 +165,9 @@ async function accountIdentity(provider: OAuthProvider, accessToken: string, tok
     ? `https://api.hubapi.com/oauth/v1/access-tokens/${encodeURIComponent(accessToken)}`
     : provider === 'google-ads'
       ? 'https://openidconnect.googleapis.com/v1/userinfo'
-      : provider === 'meta'
+      : provider === 'google-analytics'
+        ? 'https://openidconnect.googleapis.com/v1/userinfo'
+        : provider === 'meta'
         ? `https://graph.facebook.com/${env.META_GRAPH_VERSION}/me?fields=id,name`
         : provider === 'linkedin'
           ? 'https://api.linkedin.com/v2/userinfo'
@@ -205,5 +213,5 @@ export async function completeOAuthCallback(provider: OAuthProvider, code: strin
 }
 
 export function isSupportedProvider(value: string): value is OAuthProvider {
-  return ['salesforce', 'pipedrive', 'hubspot', 'google-ads', 'meta', 'linkedin', 'webflow', 'wordpress', 'shopify'].includes(value);
+  return ['salesforce', 'pipedrive', 'hubspot', 'google-ads', 'google-analytics', 'meta', 'linkedin', 'webflow', 'wordpress', 'shopify'].includes(value);
 }
