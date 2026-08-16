@@ -372,6 +372,7 @@ export async function saveAiPreferences(workspaceId: string, input: AiPreference
 
 export async function getCompletionState(workspaceId: string) {
   const { rows } = await query<{
+    onboardingCompletedAt: string | null;
     hasCompanyInformation: boolean;
     hasBusinessDescription: boolean;
     offeringCount: number;
@@ -379,6 +380,7 @@ export async function getCompletionState(workspaceId: string) {
     hasBillingConfirmation: boolean;
   }>(
     `SELECT
+       w.onboarding_completed_at AS "onboardingCompletedAt",
        (w.name IS NOT NULL AND trim(w.name) <> '') AS "hasCompanyInformation",
        (w.business_description IS NOT NULL AND trim(w.business_description) <> '') AS "hasBusinessDescription",
        (SELECT count(*)::int FROM workspace_offerings o WHERE o.workspace_id = w.id AND o.deleted_at IS NULL) AS "offeringCount",

@@ -64,7 +64,10 @@ export async function requireOnboardingComplete(
       req.workspaceAccess = { id: workspaceId, role: membership.role };
     }
     const state = await getCompletionState(workspaceId);
-    const complete = Boolean(state?.hasCompanyInformation && state.hasBusinessDescription && state.hasBillingConfirmation);
+    const complete = Boolean(
+      state?.onboardingCompletedAt
+      || (state?.hasCompanyInformation && state.hasBusinessDescription && state.hasBillingConfirmation),
+    );
     if (!complete) {
       next(forbiddenError('Complete onboarding before accessing the workspace'));
       return;
