@@ -93,7 +93,6 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS' },
     line_items: [{ price_id: planPriceId(input.planKey), quantity: 1 }],
     subscription_data: {
-      recurring: { period: 1, period_unit: 'YEAR' },
       duration: { period: 1, period_unit: 'YEAR' },
       default_invoice_template: { invoice_memo: `Lulu AI ${config.label} annual subscription` },
       metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
@@ -104,7 +103,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     success_url: input.successUrl,
     back_url: input.backUrl,
     hosted_completion_page: { display: true },
-    payment_options: { payment_method_types: ['card', 'alipaycn', 'wechatpay'] },
+    payment_options: { payment_method_types: ['card', 'alipaycn'] },
   }, crypto.randomUUID());
 
   const checkoutId = String(checkout.id ?? '');
