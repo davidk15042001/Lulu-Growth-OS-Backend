@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
+import { AppError } from '../../utils/app-error.js';
 import * as oauthService from './oauth.service.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './onboarding.service.js';
@@ -259,7 +260,7 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
   }
 }
 
-export async function oauthCallback(req: Request, res: Response, next: NextFunction) {
+export async function oauthCallback(req: Request, res: Response) {
   try {
     const provider = String(req.params.provider);
     if (!oauthService.isSupportedProvider(provider)) {
@@ -267,13 +268,18 @@ export async function oauthCallback(req: Request, res: Response, next: NextFunct
       return;
     }
     const frontend = envFrontendBaseUrl();
-    const errorRedirect = (message: string) => res.redirect(`${frontend}/onboarding/existing-platforms?oauthError=${encodeURIComponent(message.slice(0, 160))}`);
-    if (typeof req.query.error === 'string') return errorRedirect('The provider denied access');
-    if (typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return errorRedirect('The OAuth callback was incomplete');
+    const requestId = String(req.id || 'request-id-unavailable');
+    const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}/onboarding/existing-platforms?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
+    if (typeof req.query.error === 'string') return errorRedirect('OAUTH_PROVIDER_DENIED', `Provider denied access (${provider}; provider_error=${req.query.error})`);
+    if (typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return errorRedirect('OAUTH_CALLBACK_INCOMPLETE', `OAuth callback did not include both code and state for ${provider}`);
     await oauthService.completeOAuthCallback(provider, req.query.code, req.query.state);
     return res.redirect(`${frontend}/onboarding/existing-platforms?connected=${encodeURIComponent(provider)}`);
   } catch (error) {
-    next(error);
+    const code = error instanceof AppError ? error.code : 'OAUTH_CALLBACK_FAILED';
+    const message = error instanceof AppError ? error.message : 'OAuth callback failed before the account could be connected';
+    const requestId = String(req.id || 'request-id-unavailable');
+    const frontend = envFrontendBaseUrl();
+    return res.redirect(`${frontend}/onboarding/existing-platforms?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
   }
 }
 
