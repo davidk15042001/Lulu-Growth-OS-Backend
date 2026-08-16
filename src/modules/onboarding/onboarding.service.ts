@@ -113,8 +113,6 @@ export async function completeOnboarding(workspaceId: string) {
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
   if (!state.hasBusinessDescription) missing.push('businessDescription');
-  if (state.offeringCount < 1) missing.push('offerings');
-  if (!state.hasAiPreferences) missing.push('aiPreferences');
 
   if (missing.length > 0) {
     throw badRequest('Onboarding is incomplete', { missing });
