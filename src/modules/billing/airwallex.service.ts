@@ -107,7 +107,6 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     success_url: input.successUrl,
     back_url: input.backUrl,
     hosted_completion_page: { display: true },
-    payment_options: { payment_method_types: ['card', 'alipaycn'] },
   }, crypto.randomUUID());
 
   const checkoutId = String(checkout.id ?? '');
