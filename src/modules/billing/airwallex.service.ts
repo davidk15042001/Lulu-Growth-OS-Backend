@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
+import { sendMail } from '../../utils/mailer.js';
 import { query } from '../../db/pool.js';
 import { AppError, badRequest, forbiddenError } from '../../utils/app-error.js';
 
@@ -65,6 +66,63 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
   return data;
 }
 
+async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
+  const token = await login();
+  const response = await fetch(`${env.AIRWALLEX_BASE_URL}/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'x-client-id': env.AIRWALLEX_CLIENT_ID!,
+      Accept: 'application/json',
+    },
+  });
+  const data = await response.json().catch(() => ({})) as AirwallexObject;
+  if (!response.ok) {
+    logger.warn({ requestId, invoiceId, providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null, providerMessage: data.message ?? data.error ?? null }, 'Airwallex invoice lookup rejected');
+    return null;
+  }
+  return data;
+}
+
+async function sendInvoiceEmailForWebhook(workspaceId: string, planKey: BillingPlanKey, invoiceId: string, eventId: string) {
+  const checkout = await query<{ customer_email: string | null; invoice_email_sent_at: string | null }>(
+    `SELECT customer_email, invoice_email_sent_at FROM workspace_billing_checkouts
+     WHERE workspace_id=$1 AND plan_key=$2 ORDER BY created_at DESC LIMIT 1`,
+    [workspaceId, planKey]
+  );
+  const recipient = checkout.rows[0]?.customer_email;
+  if (!recipient || checkout.rows[0]?.invoice_email_sent_at) return;
+
+  const invoice = await fetchAirwallexInvoice(invoiceId, eventId);
+  if (!invoice) return;
+  const pdfUrl = typeof invoice.pdf_url === 'string' ? invoice.pdf_url : typeof invoice.invoice_pdf_url === 'string' ? invoice.invoice_pdf_url : null;
+  const hostedUrl = typeof invoice.hosted_invoice_url === 'string' ? invoice.hosted_invoice_url : typeof invoice.url === 'string' ? invoice.url : null;
+  if (!pdfUrl) {
+    logger.warn({ workspaceId, planKey, invoiceId }, 'Airwallex invoice has no PDF URL yet');
+    return;
+  }
+
+  const pdfResponse = await fetch(pdfUrl);
+  if (!pdfResponse.ok) {
+    logger.warn({ workspaceId, planKey, invoiceId, providerHttpStatus: pdfResponse.status }, 'Airwallex invoice PDF download failed');
+    return;
+  }
+  const pdf = Buffer.from(await pdfResponse.arrayBuffer());
+  const invoiceNumber = String(invoice.number ?? invoiceId);
+  const safeHostedUrl = hostedUrl ? `<p>You can also view the invoice online: <a href="${hostedUrl}">${hostedUrl}</a></p>` : '';
+  await sendMail(
+    recipient,
+    `Lulu AI invoice ${invoiceNumber}`,
+    `<p>Thank you for your payment. Your Lulu AI invoice is attached as a PDF.</p>${safeHostedUrl}`,
+    [{ filename: `lulu-ai-invoice-${invoiceNumber}.pdf`, content: pdf, contentType: 'application/pdf' }]
+  );
+  await query(
+    `UPDATE workspace_billing_checkouts SET provider_invoice_id=$2, invoice_pdf_url=$3, invoice_email_sent_at=NOW(), updated_at=NOW()
+     WHERE workspace_id=$1 AND plan_key=$4`,
+    [workspaceId, invoiceId, pdfUrl, planKey]
+  );
+}
+
 function planPriceId(planKey: BillingPlanKey) {
   const config = planConfig[planKey];
   if (!config.priceEnv) return null;
@@ -115,9 +173,9 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   if (!checkoutUrl) throw providerError('AIRWALLEX_CHECKOUT_URL_MISSING', 'Airwallex did not return a hosted Checkout URL', { checkoutId });
 
   await query(
-    `INSERT INTO workspace_billing_checkouts (workspace_id, plan_key, provider_checkout_id, provider_customer_id, provider_subscription_id, provider_invoice_id, status, checkout_url, amount_minor, currency, raw_response)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'CNY', $10::jsonb)`,
-    [input.workspaceId, input.planKey, checkoutId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, checkout.invoice_id ?? null, checkout.status ?? 'ACTIVE', checkoutUrl, config.amountMinor, JSON.stringify(checkout)]
+    `INSERT INTO workspace_billing_checkouts (workspace_id, plan_key, provider_checkout_id, provider_customer_id, provider_subscription_id, provider_invoice_id, customer_email, status, checkout_url, amount_minor, currency, raw_response)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CNY', $11::jsonb)`,
+    [input.workspaceId, input.planKey, checkoutId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, checkout.invoice_id ?? null, input.customerEmail ?? null, checkout.status ?? 'ACTIVE', checkoutUrl, config.amountMinor, JSON.stringify(checkout)]
   );
 
   await query(
@@ -165,6 +223,15 @@ export async function handleWebhook(event: AirwallexObject) {
     );
     if (mappedStatus === 'active') {
       await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
+    }
+    const invoiceId = String(data.invoice_id ?? data.invoice?.id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? checkout.invoice_id ?? checkout.latest_invoice_id ?? '');
+    const planKey = metadata.plan_key as BillingPlanKey | undefined;
+    if (invoiceId && (mappedStatus === 'active' || eventType.includes('INVOICE') || eventType.includes('PAID'))) {
+      try {
+        if (planKey === 'starter' || planKey === 'ai') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
+      } catch (error) {
+        logger.error({ error, workspaceId, planKey, invoiceId, eventId }, 'Invoice email delivery failed');
+      }
     }
   }
   await query(`UPDATE airwallex_webhook_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);

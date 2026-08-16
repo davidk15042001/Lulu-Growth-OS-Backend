@@ -1,4 +1,4 @@
-import { env, hasOpenAI, hasResend } from '../../config/env.js';
+import { env, hasOpenAI } from '../../config/env.js';
 import { conflictError, notFoundError } from '../../utils/app-error.js';
 import { sendWorkspaceInvitationEmail } from '../../utils/mailer.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
@@ -27,7 +27,7 @@ export async function getBootstrap(workspaceId: string, userId: string) {
     },
     capabilities: {
       aiGeneration: hasOpenAI,
-      transactionalEmail: hasResend,
+      transactionalEmail: !!env.MAILCOW_SMTP_HOST && !!env.MAILCOW_SMTP_USER && !!env.MAILCOW_SMTP_PASS,
     },
     ...statistics,
   };

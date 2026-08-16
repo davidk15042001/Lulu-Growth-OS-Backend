@@ -19,7 +19,11 @@ const EnvSchema = z
     REFRESH_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).optional(),
     BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
     OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
-    RESEND_API_KEY: z.string().min(1).optional(),
+    MAILCOW_SMTP_HOST: z.string().min(1).optional(),
+    MAILCOW_SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(587),
+    MAILCOW_SMTP_SECURE: booleanString.default(false),
+    MAILCOW_SMTP_USER: z.string().min(1).optional(),
+    MAILCOW_SMTP_PASS: z.string().min(1).optional(),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5.6-terra'),
     OPENAI_REASONING_EFFORT: z.enum(['none', 'low', 'medium', 'high', 'xhigh', 'max']).default('medium'),
@@ -73,7 +77,7 @@ const EnvSchema = z
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
 
-    const required: Array<keyof typeof data> = ['RESEND_API_KEY', 'DATABASE_URL', 'CORS_ORIGIN'];
+    const required: Array<keyof typeof data> = ['MAILCOW_SMTP_HOST', 'MAILCOW_SMTP_USER', 'MAILCOW_SMTP_PASS', 'EMAIL_FROM', 'DATABASE_URL', 'CORS_ORIGIN'];
 
     for (const key of required) {
       if (!data[key]) {
@@ -101,5 +105,4 @@ export const env: Env = parsedEnv;
 
 export const isProd = env.NODE_ENV === 'production';
 export const hasDb = !!env.DATABASE_URL;
-export const hasResend = !!env.RESEND_API_KEY;
 export const hasOpenAI = !!env.OPENAI_API_KEY;

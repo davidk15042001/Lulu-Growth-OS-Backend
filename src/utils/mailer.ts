@@ -1,9 +1,16 @@
-import { env, hasResend } from '../config/env.js';
+import nodemailer, { type Transporter } from 'nodemailer';
+import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
 
-type ResendRecipient = { email: string; name?: string };
+type MailAttachment = {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+};
 
-function parseEmailFrom(from: string): ResendRecipient {
+type MailRecipient = { email: string; name?: string };
+
+function parseEmailFrom(from: string): MailRecipient {
   const match = from.match(/^(.*?)<([^>]+)>$/);
   if (match && match[1] && match[2]) {
     return { name: match[1].trim().replace(/^"|"$/g, ''), email: match[2].trim() };
@@ -11,46 +18,43 @@ function parseEmailFrom(from: string): ResendRecipient {
   return { email: from.trim() };
 }
 
-export async function sendMail(to: string, subject: string, html: string) {
-  if (!hasResend) {
-    logger.warn({ to, subject }, 'RESEND_API_KEY not configured; skipping email send');
-    return;
+let transporter: Transporter | undefined;
+
+function getTransporter() {
+  if (!env.MAILCOW_SMTP_HOST || !env.MAILCOW_SMTP_USER || !env.MAILCOW_SMTP_PASS || !env.EMAIL_FROM) {
+    throw new Error('Mailcow SMTP configuration is incomplete');
   }
+  if (!transporter) {
+    transporter = nodemailer.createTransport({
+      host: env.MAILCOW_SMTP_HOST,
+      port: env.MAILCOW_SMTP_PORT,
+      secure: env.MAILCOW_SMTP_SECURE,
+      auth: { user: env.MAILCOW_SMTP_USER, pass: env.MAILCOW_SMTP_PASS },
+    });
+  }
+  return transporter;
+}
 
-  const sender = parseEmailFrom(env.EMAIL_FROM || 'LuluAI <luluai@gmail.com>');
-
-  const response = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      accept: 'application/json',
-      'content-type': 'application/json',
-      authorization: `Bearer ${env.RESEND_API_KEY!}`,
-    },
-    body: JSON.stringify({
-      from: sender.name ? `${sender.name} <${sender.email}>` : sender.email,
-      to: [to],
-      subject,
-      html,
-    }),
+export async function sendMail(to: string, subject: string, html: string, attachments: MailAttachment[] = []) {
+  const sender = parseEmailFrom(env.EMAIL_FROM || '');
+  await getTransporter().sendMail({
+    from: sender.name ? `${sender.name} <${sender.email}>` : sender.email,
+    to,
+    subject,
+    html,
+    attachments,
   });
-
-  if (!response.ok) {
-    const detail = await response.text();
-    logger.error({ to, subject, status: response.status, detail }, 'Resend email send failed');
-    throw new Error(`Resend email failed (${response.status})`);
-  }
-
-  logger.info({ to, subject }, 'Email sent via Resend');
+  logger.info({ to, subject, attachmentCount: attachments.length }, 'Email sent via Mailcow SMTP');
 }
 
 export async function sendOtpEmail(to: string, code: string) {
-  const html = `<p>Your verification code is:</p><h2>${code}</h2><p>This code expires soon.</p>`;
-  await sendMail(to, 'Your Verification Code', html);
+  const html = `<p>Your Lulu AI verification code is:</p><h2>${code}</h2><p>This code expires soon.</p>`;
+  await sendMail(to, 'Your Lulu AI verification code', html);
 }
 
 export async function sendResetEmail(to: string, code: string) {
-  const html = `<p>Use this code to reset your password:</p><h2>${code}</h2><p>This code expires soon.</p>`;
-  await sendMail(to, 'Password Reset', html);
+  const html = `<p>Use this Lulu AI code to reset your password:</p><h2>${code}</h2><p>This code expires soon.</p>`;
+  await sendMail(to, 'Reset your Lulu AI password', html);
 }
 
 function escapeHtml(value: string) {
