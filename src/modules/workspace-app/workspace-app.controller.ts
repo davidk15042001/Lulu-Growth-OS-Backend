@@ -113,7 +113,7 @@ export async function createBillingCheckout(req: WorkspaceRequest, res: Response
       successUrl: z.string().url(),
       backUrl: z.string().url(),
     }).parse(req.body);
-    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl }));
+    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl, ...(req.user?.email ? { customerEmail: req.user.email } : {}) }));
   } catch (error) { next(error); }
 }
 

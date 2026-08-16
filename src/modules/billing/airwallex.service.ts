@@ -75,7 +75,7 @@ function planPriceId(planKey: BillingPlanKey) {
   return priceId;
 }
 
-export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string }) {
+export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string }) {
   const config = planConfig[input.planKey];
   if (!config) throw badRequest('Unknown billing plan', { planKey: input.planKey });
 
@@ -94,7 +94,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     mode: 'SUBSCRIPTION',
     ui_mode: 'HOSTED',
     locale: 'AUTO',
-    customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS' },
+    customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS', ...(input.customerEmail ? { email: input.customerEmail } : {}) },
     line_items: [{ price_id: planPriceId(input.planKey), quantity: 1 }],
     subscription_data: {
       duration: { period: 1, period_unit: 'YEAR' },
