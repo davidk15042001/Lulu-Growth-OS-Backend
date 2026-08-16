@@ -64,7 +64,7 @@ const providerScopes: Record<OAuthProvider, string[]> = {
   'google-ads': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/adwords'],
   'google-analytics': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/analytics.readonly'],
   'google-business': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/business.manage'],
-  meta: ['ads_read', 'business_management'],
+  meta: ['ads_read', 'ads_management', 'business_management'],
   linkedin: ['openid', 'profile', 'email', 'r_ads_reporting'],
   webflow: ['sites:read'],
   wordpress: ['global'],
