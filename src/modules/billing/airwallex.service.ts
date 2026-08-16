@@ -36,10 +36,11 @@ async function login(): Promise<string> {
     headers,
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
-  if (!response.ok || typeof data.access_token !== 'string') {
-    throw providerError('AIRWALLEX_AUTH_FAILED', 'Airwallex rejected the Sandbox credentials', { providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null }, 502);
+  const token = typeof data.token === 'string' ? data.token : typeof data.access_token === 'string' ? data.access_token : null;
+  if (!response.ok || !token) {
+    throw providerError('AIRWALLEX_AUTH_FAILED', 'Airwallex rejected the Sandbox credentials', { providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null, providerMessage: data.message ?? data.error ?? null }, 502);
   }
-  return data.access_token;
+  return token;
 }
 
 async function airwallexRequest(path: string, body: AirwallexObject, requestId: string) {
