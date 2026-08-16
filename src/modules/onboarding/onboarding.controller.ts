@@ -1,5 +1,6 @@
 import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
+import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './onboarding.service.js';
 import {
@@ -198,7 +199,7 @@ export async function uploadDocument(req: WorkspaceRequest, res: Response, next:
     if (!allowedMimeTypes.has(file.mimetype)) {
       return documentError(req, res, 415, 'UNSUPPORTED_FILE_TYPE', 'This file type is not supported', { mimeType: file.mimetype });
     }
-    const fileName = file.originalname.replace(/[\\u0000-\\u001f\\u007f]/g, '').trim().slice(0, 255);
+    const fileName = sanitizeUploadedFileName(file.originalname);
     if (!fileName) {
       return documentError(req, res, 400, 'FILE_NAME_REQUIRED', 'The file name is required');
     }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { deleteObject, getObject, onboardingDocumentKey, putObject } from '../../storage/s3.service.js';
 import { badRequest, notFoundError } from '../../utils/app-error.js';
+import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as repo from './onboarding.repo.js';
 import type {
@@ -124,8 +125,12 @@ export async function completeOnboarding(workspaceId: string) {
 }
 
 
-export function listOnboardingDocuments(workspaceId: string) {
-  return repo.listOnboardingDocuments(workspaceId);
+export async function listOnboardingDocuments(workspaceId: string) {
+  const documents = await repo.listOnboardingDocuments(workspaceId);
+  return documents.map((document) => ({
+    ...document,
+    fileName: sanitizeUploadedFileName(document.fileName),
+  }));
 }
 
 export async function createOnboardingDocument(input: {
@@ -162,7 +167,7 @@ export async function getOnboardingDocumentContent(workspaceId: string, document
     ? await getObject(document.storageKey)
     : document.content;
   if (!content) throw new Error('Onboarding document content is unavailable');
-  return { ...document, content };
+  return { ...document, fileName: sanitizeUploadedFileName(document.fileName), content };
 }
 
 export async function deleteOnboardingDocument(workspaceId: string, documentId: string) {
