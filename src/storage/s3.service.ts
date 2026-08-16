@@ -6,6 +6,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
+import { logger } from '../config/logger.js';
 
 const s3 = new S3Client({
   region: env.AWS_REGION,
@@ -23,13 +24,32 @@ function bucketName() {
   return env.AWS_S3_BUCKET;
 }
 
-function storageError(operation: 'UPLOAD' | 'DOWNLOAD' | 'DELETE', error: unknown): AppError {
+function storageError(operation: 'UPLOAD' | 'DOWNLOAD' | 'DELETE', error: unknown, context?: { key?: string }): AppError {
   if (error instanceof AppError) return error;
+  const awsError = error as {
+    name?: string;
+    message?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number; requestId?: string };
+  };
+  const reason = error instanceof Error ? error.message : 'Unknown S3 error';
+  const awsCode = awsError.name || awsError.Code || 'UNKNOWN';
+  const httpStatus = awsError.$metadata?.httpStatusCode;
+  logger.error({
+    operation,
+    bucket: env.AWS_S3_BUCKET,
+    key: context?.key,
+    awsCode,
+    httpStatus,
+    reason,
+  }, 'Amazon S3 operation failed');
   const code = `S3_${operation}_FAILED`;
   return new AppError(502, code, `Amazon S3 ${operation.toLowerCase()} failed`, {
     provider: 'amazon-s3',
     operation,
-    reason: error instanceof Error ? error.message : 'Unknown S3 error',
+    reason,
+    awsCode,
+    ...(httpStatus ? { httpStatus } : {}),
   });
 }
 
@@ -50,11 +70,11 @@ export async function putObject(input: {
       Body: input.content,
       ContentType: input.mimeType,
       ContentLength: input.content.byteLength,
-      ContentDisposition: `inline; filename="${input.fileName.replace(/["\\]+/g, '')}"`,
+      ContentDisposition: 'inline',
       ServerSideEncryption: 'AES256',
     }));
   } catch (error) {
-    throw storageError('UPLOAD', error);
+    throw storageError('UPLOAD', error, { key: input.key });
   }
 }
 
@@ -78,7 +98,7 @@ export async function getObject(key: string) {
     const response = await s3.send(new GetObjectCommand({ Bucket: bucketName(), Key: key }));
     return bodyToBuffer(response.Body);
   } catch (error) {
-    throw storageError('DOWNLOAD', error);
+    throw storageError('DOWNLOAD', error, { key });
   }
 }
 
@@ -86,6 +106,6 @@ export async function deleteObject(key: string) {
   try {
     await s3.send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key }));
   } catch (error) {
-    throw storageError('DELETE', error);
+    throw storageError('DELETE', error, { key });
   }
 }
