@@ -3,7 +3,7 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { sendMail } from '../../utils/mailer.js';
 import { query } from '../../db/pool.js';
-import { AppError, badRequest, forbiddenError } from '../../utils/app-error.js';
+import { AppError } from '../../utils/app-error.js';
 
 export type BillingPlanKey = 'explorer' | 'starter' | 'ai';
 
@@ -45,7 +45,7 @@ async function login(): Promise<string> {
   return token;
 }
 
-async function airwallexRequest(path: string, body: AirwallexObject, requestId: string) {
+async function airwallexRequest(path: string, body: AirwallexObject, requestId: string, operation = 'REQUEST') {
   const token = await login();
   const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
     method: 'POST',
@@ -61,7 +61,7 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
     const providerCode = data.code ?? data.error_code ?? null;
     const providerMessage = data.message ?? data.error ?? null;
     logger.warn({ requestId, path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
-    throw providerError('AIRWALLEX_REQUEST_FAILED', 'Airwallex rejected the billing request', { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
+    throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
   }
   return data;
 }
@@ -78,7 +78,7 @@ async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
-    logger.warn({ requestId, invoiceId, providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null, providerMessage: data.message ?? data.error ?? null }, 'Airwallex invoice lookup rejected');
+    logger.warn({ code: 'AIRWALLEX_INVOICE_LOOKUP_FAILED', requestId, invoiceId, providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null, providerMessage: data.message ?? data.error ?? null }, 'Airwallex invoice lookup rejected');
     return null;
   }
   return data;
@@ -98,13 +98,13 @@ async function sendInvoiceEmailForWebhook(workspaceId: string, planKey: BillingP
   const pdfUrl = typeof invoice.pdf_url === 'string' ? invoice.pdf_url : typeof invoice.invoice_pdf_url === 'string' ? invoice.invoice_pdf_url : null;
   const hostedUrl = typeof invoice.hosted_invoice_url === 'string' ? invoice.hosted_invoice_url : typeof invoice.url === 'string' ? invoice.url : null;
   if (!pdfUrl) {
-    logger.warn({ workspaceId, planKey, invoiceId }, 'Airwallex invoice has no PDF URL yet');
+    logger.warn({ code: 'AIRWALLEX_INVOICE_PDF_URL_MISSING', workspaceId, planKey, invoiceId }, 'Airwallex invoice has no PDF URL yet');
     return;
   }
 
   const pdfResponse = await fetch(pdfUrl);
   if (!pdfResponse.ok) {
-    logger.warn({ workspaceId, planKey, invoiceId, providerHttpStatus: pdfResponse.status }, 'Airwallex invoice PDF download failed');
+    logger.warn({ code: 'AIRWALLEX_INVOICE_PDF_DOWNLOAD_FAILED', workspaceId, planKey, invoiceId, providerHttpStatus: pdfResponse.status }, 'Airwallex invoice PDF download failed');
     return;
   }
   const pdf = Buffer.from(await pdfResponse.arrayBuffer());
@@ -135,7 +135,7 @@ function planPriceId(planKey: BillingPlanKey) {
 
 export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string }) {
   const config = planConfig[input.planKey];
-  if (!config) throw badRequest('Unknown billing plan', { planKey: input.planKey });
+  if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
 
   if (input.planKey === 'explorer') {
     await query(
@@ -165,7 +165,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     success_url: input.successUrl,
     back_url: input.backUrl,
     hosted_completion_page: { display: true },
-  }, crypto.randomUUID());
+  }, crypto.randomUUID(), 'CHECKOUT_CREATE');
 
   const checkoutId = String(checkout.id ?? '');
   if (!checkoutId) throw providerError('AIRWALLEX_CHECKOUT_ID_MISSING', 'Airwallex did not return a Billing Checkout ID');
@@ -190,17 +190,18 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
 
 export function verifyWebhookSignature(rawBody: string, timestamp: string | undefined, signature: string | undefined, nonce: string | undefined) {
   if (!env.AIRWALLEX_WEBHOOK_SECRET) throw providerError('AIRWALLEX_WEBHOOK_SECRET_MISSING', 'Airwallex webhook secret is missing on the server', { requiredEnv: 'AIRWALLEX_WEBHOOK_SECRET' }, 500);
-  if (!timestamp || !signature || !nonce) throw forbiddenError('Airwallex webhook signature headers are missing');
+  if (!timestamp || !signature || !nonce) throw providerError('AIRWALLEX_WEBHOOK_HEADERS_MISSING', 'Airwallex webhook signature headers are missing', { requiredHeaders: ['x-timestamp', 'x-signature', 'x-nonce'] }, 403);
   const timestampNumber = Number(timestamp);
-  if (!Number.isFinite(timestampNumber) || Math.abs(Date.now() - timestampNumber * 1000) > env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS * 1000) throw forbiddenError('Airwallex webhook timestamp is outside the allowed tolerance');
+  if (!Number.isFinite(timestampNumber)) throw providerError('AIRWALLEX_WEBHOOK_TIMESTAMP_INVALID', 'Airwallex webhook timestamp is invalid', undefined, 403);
+  if (Math.abs(Date.now() - timestampNumber * 1000) > env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS * 1000) throw providerError('AIRWALLEX_WEBHOOK_TIMESTAMP_EXPIRED', 'Airwallex webhook timestamp is outside the allowed tolerance', { toleranceSeconds: env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS }, 403);
   const expected = crypto.createHmac('sha256', env.AIRWALLEX_WEBHOOK_SECRET).update(`${timestamp}${nonce}${rawBody}`).digest('hex');
-  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw forbiddenError('Airwallex webhook signature is invalid');
+  if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw providerError('AIRWALLEX_WEBHOOK_SIGNATURE_INVALID', 'Airwallex webhook signature is invalid', { signatureFormat: 'HMAC-SHA256' }, 403);
 }
 
 export async function handleWebhook(event: AirwallexObject) {
   const eventId = String(event.id ?? event.event_id ?? '');
   const eventType = String(event.type ?? event.event_type ?? 'unknown');
-  if (!eventId) throw badRequest('Airwallex webhook event ID is missing');
+  if (!eventId) throw providerError('AIRWALLEX_WEBHOOK_EVENT_ID_MISSING', 'Airwallex webhook event ID is missing', undefined, 400);
   const inserted = await query(`INSERT INTO airwallex_webhook_events (event_id, event_type, payload) VALUES ($1, $2, $3::jsonb) ON CONFLICT (event_id) DO NOTHING RETURNING event_id`, [eventId, eventType, JSON.stringify(event)]);
   if (inserted.rowCount === 0) return { duplicate: true, eventId };
 
@@ -209,13 +210,19 @@ export async function handleWebhook(event: AirwallexObject) {
   const workspaceId = typeof metadata.workspace_id === 'string' ? metadata.workspace_id : null;
   if (!workspaceId) {
     await query(`UPDATE airwallex_webhook_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);
-    return { processed: false, eventId, reason: 'workspace_id_missing' };
+    logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
+    return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
   }
 
   const subscription = (data.subscription ?? data) as AirwallexObject;
   const checkout = (data.checkout ?? data) as AirwallexObject;
   const providerStatus = String(subscription.status ?? checkout.status ?? '').toUpperCase();
   const mappedStatus = providerStatus === 'ACTIVE' || eventType.includes('PAID') || eventType.includes('COMPLETED') ? 'active' : providerStatus === 'CANCELLED' ? 'cancelled' : providerStatus === 'EXPIRED' ? 'expired' : providerStatus === 'UNPAID' ? 'past_due' : null;
+  if (!mappedStatus) {
+    await query(`UPDATE airwallex_webhook_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);
+    logger.warn({ eventId, eventType, providerStatus }, 'Airwallex webhook ignored: unsupported subscription status');
+    return { processed: false, eventId, reason: 'unsupported_subscription_status', code: 'AIRWALLEX_SUBSCRIPTION_STATUS_UNSUPPORTED' };
+  }
   if (mappedStatus) {
     await query(
       `UPDATE workspace_subscriptions SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=COALESCE($4, plan_key), status=$5, current_period_starts_at=COALESCE($6::timestamptz, current_period_starts_at), current_period_ends_at=COALESCE($7::timestamptz, current_period_ends_at), metadata=metadata || $8::jsonb, updated_at=NOW() WHERE workspace_id=$1`,
@@ -230,7 +237,7 @@ export async function handleWebhook(event: AirwallexObject) {
       try {
         if (planKey === 'starter' || planKey === 'ai') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
       } catch (error) {
-        logger.error({ error, workspaceId, planKey, invoiceId, eventId }, 'Invoice email delivery failed');
+        logger.error({ code: 'BILLING_INVOICE_EMAIL_FAILED', error: error instanceof Error ? error.message : 'unknown_error', workspaceId, planKey, invoiceId, eventId }, 'Invoice email delivery failed');
       }
     }
   }
