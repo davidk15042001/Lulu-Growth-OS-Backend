@@ -77,7 +77,7 @@ const EnvSchema = z
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
 
-    const required: Array<keyof typeof data> = ['MAILCOW_SMTP_HOST', 'MAILCOW_SMTP_USER', 'MAILCOW_SMTP_PASS', 'EMAIL_FROM', 'DATABASE_URL', 'CORS_ORIGIN'];
+    const required: Array<keyof typeof data> = ['DATABASE_URL', 'CORS_ORIGIN'];
 
     for (const key of required) {
       if (!data[key]) {
