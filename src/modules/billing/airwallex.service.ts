@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { env } from '../../config/env.js';
+import { logger } from '../../config/logger.js';
 import { query } from '../../db/pool.js';
 import { AppError, badRequest, forbiddenError } from '../../utils/app-error.js';
 
@@ -56,7 +57,10 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
-    throw providerError('AIRWALLEX_REQUEST_FAILED', 'Airwallex rejected the billing request', { providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null, providerMessage: data.message ?? data.error ?? null, path }, 502);
+    const providerCode = data.code ?? data.error_code ?? null;
+    const providerMessage = data.message ?? data.error ?? null;
+    logger.warn({ requestId, path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
+    throw providerError('AIRWALLEX_REQUEST_FAILED', 'Airwallex rejected the billing request', { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
   }
   return data;
 }
