@@ -278,5 +278,7 @@ export async function oauthCallback(req: Request, res: Response, next: NextFunct
 }
 
 function envFrontendBaseUrl() {
-  return process.env.FRONTEND_BASE_URL?.replace(/\/$/, '') || '/';
+  // Empty string keeps the callback redirect same-origin when FRONTEND_BASE_URL is not set.
+  // A fallback of '/' would create '//onboarding/...' and be interpreted as a host URL by browsers.
+  return process.env.FRONTEND_BASE_URL?.replace(/\/$/, '') || '';
 }
