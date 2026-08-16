@@ -2,6 +2,7 @@ import { Router } from 'express';
 import authRoutes from './auth/auth.routes.js';
 import workspaceRoutes from './workspaces/workspace.routes.js';
 import translationRoutes from './translations/translation.routes.js';
+import oauthRoutes from './onboarding/oauth.routes.js';
 import { RESOURCE_CATALOG, RESOURCE_DOMAINS } from '../domain/resource-catalog.js';
 
 const router = Router();
@@ -23,6 +24,7 @@ router.get('/resource-types', (_req, res) => {
 
 router.use('/auth', authRoutes);
 router.use('/translations', translationRoutes);
+router.use('/onboarding/oauth', oauthRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;

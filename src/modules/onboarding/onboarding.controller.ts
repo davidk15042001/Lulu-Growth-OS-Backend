@@ -1,6 +1,7 @@
-import type { NextFunction, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
+import * as oauthService from './oauth.service.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './onboarding.service.js';
 import {
@@ -240,4 +241,42 @@ export async function deleteDocument(req: WorkspaceRequest, res: Response, next:
   } catch (error) {
     next(error);
   }
+}
+
+
+export async function startOAuth(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const provider = String(req.params.provider);
+    if (!oauthService.isSupportedProvider(provider)) {
+      res.status(404).json({ success: false, error: { code: 'OAUTH_PROVIDER_NOT_SUPPORTED', message: 'This provider is not supported yet' } });
+      return;
+    }
+    const shop = typeof req.query.shop === 'string' ? req.query.shop.trim().toLowerCase() : undefined;
+    const url = oauthService.buildAuthorizationUrl(provider, workspaceId(req), req.user!.id, shop);
+    return successResponse(res, 'OAuth authorization URL created', { provider, authorizationUrl: url });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function oauthCallback(req: Request, res: Response, next: NextFunction) {
+  try {
+    const provider = String(req.params.provider);
+    if (!oauthService.isSupportedProvider(provider)) {
+      res.status(404).send('Unsupported OAuth provider');
+      return;
+    }
+    const frontend = envFrontendBaseUrl();
+    const errorRedirect = (message: string) => res.redirect(`${frontend}/onboarding/existing-platforms?oauthError=${encodeURIComponent(message.slice(0, 160))}`);
+    if (typeof req.query.error === 'string') return errorRedirect('The provider denied access');
+    if (typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return errorRedirect('The OAuth callback was incomplete');
+    await oauthService.completeOAuthCallback(provider, req.query.code, req.query.state);
+    return res.redirect(`${frontend}/onboarding/existing-platforms?connected=${encodeURIComponent(provider)}`);
+  } catch (error) {
+    next(error);
+  }
+}
+
+function envFrontendBaseUrl() {
+  return process.env.FRONTEND_BASE_URL?.replace(/\/$/, '') || '/';
 }

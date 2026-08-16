@@ -75,6 +75,10 @@ router.route('/platforms/:platformId')
   .delete(requireWorkspaceEditor, controller.deletePlatform)
   .all(methodNotAllowed);
 
+router.route('/platforms/:provider/connect')
+  .get(requireWorkspaceEditor, controller.startOAuth)
+  .all(methodNotAllowed);
+
 router.route('/ai-preferences')
   .get(requireWorkspaceMember, controller.getAiPreferences)
   .put(requireWorkspaceEditor, controller.saveAiPreferences)
