@@ -3,9 +3,9 @@ import { signToken } from '../../utils/jwt.js';
 import { sendOtpEmail, sendResetEmail } from '../../utils/mailer.js';
 import { logger } from '../../config/logger.js';
 import * as repo from './auth.repo.js';
-import { env, isProd } from '../../config/env.js';
+import { env } from '../../config/env.js';
 
-export type RegisterResult = { ok: true; userId: string; code?: string } | { conflict: true };
+export type RegisterResult = { ok: true; userId: string } | { conflict: true };
 
 export async function registerUser(email: string, password: string, firstName: string, lastName: string): Promise<RegisterResult> {
   const existingUser = await repo.getUserByEmail(email);
@@ -15,14 +15,8 @@ export async function registerUser(email: string, password: string, firstName: s
   const user = await repo.createUser(email, passwordHash, firstName, lastName);
   if (!user) throw new Error('Failed to create user');
 
-  const code = await repo.issueOtp(user.id, 'verify_email', null);
-  await sendOtpEmail(email, code);
-
-  logger.info({ email }, 'User registered and OTP sent');
-
-  if (!isProd) {
-    return { ok: true, userId: user.id, code };
-  }
+  await repo.verifyUser(user.id);
+  logger.info({ email }, 'User registered and activated without verification email');
 
   return { ok: true, userId: user.id };
 }

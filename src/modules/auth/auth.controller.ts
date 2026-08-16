@@ -32,11 +32,7 @@ export async function register(req: Request, res: Response, next: NextFunction) 
       return jsonError(res, 409, 'EMAIL_IN_USE', 'Email already in use');
     }
     
-    if (!isProd && result.code) {
-      return res.status(201).json({ success: true, message: 'Registered. Verify OTP to activate account.', otp: result.code });
-    }
-    
-    return res.status(201).json({ success: true, message: 'Registered. Verify OTP to activate account.' });
+    return res.status(201).json({ success: true, message: 'Registered. You can sign in now.' });
   } catch (e) {
     next(e);
   }
