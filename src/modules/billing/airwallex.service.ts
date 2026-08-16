@@ -25,10 +25,15 @@ function requireAirwallex() {
 
 async function login(): Promise<string> {
   requireAirwallex();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'x-client-id': env.AIRWALLEX_CLIENT_ID!,
+    'x-api-key': env.AIRWALLEX_API_KEY!,
+    ...(env.AIRWALLEX_LOGIN_AS ? { 'x-login-as': env.AIRWALLEX_LOGIN_AS } : {}),
+  };
   const response = await fetch(`${env.AIRWALLEX_BASE_URL}/api/v1/authentication/login`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ client_id: env.AIRWALLEX_CLIENT_ID, api_key: env.AIRWALLEX_API_KEY }),
+    headers,
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok || typeof data.access_token !== 'string') {
