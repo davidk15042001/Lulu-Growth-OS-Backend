@@ -1,6 +1,7 @@
 import nodemailer, { type Transporter } from 'nodemailer';
 import { env } from '../config/env.js';
 import { logger } from '../config/logger.js';
+import { AppError } from './app-error.js';
 
 type MailAttachment = {
   filename: string;
@@ -21,8 +22,14 @@ function parseEmailFrom(from: string): MailRecipient {
 let transporter: Transporter | undefined;
 
 function getTransporter() {
-  if (!env.MAILCOW_SMTP_HOST || !env.MAILCOW_SMTP_USER || !env.MAILCOW_SMTP_PASS || !env.EMAIL_FROM) {
-    throw new Error('Mailcow SMTP configuration is incomplete');
+  const missing = [
+    !env.MAILCOW_SMTP_HOST ? 'MAILCOW_SMTP_HOST' : null,
+    !env.MAILCOW_SMTP_USER ? 'MAILCOW_SMTP_USER' : null,
+    !env.MAILCOW_SMTP_PASS ? 'MAILCOW_SMTP_PASS' : null,
+    !env.EMAIL_FROM ? 'EMAIL_FROM' : null,
+  ].filter((value): value is string => Boolean(value));
+  if (missing.length > 0) {
+    throw new AppError(503, 'MAILCOW_SMTP_CONFIGURATION_MISSING', 'Mailcow SMTP configuration is incomplete', { missingEnv: missing });
   }
   if (!transporter) {
     transporter = nodemailer.createTransport({
@@ -37,13 +44,23 @@ function getTransporter() {
 
 export async function sendMail(to: string, subject: string, html: string, attachments: MailAttachment[] = []) {
   const sender = parseEmailFrom(env.EMAIL_FROM || '');
-  await getTransporter().sendMail({
+  try {
+    await getTransporter().sendMail({
     from: sender.name ? `${sender.name} <${sender.email}>` : sender.email,
     to,
     subject,
     html,
-    attachments,
-  });
+      attachments,
+    });
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError(502, 'MAILCOW_SMTP_SEND_FAILED', 'Mailcow rejected the outgoing email', {
+      recipient: to,
+      subject,
+      attachmentCount: attachments.length,
+      providerMessage: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
   logger.info({ to, subject, attachmentCount: attachments.length }, 'Email sent via Mailcow SMTP');
 }
 
