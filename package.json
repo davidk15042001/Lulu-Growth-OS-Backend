@@ -27,7 +27,7 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
-    "test": "tsx --test",
+    "test": "tsx --test --test-force-exit",
     "test:migrations": "tsx scripts/verify-migrations.ts",
     "test:smoke": "node scripts/smoke-built-server.mjs",
     "check": "npm run typecheck && npm run test:migrations && npm test && npm run build && npm run test:smoke"
