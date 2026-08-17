@@ -188,6 +188,65 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   return { planKey: input.planKey, free: false, checkoutId, checkoutUrl, status: checkout.status ?? 'ACTIVE' };
 }
 
+async function airwallexGet(path: string, operation = 'CHECKOUT_STATUS') {
+  const token = await login();
+  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'x-client-id': env.AIRWALLEX_CLIENT_ID!,
+      Accept: 'application/json',
+    },
+  });
+  const data = await response.json().catch(() => ({})) as AirwallexObject;
+  if (!response.ok) {
+    const providerCode = data.code ?? data.error_code ?? null;
+    const providerMessage = data.message ?? data.error ?? null;
+    logger.warn({ path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex status request rejected');
+    throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
+  }
+  return data;
+}
+
+export async function syncCheckoutStatus(workspaceId: string, checkoutId: string) {
+  const local = await query<{ plan_key: BillingPlanKey; provider_checkout_id: string }>(
+    `SELECT plan_key, provider_checkout_id FROM workspace_billing_checkouts WHERE workspace_id=$1 AND provider_checkout_id=$2 LIMIT 1`,
+    [workspaceId, checkoutId]
+  );
+  if (!local.rows[0]) throw providerError('BILLING_CHECKOUT_NOT_FOUND', 'The billing checkout does not belong to this workspace', { checkoutId }, 404);
+
+  const checkout = await airwallexGet(`/api/v1/billing/billing_checkouts/${encodeURIComponent(checkoutId)}`);
+  const subscription = (checkout.subscription ?? {}) as AirwallexObject;
+  const providerStatus = String(checkout.status ?? subscription.status ?? '').toUpperCase();
+  const completed = providerStatus === 'COMPLETED' || String(subscription.status ?? '').toUpperCase() === 'ACTIVE';
+  const customerId = checkout.billing_customer_id ?? checkout.customer_id ?? subscription.billing_customer_id ?? null;
+  const subscriptionId = checkout.subscription_id ?? subscription.id ?? null;
+  const invoiceId = checkout.invoice_id ?? checkout.latest_invoice_id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? null;
+
+  await query(
+    `UPDATE workspace_billing_checkouts
+     SET provider_customer_id=COALESCE($3, provider_customer_id),
+         provider_subscription_id=COALESCE($4, provider_subscription_id),
+         provider_invoice_id=COALESCE($5, provider_invoice_id),
+         status=$6,
+         raw_response=$7::jsonb,
+         updated_at=NOW()
+     WHERE workspace_id=$1 AND provider_checkout_id=$2`,
+    [workspaceId, checkoutId, customerId, subscriptionId, invoiceId, completed ? 'COMPLETED' : providerStatus === 'CANCELLED' ? 'CANCELLED' : providerStatus === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE', JSON.stringify(checkout)]
+  );
+
+  if (!completed) return { checkoutId, planKey: local.rows[0].plan_key, status: 'pending' as const, providerStatus };
+
+  await query(
+    `UPDATE workspace_subscriptions
+     SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=$4, status='active', metadata=metadata || $5::jsonb, updated_at=NOW()
+     WHERE workspace_id=$1`,
+    [workspaceId, customerId, subscriptionId, local.rows[0].plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId })]
+  );
+  await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
+  return { checkoutId, planKey: local.rows[0].plan_key, status: 'active' as const, providerStatus, subscriptionId, invoiceId };
+}
+
 export function verifyWebhookSignature(rawBody: string, timestamp: string | undefined, signature: string | undefined, nonce: string | undefined) {
   if (!env.AIRWALLEX_WEBHOOK_SECRET) throw providerError('AIRWALLEX_WEBHOOK_SECRET_MISSING', 'Airwallex webhook secret is missing on the server', { requiredEnv: 'AIRWALLEX_WEBHOOK_SECRET' }, 500);
   if (!timestamp || !signature || !nonce) throw providerError('AIRWALLEX_WEBHOOK_HEADERS_MISSING', 'Airwallex webhook signature headers are missing', { requiredHeaders: ['x-timestamp', 'x-signature', 'x-nonce'] }, 403);

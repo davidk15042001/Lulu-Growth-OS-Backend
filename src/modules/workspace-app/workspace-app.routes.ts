@@ -43,6 +43,10 @@ router.route('/billing')
   .post(requireWorkspaceAdmin, controller.createBillingCheckout)
   .all(methodNotAllowed);
 
+router.route('/billing/checkouts/:checkoutId/sync')
+  .post(requireWorkspaceAdmin, controller.syncBillingCheckout)
+  .all(methodNotAllowed);
+
 router.route('/integrations/:platformId/sync')
   .post(requireWorkspaceEditor, controller.syncIntegration)
   .all(methodNotAllowed);

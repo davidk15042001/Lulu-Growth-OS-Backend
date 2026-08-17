@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
-import { createCheckout, type BillingPlanKey } from '../billing/airwallex.service.js';
+import { createCheckout, syncCheckoutStatus, type BillingPlanKey } from '../billing/airwallex.service.js';
 import {
   createSavedViewSchema,
   inviteMemberSchema,
@@ -114,6 +114,16 @@ export async function createBillingCheckout(req: WorkspaceRequest, res: Response
       backUrl: z.string().url(),
     }).parse(req.body);
     return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl, ...(req.user?.email ? { customerEmail: req.user.email } : {}) }));
+  } catch (error) { next(error); }
+}
+
+export async function syncBillingCheckout(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const rawCheckoutId = req.params.checkoutId;
+    const checkoutId = Array.isArray(rawCheckoutId) ? rawCheckoutId[0] : rawCheckoutId;
+    if (!checkoutId) throw new Error('Billing checkout ID is required');
+    return successResponse(res, 'Billing checkout status synchronized', await syncCheckoutStatus(workspaceId, checkoutId));
   } catch (error) { next(error); }
 }
 
