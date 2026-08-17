@@ -52,7 +52,12 @@ export async function loginUser(email: string, password: string, options?: { use
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) return { invalid: true };
 
-  if (!user.verified_at) return { unverified: true };
+  // Registration no longer requires email OTP. Legacy accounts that were
+  // created before that change are activated after a successful password
+  // check, so they do not get trapped in the retired verification flow.
+  if (!user.verified_at) {
+    await repo.verifyUser(user.id);
+  }
 
   const token = signToken({ sub: user.id, email, tv: user.token_version });
   const { token: refreshToken } = await repo.createRefreshToken(user.id, {
