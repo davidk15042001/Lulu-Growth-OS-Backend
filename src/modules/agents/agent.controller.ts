@@ -2,7 +2,7 @@ import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './agent.service.js';
-import { agentRunParamsSchema, createAgentRunSchema } from './agent.validator.js';
+import { agentRunParamsSchema, agentStepDecisionSchema, createAgentRunSchema } from './agent.validator.js';
 
 export async function create(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
@@ -32,6 +32,7 @@ export async function cancel(req: WorkspaceRequest, res: Response, next: NextFun
 export async function approve(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.extend({ stepId: agentRunParamsSchema.shape.runId }).parse(req.params);
-    return successResponse(res, 'Agent step approved', await service.approveStep(params.workspaceId, params.runId!, params.stepId!));
+    const decision = agentStepDecisionSchema.parse(req.body);
+    return successResponse(res, 'Agent step decision recorded', await service.approveStep(params.workspaceId, params.runId!, params.stepId!, req.user!.id, decision));
   } catch (error) { next(error); }
 }

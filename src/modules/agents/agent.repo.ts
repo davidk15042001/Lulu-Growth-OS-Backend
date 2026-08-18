@@ -61,6 +61,11 @@ export async function addEvent(input: { runId: string; stepId?: string | null; w
     VALUES ($1,$2,$3,$4,$5,$6) RETURNING ${eventSelect}`, [input.runId, input.stepId ?? null, input.workspaceId, input.eventType, input.agentRole ?? null, input.payload ?? {}]);
   return rows[0];
 }
+export async function getApprovalStatus(workspaceId: string, approvalId: string) {
+  const { rows } = await query<{ status: string }>(`SELECT status FROM approval_requests WHERE workspace_id=$1 AND id=$2`, [workspaceId, approvalId]);
+  return rows[0]?.status ?? null;
+}
+
 export async function listEvents(workspaceId: string, runId: string) {
   const { rows } = await query<AgentRunEvent>(`SELECT ${eventSelect} FROM agent_run_events WHERE workspace_id=$1 AND run_id=$2 ORDER BY created_at ASC`, [workspaceId, runId]);
   return rows;
