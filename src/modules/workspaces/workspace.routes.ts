@@ -12,6 +12,7 @@ import metricRoutes from '../metrics/metric.routes.js';
 import notificationRoutes from '../notifications/notification.routes.js';
 import conversationRoutes from '../ai/conversation.routes.js';
 import approvalRoutes from '../approvals/approval.routes.js';
+import agentRoutes from '../agents/agent.routes.js';
 import workspaceAppRoutes from '../workspace-app/workspace-app.routes.js';
 import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 
@@ -40,5 +41,6 @@ router.use('/:workspaceId/metrics', metricRoutes);
 router.use('/:workspaceId/notifications', notificationRoutes);
 router.use('/:workspaceId/ai', conversationRoutes);
 router.use('/:workspaceId/approvals', approvalRoutes);
+router.use('/:workspaceId/agent-runs', agentRoutes);
 
 export default router;
