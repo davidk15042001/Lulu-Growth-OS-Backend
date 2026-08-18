@@ -1,4 +1,5 @@
 import { AppError } from '../../utils/app-error.js';
+import * as agentRepo from '../agents/agent.repo.js';
 import { getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceForUser } from '../workspaces/workspace.repo.js';
@@ -42,11 +43,8 @@ type WebsiteContext = {
     valueProposition: string | null;
     status: string;
   }>;
-  connectedPlatforms: Array<{
-    name: string;
-    category: string;
-    status: string;
-  }>;
+  connectedPlatforms: Array<{ name: string; category: string; status: string }>;
+  initialAnalysis: Record<string, unknown> | null;
 };
 
 function extractJson(text: string): WebsitePlan {
@@ -61,12 +59,11 @@ function extractJson(text: string): WebsitePlan {
 async function loadWebsiteContext(workspaceId: string, userId: string): Promise<WebsiteContext> {
   const workspace = await findWorkspaceForUser(workspaceId, userId);
   if (!workspace) throw new AppError(404, 'WEBSITE_WORKSPACE_NOT_FOUND', 'The workspace context was not found');
-
-  const [offerings, platforms] = await Promise.all([
+  const [offerings, platforms, initialAnalysis] = await Promise.all([
     listOfferings(workspaceId),
     listPlatforms(workspaceId),
+    agentRepo.getLatestCompletedInitialAnalysis(workspaceId),
   ]);
-
   return {
     workspace: {
       companyName: workspace.companyName,
@@ -94,11 +91,8 @@ async function loadWebsiteContext(workspaceId: string, userId: string): Promise<
     connectedPlatforms: platforms
       .filter((platform) => platform.connectionStatus === 'connected' || platform.connectionStatus === 'active')
       .map((platform) => ({ name: platform.name, category: platform.category, status: platform.connectionStatus })),
+    initialAnalysis: initialAnalysis?.result ?? null,
   };
-}
-
-function serializeContext(context: WebsiteContext) {
-  return JSON.stringify(context, null, 2);
 }
 
 export async function generateWebsitePlan(input: {
@@ -113,11 +107,13 @@ export async function generateWebsitePlan(input: {
     model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
     instructions: [
       'You are Lulu Website Architect.',
-      'Generate a production-ready website plan from the verified workspace context and the user brief.',
-      'The workspace context is the source of truth. Never invent company names, products, services, prices, certifications, locations, markets, statistics, customers, integrations or legal claims.',
-      'If a fact is missing, omit it or use a neutral placeholder that clearly requires user confirmation. Do not present placeholders as facts.',
-      'Do not copy example companies, contacts, phone numbers, addresses, color palettes or content from the user brief unless they are explicitly part of the verified workspace context.',
-      'Treat connected platform names as integration metadata only; never claim that a site was published or that a platform is available unless the provider result confirms it.',
+      'Generate a production-ready website plan from the verified workspace context, the completed initial business analysis and the user brief.',
+      'The workspace context and completed initial analysis are the source of truth. Never invent company names, products, services, prices, certifications, locations, markets, statistics, customers, integrations or legal claims.',
+      'Reuse verified facts and strategic findings from the initial analysis. Treat hypotheses as hypotheses and never convert them into factual claims.',
+      'Respect all data gaps. If a fact is missing, omit it or use a neutral placeholder that clearly requires user confirmation. Do not present placeholders as facts.',
+      'Use the initial analysis sections for positioning, content, SEO, GEO, AEO and website architecture whenever they are present.',
+      'Do not copy example companies, contacts, phone numbers, addresses, color palettes or content from the user brief unless they are explicitly part of verified workspace data.',
+      'Treat connected platform names as integration metadata only; never claim that a site was published or that a platform is available unless a provider result confirms it.',
       'Return ONLY valid JSON without markdown fences and never claim that a website was published.',
       'Create practical provider-compatible pages, content, SEO metadata and asset briefs. Limit the result to 8 pages.',
     ].join(' '),
@@ -127,8 +123,8 @@ export async function generateWebsitePlan(input: {
         `Provider target: ${input.provider}`,
         `Requested language: ${input.language ?? 'en'}`,
         `User website brief: ${input.prompt}`,
-        'Verified workspace context:',
-        serializeContext(context),
+        'Verified workspace context including the shared initial analysis:',
+        JSON.stringify(context, null, 2),
         'Required JSON shape:',
         '{"siteTitle":string,"brandVoice":string,"primaryLanguage":string,"pages":[{"title":string,"slug":string,"purpose":string,"content":string,"seoTitle":string,"seoDescription":string}],"globalSeo":{"title":string,"description":string,"keywords":string[]},"assets":[{"brief":string,"altText":string}]}'
       ].join('\n\n'),
@@ -136,7 +132,6 @@ export async function generateWebsitePlan(input: {
     max_output_tokens: 12000,
     store: false,
   });
-
   const plan = extractJson(response.output_text);
   if (!plan.pages?.length || !plan.siteTitle) {
     throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI generated an incomplete website plan');
@@ -146,7 +141,3 @@ export async function generateWebsitePlan(input: {
 
 export { loadWebsiteContext };
 export type { WebsiteContext };
-
-// The context is deliberately loaded per job so changes in company data,
-// offerings, platforms and language settings are reflected in the next generation.
-// No sample business identity or static catalog is used as a fallback.

@@ -33,6 +33,20 @@ export async function getRun(workspaceId: string, runId: string) {
   const { rows } = await query<AgentRun>(`SELECT ${runSelect} FROM agent_runs WHERE workspace_id=$1 AND id=$2`, [workspaceId, runId]);
   return rows[0];
 }
+
+export async function getLatestCompletedInitialAnalysis(workspaceId: string) {
+  const { rows } = await query<AgentRun>(
+    `SELECT ${runSelect}
+     FROM agent_runs
+     WHERE workspace_id=$1
+       AND goal='[initial-business-analysis] Detailed post-onboarding business intelligence analysis'
+       AND status='completed'
+     ORDER BY finished_at DESC NULLS LAST, updated_at DESC
+     LIMIT 1`,
+    [workspaceId],
+  );
+  return rows[0];
+}
 export async function updateRun(runId: string, patch: Record<string, unknown>) {
   const keys = Object.keys(patch);
   const values = keys.map((key) => patch[key]);
