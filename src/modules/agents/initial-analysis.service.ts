@@ -7,6 +7,10 @@ import * as agentRepo from './agent.repo.js';
 
 const INITIAL_ANALYSIS_GOAL = '[initial-business-analysis] Detailed post-onboarding business intelligence analysis';
 
+const actualMetricCategories = [
+  'actual_customer_structure', 'validated_customer_personas', 'actual_customer_needs', 'actual_purchase_motives', 'actual_purchase_barriers', 'actual_customer_behavior', 'actual_purchase_history', 'actual_conversion_rate', 'actual_sales_volume', 'actual_average_order_value', 'actual_repeat_purchase_rate', 'actual_customer_retention', 'actual_churn_risk', 'actual_customer_lifetime_value', 'actual_purchase_probability', 'actual_upsell_cross_sell', 'actual_product_demand', 'actual_product_market_fit', 'actual_product_performance', 'actual_service_performance', 'actual_product_reviews', 'actual_customer_satisfaction', 'actual_return_rate', 'actual_complaint_rate', 'actual_product_quality', 'actual_support_load', 'actual_support_quality', 'actual_website_performance', 'actual_website_traffic', 'actual_website_conversion', 'actual_marketing_performance', 'actual_email_performance', 'actual_social_performance', 'actual_google_ads_performance', 'actual_meta_ads_performance', 'actual_ad_profitability', 'actual_attribution', 'actual_customer_journey', 'actual_seo_rankings', 'actual_geo_visibility', 'actual_aeo_performance', 'actual_competitor_performance', 'actual_market_size_development', 'actual_price_elasticity', 'actual_willingness_to_pay', 'actual_profitability', 'actual_unit_economics', 'actual_liquidity', 'actual_inventory_performance', 'actual_supply_chain_performance', 'actual_process_performance', 'actual_employee_performance', 'actual_brand_awareness', 'actual_brand_perception', 'actual_partner_performance', 'actual_marketplace_performance', 'actual_ab_test_results', 'reliable_forecasts', 'actual_scenario_impacts', 'actual_risks', 'actual_anomalies', 'actual_data_quality', 'actual_privacy_compliance',
+] as const;
+
 const analysisSections = [
   ['business', 'Company profile, business model, goals and operating model'],
   ['offerings', 'Products, services, customer value and product/service architecture'],
@@ -88,7 +92,9 @@ function buildInstructions() {
     'Do not execute actions, publish content, contact customers or claim that anything was changed. This job only analyses and stores knowledge.',
     'Analyse every requested category in depth. Where evidence is missing, return an explicit data gap instead of fabricating content.',
     'Return ONLY valid JSON without markdown fences. Use concise but substantive paragraphs and arrays of structured findings.',
-    'The result must contain executiveSummary, confidence, dataGaps, verifiedFacts, sections, priorities and knowledgeBaseDraft.',
+    'The result must contain executiveSummary, confidence, dataGaps, verifiedFacts, sections, priorities, actualMetrics and knowledgeBaseDraft.',
+    `Cover every actual metric category, including all customer, conversion, commerce, support, website, marketing, advertising, SEO/GEO/AEO, competition, market, finance, operations, brand, partner, experiment, forecast, scenario, risk, anomaly, data-quality and privacy/compliance categories: ${actualMetricCategories.join(', ')}.`,
+    'For every actual metric return value, unit, period, source, sourceStatus, confidence, limitations and whether it is measured, derived, forecast, unavailable or not applicable.',
     'Each section must contain title, status, verifiedFacts, derivedInsights, hypotheses, risks, opportunities, questionsToResolve and recommendedNextData.',
   ].join(' ');
 }
@@ -122,10 +128,12 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
           `Workspace analysis target: ${workspaceId}`,
           'Required sections:',
           JSON.stringify(analysisSections),
+          'Required actual metric categories:',
+          JSON.stringify(actualMetricCategories),
           'Verified workspace context:',
           JSON.stringify(context),
           'Required JSON shape:',
-          '{"executiveSummary":string,"confidence":"high"|"medium"|"low","dataGaps":string[],"verifiedFacts":string[],"sections":{"business":object,"offerings":object,"customers":object,"positioning":object,"marketing":object,"search":object,"website":object,"operations":object},"priorities":string[],"knowledgeBaseDraft":object}',
+          '{"executiveSummary":string,"confidence":"high"|"medium"|"low","dataGaps":string[],"verifiedFacts":string[],"sections":{"business":object,"offerings":object,"customers":object,"positioning":object,"marketing":object,"search":object,"website":object,"operations":object},"actualMetrics":{"metric_key":{"value":unknown,"unit":string|null,"period":string|null,"source":string|null,"sourceStatus":"verified"|"derived"|"forecast"|"unavailable"|"not_applicable","confidence":"high"|"medium"|"low","limitations":string[]}},"priorities":string[],"knowledgeBaseDraft":object}',
         ].join('\n\n') }],
         max_output_tokens: 30000,
         store: false,
@@ -134,7 +142,7 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
       for (const step of steps) {
         await agentRepo.updateStep(step.id, { status: 'completed', result: { analysed: true, reportSection: step.title }, finished_at: new Date() });
       }
-      await agentRepo.updateRun(run.id, { status: 'completed', result: { type: 'initial_business_analysis', generatedAt: new Date().toISOString(), ...result }, finished_at: new Date() });
+      await agentRepo.updateRun(run.id, { status: 'completed', result: { type: 'initial_business_analysis', generatedAt: new Date().toISOString(), metricCategories: actualMetricCategories, ...result }, finished_at: new Date() });
       await agentRepo.addEvent({ runId: run.id, workspaceId, eventType: 'initial_analysis.completed', agentRole: 'reviewer', payload: { confidence: result.confidence ?? null, dataGapCount: Array.isArray(result.dataGaps) ? result.dataGaps.length : null } });
     } catch (error) {
       const appError = error instanceof AppError ? error : new AppError(502, 'INITIAL_ANALYSIS_FAILED', error instanceof Error ? error.message : 'The initial analysis failed');
