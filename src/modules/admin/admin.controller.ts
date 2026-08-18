@@ -14,7 +14,9 @@ function requireAdmin(req: AuthedRequest, res: Response) {
 function monthRange(value: unknown) {
   const raw = typeof value === 'string' && /^\d{4}-\d{2}$/.test(value) ? value : new Date().toISOString().slice(0, 7);
   const start = `${raw}-01`;
-  const [year, month] = raw.split('-').map(Number);
+  const [yearValue, monthValue] = raw.split('-').map(Number);
+  const year = yearValue ?? new Date().getUTCFullYear();
+  const month = monthValue ?? new Date().getUTCMonth() + 1;
   const end = new Date(Date.UTC(year, month, 0)).toISOString().slice(0, 10);
   return { start, end, month: raw };
 }
@@ -33,7 +35,9 @@ export async function changePlan(req: AuthedRequest, res: Response, next: NextFu
     if (!requireAdmin(req, res)) return;
     const plan = req.body?.planKey;
     if (!['explorer', 'starter', 'ai'].includes(plan)) return res.status(422).json({ success: false, error: { code: 'INVALID_PLAN', message: 'Plan must be explorer, starter, or ai' } });
-    const result = await repo.updatePlan(req.params.workspaceId, plan);
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : undefined;
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const result = await repo.updatePlan(workspaceId, plan);
     if (!result) return res.status(404).json({ success: false, error: { code: 'WORKSPACE_SUBSCRIPTION_NOT_FOUND', message: 'Workspace subscription not found' } });
     return successResponse(res, 'Plan updated', result);
   } catch (error) { next(error); }
