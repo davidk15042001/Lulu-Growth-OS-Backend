@@ -59,11 +59,12 @@ export async function loginUser(email: string, password: string, options?: { use
     await repo.verifyUser(user.id);
   }
 
-  const token = signToken({ sub: user.id, email, tv: user.token_version });
-  const { token: refreshToken } = await repo.createRefreshToken(user.id, {
+  const session = await repo.createSingleDeviceSession(user.id, {
     userAgent: options?.userAgent ?? null,
     ipAddress: options?.ipAddress ?? null,
   });
+  const token = signToken({ sub: user.id, email, tv: session.tokenVersion });
+  const refreshToken = session.token;
 
   return {
     ok: true, 

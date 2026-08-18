@@ -113,6 +113,31 @@ export async function createRefreshToken(
   return { token: rawToken, expiresAt };
 }
 
+export async function createSingleDeviceSession(
+  userId: string,
+  options?: { userAgent?: string | null; ipAddress?: string | null },
+) {
+  return withTransaction(async (client) => {
+    const { rows } = await query<{ token_version: number }>(
+      `UPDATE users
+       SET token_version = token_version + 1
+       WHERE id = $1 AND deleted_at IS NULL
+       RETURNING token_version`,
+      [userId],
+      client,
+    );
+    if (!rows[0]) throw new Error('User not found while creating session');
+
+    await query(
+      'UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE',
+      [userId],
+      client,
+    );
+    const refresh = await createRefreshToken(userId, options, client);
+    return { ...refresh, tokenVersion: rows[0].token_version };
+  });
+}
+
 export async function getRefreshTokenBySelector(selector: string) {
   const { rows } = await query<RefreshToken>(
     'SELECT * FROM refresh_tokens WHERE selector=$1 AND revoked=false LIMIT 1',
