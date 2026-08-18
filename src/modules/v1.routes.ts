@@ -5,6 +5,7 @@ import translationRoutes from './translations/translation.routes.js';
 import oauthRoutes from './onboarding/oauth.routes.js';
 import { RESOURCE_CATALOG, RESOURCE_DOMAINS } from '../domain/resource-catalog.js';
 import billingRoutes from './billing/billing.routes.js';
+import adminRoutes from './admin/admin.routes.js';
 
 const router = Router();
 
@@ -27,6 +28,7 @@ router.use('/auth', authRoutes);
 router.use('/translations', translationRoutes);
 router.use('/onboarding/oauth', oauthRoutes);
 router.use('/billing', billingRoutes);
+router.use('/admin', adminRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;
