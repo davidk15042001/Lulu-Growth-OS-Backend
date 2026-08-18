@@ -120,6 +120,23 @@ export async function findWorkspaceForUser(
   return rows[0];
 }
 
+export async function findWorkspaceById(workspaceId: string) {
+  const { rows } = await query<Workspace>(
+    `SELECT w.id, w.name AS "companyName", w.slug, w.industry, w.company_size AS "companySize",
+            w.country_region AS "countryRegion", w.business_description AS "businessDescription",
+            w.value_proposition AS "valueProposition", w.target_market AS "targetMarket",
+            w.short_brand_description AS "shortBrandDescription", w.positioning_tags AS "positioningTags",
+            w.onboarding_step AS "onboardingStep", w.onboarding_completed_at AS "onboardingCompletedAt",
+            w.created_by AS "createdBy", w.created_at AS "createdAt", w.updated_at AS "updatedAt",
+            'owner'::text AS role
+     FROM workspaces w
+     WHERE w.id = $1 AND w.deleted_at IS NULL
+     LIMIT 1`,
+    [workspaceId]
+  );
+  return rows[0];
+}
+
 const updateColumnMap: Record<keyof UpdateWorkspaceInput, string> = {
   companyName: 'name',
   slug: 'slug',
