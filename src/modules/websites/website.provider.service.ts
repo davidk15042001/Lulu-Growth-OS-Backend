@@ -46,11 +46,15 @@ export async function webflowCollections(workspaceId: string, siteId: string) {
 }
 export async function createWebflowItem(workspaceId: string, collectionId: string, fieldData: Record<string, unknown>, isDraft = true) {
   const token = await tokenFor(workspaceId, 'webflow');
-  return (await providerRequest('webflow', `https://api.webflow.com/v2/collections/${encodeURIComponent(collectionId)}/items`, token, { method: 'POST', body: JSON.stringify({ isDraft, fieldData }) })).data;
+  return (await providerRequest('webflow', `https://api.webflow.com/v2/collections/${encodeURIComponent(collectionId)}/items/bulk`, token, { method: 'POST', body: JSON.stringify({ isDraft, fieldData }) })).data;
 }
-export async function publishWebflowSite(workspaceId: string, siteId: string, customDomains: string[] = []) {
+export async function webflowCustomDomains(workspaceId: string, siteId: string) {
   const token = await tokenFor(workspaceId, 'webflow');
-  return (await providerRequest('webflow', `https://api.webflow.com/v2/sites/${encodeURIComponent(siteId)}/publish`, token, { method: 'POST', body: JSON.stringify({ publishToWebflowSubdomain: true, customDomains }) })).data;
+  return (await providerRequest('webflow', `https://api.webflow.com/v2/sites/${encodeURIComponent(siteId)}/custom_domains`, token)).data;
+}
+export async function publishWebflowSite(workspaceId: string, siteId: string, customDomainIds: string[] = []) {
+  const token = await tokenFor(workspaceId, 'webflow');
+  return (await providerRequest('webflow', `https://api.webflow.com/v2/sites/${encodeURIComponent(siteId)}/publish`, token, { method: 'POST', body: JSON.stringify({ publishToWebflowSubdomain: customDomainIds.length === 0, ...(customDomainIds.length ? { customDomains: customDomainIds } : {}) }) })).data;
 }
 
 export async function withProviderConnectionError<T>(workspaceId: string, provider: 'wordpress' | 'webflow', action: () => Promise<T>) {

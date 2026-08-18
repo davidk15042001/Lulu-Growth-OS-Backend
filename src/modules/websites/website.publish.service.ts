@@ -1,6 +1,6 @@
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './website.repo.js';
-import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, withProviderConnectionError } from './website.provider.service.js';
+import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 
 export async function publishWebsiteJob(workspaceId: string, siteId: string, jobId: string) {
   const site = await repo.getSite(workspaceId, siteId);
@@ -30,7 +30,11 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       const item = await withProviderConnectionError(workspaceId, 'webflow', () => createWebflowItem(workspaceId, collectionId, { name: page.title, slug: page.slug, content: page.content, seoTitle: page.seoTitle, seoDescription: page.seoDescription }, false));
       items.push({ id: item.id ?? item._id, slug: page.slug });
     }
-    const published = await withProviderConnectionError(workspaceId, 'webflow', () => publishWebflowSite(workspaceId, site.externalSiteId!, site.domains.filter((domain) => domain.status === 'verified').map((domain) => domain.hostname)));
+    const providerDomains = await withProviderConnectionError(workspaceId, 'webflow', () => webflowCustomDomains(workspaceId, site.externalSiteId!));
+    const providerDomainItems = Array.isArray(providerDomains?.customDomains) ? providerDomains.customDomains : Array.isArray(providerDomains) ? providerDomains : [];
+    const verifiedHostnames = new Set(site.domains.filter((domain) => domain.status === 'verified').map((domain) => domain.hostname.toLowerCase()));
+    const customDomainIds = providerDomainItems.filter((domain: any) => verifiedHostnames.has(String(domain.url ?? domain.hostname ?? '').toLowerCase())).map((domain: any) => String(domain.id));
+    const published = await withProviderConnectionError(workspaceId, 'webflow', () => publishWebflowSite(workspaceId, site.externalSiteId!, customDomainIds));
     return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'webflow', items, published } });
   } catch (error) {
     await repo.updateJob(siteId, jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_PUBLISH_FAILED', errorMessage: error instanceof Error ? error.message : 'Website publishing failed' });
