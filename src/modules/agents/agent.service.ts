@@ -4,6 +4,7 @@ import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai
 import * as repo from './agent.repo.js';
 import type { AgentRole, AgentTool } from './agent.types.js';
 import type { DecideApprovalInput } from '../approvals/approval.validator.js';
+import { getAgentCapabilities, type AgentModule, isAgentModule } from './agent.capabilities.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -31,20 +32,21 @@ async function assertNotCancelled(workspaceId: string, runId: string) {
   const run = await repo.getRun(workspaceId, runId).catch(() => undefined);
   if (run?.status === 'cancelled') throw new AppError(409, 'AGENT_RUN_CANCELLED', 'The agent run was cancelled');
 }
-async function planRun(runId: string, workspaceId: string, goal: string) {
+async function planRun(runId: string, workspaceId: string, goal: string, executionMode: 'analysis_only' | 'autonomous', module: AgentModule, capabilities: ReturnType<typeof getAgentCapabilities>) {
   await repo.updateRun(runId, { status: 'planning', started_at: new Date() });
   await event({ runId, workspaceId, eventType: 'run.planning_started', agentRole: 'planner', payload: { goal } });
-  const steps = await repo.createSteps(pipeline.map((step, index) => ({ runId, workspaceId, sequenceNo: index + 1, agentRole: step.role, title: step.title, instruction: `${step.instruction} User goal: ${goal}`, toolName: step.toolName ?? null })));
-  await repo.updateRun(runId, { status: 'running', plan: { version: 1, agents: pipeline.map((item) => item.role), steps: steps.map((item) => ({ id: item.id, role: item.agentRole, title: item.title })) } });
+  const selectedPipeline = pipeline.filter((step) => step.role !== 'strategist' || capabilities.recommend);
+  const steps = await repo.createSteps(selectedPipeline.map((step, index) => ({ runId, workspaceId, sequenceNo: index + 1, agentRole: step.role, title: step.title, instruction: `${step.instruction} Module: ${module}. Capabilities: ${JSON.stringify(capabilities)} User goal: ${goal}`, toolName: step.toolName ?? null })));
+  await repo.updateRun(runId, { status: 'running', plan: { version: 1, module, capabilities, executionMode, agents: selectedPipeline.map((item) => item.role), steps: steps.map((item) => ({ id: item.id, role: item.agentRole, title: item.title })) } });
   await event({ runId, workspaceId, eventType: 'run.planned', agentRole: 'planner', payload: { stepCount: steps.length } });
   return steps;
 }
-async function executeStep(runId: string, workspaceId: string, userId: string, step: Awaited<ReturnType<typeof repo.listSteps>>[number]) {
+async function executeStep(runId: string, workspaceId: string, userId: string, step: Awaited<ReturnType<typeof repo.listSteps>>[number], autonomous: boolean) {
   await repo.updateStep(step.id, { status: 'running', started_at: new Date() });
   await event({ runId, stepId: step.id, workspaceId, eventType: 'step.started', agentRole: step.agentRole, payload: { title: step.title } });
   const tool = step.toolName ? tools.get(step.toolName) : undefined;
   if (step.toolName && !tool) throw new AppError(500, 'AGENT_TOOL_NOT_REGISTERED', `Tool ${step.toolName} is not registered`);
-  if (tool && tool.risk !== 'read') {
+  if (tool && tool.risk !== 'read' && !autonomous) {
     const approval = await createApproval(workspaceId, userId, { actionType: `agent_tool:${tool.name}`, title: `Approve ${tool.name}`, description: step.instruction, payload: { runId, stepId: step.id, toolName: tool.name, toolInput: step.toolInput ?? {} } });
     if (!approval) throw new AppError(500, 'AGENT_APPROVAL_CREATION_FAILED', 'The approval request could not be created');
     await repo.updateStep(step.id, { status: 'waiting_approval', approval_id: approval.id });
@@ -57,13 +59,13 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
   await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: toolOutput });
   return { waiting: false, output: toolOutput };
 }
-async function executeRun(runId: string, workspaceId: string, userId: string, goal: string, initial = false) {
+async function executeRun(runId: string, workspaceId: string, userId: string, goal: string, executionMode: 'analysis_only' | 'autonomous', module: AgentModule, capabilities: ReturnType<typeof getAgentCapabilities>, initial = false) {
   if (activeRuns.has(runId)) return;
   activeRuns.add(runId);
   const deadline = Date.now() + MAX_RUN_DURATION_MS;
   try {
     let steps = await repo.listSteps(workspaceId, runId);
-    if (initial && steps.length === 0) steps = await planRun(runId, workspaceId, goal);
+    if (initial && steps.length === 0) steps = await planRun(runId, workspaceId, goal, executionMode, module, capabilities);
     const outputs: Record<string, unknown>[] = [];
     for (const step of steps) {
       if (Date.now() > deadline) throw new AppError(504, 'AGENT_RUN_TIMEOUT', 'The agent run exceeded its time limit');
@@ -73,7 +75,7 @@ async function executeRun(runId: string, workspaceId: string, userId: string, go
         continue;
       }
       if (step.status === 'waiting_approval') return;
-      const result = await executeStep(runId, workspaceId, userId, step);
+      const result = await executeStep(runId, workspaceId, userId, step, executionMode === 'autonomous');
       if (result.waiting) return;
       outputs.push({ stepId: step.id, output: result.output });
     }
@@ -90,10 +92,24 @@ async function executeRun(runId: string, workspaceId: string, userId: string, go
     await event({ runId, workspaceId, eventType: 'run.failed', payload: { code: appError.code, message: appError.message } });
   } finally { activeRuns.delete(runId); }
 }
-export async function startRun(workspaceId: string, userId: string, goal: string) {
+export async function startRun(workspaceId: string, userId: string, goal: string, module: AgentModule = 'general') {
+  const subscription = await repo.getWorkspacePlan(workspaceId);
+  if (subscription.status !== 'active' && subscription.status !== 'trialing') throw new AppError(403, 'AGENT_PLAN_INACTIVE', 'An active workspace subscription is required for agent analysis');
+  const capabilities = getAgentCapabilities(subscription.plan_key, isAgentModule(module) ? module : 'general');
+  if (!capabilities.analyze) throw new AppError(403, 'AGENT_EXPLORER_READ_ONLY', 'Explorer is read-only and does not run AI analysis. Choose Starter or AI.');
+  const executionMode = capabilities.autonomous ? 'autonomous' : 'analysis_only';
   const run = await repo.createRun(workspaceId, userId, goal);
   if (!run) throw new AppError(500, 'AGENT_RUN_CREATION_FAILED', 'The agent run could not be created');
-  void executeRun(run.id, workspaceId, userId, goal, true);
+  void executeRun(run.id, workspaceId, userId, goal, executionMode, isAgentModule(module) ? module : 'general', capabilities, true);
+  return run;
+}
+export async function startAutomaticRun(workspaceId: string, goal: string, module: AgentModule) {
+  const subscription = await repo.getWorkspacePlan(workspaceId);
+  const capabilities = getAgentCapabilities(subscription.plan_key, module);
+  if ((subscription.status !== 'active' && subscription.status !== 'trialing') || !capabilities.automatic || !capabilities.analyze) return null;
+  const run = await repo.createRun(workspaceId, null, goal);
+  if (!run) throw new AppError(500, 'AGENT_AUTOMATIC_RUN_CREATION_FAILED', 'The automatic analysis run could not be created');
+  void executeRun(run.id, workspaceId, 'system', goal, capabilities.autonomous ? 'autonomous' : 'analysis_only', module, capabilities, true);
   return run;
 }
 export async function listRuns(workspaceId: string) { return repo.listRuns(workspaceId); }
@@ -128,6 +144,10 @@ export async function approveStep(workspaceId: string, runId: string, stepId: st
   await repo.updateStep(stepId, { status: 'pending', approval_id: null });
   await repo.updateRun(runId, { status: 'running', error_code: null, error_message: null });
   await event({ runId, stepId, workspaceId, eventType: 'step.approved', agentRole: 'executor', payload: {} });
-  void executeRun(runId, workspaceId, userId, (await repo.getRun(workspaceId, runId))?.goal ?? 'approved agent run');
+  const run = await repo.getRun(workspaceId, runId);
+  const subscription = await repo.getWorkspacePlan(workspaceId);
+  const module = isAgentModule(run?.plan?.module) ? run.plan.module : 'general';
+  const capabilities = getAgentCapabilities(subscription.plan_key, module);
+  void executeRun(runId, workspaceId, userId, run?.goal ?? 'approved agent run', capabilities.autonomous ? 'autonomous' : 'analysis_only', module, capabilities);
   return getRunDetails(workspaceId, runId);
 }

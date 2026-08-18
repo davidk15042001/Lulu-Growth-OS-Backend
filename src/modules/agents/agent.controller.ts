@@ -8,7 +8,7 @@ export async function create(req: WorkspaceRequest, res: Response, next: NextFun
   try {
     const params = agentRunParamsSchema.parse(req.params);
     const input = createAgentRunSchema.parse(req.body);
-    return createdResponse(res, 'Agent run started', await service.startRun(params.workspaceId, req.user!.id, input.goal));
+    return createdResponse(res, 'Agent run started', await service.startRun(params.workspaceId, req.user!.id, input.goal, input.module));
   } catch (error) { next(error); }
 }
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) {

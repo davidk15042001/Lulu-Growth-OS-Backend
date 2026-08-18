@@ -9,4 +9,5 @@ export const agentRunParamsSchema = z.object({
 export const agentStepDecisionSchema = decideApprovalSchema;
 export const createAgentRunSchema = z.object({
   goal: z.string().trim().min(3).max(4000),
+  module: z.enum(['general', 'seo', 'geo', 'aeo', 'website']).default('general'),
 });

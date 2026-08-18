@@ -12,10 +12,18 @@ const stepSelect = `id, run_id AS "runId", workspace_id AS "workspaceId", sequen
 const eventSelect = `id, run_id AS "runId", step_id AS "stepId", workspace_id AS "workspaceId",
  event_type AS "eventType", agent_role AS "agentRole", payload, created_at AS "createdAt"`;
 
-export async function createRun(workspaceId: string, userId: string, goal: string) {
+export async function createRun(workspaceId: string, userId: string | null, goal: string) {
   const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (workspace_id, created_by, goal)
     VALUES ($1, $2, $3) RETURNING ${runSelect}`, [workspaceId, userId, goal]);
   return rows[0];
+}
+export async function listAutomatedTargets() {
+  const { rows } = await query<{ workspace_id: string; plan_key: 'explorer' | 'starter' | 'ai'; status: string }>(`SELECT workspace_id, plan_key, status FROM workspace_subscriptions WHERE status IN ('active', 'trialing') AND plan_key IN ('starter', 'ai')`);
+  return rows;
+}
+export async function hasRecentAutomaticRun(workspaceId: string, goal: string, minutes = 30) {
+  const { rows } = await query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM agent_runs WHERE workspace_id=$1 AND goal=$2 AND created_at > NOW() - ($3 * INTERVAL '1 minute') AND status IN ('queued','planning','running','waiting_approval','completed')) AS exists`, [workspaceId, goal, minutes]);
+  return Boolean(rows[0]?.exists);
 }
 export async function listRuns(workspaceId: string, limit = 50) {
   const { rows } = await query<AgentRun>(`SELECT ${runSelect} FROM agent_runs WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT $2`, [workspaceId, limit]);
@@ -61,6 +69,11 @@ export async function addEvent(input: { runId: string; stepId?: string | null; w
     VALUES ($1,$2,$3,$4,$5,$6) RETURNING ${eventSelect}`, [input.runId, input.stepId ?? null, input.workspaceId, input.eventType, input.agentRole ?? null, input.payload ?? {}]);
   return rows[0];
 }
+export async function getWorkspacePlan(workspaceId: string) {
+  const { rows } = await query<{ plan_key: 'explorer' | 'starter' | 'ai'; status: string }>(`SELECT plan_key, status FROM workspace_subscriptions WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT 1`, [workspaceId]);
+  return rows[0] ?? { plan_key: 'explorer' as const, status: 'inactive' };
+}
+
 export async function getApprovalStatus(workspaceId: string, approvalId: string) {
   const { rows } = await query<{ status: string }>(`SELECT status FROM approval_requests WHERE workspace_id=$1 AND id=$2`, [workspaceId, approvalId]);
   return rows[0]?.status ?? null;
