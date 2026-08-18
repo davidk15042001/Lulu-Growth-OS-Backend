@@ -10,4 +10,5 @@ router.route('/:siteId/domains').post(controller.addDomain).all(methodNotAllowed
 router.route('/:siteId/domains/:domainId/verify').post(controller.verifyDomain).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs').post(controller.createJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId').get(controller.getJob).all(methodNotAllowed);
+router.route('/:siteId/generation-jobs/:jobId/publish').post(controller.publishJob).all(methodNotAllowed);
 export default router;
