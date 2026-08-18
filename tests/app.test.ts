@@ -31,6 +31,19 @@ describe('HTTP application', () => {
     assert.equal(catalog.body.data.items.length, RESOURCE_CATALOG.length);
   });
 
+  it('accepts case-insensitive UTF-8 charset parameters from browsers and proxies', async () => {
+    const response = await request(createApp())
+      .post('/api/v1/auth/login')
+      .set('Content-Type', 'application/json; charset=UTF-8')
+      .send({ email: 'not-an-email', password: 'A-valid-password-123!' });
+
+    // The request must reach auth validation code. The old body-parser failure
+    // happened before validation and incorrectly became a generic 500.
+    assert.equal(response.status, 422);
+    assert.equal(response.body.success, false);
+    assert.equal(response.body.error.code, 'VALIDATION_ERROR');
+  });
+
   it('returns structured validation errors', async () => {
     const response = await request(createApp())
       .post('/api/v1/auth/register')

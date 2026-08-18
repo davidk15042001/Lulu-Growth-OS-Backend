@@ -39,6 +39,21 @@ export function createApp() {
     })
   );
 
+  // body-parser 2.x validates JSON/urlencoded charsets case-sensitively,
+  // while browsers and reverse proxies may send the equivalent `UTF-8` token.
+  // Normalize only the charset parameter before parsing; do not alter the body
+  // or any other content-type parameter.
+  app.use((req, _res, next) => {
+    const contentType = req.headers['content-type'];
+    if (typeof contentType === 'string' && /\bcharset\s*=/i.test(contentType)) {
+      req.headers['content-type'] = contentType.replace(
+        /(\bcharset\s*=\s*"?)([^;"\s]+)("?)/i,
+        (_match, prefix: string, charset: string, suffix: string) => `${prefix}${charset.toLowerCase()}${suffix}`,
+      );
+    }
+    next();
+  });
+
   app.use(express.json({
     limit: '2mb',
     verify(req, _res, buffer) {
@@ -46,6 +61,7 @@ export function createApp() {
     },
   }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+
   app.use(cookieParser());
 
   app.get('/health', (_req: Request, res: Response) => {
