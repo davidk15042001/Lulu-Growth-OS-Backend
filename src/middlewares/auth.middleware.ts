@@ -22,7 +22,6 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
 
     const { token_version, role, deleted_at } = row;
 
-    // Added curly braces to guard blocks properly
     if (deleted_at) {
       logger.error('Account disabled');
       return forbidden(res, 'Account disabled');
@@ -39,30 +38,4 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
     logger.error('Invalid token');
     return unauthorized(res, 'Invalid token');
   }
-}
-
-export async function fakeAuth(req: AuthedRequest, _res: Response, next: NextFunction) {
-  const token = extractBearerToken(req.headers.authorization as string | undefined);
-
-  if (token) {
-    try {
-      const payload = verifyToken<JwtPayload>(token);
-      const { rows } = await query<{ token_version: number; role: 'user' | 'admin'; deleted_at: string | null }>(
-        'SELECT token_version, role, deleted_at FROM users WHERE id=$1',
-        [payload.sub]
-      );
-      const row = rows[0];
-      if (row && !row.deleted_at && (payload.tv ?? 0) === row.token_version) {
-        req.user = { id: payload.sub, email: payload.email, role: row.role };
-      }
-    } catch {
-      // If token verification fails, still continue
-    }
-  }
-
-  if (!req.user) {
-    req.user = { id: 'fake-user-id', email: 'fake@example.com', role: 'user' };
-  }
-
-  next();
 }
