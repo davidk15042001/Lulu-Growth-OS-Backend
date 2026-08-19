@@ -21,6 +21,20 @@ async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress
   return repo.updateSiteSettings(site.workspaceId, site.id, { collectionId: target.collectionId });
 }
 
+function generationErrorMessage(error: unknown) {
+  if (!(error instanceof AppError)) return error instanceof Error ? error.message : 'Automatic website generation failed';
+  const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
+  const providerStatus = details.providerHttpStatus;
+  const providerCode = details.providerCode;
+  const providerMessage = details.providerMessage;
+  const diagnostic = [
+    typeof providerStatus === 'number' ? `HTTP ${providerStatus}` : null,
+    typeof providerCode === 'string' && providerCode ? `Code: ${providerCode}` : null,
+    typeof providerMessage === 'string' && providerMessage ? providerMessage : null,
+  ].filter(Boolean).join(' · ');
+  return diagnostic ? `${error.message} (${diagnostic})` : error.message;
+}
+
 async function processAutoGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; siteId: string; jobId: string; language?: string }) {
   try {
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'generating');
@@ -31,7 +45,7 @@ async function processAutoGeneration(input: { workspaceId: string; userId: strin
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'published');
   } catch (error) {
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
-    await repo.updateJob(input.siteId, input.jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: error instanceof Error ? error.message : 'Automatic website generation failed' }).catch(() => undefined);
+    await repo.updateJob(input.siteId, input.jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: generationErrorMessage(error) }).catch(() => undefined);
   }
 }
 
