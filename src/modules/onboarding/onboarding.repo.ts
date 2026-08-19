@@ -518,7 +518,7 @@ export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredenti
       `UPDATE workspace_platforms
        SET name = $3,
            category = $4,
-           connection_status = 'connected',
+           connection_status = 'pending',
            external_account_id = $5,
            granted_scopes = $6,
            settings = $7,
@@ -532,7 +532,7 @@ export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredenti
       `INSERT INTO workspace_platforms (
          workspace_id, integration_key, name, category, connection_status,
          external_account_id, granted_scopes, settings
-       ) VALUES ($1, $2, $3, $4, 'connected', $5, $6, $7)
+       ) VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
        RETURNING id`,
       [input.workspaceId, input.integrationKey, input.name, input.category, input.externalAccountId, input.grantedScopes, input.settings]
     );
@@ -586,6 +586,24 @@ export async function markPlatformConnectionError(workspaceId: string, integrati
   await query(
     `UPDATE workspace_platforms
      SET connection_status = 'error', last_error = $3, updated_at = NOW()
+     WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
+    [workspaceId, integrationKey, message.slice(0, 2_000)]
+  );
+}
+
+export async function markPlatformConnected(workspaceId: string, integrationKey: string) {
+  await query(
+    `UPDATE workspace_platforms
+     SET connection_status = 'connected', last_error = NULL, updated_at = NOW()
+     WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
+    [workspaceId, integrationKey]
+  );
+}
+
+export async function archivePlatformByIntegration(workspaceId: string, integrationKey: string, message: string) {
+  await query(
+    `UPDATE workspace_platforms
+     SET connection_status = 'not_connected', last_error = $3, deleted_at = NOW(), updated_at = NOW()
      WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
     [workspaceId, integrationKey, message.slice(0, 2_000)]
   );
