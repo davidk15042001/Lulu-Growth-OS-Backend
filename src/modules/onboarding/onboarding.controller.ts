@@ -261,6 +261,12 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
   }
 }
 
+function appendQuery(path: string, params: Record<string, string>) {
+  const url = new URL(path, 'http://lulu.local');
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
 export async function oauthCallback(req: Request, res: Response) {
   try {
     const provider = String(req.params.provider);
@@ -271,18 +277,18 @@ export async function oauthCallback(req: Request, res: Response) {
     const frontend = envFrontendBaseUrl();
     const requestId = String(req.id || 'request-id-unavailable');
     const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? '/onboarding/existing-platforms';
-    const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}${returnTo}?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
+    const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
     if (typeof req.query.error === 'string') return errorRedirect('OAUTH_PROVIDER_DENIED', `Provider denied access (${provider}; provider_error=${req.query.error})`);
     if (typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return errorRedirect('OAUTH_CALLBACK_INCOMPLETE', `OAuth callback did not include both code and state for ${provider}`);
     await oauthService.completeOAuthCallback(provider, req.query.code, req.query.state);
-    return res.redirect(`${frontend}${returnTo}?connected=${encodeURIComponent(provider)}`);
+    return res.redirect(`${frontend}${appendQuery(returnTo, { connected: provider })}`);
   } catch (error) {
     const code = error instanceof AppError ? error.code : 'OAUTH_CALLBACK_FAILED';
     const message = error instanceof AppError ? error.message : 'OAuth callback failed before the account could be connected';
     const requestId = String(req.id || 'request-id-unavailable');
     const frontend = envFrontendBaseUrl();
     const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? '/onboarding/existing-platforms';
-    return res.redirect(`${frontend}${returnTo}?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
+    return res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
   }
 }
 
