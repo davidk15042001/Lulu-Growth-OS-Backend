@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { sendMail } from '../../utils/mailer.js';
-import { query } from '../../db/pool.js';
+import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
 
@@ -263,28 +263,62 @@ export async function handleWebhook(event: AirwallexObject) {
   const eventId = String(event.id ?? event.event_id ?? '');
   const eventType = String(event.type ?? event.event_type ?? 'unknown');
   if (!eventId) throw providerError('AIRWALLEX_WEBHOOK_EVENT_ID_MISSING', 'Airwallex webhook event ID is missing', undefined, 400);
-  const inserted = await query(`INSERT INTO airwallex_webhook_events (event_id, event_type, payload) VALUES ($1, $2, $3::jsonb) ON CONFLICT (event_id) DO NOTHING RETURNING event_id`, [eventId, eventType, JSON.stringify(event)]);
-  if (inserted.rowCount === 0) return { duplicate: true, eventId };
 
-  const data = (event.data ?? event.object ?? {}) as AirwallexObject;
-  const metadata = (data.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
-  const workspaceId = typeof metadata.workspace_id === 'string' ? metadata.workspace_id : null;
-  if (!workspaceId) {
-    await query(`UPDATE airwallex_webhook_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);
-    logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
-    return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
-  }
+  const claim = await withTransaction(async (client) => {
+    const inserted = await query<{ event_id: string; processed_at: string | null }>(
+      `INSERT INTO airwallex_webhook_events (event_id, event_type, payload, processing_at)
+       VALUES ($1, $2, $3::jsonb, NOW())
+       ON CONFLICT (event_id) DO NOTHING
+       RETURNING event_id, processed_at`,
+      [eventId, eventType, JSON.stringify(event)],
+      client,
+    );
+    if (inserted.rowCount > 0) return { claimed: true, processed: false };
 
-  const subscription = (data.subscription ?? data) as AirwallexObject;
-  const checkout = (data.checkout ?? data) as AirwallexObject;
-  const providerStatus = String(subscription.status ?? checkout.status ?? '').toUpperCase();
-  const mappedStatus = providerStatus === 'ACTIVE' || eventType.includes('PAID') || eventType.includes('COMPLETED') ? 'active' : providerStatus === 'CANCELLED' ? 'cancelled' : providerStatus === 'EXPIRED' ? 'expired' : providerStatus === 'UNPAID' ? 'past_due' : null;
-  if (!mappedStatus) {
-    await query(`UPDATE airwallex_webhook_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);
-    logger.warn({ eventId, eventType, providerStatus }, 'Airwallex webhook ignored: unsupported subscription status');
-    return { processed: false, eventId, reason: 'unsupported_subscription_status', code: 'AIRWALLEX_SUBSCRIPTION_STATUS_UNSUPPORTED' };
-  }
-  if (mappedStatus) {
+    const existing = await query<{ processed_at: string | null; processing_at: string | null }>(
+      `SELECT processed_at, processing_at
+       FROM airwallex_webhook_events
+       WHERE event_id=$1
+       FOR UPDATE`,
+      [eventId],
+      client,
+    );
+    const row = existing.rows[0];
+    if (!row) return { claimed: false, processed: false };
+    if (row.processed_at) return { claimed: false, processed: true };
+
+    await query(
+      `UPDATE airwallex_webhook_events
+       SET processing_at=NOW(), last_error_code=NULL, payload=$2::jsonb, event_type=$3
+       WHERE event_id=$1`,
+      [eventId, JSON.stringify(event), eventType],
+      client,
+    );
+    return { claimed: true, processed: false };
+  });
+
+  if (!claim.claimed) return { duplicate: true, eventId, processed: claim.processed };
+
+  try {
+    const data = (event.data ?? event.object ?? {}) as AirwallexObject;
+    const metadata = (data.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
+    const workspaceId = typeof metadata.workspace_id === 'string' ? metadata.workspace_id : null;
+    if (!workspaceId) {
+      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL WHERE event_id=$1`, [eventId]);
+      logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
+      return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
+    }
+
+    const subscription = (data.subscription ?? data) as AirwallexObject;
+    const checkout = (data.checkout ?? data) as AirwallexObject;
+    const providerStatus = String(subscription.status ?? checkout.status ?? '').toUpperCase();
+    const mappedStatus = providerStatus === 'ACTIVE' || eventType.includes('PAID') || eventType.includes('COMPLETED') ? 'active' : providerStatus === 'CANCELLED' ? 'cancelled' : providerStatus === 'EXPIRED' ? 'expired' : providerStatus === 'UNPAID' ? 'past_due' : null;
+    if (!mappedStatus) {
+      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL WHERE event_id=$1`, [eventId]);
+      logger.warn({ eventId, eventType, providerStatus }, 'Airwallex webhook ignored: unsupported subscription status');
+      return { processed: false, eventId, reason: 'unsupported_subscription_status', code: 'AIRWALLEX_SUBSCRIPTION_STATUS_UNSUPPORTED' };
+    }
+
     await query(
       `UPDATE workspace_subscriptions SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=COALESCE($4, plan_key), status=$5, current_period_starts_at=COALESCE($6::timestamptz, current_period_starts_at), current_period_ends_at=COALESCE($7::timestamptz, current_period_ends_at), metadata=metadata || $8::jsonb, updated_at=NOW() WHERE workspace_id=$1`,
       [workspaceId, subscription.billing_customer_id ?? checkout.billing_customer_id ?? null, subscription.id ?? checkout.subscription_id ?? null, metadata.plan_key ?? null, mappedStatus, subscription.current_period_starts_at ?? null, subscription.current_period_ends_at ?? null, JSON.stringify({ lastWebhookEventId: eventId, lastWebhookType: eventType, invoiceId: data.invoice_id ?? null })]
@@ -302,9 +336,13 @@ export async function handleWebhook(event: AirwallexObject) {
         logger.error({ code: 'BILLING_INVOICE_EMAIL_FAILED', error: error instanceof Error ? error.message : 'unknown_error', workspaceId, planKey, invoiceId, eventId }, 'Invoice email delivery failed');
       }
     }
+    await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
+    return { processed: true, eventId, status: mappedStatus };
+  } catch (error) {
+    const errorCode = error instanceof AppError ? error.code : 'AIRWALLEX_WEBHOOK_PROCESSING_FAILED';
+    await query(`UPDATE airwallex_webhook_events SET processing_at=NULL, last_error_code=$2 WHERE event_id=$1`, [eventId, errorCode]).catch((updateError) => logger.error({ updateError, eventId }, 'Could not release Airwallex webhook claim'));
+    throw error;
   }
-  await query(`UPDATE airwallex_webhook_events SET processed_at=NOW() WHERE event_id=$1`, [eventId]);
-  return { processed: true, eventId, status: mappedStatus };
 }
 
 export const billingPlans = Object.entries(planConfig).map(([key, value]) => ({ key, label: value.label, amountMinor: value.amountMinor, currency: 'CNY', interval: 'year' }));
