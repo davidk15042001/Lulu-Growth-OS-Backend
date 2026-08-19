@@ -22,6 +22,10 @@ jobs:
 
       - run: npm ci
       - run: npm run typecheck
+      - run: npm run test:migrations
+      - run: npm test
+      - run: npm run build
+      - run: npm run test:smoke
 
       - name: SSH einrichten
         env:
@@ -54,4 +58,4 @@ jobs:
             ./ "$DEPLOY_USER@$DEPLOY_HOST:/var/www/lulu-growth-os/backend/"
 
           ssh "$DEPLOY_USER@$DEPLOY_HOST" \
-            'cd /var/www/lulu-growth-os/backend && npm ci && sudo systemctl restart lulu-growth-backend'
+            'set -e; cd /var/www/lulu-growth-os/backend && npm ci && npm run build && sudo systemctl restart lulu-growth-backend && for attempt in $(seq 1 30); do if curl -fsS http://127.0.0.1:4000/api/v1/ready >/tmp/lulu-ready.json; then cat /tmp/lulu-ready.json; exit 0; fi; sleep 2; done; echo "Backend readiness check failed" >&2; sudo systemctl --no-pager --full status lulu-growth-backend; exit 1'
