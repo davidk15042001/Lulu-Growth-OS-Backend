@@ -23,6 +23,7 @@ type OAuthState = {
   nonce: string;
   exp: number;
   shop?: string;
+  returnTo?: string;
 };
 
 const providerNames: Record<OAuthProvider, string> = {
@@ -138,10 +139,25 @@ function parseState(value: string): OAuthState {
   return state;
 }
 
-export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: string, userId: string, shop?: string) {
+function safeReturnTo(value?: string) {
+  if (!value || !value.startsWith('/') || value.startsWith('//') || value.includes('\\\\')) return undefined;
+  return value;
+}
+
+export function getSafeReturnTo(stateValue?: string) {
+  if (!stateValue) return undefined;
+  try {
+    return safeReturnTo(parseState(stateValue).returnTo);
+  } catch {
+    return undefined;
+  }
+}
+
+export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: string, userId: string, shop?: string, returnTo?: string) {
   const config = providerConfig(provider);
   if (provider === 'shopify' && (!shop || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop))) throw oauthError(provider, 'SHOPIFY_SHOP_DOMAIN_INVALID', 'Shopify shop domain must use the format example.myshopify.com', { expectedFormat: 'example.myshopify.com' }, 400);
-  const state = createState({ provider, workspaceId, userId, nonce: crypto.randomBytes(24).toString('base64url'), exp: Date.now() + 10 * 60 * 1_000, ...(shop ? { shop } : {}) });
+  const safeDestination = safeReturnTo(returnTo);
+  const state = createState({ provider, workspaceId, userId, nonce: crypto.randomBytes(24).toString('base64url'), exp: Date.now() + 10 * 60 * 1_000, ...(shop ? { shop } : {}), ...(safeDestination ? { returnTo: safeDestination } : {}) });
   const url = provider === 'shopify' ? new URL(`https://${shop}/admin/oauth/authorize`) : new URL(config.authorizationUrl);
   url.searchParams.set('client_id', config.clientId);
   url.searchParams.set('redirect_uri', callbackUrl(provider));

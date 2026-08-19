@@ -253,7 +253,8 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
       return;
     }
     const shop = typeof req.query.shop === 'string' ? req.query.shop.trim().toLowerCase() : undefined;
-    const url = oauthService.buildAuthorizationUrl(provider, workspaceId(req), req.user!.id, shop);
+    const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined;
+    const url = oauthService.buildAuthorizationUrl(provider, workspaceId(req), req.user!.id, shop, returnTo);
     return successResponse(res, 'OAuth authorization URL created', { provider, authorizationUrl: url });
   } catch (error) {
     next(error);
@@ -269,17 +270,19 @@ export async function oauthCallback(req: Request, res: Response) {
     }
     const frontend = envFrontendBaseUrl();
     const requestId = String(req.id || 'request-id-unavailable');
-    const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}/onboarding/existing-platforms?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
+    const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? '/onboarding/existing-platforms';
+    const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}${returnTo}?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
     if (typeof req.query.error === 'string') return errorRedirect('OAUTH_PROVIDER_DENIED', `Provider denied access (${provider}; provider_error=${req.query.error})`);
     if (typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return errorRedirect('OAUTH_CALLBACK_INCOMPLETE', `OAuth callback did not include both code and state for ${provider}`);
     await oauthService.completeOAuthCallback(provider, req.query.code, req.query.state);
-    return res.redirect(`${frontend}/onboarding/existing-platforms?connected=${encodeURIComponent(provider)}`);
+    return res.redirect(`${frontend}${returnTo}?connected=${encodeURIComponent(provider)}`);
   } catch (error) {
     const code = error instanceof AppError ? error.code : 'OAUTH_CALLBACK_FAILED';
     const message = error instanceof AppError ? error.message : 'OAuth callback failed before the account could be connected';
     const requestId = String(req.id || 'request-id-unavailable');
     const frontend = envFrontendBaseUrl();
-    return res.redirect(`${frontend}/onboarding/existing-platforms?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
+    const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? '/onboarding/existing-platforms';
+    return res.redirect(`${frontend}${returnTo}?oauthCode=${encodeURIComponent(code)}&oauthError=${encodeURIComponent(message.slice(0, 240))}&oauthRequestId=${encodeURIComponent(requestId)}`);
   }
 }
 
