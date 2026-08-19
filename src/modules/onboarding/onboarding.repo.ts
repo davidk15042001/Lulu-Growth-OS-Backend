@@ -505,6 +505,8 @@ export type PlatformOAuthCredentialInput = {
 };
 
 export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredentialInput) {
+  const websiteProviderPending = ['wordpress', 'webflow'].includes(input.integrationKey);
+  const connectionStatus = websiteProviderPending ? 'pending' : 'connected';
   const existing = await query<{ id: string }>(
     `SELECT id FROM workspace_platforms
      WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL
@@ -518,23 +520,23 @@ export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredenti
       `UPDATE workspace_platforms
        SET name = $3,
            category = $4,
-           connection_status = 'pending',
-           external_account_id = $5,
-           granted_scopes = $6,
-           settings = $7,
+           connection_status = $5,
+           external_account_id = $6,
+           granted_scopes = $7,
+           settings = $8,
            last_error = NULL,
            updated_at = NOW()
        WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
-      [input.workspaceId, platformId, input.name, input.category, input.externalAccountId, input.grantedScopes, input.settings]
+      [input.workspaceId, platformId, input.name, input.category, connectionStatus, input.externalAccountId, input.grantedScopes, input.settings]
     );
   } else {
     const created = await query<{ id: string }>(
       `INSERT INTO workspace_platforms (
          workspace_id, integration_key, name, category, connection_status,
          external_account_id, granted_scopes, settings
-       ) VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7)
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
-      [input.workspaceId, input.integrationKey, input.name, input.category, input.externalAccountId, input.grantedScopes, input.settings]
+      [input.workspaceId, input.integrationKey, input.name, input.category, connectionStatus, input.externalAccountId, input.grantedScopes, input.settings]
     );
     platformId = created.rows[0]?.id;
   }
