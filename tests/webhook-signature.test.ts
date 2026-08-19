@@ -31,7 +31,7 @@ describe('Airwallex webhook signature verification', () => {
   it('rejects an invalid signature with an exact code', () => {
     const headers = signed('{}');
     assert.throws(
-      () => verifyWebhookSignature('{}', headers.timestamp, `${headers.signature.slice(0, -2)}00`, headers.nonce),
+      () => verifyWebhookSignature('{}', headers.timestamp, `${headers.signature.slice(0, -1)}${headers.signature.endsWith('0') ? '1' : '0'}`, headers.nonce),
       (error: unknown) => error instanceof AppError && error.code === 'AIRWALLEX_WEBHOOK_SIGNATURE_INVALID' && error.status === 403,
     );
   });
