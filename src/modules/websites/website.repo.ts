@@ -20,6 +20,23 @@ export async function listSites(workspaceId: string) {
   for (const row of domains.rows) { const value = domainMap.get(row.siteId) ?? []; value.push(mapDomain(row)); domainMap.set(row.siteId, value); }
   return sites.rows.map((row: any) => mapSite(row, domainMap.get(row.id) ?? []));
 }
+export async function findSiteByExternalSiteId(workspaceId: string, provider: string, externalSiteId: string) {
+  const result = await query<any>(`${siteSelect} WHERE workspace_id = $1 AND provider = $2 AND external_site_id = $3 LIMIT 1`, [workspaceId, provider, externalSiteId]);
+  if (!result.rows[0]) return null;
+  const domains = await query<any>(`${domainSelect} WHERE site_id = $1 AND status <> 'removed' ORDER BY created_at`, [result.rows[0].id]);
+  return mapSite(result.rows[0], domains.rows.map(mapDomain));
+}
+
+export async function updateSiteStatus(workspaceId: string, siteId: string, status: string) {
+  const result = await query<any>(`UPDATE workspace_sites SET status = $3 WHERE workspace_id = $1 AND id = $2 RETURNING id`, [workspaceId, siteId, status]);
+  return result.rowCount ? getSite(workspaceId, siteId) : null;
+}
+
+export async function updateSiteSettings(workspaceId: string, siteId: string, settings: Record<string, unknown>) {
+  const result = await query<any>(`UPDATE workspace_sites SET settings = COALESCE(settings, '{}'::jsonb) || $3::jsonb WHERE workspace_id = $1 AND id = $2 RETURNING id`, [workspaceId, siteId, JSON.stringify(settings)]);
+  return result.rowCount ? getSite(workspaceId, siteId) : null;
+}
+
 export async function getSite(workspaceId: string, siteId: string) {
   const site = await query<any>(`${siteSelect} WHERE workspace_id = $1 AND id = $2 LIMIT 1`, [workspaceId, siteId]);
   if (!site.rows[0]) return null;
@@ -44,6 +61,11 @@ export async function createJob(input: { siteId: string; prompt: string; created
   const result = await query<any>(`INSERT INTO website_generation_jobs (site_id, prompt, created_by) VALUES ($1,$2,$3) RETURNING id`, [input.siteId, input.prompt.trim(), input.createdBy]);
   return getJob(input.siteId, result.rows[0].id);
 }
+export async function findActiveJob(siteId: string) {
+  const result = await query<any>(`SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs WHERE site_id = $1 AND status IN ('queued','planning','generated','preview','publishing') ORDER BY created_at DESC LIMIT 1`, [siteId]);
+  return result.rows[0] ? mapJob(result.rows[0]) : null;
+}
+
 export async function getJob(siteId: string, jobId: string) {
   const result = await query<any>(`SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs WHERE site_id = $1 AND id = $2 LIMIT 1`, [siteId, jobId]);
   return result.rows[0] ? mapJob(result.rows[0]) : null;

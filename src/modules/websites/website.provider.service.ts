@@ -40,6 +40,27 @@ export async function webflowSites(workspaceId: string) {
   const token = await tokenFor(workspaceId, 'webflow');
   return (await providerRequest('webflow', 'https://api.webflow.com/v2/sites', token)).data;
 }
+
+export async function firstWordpressSite(workspaceId: string) {
+  const data = await wordpressSites(workspaceId);
+  const sites = Array.isArray(data) ? data : Array.isArray(data?.sites) ? data.sites : [];
+  const site = sites[0] as Record<string, unknown> | undefined;
+  if (!site) throw new AppError(409, 'WEBSITE_PROVIDER_NO_SITE_AVAILABLE', 'No WordPress site is available in the connected account');
+  return { id: String(site.ID ?? site.id ?? ''), name: String(site.name ?? site.URL ?? 'WordPress site'), url: site.URL ? String(site.URL) : undefined };
+}
+
+export async function firstWebflowSiteWithCollection(workspaceId: string) {
+  const data = await webflowSites(workspaceId);
+  const sites = Array.isArray(data) ? data : Array.isArray(data?.sites) ? data.sites : [];
+  const site = sites[0] as Record<string, unknown> | undefined;
+  if (!site) throw new AppError(409, 'WEBSITE_PROVIDER_NO_SITE_AVAILABLE', 'No Webflow site is available in the connected account');
+  const siteId = String(site.id ?? site._id ?? '');
+  const collectionsData = await webflowCollections(workspaceId, siteId);
+  const collections = Array.isArray(collectionsData) ? collectionsData : Array.isArray(collectionsData?.collections) ? collectionsData.collections : [];
+  const collection = collections[0] as Record<string, unknown> | undefined;
+  if (!collection) throw new AppError(409, 'WEBSITE_PROVIDER_COLLECTION_REQUIRED', 'The connected Webflow site has no CMS collection available for generated pages');
+  return { id: siteId, name: String(site.displayName ?? site.name ?? 'Webflow site'), url: site.previewUrl ? String(site.previewUrl) : undefined, collectionId: String(collection.id ?? collection._id ?? '') };
+}
 export async function webflowCollections(workspaceId: string, siteId: string) {
   const token = await tokenFor(workspaceId, 'webflow');
   return (await providerRequest('webflow', `https://api.webflow.com/v2/sites/${encodeURIComponent(siteId)}/collections`, token)).data;
