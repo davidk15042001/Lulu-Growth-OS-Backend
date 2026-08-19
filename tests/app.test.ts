@@ -13,6 +13,22 @@ describe('HTTP application', () => {
     assert.equal(response.body.data.status, 'ok');
   });
 
+  it('reports versioned process health without requiring a database', async () => {
+    const response = await request(createApp()).get('/api/v1/health');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.status, 'ok');
+  });
+
+  it('reports versioned readiness when DATABASE_URL is not configured', async () => {
+    const response = await request(createApp()).get('/api/v1/ready');
+
+    assert.equal(response.status, 503);
+    assert.equal(response.body.success, false);
+    assert.equal(response.body.data.database.configured, false);
+  });
+
   it('reports not ready when DATABASE_URL is not configured', async () => {
     const response = await request(createApp()).get('/ready');
 
