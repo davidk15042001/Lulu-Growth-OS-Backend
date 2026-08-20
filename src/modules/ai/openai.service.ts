@@ -159,6 +159,23 @@ function parseTokenTestNumber(value: string) {
 }
 
 export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
+  if (hasGroq) {
+    const groqRequest = {
+      model: env.GROQ_TOKEN_TEST_MODEL,
+      messages: [{ role: 'user', content: 'Reply with exactly one digit from 1 to 10 and nothing else. Do not include reasoning, markdown, words, or punctuation.' }],
+      temperature: 0,
+      max_tokens: 64,
+      reasoning_format: 'hidden',
+      reasoning_effort: 'none',
+    } as unknown as Parameters<OpenAI['chat']['completions']['create']>[0];
+    const completion = await getConfiguredClient().chat.completions.create(groqRequest) as unknown as OpenAI.Chat.Completions.ChatCompletion;
+    const number = parseTokenTestNumber(completion.choices[0]?.message?.content ?? '');
+    if (number === null || number < 1 || number > 10) {
+      throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The Groq provider returned an unusable token-test response. Expected a number from 1 to 10.');
+    }
+    return { number, model: completion.model, responseId: completion.id };
+  }
+
   const request: Record<string, unknown> = {
     model: hasAlibaba ? env.DASHSCOPE_TOKEN_TEST_MODEL : hasGroq ? env.GROQ_TOKEN_TEST_MODEL : configuredModel(),
     instructions: 'Return exactly one ASCII digit from 1 to 10 and nothing else. Valid answers are only 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10. Do not explain, use words, markdown, or punctuation.',
