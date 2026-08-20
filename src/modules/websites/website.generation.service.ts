@@ -1,3 +1,4 @@
+import { env } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import * as agentRepo from '../agents/agent.repo.js';
 import { getOpenAIResponsesClient } from '../ai/openai.service.js';
@@ -103,8 +104,11 @@ export async function generateWebsitePlan(input: {
   provider: string;
 }) {
   const context = await loadWebsiteContext(input.workspaceId, input.userId);
-  const response = await getOpenAIResponsesClient().create({
-    model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+  const client = getOpenAIResponsesClient();
+  const configuredModel = env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL;
+  const primaryModel = configuredModel === 'gpt-4.1-mini' ? 'gpt-5-mini' : configuredModel;
+  const request = {
+    model: primaryModel,
     instructions: [
       'You are Lulu Website Architect.',
       'Generate a production-ready website plan from the verified workspace context, the completed initial business analysis and the user brief.',
@@ -131,7 +135,16 @@ export async function generateWebsitePlan(input: {
     }],
     max_output_tokens: 12000,
     store: false,
-  });
+  };
+  let response;
+  try {
+    response = await client.create(request);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const modelUnavailable = /404|does not exist|do not have access|model/i.test(message);
+    if (!modelUnavailable || primaryModel === 'gpt-5-mini' || env.AI_PROVIDER !== 'openai') throw error;
+    response = await client.create({ ...request, model: 'gpt-5-mini' });
+  }
   const plan = extractJson(response.output_text);
   if (!plan.pages?.length || !plan.siteTitle) {
     throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI generated an incomplete website plan');
