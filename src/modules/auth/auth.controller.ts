@@ -2,7 +2,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { env, isProd } from '../../config/env.js';
 import * as service from './auth.service.js';
 import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
-import { jsonError } from '../../utils/response.js';
+import { jsonError, successResponse } from '../../utils/response.js';
+import { generateTokenTestNumber } from '../ai/openai.service.js';
 import {
   registerSchema,
   verifyOtpSchema,
@@ -23,6 +24,16 @@ const RT_COOKIE_OPTS = {
   maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   path: '/' 
 };
+
+export async function tokenTest(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!req.user?.id) return jsonError(res, 401, 'UNAUTHORIZED', 'Please sign in');
+    const result = await generateTokenTestNumber();
+    return successResponse(res, 'AI token test completed', result);
+  } catch (e) {
+    next(e);
+  }
+}
 
 export async function register(req: Request, res: Response, next: NextFunction) {
   try {
