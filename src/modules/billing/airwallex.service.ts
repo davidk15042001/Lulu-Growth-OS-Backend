@@ -6,7 +6,7 @@ import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
 
-export type BillingPlanKey = 'explorer' | 'starter' | 'ai';
+export type BillingPlanKey = 'explorer' | 'starter' | 'ai' | 'test';
 
 type AirwallexObject = Record<string, any>;
 
@@ -14,6 +14,7 @@ const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof
   explorer: { amountMinor: 0, label: 'Explorer' },
   starter: { amountMinor: 420000, priceEnv: 'AIRWALLEX_STARTER_PRICE_ID', label: 'Starter' },
   ai: { amountMinor: 3000000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI' },
+  test: { amountMinor: 100, priceEnv: 'AIRWALLEX_TEST_PRICE_ID', label: 'Test' },
 };
 
 function providerError(code: string, message: string, details?: Record<string, unknown>, status = 502) {
@@ -331,7 +332,7 @@ export async function handleWebhook(event: AirwallexObject) {
     const planKey = metadata.plan_key as BillingPlanKey | undefined;
     if (invoiceId && (mappedStatus === 'active' || eventType.includes('INVOICE') || eventType.includes('PAID'))) {
       try {
-        if (planKey === 'starter' || planKey === 'ai') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
+        if (planKey === 'starter' || planKey === 'ai' || planKey === 'test') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
       } catch (error) {
         logger.error({ code: 'BILLING_INVOICE_EMAIL_FAILED', error: error instanceof Error ? error.message : 'unknown_error', workspaceId, planKey, invoiceId, eventId }, 'Invoice email delivery failed');
       }

@@ -102,7 +102,7 @@ function buildInstructions() {
 export async function queueInitialBusinessAnalysis(workspaceId: string) {
   if (await hasInitialAnalysis(workspaceId)) return null;
   const plan = await agentRepo.getWorkspacePlan(workspaceId);
-  if ((plan.status !== 'active' && plan.status !== 'trialing') || !['starter', 'ai'].includes(plan.plan_key)) return null;
+  if ((plan.status !== 'active' && plan.status !== 'trialing') || !['starter', 'ai', 'test'].includes(plan.plan_key)) return null;
   if (!isAiGenerationConfigured()) throw new AppError(503, 'INITIAL_ANALYSIS_AI_NOT_CONFIGURED', 'The AI provider is not configured for the initial analysis');
 
   const context = await loadInitialAnalysisContext(workspaceId);

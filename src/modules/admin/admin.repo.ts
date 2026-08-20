@@ -32,7 +32,7 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
   return rows;
 }
 
-export async function updatePlan(workspaceId: string, planKey: 'explorer' | 'starter' | 'ai') {
+export async function updatePlan(workspaceId: string, planKey: 'explorer' | 'starter' | 'ai' | 'test') {
   const { rows } = await query(
     `UPDATE workspace_subscriptions
      SET plan_key = $2, updated_at = NOW()

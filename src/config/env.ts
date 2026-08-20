@@ -70,6 +70,7 @@ const EnvSchema = z
     AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID: z.string().min(1).optional(),
     AIRWALLEX_STARTER_PRICE_ID: z.string().min(1).optional(),
     AIRWALLEX_AI_PRICE_ID: z.string().min(1).optional(),
+    AIRWALLEX_TEST_PRICE_ID: z.string().min(1).optional(),
     AIRWALLEX_WEBHOOK_SECRET: z.string().min(1).optional(),
     AIRWALLEX_LOGIN_AS: z.string().min(1).optional(),
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),

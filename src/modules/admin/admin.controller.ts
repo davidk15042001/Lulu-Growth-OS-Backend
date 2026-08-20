@@ -34,7 +34,7 @@ export async function changePlan(req: AuthedRequest, res: Response, next: NextFu
   try {
     if (!requireAdmin(req, res)) return;
     const plan = req.body?.planKey;
-    if (!['explorer', 'starter', 'ai'].includes(plan)) return res.status(422).json({ success: false, error: { code: 'INVALID_PLAN', message: 'Plan must be explorer, starter, or ai' } });
+    if (!['explorer', 'starter', 'ai', 'test'].includes(plan)) return res.status(422).json({ success: false, error: { code: 'INVALID_PLAN', message: 'Plan must be explorer, starter, ai, or test' } });
     const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : undefined;
     if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
     const result = await repo.updatePlan(workspaceId, plan);
