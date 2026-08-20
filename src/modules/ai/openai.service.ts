@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
-import { env, hasAiProvider, hasAlibaba, hasOpenAI } from '../../config/env.js';
+import { env, hasAiProvider, hasAlibaba, hasGroq, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 
 export type ConversationTurn = {
@@ -41,6 +41,7 @@ export type ResponsesClient = {
 
 let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
+let groqClient: OpenAI | undefined;
 
 function getConfiguredClient() {
   if (hasOpenAI) {
@@ -51,11 +52,18 @@ function getConfiguredClient() {
     alibabaClient ??= new OpenAI({ apiKey: env.DASHSCOPE_API_KEY, baseURL: env.DASHSCOPE_BASE_URL });
     return alibabaClient;
   }
+  if (hasGroq) {
+    groqClient ??= new OpenAI({ apiKey: env.GROQ_API_KEY, baseURL: env.GROQ_BASE_URL });
+    return groqClient;
+  }
   throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
 }
 
 function configuredModel(requestedModel?: string | null) {
-  return requestedModel || (hasAlibaba ? env.DASHSCOPE_MODEL : env.OPENAI_MODEL);
+  if (requestedModel) return requestedModel;
+  if (hasAlibaba) return env.DASHSCOPE_MODEL;
+  if (hasGroq) return env.GROQ_MODEL;
+  return env.OPENAI_MODEL;
 }
 
 export function getOpenAIResponsesClient(): ResponsesClient {
@@ -152,10 +160,10 @@ function parseTokenTestNumber(value: string) {
 
 export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
   const response = await client.create({
-    model: hasAlibaba ? env.DASHSCOPE_TOKEN_TEST_MODEL : configuredModel(),
+    model: hasAlibaba ? env.DASHSCOPE_TOKEN_TEST_MODEL : hasGroq ? env.GROQ_TOKEN_TEST_MODEL : configuredModel(),
     instructions: 'Return exactly one ASCII digit from 1 to 10 and nothing else. Valid answers are only 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10. Do not explain, use words, markdown, or punctuation.',
     input: 'Generate one number between 1 and 10 to verify the configured AI token.',
-    reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.OPENAI_REASONING_EFFORT },
+    reasoning: { effort: env.AI_PROVIDER === 'alibaba' || env.AI_PROVIDER === 'groq' ? 'none' : env.OPENAI_REASONING_EFFORT },
     max_output_tokens: 32,
     store: false,
   });

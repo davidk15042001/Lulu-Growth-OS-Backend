@@ -24,13 +24,17 @@ const EnvSchema = z
     MAILCOW_SMTP_SECURE: booleanString.default(false),
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
-    AI_PROVIDER: z.enum(['openai', 'alibaba']).default('openai'),
+    AI_PROVIDER: z.enum(['openai', 'alibaba', 'groq']).default('openai'),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
     DASHSCOPE_API_KEY: z.string().min(1).optional(),
     DASHSCOPE_BASE_URL: z.string().url().default('https://dashscope-intl.aliyuncs.com/compatible-mode/v1'),
     DASHSCOPE_MODEL: z.string().min(1).default('qwen-plus'),
     DASHSCOPE_TOKEN_TEST_MODEL: z.string().min(1).default('qwen-plus'),
+    GROQ_API_KEY: z.string().min(1).optional(),
+    GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
+    GROQ_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
+    GROQ_TOKEN_TEST_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
     OPENAI_REASONING_EFFORT: z.enum(['minimal', 'low', 'medium', 'high']).default('low'),
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
     EMAIL_FROM: z.string().optional(),
@@ -89,6 +93,9 @@ const EnvSchema = z
     if (data.AI_PROVIDER === 'alibaba' && !data.DASHSCOPE_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DASHSCOPE_API_KEY'], message: 'DASHSCOPE_API_KEY is required when AI_PROVIDER=alibaba in production' });
     }
+    if (data.AI_PROVIDER === 'groq' && !data.GROQ_API_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['GROQ_API_KEY'], message: 'GROQ_API_KEY is required when AI_PROVIDER=groq in production' });
+    }
 
     const required: Array<keyof typeof data> = ['DATABASE_URL', 'CORS_ORIGIN'];
 
@@ -120,4 +127,5 @@ export const isProd = env.NODE_ENV === 'production';
 export const hasDb = !!env.DATABASE_URL;
 export const hasOpenAI = env.AI_PROVIDER === 'openai' && !!env.OPENAI_API_KEY;
 export const hasAlibaba = env.AI_PROVIDER === 'alibaba' && !!env.DASHSCOPE_API_KEY;
-export const hasAiProvider = hasOpenAI || hasAlibaba;
+export const hasGroq = env.AI_PROVIDER === 'groq' && !!env.GROQ_API_KEY;
+export const hasAiProvider = hasOpenAI || hasAlibaba || hasGroq;
