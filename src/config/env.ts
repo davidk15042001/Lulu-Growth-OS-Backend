@@ -24,8 +24,12 @@ const EnvSchema = z
     MAILCOW_SMTP_SECURE: booleanString.default(false),
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
+    AI_PROVIDER: z.enum(['openai', 'alibaba']).default('openai'),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
+    DASHSCOPE_API_KEY: z.string().min(1).optional(),
+    DASHSCOPE_BASE_URL: z.string().url().default('https://dashscope-intl.aliyuncs.com/compatible-mode/v1'),
+    DASHSCOPE_MODEL: z.string().min(1).default('qwen-plus'),
     OPENAI_REASONING_EFFORT: z.enum(['minimal', 'low', 'medium', 'high']).default('low'),
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
     EMAIL_FROM: z.string().optional(),
@@ -76,6 +80,12 @@ const EnvSchema = z
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
   })
   .superRefine((data, ctx) => {
+    if (data.AI_PROVIDER === 'openai' && !data.OPENAI_API_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['OPENAI_API_KEY'], message: 'OPENAI_API_KEY is required when AI_PROVIDER=openai' });
+    }
+    if (data.AI_PROVIDER === 'alibaba' && !data.DASHSCOPE_API_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DASHSCOPE_API_KEY'], message: 'DASHSCOPE_API_KEY is required when AI_PROVIDER=alibaba' });
+    }
     if (data.NODE_ENV !== 'production') return;
 
     const required: Array<keyof typeof data> = ['DATABASE_URL', 'CORS_ORIGIN'];
@@ -106,4 +116,6 @@ export const env: Env = parsedEnv;
 
 export const isProd = env.NODE_ENV === 'production';
 export const hasDb = !!env.DATABASE_URL;
-export const hasOpenAI = !!env.OPENAI_API_KEY;
+export const hasOpenAI = env.AI_PROVIDER === 'openai' && !!env.OPENAI_API_KEY;
+export const hasAlibaba = env.AI_PROVIDER === 'alibaba' && !!env.DASHSCOPE_API_KEY;
+export const hasAiProvider = hasOpenAI || hasAlibaba;

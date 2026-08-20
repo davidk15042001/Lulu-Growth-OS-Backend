@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
-import { env, hasOpenAI } from '../../config/env.js';
+import { env, hasAiProvider, hasAlibaba, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 
 export type ConversationTurn = {
@@ -40,14 +40,31 @@ export type ResponsesClient = {
 };
 
 let openAIClient: OpenAI | undefined;
+let alibabaClient: OpenAI | undefined;
+
+function getConfiguredClient() {
+  if (hasOpenAI) {
+    openAIClient ??= new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    return openAIClient;
+  }
+  if (hasAlibaba) {
+    alibabaClient ??= new OpenAI({ apiKey: env.DASHSCOPE_API_KEY, baseURL: env.DASHSCOPE_BASE_URL });
+    return alibabaClient;
+  }
+  throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
+}
+
+function configuredModel(requestedModel?: string | null) {
+  return requestedModel || (hasAlibaba ? env.DASHSCOPE_MODEL : env.OPENAI_MODEL);
+}
 
 export function getOpenAIResponsesClient(): ResponsesClient {
-  if (!hasOpenAI) {
-    throw new AppError(503, 'AI_NOT_CONFIGURED', 'OPENAI_API_KEY is not configured');
+  if (!hasAiProvider) {
+    throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
   }
-  openAIClient ??= new OpenAI({ apiKey: env.OPENAI_API_KEY });
+  const client = getConfiguredClient();
   return {
-    create: (params) => openAIClient!.responses.create(params as never) as Promise<ResponseResult>,
+    create: (params) => client.responses.create(params as never) as Promise<ResponseResult>,
   };
 }
 
@@ -79,15 +96,16 @@ export async function generateAssistantResponse(
   },
   client: ResponsesClient = getOpenAIResponsesClient()
 ) {
-  const response = await client.create({
-    model: input.model || env.OPENAI_MODEL,
+  const request: Record<string, unknown> = {
+    model: configuredModel(input.model),
     instructions: buildAssistantInstructions(input.context),
     input: input.turns.map((turn) => ({ role: turn.role, content: turn.content })),
     reasoning: { effort: env.OPENAI_REASONING_EFFORT },
     max_output_tokens: env.OPENAI_MAX_OUTPUT_TOKENS,
-    safety_identifier: buildSafetyIdentifier(input.userId),
     store: false,
-  });
+  };
+  if (hasOpenAI) request.safety_identifier = buildSafetyIdentifier(input.userId);
+  const response = await client.create(request);
 
   const content = response.output_text.trim();
   if (!content) {
@@ -107,7 +125,7 @@ export async function generateAssistantResponse(
 
 export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
   const response = await client.create({
-    model: env.OPENAI_MODEL,
+    model: configuredModel(),
     instructions: 'Return exactly one integer from 1 to 10 and nothing else. Do not explain your answer.',
     input: 'Generate one number between 1 and 10 to verify the configured ChatGPT token.',
     reasoning: { effort: env.OPENAI_REASONING_EFFORT },
@@ -120,5 +138,5 @@ export async function generateTokenTestNumber(client: ResponsesClient = getOpenA
 }
 
 export function isAiGenerationConfigured() {
-  return hasOpenAI;
+  return hasAiProvider;
 }
