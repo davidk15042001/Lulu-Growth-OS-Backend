@@ -603,6 +603,15 @@ export async function markPlatformConnected(workspaceId: string, integrationKey:
   );
 }
 
+export async function removePlatformByIntegration(workspaceId: string, integrationKey: string) {
+  const result = await query(
+    `DELETE FROM workspace_platforms
+     WHERE workspace_id = $1 AND integration_key = $2`,
+    [workspaceId, integrationKey]
+  );
+  return result.rowCount ?? 0;
+}
+
 export async function archivePlatformByIntegration(workspaceId: string, integrationKey: string, message: string) {
   await query(
     `UPDATE workspace_platforms

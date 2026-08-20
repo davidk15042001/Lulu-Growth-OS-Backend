@@ -5,6 +5,7 @@ import { AppError } from '../../utils/app-error.js';
 import * as oauthService from './oauth.service.js';
 import { generateTokenTestNumber } from '../ai/openai.service.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
+import { resetWebsiteProviderState } from '../websites/website.automation.service.js';
 import * as service from './onboarding.service.js';
 import {
   aiPreferencesSchema,
@@ -300,7 +301,9 @@ export async function oauthCallback(req: Request, res: Response) {
     const frontend = envFrontendBaseUrl();
     const provider = String(req.params.provider);
     const providerReturnTo = provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
+    const stateContext = oauthService.getSafeStateContext(typeof req.query.state === 'string' ? req.query.state : undefined);
     const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? providerReturnTo;
+    if ((provider === 'wordpress' || provider === 'webflow') && stateContext?.workspaceId) await resetWebsiteProviderState(stateContext.workspaceId, provider).catch(() => undefined);
     return res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
   }
 }

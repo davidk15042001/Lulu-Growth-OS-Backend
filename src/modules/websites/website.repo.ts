@@ -27,6 +27,11 @@ export async function findSiteByExternalSiteId(workspaceId: string, provider: st
   return mapSite(result.rows[0], domains.rows.map(mapDomain));
 }
 
+export async function deleteSitesByProvider(workspaceId: string, provider: string) {
+  const result = await query(`DELETE FROM workspace_sites WHERE workspace_id = $1 AND provider = $2`, [workspaceId, provider]);
+  return result.rowCount ?? 0;
+}
+
 export async function updateSiteStatus(workspaceId: string, siteId: string, status: string) {
   const result = await query<any>(`UPDATE workspace_sites SET status = $3 WHERE workspace_id = $1 AND id = $2 RETURNING id`, [workspaceId, siteId, status]);
   return result.rowCount ? getSite(workspaceId, siteId) : null;

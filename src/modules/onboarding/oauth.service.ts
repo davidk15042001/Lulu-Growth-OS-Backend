@@ -153,6 +153,16 @@ export function getSafeReturnTo(stateValue?: string) {
   }
 }
 
+export function getSafeStateContext(stateValue?: string) {
+  if (!stateValue) return undefined;
+  try {
+    const state = parseState(stateValue);
+    return { workspaceId: state.workspaceId, userId: state.userId, provider: state.provider };
+  } catch {
+    return undefined;
+  }
+}
+
 export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: string, userId: string, shop?: string, returnTo?: string) {
   const config = providerConfig(provider);
   if (provider === 'shopify' && (!shop || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop))) throw oauthError(provider, 'SHOPIFY_SHOP_DOMAIN_INVALID', 'Shopify shop domain must use the format example.myshopify.com', { expectedFormat: 'example.myshopify.com' }, 400);

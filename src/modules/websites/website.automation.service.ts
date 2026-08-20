@@ -7,6 +7,11 @@ import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 
 export const DEFAULT_WEBSITE_PROMPT = `Create a high-converting, production-ready website for this business using the verified workspace information and the completed AI business analysis as the only source of truth. Build a clear information architecture, compelling but factual copy, strong SEO/GEO/AEO foundations, accessible responsive layouts, and a consistent brand voice. Include the most relevant pages for the business, meaningful calls to action, metadata, and content sections. Never invent facts, testimonials, prices, certifications, locations, customers, metrics, or legal claims. If information is missing, omit it or mark it for confirmation. The result must be ready to publish to the connected CMS.`;
 
+export async function resetWebsiteProviderState(workspaceId: string, provider: 'wordpress' | 'webflow') {
+  await repo.deleteSitesByProvider(workspaceId, provider).catch(() => undefined);
+  await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
+}
+
 async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress' | 'webflow') {
   if (provider === 'wordpress') {
     const target = await firstWordpressSite(workspaceId);
@@ -49,7 +54,7 @@ async function processAutoGeneration(input: { workspaceId: string; userId: strin
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
     await repo.updateJob(input.siteId, input.jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message }).catch(() => undefined);
-    await onboardingRepo.archivePlatformByIntegration(input.workspaceId, input.provider, message).catch(() => undefined);
+    await resetWebsiteProviderState(input.workspaceId, input.provider);
   }
 }
 
@@ -64,8 +69,7 @@ export async function startAutomaticWebsiteGeneration(input: { workspaceId: stri
     void processAutoGeneration({ ...input, siteId: site.id, jobId: job.id });
     return { site, job, reused: false };
   } catch (error) {
-    const message = generationErrorMessage(error);
-    await onboardingRepo.archivePlatformByIntegration(input.workspaceId, input.provider, message).catch(() => undefined);
+    await resetWebsiteProviderState(input.workspaceId, input.provider);
     throw error;
   }
 }
