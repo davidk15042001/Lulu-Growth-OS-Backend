@@ -276,7 +276,8 @@ export async function oauthCallback(req: Request, res: Response) {
     }
     const frontend = envFrontendBaseUrl();
     const requestId = String(req.id || 'request-id-unavailable');
-    const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? '/onboarding/existing-platforms';
+    const providerReturnTo = provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
+    const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? providerReturnTo;
     const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
     if (typeof req.query.error === 'string') return errorRedirect('OAUTH_PROVIDER_DENIED', `Provider denied access (${provider}; provider_error=${req.query.error})`);
     if (typeof req.query.code !== 'string' || typeof req.query.state !== 'string') return errorRedirect('OAUTH_CALLBACK_INCOMPLETE', `OAuth callback did not include both code and state for ${provider}`);
@@ -287,7 +288,9 @@ export async function oauthCallback(req: Request, res: Response) {
     const message = error instanceof AppError ? error.message : 'OAuth callback failed before the account could be connected';
     const requestId = String(req.id || 'request-id-unavailable');
     const frontend = envFrontendBaseUrl();
-    const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? '/onboarding/existing-platforms';
+    const provider = String(req.params.provider);
+    const providerReturnTo = provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
+    const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? providerReturnTo;
     return res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
   }
 }
