@@ -159,14 +159,17 @@ function parseTokenTestNumber(value: string) {
 }
 
 export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
-  const response = await client.create({
+  const request: Record<string, unknown> = {
     model: hasAlibaba ? env.DASHSCOPE_TOKEN_TEST_MODEL : hasGroq ? env.GROQ_TOKEN_TEST_MODEL : configuredModel(),
     instructions: 'Return exactly one ASCII digit from 1 to 10 and nothing else. Valid answers are only 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10. Do not explain, use words, markdown, or punctuation.',
     input: 'Generate one number between 1 and 10 to verify the configured AI token.',
-    reasoning: { effort: env.AI_PROVIDER === 'alibaba' || env.AI_PROVIDER === 'groq' ? 'none' : env.OPENAI_REASONING_EFFORT },
     max_output_tokens: 32,
     store: false,
-  });
+  };
+  if (env.AI_PROVIDER !== 'groq') {
+    request.reasoning = { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.OPENAI_REASONING_EFFORT };
+  }
+  const response = await client.create(request);
   const number = parseTokenTestNumber(response.output_text);
   if (number === null || number < 1 || number > 10) {
     throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The AI provider returned an unusable token-test response. Expected a number from 1 to 10.');
