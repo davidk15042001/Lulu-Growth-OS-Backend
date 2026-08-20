@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { deleteObject, getObject, onboardingDocumentKey, putObject } from '../../storage/s3.service.js';
-import { badRequest, notFoundError } from '../../utils/app-error.js';
+import { AppError, badRequest, notFoundError } from '../../utils/app-error.js';
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as repo from './onboarding.repo.js';
@@ -152,6 +152,7 @@ export async function createOnboardingDocument(input: {
       mimeType: input.mimeType,
       sizeBytes: input.sizeBytes,
       storageKey,
+      content: input.content,
     });
   } catch (error) {
     await deleteObject(storageKey).catch(() => undefined);
@@ -162,10 +163,15 @@ export async function createOnboardingDocument(input: {
 export async function getOnboardingDocumentContent(workspaceId: string, documentId: string) {
   const document = await repo.getOnboardingDocumentContent(workspaceId, documentId);
   if (!document) throw notFoundError('Onboarding document not found');
-  const content = document.storageKey
-    ? await getObject(document.storageKey)
-    : document.content;
-  if (!content) throw new Error('Onboarding document content is unavailable');
+  let content = document.content;
+  if (document.storageKey) {
+    try {
+      content = await getObject(document.storageKey);
+    } catch {
+      if (!content) throw new AppError(503, 'ONBOARDING_DOCUMENT_STORAGE_UNAVAILABLE', 'The saved document is temporarily unavailable. Please try again shortly', { documentId });
+    }
+  }
+  if (!content) throw new AppError(404, 'ONBOARDING_DOCUMENT_CONTENT_MISSING', 'The saved document content is unavailable', { documentId });
   return { ...document, fileName: sanitizeUploadedFileName(document.fileName), content };
 }
 

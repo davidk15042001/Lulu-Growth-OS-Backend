@@ -455,12 +455,13 @@ export async function createOnboardingDocument(input: {
   mimeType: string;
   sizeBytes: number;
   storageKey: string;
+  content: Buffer;
 }) {
   const { rows } = await query<OnboardingDocument>(
     `INSERT INTO onboarding_documents (id, workspace_id, uploaded_by, file_name, mime_type, size_bytes, storage_key, content)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING ${onboardingDocumentSelect}`,
-    [input.id, input.workspaceId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.storageKey],
+    [input.id, input.workspaceId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.storageKey, input.content],
   );
   return rows[0];
 }
