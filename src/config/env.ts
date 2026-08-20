@@ -80,13 +80,14 @@ const EnvSchema = z
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
   })
   .superRefine((data, ctx) => {
+    if (data.NODE_ENV !== 'production') return;
+
     if (data.AI_PROVIDER === 'openai' && !data.OPENAI_API_KEY) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['OPENAI_API_KEY'], message: 'OPENAI_API_KEY is required when AI_PROVIDER=openai' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['OPENAI_API_KEY'], message: 'OPENAI_API_KEY is required when AI_PROVIDER=openai in production' });
     }
     if (data.AI_PROVIDER === 'alibaba' && !data.DASHSCOPE_API_KEY) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DASHSCOPE_API_KEY'], message: 'DASHSCOPE_API_KEY is required when AI_PROVIDER=alibaba' });
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DASHSCOPE_API_KEY'], message: 'DASHSCOPE_API_KEY is required when AI_PROVIDER=alibaba in production' });
     }
-    if (data.NODE_ENV !== 'production') return;
 
     const required: Array<keyof typeof data> = ['DATABASE_URL', 'CORS_ORIGIN'];
 
