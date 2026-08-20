@@ -4,6 +4,7 @@ import type { AuthedRequest } from './auth.middleware.js';
 import { forbiddenError, notFoundError } from '../utils/app-error.js';
 import { findMembership, type WorkspaceRole } from '../modules/workspaces/workspace.repo.js';
 import { getCompletionState } from '../modules/onboarding/onboarding.repo.js';
+import { getWorkspacePlan } from '../modules/agents/agent.repo.js';
 
 export type WorkspaceRequest = AuthedRequest & {
   workspaceAccess?: { id: string; role: WorkspaceRole };
@@ -33,6 +34,13 @@ export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
       if (allowedRoles.length > 0 && !allowedRoles.includes(membership.role)) {
         next(forbiddenError('Your workspace role does not allow this action'));
         return;
+      }
+      if (allowedRoles.length > 0) {
+        const plan = await getWorkspacePlan(workspaceId);
+        if (plan.plan_key === 'viewer') {
+          next(forbiddenError('The Viewer plan is read-only'));
+          return;
+        }
       }
 
       req.workspaceAccess = { id: workspaceId, role: membership.role };

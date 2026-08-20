@@ -22,6 +22,7 @@ export type Workspace = {
   createdAt: string;
   updatedAt: string;
   role: WorkspaceRole;
+  planKey: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 };
 
 const workspaceSelect = `
@@ -41,7 +42,8 @@ const workspaceSelect = `
   w.created_by AS "createdBy",
   w.created_at AS "createdAt",
   w.updated_at AS "updatedAt",
-  wm.role
+  wm.role,
+  COALESCE((SELECT plan_key FROM workspace_subscriptions ws2 WHERE ws2.workspace_id = w.id ORDER BY ws2.updated_at DESC LIMIT 1), 'starter') AS "planKey"
 `;
 
 export async function createWorkspace(
@@ -128,7 +130,8 @@ export async function findWorkspaceById(workspaceId: string) {
             w.short_brand_description AS "shortBrandDescription", w.positioning_tags AS "positioningTags",
             w.onboarding_step AS "onboardingStep", w.onboarding_completed_at AS "onboardingCompletedAt",
             w.created_by AS "createdBy", w.created_at AS "createdAt", w.updated_at AS "updatedAt",
-            'owner'::text AS role
+            'owner'::text AS role,
+            COALESCE((SELECT plan_key FROM workspace_subscriptions ws2 WHERE ws2.workspace_id = w.id ORDER BY ws2.updated_at DESC LIMIT 1), 'starter') AS "planKey"
      FROM workspaces w
      WHERE w.id = $1 AND w.deleted_at IS NULL
      LIMIT 1`,

@@ -18,7 +18,7 @@ export async function createRun(workspaceId: string, userId: string | null, goal
   return rows[0];
 }
 export async function listAutomatedTargets() {
-  const { rows } = await query<{ workspace_id: string; plan_key: 'explorer' | 'starter' | 'ai' | 'test'; status: string }>(`SELECT workspace_id, plan_key, status FROM workspace_subscriptions WHERE status IN ('active', 'trialing') AND plan_key IN ('starter', 'ai', 'test')`);
+  const { rows } = await query<{ workspace_id: string; plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test'; status: string }>(`SELECT workspace_id, plan_key, status FROM workspace_subscriptions WHERE status IN ('active', 'trialing') AND plan_key IN ('starter', 'ai', 'test')`);
   return rows;
 }
 export async function hasRecentAutomaticRun(workspaceId: string, goal: string, minutes = 30) {
@@ -84,7 +84,7 @@ export async function addEvent(input: { runId: string; stepId?: string | null; w
   return rows[0];
 }
 export async function getWorkspacePlan(workspaceId: string) {
-  const { rows } = await query<{ plan_key: 'explorer' | 'starter' | 'ai' | 'test'; status: string }>(`SELECT plan_key, status FROM workspace_subscriptions WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT 1`, [workspaceId]);
+  const { rows } = await query<{ plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test'; status: string }>(`SELECT plan_key, status FROM workspace_subscriptions WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT 1`, [workspaceId]);
   return rows[0] ?? { plan_key: 'explorer' as const, status: 'inactive' };
 }
 

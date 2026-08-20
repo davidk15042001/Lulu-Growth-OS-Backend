@@ -6,12 +6,13 @@ import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
 
-export type BillingPlanKey = 'explorer' | 'starter' | 'ai' | 'test';
+export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
 type AirwallexObject = Record<string, any>;
 
 const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof typeof env; label: string }> = {
-  explorer: { amountMinor: 0, label: 'Explorer' },
+  explorer: { amountMinor: 0, label: 'Explorer (legacy)' },
+  viewer: { amountMinor: 0, label: 'Viewer' },
   starter: { amountMinor: 420000, priceEnv: 'AIRWALLEX_STARTER_PRICE_ID', label: 'Starter' },
   ai: { amountMinor: 3000000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI' },
   test: { amountMinor: 0, label: 'Test' },
@@ -157,11 +158,11 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   const config = planConfig[input.planKey];
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
 
-  if (input.planKey === 'explorer') {
-    await activateInternalPlan(input.workspaceId, 'explorer', { source: 'onboarding', confirmedAt: new Date().toISOString() });
-    return { planKey: 'explorer' as const, free: true, status: 'active' as const };
+  if (input.planKey === 'explorer') throw new AppError(422, 'BILLING_PLAN_REMOVED', 'The Explorer plan is no longer available.');
+  if (input.planKey === 'viewer') {
+    await activateInternalPlan(input.workspaceId, 'viewer', { source: 'viewer-plan', activatedAt: new Date().toISOString() });
+    return { planKey: 'viewer' as const, free: true as const, status: 'active' as const };
   }
-
   if (input.planKey === 'test') return activateTestPlan(input);
 
   if (!env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID) {
