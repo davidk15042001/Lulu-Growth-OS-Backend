@@ -104,7 +104,7 @@ export async function generateAssistantResponse(
     max_output_tokens: env.OPENAI_MAX_OUTPUT_TOKENS,
     store: false,
   };
-  if (hasOpenAI) request.safety_identifier = buildSafetyIdentifier(input.userId);
+  if (env.AI_PROVIDER === 'openai') request.safety_identifier = buildSafetyIdentifier(input.userId);
   const response = await client.create(request);
 
   const content = response.output_text.trim();
