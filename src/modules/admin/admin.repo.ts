@@ -8,7 +8,7 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
       u.last_name AS "lastName",
       u.email,
       w.name AS "companyName",
-      COALESCE(ws.plan_key, 'explorer') AS "planKey",
+      COALESCE(ws.plan_key, 'starter') AS "planKey",
       COALESCE(ws.status, 'inactive') AS "subscriptionStatus",
       COALESCE(ws.current_period_starts_at, ws.created_at, w.created_at) AS "startDate",
       COALESCE(ws.current_period_ends_at, ws.trial_ends_at) AS "expiryDate",
