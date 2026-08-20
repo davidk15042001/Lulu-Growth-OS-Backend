@@ -112,8 +112,10 @@ export async function createBillingCheckout(req: WorkspaceRequest, res: Response
       planKey: z.enum(['explorer', 'starter', 'ai', 'test']),
       successUrl: z.string().url(),
       backUrl: z.string().url(),
+      code: z.string().trim().min(8).max(64).optional(),
+      challengeId: z.string().uuid().optional(),
     }).parse(req.body);
-    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl, ...(req.user?.email ? { customerEmail: req.user.email } : {}) }));
+    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl, ...(req.user?.email ? { customerEmail: req.user.email } : {}), ...(input.code ? { code: input.code } : {}), ...(input.challengeId ? { challengeId: input.challengeId } : {}) }));
   } catch (error) { next(error); }
 }
 

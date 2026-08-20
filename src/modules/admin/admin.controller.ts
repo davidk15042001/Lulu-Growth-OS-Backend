@@ -3,9 +3,11 @@ import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
 import { forbidden, successResponse } from '../../utils/response.js';
 import * as repo from './admin.repo.js';
 
+const ADMIN_BILLING_EMAIL = 'lulu.ai.cn@gmail.com';
+
 function requireAdmin(req: AuthedRequest, res: Response) {
-  if (req.user?.role !== 'admin') {
-    forbidden(res, 'Administrator access required');
+  if (req.user?.role !== 'admin' || req.user.email.trim().toLowerCase() !== ADMIN_BILLING_EMAIL) {
+    forbidden(res, 'Administrator access restricted to the billing administrator account');
     return false;
   }
   return true;

@@ -1,7 +1,7 @@
-import crypto from 'node:crypto';
+import crypto, { createHash, randomBytes } from 'node:crypto';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
-import { sendMail } from '../../utils/mailer.js';
+import { sendMail, sendOtpEmail } from '../../utils/mailer.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
@@ -14,7 +14,7 @@ const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof
   explorer: { amountMinor: 0, label: 'Explorer' },
   starter: { amountMinor: 420000, priceEnv: 'AIRWALLEX_STARTER_PRICE_ID', label: 'Starter' },
   ai: { amountMinor: 3000000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI' },
-  test: { amountMinor: 100, priceEnv: 'AIRWALLEX_TEST_PRICE_ID', label: 'Test' },
+  test: { amountMinor: 0, label: 'Test' },
 };
 
 function providerError(code: string, message: string, details?: Record<string, unknown>, status = 502) {
@@ -135,20 +135,69 @@ function planPriceId(planKey: BillingPlanKey) {
   return priceId;
 }
 
-export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string }) {
+function hashTestCode(code: string) {
+  return createHash('sha256').update(code, 'utf8').digest('hex');
+}
+
+function generateTestCode() {
+  return randomBytes(18).toString('base64url').slice(0, 16);
+}
+
+async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey, metadata: Record<string, unknown>) {
+  await query(
+    `INSERT INTO workspace_subscriptions (workspace_id, provider, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
+     VALUES ($1, 'internal', $2, 'active', NOW(), NOW() + INTERVAL '1 year', $3::jsonb)
+     ON CONFLICT (workspace_id) DO UPDATE SET provider='internal', plan_key=EXCLUDED.plan_key, status='active', cancel_at_period_end=false, current_period_starts_at=NOW(), current_period_ends_at=NOW() + INTERVAL '1 year', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
+    [workspaceId, planKey, JSON.stringify(metadata)]
+  );
+  await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
+}
+
+async function requestOrRedeemTestAccess(input: { workspaceId: string; customerEmail?: string; code?: string; challengeId?: string }) {
+  const email = input.customerEmail?.trim().toLowerCase();
+  if (!email) throw new AppError(422, 'TEST_CODE_EMAIL_REQUIRED', 'An account email is required to use the Test plan');
+
+  if (!input.code || !input.challengeId) {
+    const generatedCode = generateTestCode();
+    const codeHash = hashTestCode(generatedCode);
+    await query(`UPDATE workspace_test_access_codes SET consumed_at=COALESCE(consumed_at, NOW()) WHERE workspace_id=$1 AND email=$2 AND consumed_at IS NULL`, [input.workspaceId, email]);
+    const inserted = await query<{ id: string }>(
+      `INSERT INTO workspace_test_access_codes (workspace_id, email, code_hash, expires_at)
+       VALUES ($1, $2, $3, NOW() + INTERVAL '10 minutes') RETURNING id`,
+      [input.workspaceId, email, codeHash]
+    );
+    await sendOtpEmail(email, generatedCode);
+    return { planKey: 'test' as const, free: false as const, requiresOneTimeCode: true as const, challengeId: inserted.rows[0]!.id, expiresInSeconds: 600 };
+  }
+
+  const challenge = await query<{ id: string; code_hash: string; expires_at: string; consumed_at: string | null; attempt_count: number }>(
+    `SELECT id, code_hash, expires_at, consumed_at, attempt_count FROM workspace_test_access_codes
+     WHERE id=$1 AND workspace_id=$2 AND email=$3 LIMIT 1`,
+    [input.challengeId, input.workspaceId, email]
+  );
+  const row = challenge.rows[0];
+  if (!row || row.consumed_at || new Date(row.expires_at).getTime() <= Date.now()) throw new AppError(422, 'TEST_CODE_EXPIRED', 'This Test access password has expired. Request a new one.');
+  if (row.attempt_count >= 5) throw new AppError(429, 'TEST_CODE_ATTEMPTS_EXCEEDED', 'Too many invalid Test access password attempts. Request a new one.');
+  if (hashTestCode(input.code) !== row.code_hash) {
+    await query(`UPDATE workspace_test_access_codes SET attempt_count=attempt_count+1 WHERE id=$1`, [row.id]);
+    throw new AppError(422, 'TEST_CODE_INVALID', 'The Test access password is invalid.');
+  }
+  const consumed = await query(`UPDATE workspace_test_access_codes SET consumed_at=NOW() WHERE id=$1 AND consumed_at IS NULL RETURNING id`, [row.id]);
+  if (!consumed.rows[0]) throw new AppError(422, 'TEST_CODE_ALREADY_USED', 'This Test access password has already been used.');
+  await activateInternalPlan(input.workspaceId, 'test', { source: 'test-one-time-password', challengeId: row.id, activatedAt: new Date().toISOString() });
+  return { planKey: 'test' as const, free: true as const, requiresOneTimeCode: false as const, status: 'active' as const };
+}
+
+export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string; code?: string; challengeId?: string }) {
   const config = planConfig[input.planKey];
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
 
   if (input.planKey === 'explorer') {
-    await query(
-      `INSERT INTO workspace_subscriptions (workspace_id, provider, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
-       VALUES ($1, 'internal', 'explorer', 'active', NOW(), NOW() + INTERVAL '1 year', $2::jsonb)
-       ON CONFLICT (workspace_id) DO UPDATE SET provider='internal', plan_key='explorer', status='active', cancel_at_period_end=false, current_period_starts_at=NOW(), current_period_ends_at=NOW() + INTERVAL '1 year', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
-      [input.workspaceId, JSON.stringify({ source: 'onboarding', confirmedAt: new Date().toISOString() })]
-    );
-    await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [input.workspaceId]);
+    await activateInternalPlan(input.workspaceId, 'explorer', { source: 'onboarding', confirmedAt: new Date().toISOString() });
     return { planKey: 'explorer' as const, free: true, status: 'active' as const };
   }
+
+  if (input.planKey === 'test') return requestOrRedeemTestAccess(input);
 
   if (!env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID) {
     throw providerError(
