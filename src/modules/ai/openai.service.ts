@@ -130,8 +130,18 @@ const TOKEN_WORDS: Record<string, number> = {
   '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
 };
 
+function normalizeUnicodeDigits(value: string) {
+  return value.replace(/[０-９٠-٩۰-۹]/g, (character) => {
+    const code = character.codePointAt(0) ?? 0;
+    if (code >= 0xff10 && code <= 0xff19) return String(code - 0xff10);
+    if (code >= 0x660 && code <= 0x669) return String(code - 0x660);
+    if (code >= 0x6f0 && code <= 0x6f9) return String(code - 0x6f0);
+    return character;
+  });
+}
+
 function parseTokenTestNumber(value: string) {
-  const normalized = value.normalize('NFKC').toLowerCase();
+  const normalized = normalizeUnicodeDigits(value.normalize('NFKC')).toLowerCase().replace(/[```*_#]/g, ' ');
   const numericMatch = normalized.match(/(?:^|[^0-9])(10|[1-9])(?:$|[^0-9])/);
   if (numericMatch) return Number(numericMatch[1]);
   for (const [word, number] of Object.entries(TOKEN_WORDS)) {
@@ -145,7 +155,7 @@ export async function generateTokenTestNumber(client: ResponsesClient = getOpenA
     model: configuredModel(),
     instructions: 'Return exactly one ASCII digit from 1 to 10 and nothing else. Valid answers are only 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10. Do not explain, use words, markdown, or punctuation.',
     input: 'Generate one number between 1 and 10 to verify the configured AI token.',
-    reasoning: { effort: env.OPENAI_REASONING_EFFORT },
+    reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.OPENAI_REASONING_EFFORT },
     max_output_tokens: 32,
     store: false,
   });
