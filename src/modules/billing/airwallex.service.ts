@@ -150,6 +150,18 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     return { planKey: 'explorer' as const, free: true, status: 'active' as const };
   }
 
+  if (!env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID) {
+    throw providerError(
+      'AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID_MISSING',
+      'Airwallex requires a linked payment account because this seller has multiple linked payment accounts',
+      {
+        requiredEnv: 'AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID',
+        configuration: 'Set the seller linked payment account ID in the backend environment before creating a checkout',
+      },
+      500,
+    );
+  }
+
   const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
     mode: 'SUBSCRIPTION',
     ui_mode: 'HOSTED',
