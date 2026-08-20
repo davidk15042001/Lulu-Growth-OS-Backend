@@ -24,7 +24,7 @@ describe('request validators', () => {
     assert.equal(valid.email, 'user@example.com');
     assert.equal(registerSchema.safeParse({
       email: 'user@example.com',
-      password: 'too-short',
+      password: 'Short1!',
       first_name: 'Ada',
       last_name: 'Lovelace',
     }).success, false);
