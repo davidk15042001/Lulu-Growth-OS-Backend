@@ -91,27 +91,44 @@ export async function getWorkspaceCredits(workspaceId: string) {
     credits: string;
     providerCostUsd: string;
     customerCostUsd: string;
+    periodStart: string;
+    periodEnd: string;
   }>(
-    `SELECT
-       COALESCE(SUM(input_tokens), 0)::bigint AS "inputTokens",
-       COALESCE(SUM(output_tokens), 0)::bigint AS "outputTokens",
-       COALESCE(SUM(total_tokens), 0)::bigint AS "totalTokens",
-       COALESCE(SUM(credits), 0)::numeric AS credits,
-       COALESCE(SUM(provider_cost_usd), 0)::numeric AS "providerCostUsd",
-       COALESCE(SUM(customer_cost_usd), 0)::numeric AS "customerCostUsd"
-     FROM ai_usage_ledger
-     WHERE workspace_id = $1
-       AND created_at >= date_trunc('month', NOW())
-       AND created_at < date_trunc('month', NOW()) + INTERVAL '1 month'`,
+    `WITH subscription_period AS (
+       SELECT
+         COALESCE(current_period_starts_at, created_at) AS period_start,
+         COALESCE(current_period_ends_at, COALESCE(current_period_starts_at, created_at) + INTERVAL '1 year') AS period_end
+       FROM workspace_subscriptions
+       WHERE workspace_id = $1
+       ORDER BY updated_at DESC
+       LIMIT 1
+     )
+     SELECT
+       COALESCE(SUM(u.input_tokens), 0)::bigint AS "inputTokens",
+       COALESCE(SUM(u.output_tokens), 0)::bigint AS "outputTokens",
+       COALESCE(SUM(u.total_tokens), 0)::bigint AS "totalTokens",
+       COALESCE(SUM(u.credits), 0)::numeric AS credits,
+       COALESCE(SUM(u.provider_cost_usd), 0)::numeric AS "providerCostUsd",
+       COALESCE(SUM(u.customer_cost_usd), 0)::numeric AS "customerCostUsd",
+       COALESCE(MAX(sp.period_start), date_trunc('year', NOW())) AS "periodStart",
+       COALESCE(MAX(sp.period_end), date_trunc('year', NOW()) + INTERVAL '1 year') AS "periodEnd"
+     FROM subscription_period sp
+     LEFT JOIN ai_usage_ledger u
+       ON u.workspace_id = $1
+      AND u.created_at >= sp.period_start
+      AND u.created_at < sp.period_end`,
     [workspaceId],
   );
 
   const row = rows[0] ?? {
     inputTokens: '0', outputTokens: '0', totalTokens: '0', credits: '0',
     providerCostUsd: '0', customerCostUsd: '0',
+    periodStart: new Date(new Date().getFullYear(), 0, 1).toISOString(),
+    periodEnd: new Date(new Date().getFullYear() + 1, 0, 1).toISOString(),
   };
   return {
-    period: new Date().toISOString().slice(0, 7),
+    periodStart: new Date(row.periodStart).toISOString(),
+    periodEnd: new Date(row.periodEnd).toISOString(),
     inputTokens: Number(row.inputTokens),
     outputTokens: Number(row.outputTokens),
     totalTokens: Number(row.totalTokens),
