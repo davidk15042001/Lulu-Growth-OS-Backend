@@ -12,6 +12,10 @@ export async function resetWebsiteProviderState(workspaceId: string, provider: '
   await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
 }
 
+export async function disconnectWebsiteProvider(workspaceId: string, provider: 'wordpress' | 'webflow') {
+  await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
+}
+
 async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress' | 'webflow') {
   if (provider === 'wordpress') {
     const target = await firstWordpressSite(workspaceId);
@@ -54,7 +58,7 @@ async function processAutoGeneration(input: { workspaceId: string; userId: strin
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
     await repo.updateJob(input.siteId, input.jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message }).catch(() => undefined);
-    await resetWebsiteProviderState(input.workspaceId, input.provider);
+    await disconnectWebsiteProvider(input.workspaceId, input.provider);
   }
 }
 
