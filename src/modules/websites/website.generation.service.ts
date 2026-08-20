@@ -133,7 +133,9 @@ export async function generateWebsitePlan(input: {
         '{"siteTitle":string,"brandVoice":string,"primaryLanguage":string,"pages":[{"title":string,"slug":string,"purpose":string,"content":string,"seoTitle":string,"seoDescription":string}],"globalSeo":{"title":string,"description":string,"keywords":string[]},"assets":[{"brief":string,"altText":string}]}'
       ].join('\n\n'),
     }],
-    max_output_tokens: 12000,
+    // Groq Free Tier: keep the requested budget below the 8,000 TPM ceiling.
+    // The website plan is intentionally capped at 8 pages and compact metadata.
+    max_output_tokens: 5000,
     store: false,
   };
   let response;
@@ -142,8 +144,14 @@ export async function generateWebsitePlan(input: {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const modelUnavailable = /404|does not exist|do not have access|model/i.test(message);
-    if (!modelUnavailable || primaryModel === 'gpt-5-mini' || env.AI_PROVIDER !== 'openai') throw error;
-    response = await client.create({ ...request, model: 'gpt-5-mini' });
+    const tokenLimited = /413|TPM|tokens per minute|Requested .* reduce your message size|rate limit/i.test(message);
+    if (tokenLimited) {
+      response = await client.create({ ...request, max_output_tokens: 3000 });
+    } else if (modelUnavailable && primaryModel !== 'gpt-5-mini' && env.AI_PROVIDER === 'openai') {
+      response = await client.create({ ...request, model: 'gpt-5-mini', max_output_tokens: 5000 });
+    } else {
+      throw error;
+    }
   }
   const plan = extractJson(response.output_text);
   if (!plan.pages?.length || !plan.siteTitle) {
