@@ -11,6 +11,13 @@ export async function create(req: WorkspaceRequest, res: Response, next: NextFun
     return createdResponse(res, 'Agent run started', await service.startRun(params.workspaceId, req.user!.id, input.goal, input.module));
   } catch (error) { next(error); }
 }
+export async function knowledge(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = agentRunParamsSchema.parse(req.params);
+    const bundle = await service.getKnowledgeBundle(params.workspaceId);
+    return successResponse(res, 'Workspace intelligence loaded', bundle ?? { snapshot: null, sections: [], metrics: [] });
+  } catch (error) { next(error); }
+}
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.parse(req.params);

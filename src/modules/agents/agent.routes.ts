@@ -4,6 +4,9 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './agent.controller.js';
 
 const router = Router({ mergeParams: true });
+router.route('/knowledge')
+  .get(requireWorkspaceMember, controller.knowledge)
+  .all(methodNotAllowed);
 router.route('/')
   .get(requireWorkspaceMember, controller.list)
   .post(requireWorkspaceEditor, controller.create)

@@ -83,6 +83,36 @@ function extractJson(text: string): Record<string, unknown> {
   }
 }
 
+function normaliseActualMetrics(raw: unknown) {
+  const input = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+  return Object.fromEntries(actualMetricCategories.map((metricKey) => {
+    const candidate = input[metricKey];
+    if (candidate && typeof candidate === 'object') {
+      const metric = candidate as Record<string, unknown>;
+      const status = typeof metric.sourceStatus === 'string' && ['verified', 'derived', 'forecast', 'unavailable', 'not_applicable'].includes(metric.sourceStatus)
+        ? metric.sourceStatus : 'unavailable';
+      return [metricKey, {
+        value: metric.value ?? null,
+        unit: typeof metric.unit === 'string' ? metric.unit : null,
+        period: typeof metric.period === 'string' ? metric.period : null,
+        source: typeof metric.source === 'string' ? metric.source : null,
+        sourceStatus: status,
+        confidence: typeof metric.confidence === 'string' ? metric.confidence : 'low',
+        limitations: Array.isArray(metric.limitations) ? metric.limitations : ['No verified source data was available.'],
+      }];
+    }
+    return [metricKey, {
+      value: null,
+      unit: null,
+      period: null,
+      source: null,
+      sourceStatus: 'unavailable',
+      confidence: 'low',
+      limitations: ['No verified source data was available.'],
+    }];
+  }));
+}
+
 function buildInstructions() {
   return [
     'You are Lulu Intelligence, a senior multi-agent business analysis system.',
@@ -139,6 +169,27 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
         store: false,
       });
       const result = extractJson(response.output_text);
+      const actualMetrics = normaliseActualMetrics(result.actualMetrics);
+      const sections = result.sections && typeof result.sections === 'object'
+        ? result.sections as Record<string, unknown> : {};
+      const snapshot = await agentRepo.createKnowledgeSnapshot({
+        workspaceId,
+        sourceRunId: run.id,
+        status: 'completed',
+        confidence: typeof result.confidence === 'string' ? result.confidence : 'low',
+        executiveSummary: typeof result.executiveSummary === 'string' ? result.executiveSummary : null,
+        dataGaps: Array.isArray(result.dataGaps) ? result.dataGaps : [],
+        verifiedFacts: Array.isArray(result.verifiedFacts) ? result.verifiedFacts : [],
+        priorities: Array.isArray(result.priorities) ? result.priorities : [],
+        knowledgeBase: result.knowledgeBaseDraft && typeof result.knowledgeBaseDraft === 'object' ? result.knowledgeBaseDraft as Record<string, unknown> : {},
+        sourceManifest: { source: 'workspace_onboarding_and_connected_records', generatedBy: 'lulu-intelligence', metricCount: actualMetricCategories.length },
+        generatedAt: new Date(),
+      });
+      if (snapshot?.id) {
+        await agentRepo.replaceKnowledgeSections(snapshot.id, workspaceId, sections);
+        await agentRepo.replaceIntelligenceMetrics({ workspaceId, snapshotId: snapshot.id, metrics: actualMetrics });
+      }
+      result.actualMetrics = actualMetrics;
       for (const step of steps) {
         await agentRepo.updateStep(step.id, { status: 'completed', result: { analysed: true, reportSection: step.title }, finished_at: new Date() });
       }

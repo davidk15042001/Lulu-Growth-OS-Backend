@@ -97,3 +97,113 @@ export async function listEvents(workspaceId: string, runId: string) {
   const { rows } = await query<AgentRunEvent>(`SELECT ${eventSelect} FROM agent_run_events WHERE workspace_id=$1 AND run_id=$2 ORDER BY created_at ASC`, [workspaceId, runId]);
   return rows;
 }
+
+export async function createKnowledgeSnapshot(input: {
+  workspaceId: string;
+  sourceRunId: string;
+  status: 'completed' | 'failed';
+  confidence?: string | null;
+  executiveSummary?: string | null;
+  dataGaps?: unknown[];
+  verifiedFacts?: unknown[];
+  priorities?: unknown[];
+  knowledgeBase?: Record<string, unknown>;
+  sourceManifest?: Record<string, unknown>;
+  generatedAt?: Date | null;
+}) {
+  const { rows } = await query(`
+    INSERT INTO workspace_knowledge_snapshots
+      (workspace_id, source_run_id, status, confidence, executive_summary, data_gaps,
+       verified_facts, priorities, knowledge_base, source_manifest, generated_at)
+    VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11)
+    ON CONFLICT (workspace_id, snapshot_type, source_run_id)
+    DO UPDATE SET status=EXCLUDED.status, confidence=EXCLUDED.confidence,
+      executive_summary=EXCLUDED.executive_summary, data_gaps=EXCLUDED.data_gaps,
+      verified_facts=EXCLUDED.verified_facts, priorities=EXCLUDED.priorities,
+      knowledge_base=EXCLUDED.knowledge_base, source_manifest=EXCLUDED.source_manifest,
+      generated_at=EXCLUDED.generated_at, updated_at=NOW()
+    RETURNING id, workspace_id AS "workspaceId", source_run_id AS "sourceRunId", status,
+      confidence, executive_summary AS "executiveSummary", data_gaps AS "dataGaps",
+      verified_facts AS "verifiedFacts", priorities, knowledge_base AS "knowledgeBase",
+      source_manifest AS "sourceManifest", generated_at AS "generatedAt", updated_at AS "updatedAt"`,
+    [input.workspaceId, input.sourceRunId, input.status, input.confidence ?? null, input.executiveSummary ?? null,
+      JSON.stringify(input.dataGaps ?? []), JSON.stringify(input.verifiedFacts ?? []), JSON.stringify(input.priorities ?? []),
+      JSON.stringify(input.knowledgeBase ?? {}), JSON.stringify(input.sourceManifest ?? {}), input.generatedAt ?? null]);
+  return rows[0];
+}
+
+export async function replaceKnowledgeSections(snapshotId: string, workspaceId: string, sections: Record<string, unknown>) {
+  for (const [sectionKey, content] of Object.entries(sections)) {
+    if (!content || typeof content !== 'object') continue;
+    await query(`
+      INSERT INTO workspace_knowledge_sections (snapshot_id, workspace_id, section_key, status, content)
+      VALUES ($1,$2,$3,$4,$5::jsonb)
+      ON CONFLICT (snapshot_id, section_key)
+      DO UPDATE SET status=EXCLUDED.status, content=EXCLUDED.content, updated_at=NOW()`,
+      [snapshotId, workspaceId, sectionKey, 'completed', JSON.stringify(content)]);
+  }
+}
+
+export async function replaceIntelligenceMetrics(input: {
+  workspaceId: string;
+  snapshotId: string;
+  metrics: Record<string, unknown>;
+}) {
+  for (const [metricKey, raw] of Object.entries(input.metrics)) {
+    const metric = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
+    const status = typeof metric.sourceStatus === 'string' ? metric.sourceStatus : 'unavailable';
+    const safeStatus = ['verified','derived','forecast','unavailable','not_applicable'].includes(status) ? status : 'unavailable';
+    await query(`
+      INSERT INTO workspace_intelligence_metrics
+        (workspace_id, snapshot_id, metric_key, value, unit, period, source, source_status,
+         confidence, limitations, measured_at)
+      VALUES ($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10::jsonb,$11)
+      ON CONFLICT (workspace_id, snapshot_id, metric_key)
+      DO UPDATE SET value=EXCLUDED.value, unit=EXCLUDED.unit, period=EXCLUDED.period,
+        source=EXCLUDED.source, source_status=EXCLUDED.source_status, confidence=EXCLUDED.confidence,
+        limitations=EXCLUDED.limitations, measured_at=EXCLUDED.measured_at, updated_at=NOW()`,
+      [input.workspaceId, input.snapshotId, metricKey, JSON.stringify(metric.value ?? null),
+        typeof metric.unit === 'string' ? metric.unit : null, typeof metric.period === 'string' ? metric.period : null,
+        typeof metric.source === 'string' ? metric.source : null, safeStatus,
+        typeof metric.confidence === 'string' ? metric.confidence : null,
+        JSON.stringify(Array.isArray(metric.limitations) ? metric.limitations : []), null]);
+  }
+}
+
+export async function getLatestKnowledgeSnapshot(workspaceId: string) {
+  const { rows } = await query(`
+    SELECT id, workspace_id AS "workspaceId", source_run_id AS "sourceRunId", snapshot_type AS "snapshotType",
+      status, confidence, executive_summary AS "executiveSummary", data_gaps AS "dataGaps",
+      verified_facts AS "verifiedFacts", priorities, knowledge_base AS "knowledgeBase",
+      source_manifest AS "sourceManifest", generated_at AS "generatedAt", updated_at AS "updatedAt"
+    FROM workspace_knowledge_snapshots
+    WHERE workspace_id=$1 AND snapshot_type='initial_business_analysis' AND status='completed'
+    ORDER BY generated_at DESC NULLS LAST, updated_at DESC LIMIT 1`, [workspaceId]);
+  return rows[0] ?? null;
+}
+
+export async function listKnowledgeSections(workspaceId: string, snapshotId: string) {
+  const { rows } = await query(`SELECT section_key AS "sectionKey", status, content, updated_at AS "updatedAt"
+    FROM workspace_knowledge_sections WHERE workspace_id=$1 AND snapshot_id=$2 ORDER BY section_key`, [workspaceId, snapshotId]);
+  return rows;
+}
+
+export async function listIntelligenceMetrics(workspaceId: string, snapshotId?: string) {
+  const values: unknown[] = [workspaceId];
+  const where = snapshotId ? 'AND snapshot_id=$2' : '';
+  if (snapshotId) values.push(snapshotId);
+  const { rows } = await query(`SELECT metric_key AS "metricKey", value, unit, period, source,
+      source_status AS "sourceStatus", confidence, limitations, measured_at AS "measuredAt", updated_at AS "updatedAt"
+    FROM workspace_intelligence_metrics WHERE workspace_id=$1 ${where} ORDER BY metric_key`, values);
+  return rows;
+}
+
+export async function getKnowledgeBundle(workspaceId: string) {
+  const snapshot = await getLatestKnowledgeSnapshot(workspaceId);
+  if (!snapshot) return null;
+  const [sections, metrics] = await Promise.all([
+    listKnowledgeSections(workspaceId, snapshot.id),
+    listIntelligenceMetrics(workspaceId, snapshot.id),
+  ]);
+  return { snapshot, sections, metrics };
+}

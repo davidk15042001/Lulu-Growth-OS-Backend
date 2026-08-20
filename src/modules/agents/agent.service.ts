@@ -113,6 +113,9 @@ export async function startAutomaticRun(workspaceId: string, goal: string, modul
   return run;
 }
 export async function listRuns(workspaceId: string) { return repo.listRuns(workspaceId); }
+export async function getKnowledgeBundle(workspaceId: string) {
+  return repo.getKnowledgeBundle(workspaceId);
+}
 export async function getRunDetails(workspaceId: string, runId: string) {
   const run = await repo.getRun(workspaceId, runId);
   if (!run) throw notFoundError('Agent run not found');
