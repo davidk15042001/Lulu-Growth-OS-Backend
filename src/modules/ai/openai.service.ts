@@ -123,18 +123,37 @@ export async function generateAssistantResponse(
   };
 }
 
+const TOKEN_WORDS: Record<string, number> = {
+  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
+  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+  '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+  '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+};
+
+function parseTokenTestNumber(value: string) {
+  const normalized = value.normalize('NFKC').toLowerCase();
+  const numericMatch = normalized.match(/(?:^|[^0-9])(10|[1-9])(?:$|[^0-9])/);
+  if (numericMatch) return Number(numericMatch[1]);
+  for (const [word, number] of Object.entries(TOKEN_WORDS)) {
+    if (new RegExp(`(?:^|[^a-z\\u4e00-\\u9fff])${word}(?:$|[^a-z\\u4e00-\\u9fff])`, 'i').test(normalized)) return number;
+  }
+  return null;
+}
+
 export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
   const response = await client.create({
     model: configuredModel(),
-    instructions: 'Return exactly one integer from 1 to 10 and nothing else. Do not explain your answer.',
-    input: 'Generate one number between 1 and 10 to verify the configured ChatGPT token.',
+    instructions: 'Return exactly one ASCII digit from 1 to 10 and nothing else. Valid answers are only 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10. Do not explain, use words, markdown, or punctuation.',
+    input: 'Generate one number between 1 and 10 to verify the configured AI token.',
     reasoning: { effort: env.OPENAI_REASONING_EFFORT },
     max_output_tokens: 32,
     store: false,
   });
-  const match = response.output_text.match(/\b(10|[1-9])\b/);
-  if (!match) throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The AI provider did not return a number from 1 to 10');
-  return { number: Number(match[1]), model: response.model, responseId: response.id };
+  const number = parseTokenTestNumber(response.output_text);
+  if (number === null || number < 1 || number > 10) {
+    throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The AI provider returned an unusable token-test response. Expected a number from 1 to 10.');
+  }
+  return { number, model: response.model, responseId: response.id };
 }
 
 export function isAiGenerationConfigured() {
