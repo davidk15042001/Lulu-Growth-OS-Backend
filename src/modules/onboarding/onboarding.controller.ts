@@ -3,6 +3,7 @@ import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import { AppError } from '../../utils/app-error.js';
 import * as oauthService from './oauth.service.js';
+import { generateTokenTestNumber } from '../ai/openai.service.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './onboarding.service.js';
 import {
@@ -19,6 +20,15 @@ import {
 
 function workspaceId(req: WorkspaceRequest) {
   return onboardingRecordParamsSchema.parse(req.params).workspaceId;
+}
+
+export async function tokenTest(_req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await generateTokenTestNumber();
+    return successResponse(res, 'AI token test completed', result);
+  } catch (error) {
+    next(error);
+  }
 }
 
 export async function snapshot(req: WorkspaceRequest, res: Response, next: NextFunction) {

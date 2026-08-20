@@ -105,6 +105,20 @@ export async function generateAssistantResponse(
   };
 }
 
+export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
+  const response = await client.create({
+    model: env.OPENAI_MODEL,
+    instructions: 'Return exactly one integer from 1 to 10 and nothing else. Do not explain your answer.',
+    input: 'Generate one number between 1 and 10 to verify the configured ChatGPT token.',
+    reasoning: { effort: env.OPENAI_REASONING_EFFORT },
+    max_output_tokens: 32,
+    store: false,
+  });
+  const match = response.output_text.match(/\b(10|[1-9])\b/);
+  if (!match) throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The AI provider did not return a number from 1 to 10');
+  return { number: Number(match[1]), model: response.model, responseId: response.id };
+}
+
 export function isAiGenerationConfigured() {
   return hasOpenAI;
 }
