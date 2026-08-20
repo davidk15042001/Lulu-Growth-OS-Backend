@@ -30,6 +30,7 @@ const EnvSchema = z
     DASHSCOPE_API_KEY: z.string().min(1).optional(),
     DASHSCOPE_BASE_URL: z.string().url().default('https://dashscope-intl.aliyuncs.com/compatible-mode/v1'),
     DASHSCOPE_MODEL: z.string().min(1).default('qwen-plus'),
+    DASHSCOPE_TOKEN_TEST_MODEL: z.string().min(1).default('qwen-plus'),
     OPENAI_REASONING_EFFORT: z.enum(['minimal', 'low', 'medium', 'high']).default('low'),
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
     EMAIL_FROM: z.string().optional(),
