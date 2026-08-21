@@ -19,7 +19,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
       const createdPages: any[] = [];
       const existingPages = await withProviderConnectionError(workspaceId, 'wordpress', () => wordpressPages(workspaceId, externalSiteId));
-      for (const page of plannedPages) {
+      for (const [pageIndex, page] of plannedPages.entries()) {
         const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
         const existing = existingPages.find((candidate: any) => {
           const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
@@ -31,13 +31,13 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         const existingStatus = String(existing?.status ?? '').toLowerCase();
         if (!pageId) {
           await new Promise((resolve) => setTimeout(resolve, 750));
-          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoTitle: page.seoTitle, seoDescription: page.seoDescription, status: 'draft' }));
+          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoTitle: page.seoTitle, seoDescription: page.seoDescription, menuOrder: pageIndex + 1, status: 'draft' }));
           pageId = draft.ID ?? draft.id;
           if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
           published = draft;
         } else {
           await new Promise((resolve) => setTimeout(resolve, 750));
-          published = await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressPage(workspaceId, externalSiteId, String(pageId), { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoDescription: page.seoDescription, status: 'draft' }));
+          published = await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressPage(workspaceId, externalSiteId, String(pageId), { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoDescription: page.seoDescription, menuOrder: pageIndex + 1, status: 'draft' }));
         }
         const existingUrl = existing?.URL ?? existing?.url ?? existing?.link ?? null;
         if (existingStatus !== 'publish' || !existingUrl || Boolean(existing)) {
