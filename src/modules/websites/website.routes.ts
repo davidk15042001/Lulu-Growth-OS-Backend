@@ -6,6 +6,7 @@ import * as controller from './website.controller.js';
 const router = Router({ mergeParams: true });
 router.use(requireWorkspaceMember);
 router.route('/').get(controller.list).post(requireWorkspaceEditor, controller.create).all(methodNotAllowed);
+router.route('/:siteId/provider-content').get(controller.providerContent).all(methodNotAllowed);
 router.route('/:siteId/wordpress-content').get(controller.wordpressContent).all(methodNotAllowed);
 router.route('/automatic-generation').post(requireWorkspaceEditor, controller.automaticGenerate).all(methodNotAllowed);
 router.route('/cleanup-provider').post(requireWorkspaceEditor, controller.cleanupProvider).all(methodNotAllowed);

@@ -6,12 +6,37 @@ import { automaticGenerationSchema, createDomainSchema, createJobSchema, createS
 import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
 import { resetWebsiteProviderState, startAutomaticWebsiteGeneration } from './website.automation.service.js';
-import { wordpressMedia, wordpressPages, wordpressPosts } from './website.provider.service.js';
+import { webflowCollections, webflowCustomDomains, webflowSites, wordpressMedia, wordpressPages, wordpressPosts } from './website.provider.service.js';
 
 type WorkspaceRequest = Request & { user?: { id: string } };
 function workspaceId(req: Request) { return String(req.params.workspaceId); }
 
 export async function list(req: Request, res: Response, next: NextFunction) { try { return successResponse(res, 'Website sites loaded', { items: await repo.listSites(workspaceId(req)) }); } catch (error) { next(error); } }
+export async function providerContent(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.parse(req.params);
+    const site = await repo.getSite(params.workspaceId, params.siteId);
+    if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'The website site was not found');
+    if (site.provider === 'wordpress' && site.externalSiteId) {
+      const [pages, posts, media] = await Promise.all([
+        wordpressPages(params.workspaceId, site.externalSiteId),
+        wordpressPosts(params.workspaceId, site.externalSiteId),
+        wordpressMedia(params.workspaceId, site.externalSiteId),
+      ]);
+      return successResponse(res, 'Website provider content loaded', { provider: site.provider, site, pages, posts, media });
+    }
+    if (site.provider === 'webflow' && site.externalSiteId) {
+      const [sites, collections, customDomains] = await Promise.all([
+        webflowSites(params.workspaceId),
+        webflowCollections(params.workspaceId, site.externalSiteId),
+        webflowCustomDomains(params.workspaceId, site.externalSiteId),
+      ]);
+      return successResponse(res, 'Website provider content loaded', { provider: site.provider, site, sites, collections, customDomains });
+    }
+    return successResponse(res, 'Website provider content loaded', { provider: site.provider, site });
+  } catch (error) { next(error); }
+}
+
 export async function wordpressContent(req: Request, res: Response, next: NextFunction) {
   try {
     const params = siteIdParams.parse(req.params);
