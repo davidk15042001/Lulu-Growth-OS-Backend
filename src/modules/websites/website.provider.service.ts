@@ -55,6 +55,18 @@ export async function wordpressPages(workspaceId: string, siteId: string) {
   return Array.isArray(data) ? data : Array.isArray(data?.posts) ? data.posts : [];
 }
 
+export async function wordpressPosts(workspaceId: string, siteId: string) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const data = (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/?number=100&status=any`, token)).data;
+  return Array.isArray(data) ? data : Array.isArray(data?.posts) ? data.posts : [];
+}
+
+export async function wordpressMedia(workspaceId: string, siteId: string) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const data = (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/media/?number=100`, token)).data;
+  return Array.isArray(data) ? data : Array.isArray(data?.media) ? data.media : [];
+}
+
 export async function createWordpressPage(workspaceId: string, siteId: string, page: { title: string; slug?: string; content: string; seoTitle?: string; seoDescription?: string; menuOrder?: number; status?: 'draft' | 'publish' }) {
   const token = await tokenFor(workspaceId, 'wordpress');
   return (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/new/`, token, { method: 'POST', body: JSON.stringify({ type: 'page', title: page.title, ...(page.slug ? { slug: page.slug } : {}), content: page.content, ...(page.seoDescription ? { excerpt: page.seoDescription } : {}), ...(typeof page.menuOrder === 'number' ? { menu_order: page.menuOrder } : {}), status: page.status ?? 'draft' }) })).data;
