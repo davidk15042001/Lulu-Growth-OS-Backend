@@ -34,7 +34,20 @@ export async function createWordpressPage(workspaceId: string, siteId: string, p
 }
 export async function publishWordpressPage(workspaceId: string, siteId: string, pageId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
-  return (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/${encodeURIComponent(pageId)}/`, token, { method: 'POST', body: JSON.stringify({ status: 'publish' }) })).data;
+  const endpoint = `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/${encodeURIComponent(pageId)}/`;
+  await providerRequest('wordpress', endpoint, token, { method: 'POST', body: JSON.stringify({ status: 'publish' }) });
+  const verification = (await providerRequest('wordpress', endpoint, token)).data;
+  const status = String(verification?.status ?? '').toLowerCase();
+  const publicUrl = verification?.URL ?? verification?.url ?? verification?.link ?? null;
+  if (status !== 'publish' || !publicUrl) {
+    throw new AppError(502, 'WORDPRESS_PUBLISH_VERIFICATION_FAILED', 'WordPress did not verify the page as publicly published', {
+      provider: 'wordpress',
+      pageId,
+      verifiedStatus: verification?.status,
+      providerResult: verification,
+    });
+  }
+  return verification;
 }
 export async function webflowSites(workspaceId: string) {
   const token = await tokenFor(workspaceId, 'webflow');
