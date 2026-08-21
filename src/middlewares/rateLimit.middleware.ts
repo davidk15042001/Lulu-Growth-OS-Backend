@@ -45,12 +45,17 @@ export const rateLimiter = rateLimit({
   max: 200,
   standardHeaders: 'draft-7',
   legacyHeaders: false,
+  skip: (req) => req.path.startsWith('/v1/auth/'),
   handler: (_req, res) => tooManyRequests(res),
 });
 
-// TEST MODE: authentication requests are intentionally unrestricted for now.
-// Restore the production limiter before exposing this environment publicly.
-export const authLimiter = (_req: Request, _res: Response, next: NextFunction) => next();
+export const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  handler: (_req, res) => tooManyRequests(res),
+});
 
 export const otpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
