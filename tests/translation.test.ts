@@ -40,6 +40,9 @@ describe('translation service', () => {
           }),
         };
       },
+      async createChat() {
+        throw new Error('createChat should not be used by this test');
+      },
     };
 
     const first = await translateStrings(

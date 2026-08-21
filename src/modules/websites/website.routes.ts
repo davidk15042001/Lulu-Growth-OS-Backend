@@ -13,6 +13,7 @@ router.route('/cleanup-provider').post(requireWorkspaceEditor, controller.cleanu
 router.route('/:siteId/domains').post(requireWorkspaceEditor, controller.addDomain).all(methodNotAllowed);
 router.route('/:siteId/domains/:domainId/verify').post(requireWorkspaceEditor, controller.verifyDomain).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs').post(requireWorkspaceEditor, controller.createJob).all(methodNotAllowed);
+router.route('/:siteId/generation-jobs/active').get(controller.getActiveJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId').get(controller.getJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId/publish').post(requireWorkspaceEditor, controller.publishJob).all(methodNotAllowed);
 export default router;

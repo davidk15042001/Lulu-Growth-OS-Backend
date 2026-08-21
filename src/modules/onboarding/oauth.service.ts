@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { env } from '../../config/env.js';
-import { encryptSecret } from '../../utils/secret-box.js';
+import { decryptSecret, encryptSecret } from '../../utils/secret-box.js';
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './onboarding.repo.js';
 
@@ -190,6 +190,16 @@ async function exchangeCode(provider: OAuthProvider, code: string, state: OAuthS
   return data;
 }
 
+async function exchangeRefreshToken(provider: OAuthProvider, refreshToken: string) {
+  const config = providerConfig(provider);
+  const body = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: config.clientId, client_secret: config.clientSecret });
+  const authorization = provider === 'pipedrive' ? `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64')}` : undefined;
+  const response = await fetch(config.tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(authorization ? { Authorization: authorization } : {}) }, body });
+  const data = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw oauthError(provider, 'OAUTH_TOKEN_REFRESH_FAILED', 'Provider rejected the saved refresh token', { providerHttpStatus: response.status }, 502);
+  return data;
+}
+
 async function accountIdentity(provider: OAuthProvider, accessToken: string, tokenData: Record<string, unknown>, shop?: string) {
   if (provider === 'salesforce') return { id: typeof tokenData.id === 'string' ? tokenData.id : null, settings: { instanceUrl: tokenData.instance_url ?? null } };
   if (provider === 'pipedrive') return { id: tokenData.company_id ? String(tokenData.company_id) : tokenData.user_id ? String(tokenData.user_id) : null, settings: { apiDomain: tokenData.api_domain ?? null } };
@@ -244,6 +254,31 @@ export async function completeOAuthCallback(provider: OAuthProvider, code: strin
   });
   await repo.setOnboardingStep(state.workspaceId, 'ai_preferences');
   return { platform, workspaceId: state.workspaceId };
+}
+
+export async function refreshStoredOAuthCredential(input: {
+  workspaceId: string;
+  provider: OAuthProvider;
+  encryptedRefreshToken: string | null;
+}) {
+  if (!input.encryptedRefreshToken) {
+    throw oauthError(input.provider, 'OAUTH_REFRESH_TOKEN_MISSING', 'Provider connection must be re-authorized because no refresh token is stored', undefined, 401);
+  }
+  const refreshToken = decryptSecret(input.encryptedRefreshToken);
+  const tokenData = await exchangeRefreshToken(input.provider, refreshToken);
+  const accessToken = String(tokenData.access_token ?? '');
+  if (!accessToken) throw oauthError(input.provider, 'OAUTH_ACCESS_TOKEN_MISSING', 'Provider refresh response did not contain an access token', undefined, 502);
+  const nextRefreshToken = typeof tokenData.refresh_token === 'string' ? tokenData.refresh_token : null;
+  const expiresIn = Number(tokenData.expires_in ?? 0);
+  const tokenExpiresAt = expiresIn > 0 ? new Date(Date.now() + expiresIn * 1_000).toISOString() : null;
+  await repo.updatePlatformOAuthTokens({
+    workspaceId: input.workspaceId,
+    integrationKey: input.provider,
+    encryptedAccessToken: encryptSecret(accessToken),
+    encryptedRefreshToken: nextRefreshToken ? encryptSecret(nextRefreshToken) : null,
+    tokenExpiresAt,
+  });
+  return accessToken;
 }
 
 export function isSupportedProvider(value: string): value is OAuthProvider {

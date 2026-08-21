@@ -1,6 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { query } from '../db/pool.js';
-import { forbidden, unauthorized } from '../utils/response.js';
+import { forbidden, jsonError, unauthorized } from '../utils/response.js';
 import { logger } from '../config/logger.js';
 import { extractBearerToken, verifyToken, type JwtPayload } from '../utils/jwt.js';
 
@@ -29,7 +29,7 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
 
     if ((payload.tv ?? 0) !== token_version) {
       logger.error('Token revoked');
-      return unauthorized(res, 'Token revoked');
+      return jsonError(res, 401, 'TOKEN_REVOKED', 'This session was ended because the account signed in somewhere else');
     }
 
     req.user = { id: payload.sub, email: payload.email, role };

@@ -53,6 +53,9 @@ describe('OpenAI Responses adapter', () => {
           usage: { input_tokens: 12, output_tokens: 7 },
         };
       },
+      async createChat() {
+        throw new Error('createChat should not be used by this test');
+      },
     };
 
     const result = await generateAssistantResponse(

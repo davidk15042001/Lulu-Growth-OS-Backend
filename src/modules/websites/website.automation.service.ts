@@ -5,6 +5,8 @@ import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 
+const WEBSITE_GENERATION_TIMEOUT_MINUTES = 10;
+
 export const DEFAULT_WEBSITE_PROMPT = `Create an exceptional, premium, production-ready website that feels like a top-tier digital agency delivered it. The result must be visually compelling, strategically complete, highly detailed and conversion-focused—not a basic blog, a generic template or a short information page. Use the verified Lulu workspace data, active or draft offerings, uploaded business context and completed initial AI analysis as the only source of truth for factual claims. Adapt the design, language, hierarchy and functionality to the customer's real industry, audience, positioning, geography, offers and business goals.
 
 Design a complete information architecture with up to 8 high-value pages, using the page budget intelligently. The set should normally cover: a cinematic homepage; a detailed solutions, services or capabilities page; one or more offer/detail pages when verified offerings exist; an audience, industry or use-case page when supported; an outcomes, process or how-it-works page; an about, trust or company page; a resources, FAQ or insights page when useful; and a contact, consultation or inquiry page. Do not create irrelevant pages just to reach a quota. If there are more important functions than pages, group them into clearly labeled sections, feature grids, comparison blocks, process steps, FAQs and conversion modules on the most relevant pages so the complete product or service story is covered.
@@ -94,6 +96,7 @@ export async function startAutomaticWebsiteGeneration(input: { workspaceId: stri
   try {
     const site = await getOrCreateProviderSite(input.workspaceId, input.provider, input.siteId);
     if (!site) throw new AppError(500, 'WEBSITE_SITE_CREATE_FAILED', 'The connected provider site could not be registered');
+    await repo.expireStaleActiveJobs(site.id, WEBSITE_GENERATION_TIMEOUT_MINUTES);
     const active = await repo.findActiveJob(site.id);
     if (active) return { site, job: active, reused: true };
     const job = await repo.createJob({ siteId: site.id, prompt: DEFAULT_WEBSITE_PROMPT, createdBy: input.userId });
@@ -104,4 +107,11 @@ export async function startAutomaticWebsiteGeneration(input: { workspaceId: stri
     if (shouldDisconnectProvider(error)) await resetWebsiteProviderState(input.workspaceId, input.provider);
     throw error;
   }
+}
+
+export async function getActiveWebsiteGenerationJob(input: { workspaceId: string; siteId: string }) {
+  const site = await repo.getSite(input.workspaceId, input.siteId);
+  if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'The selected website could not be found');
+  await repo.expireStaleActiveJobs(site.id, WEBSITE_GENERATION_TIMEOUT_MINUTES);
+  return repo.findActiveJob(site.id);
 }

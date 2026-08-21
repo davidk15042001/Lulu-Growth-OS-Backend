@@ -506,8 +506,7 @@ export type PlatformOAuthCredentialInput = {
 };
 
 export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredentialInput) {
-  const websiteProviderPending = ['wordpress', 'webflow'].includes(input.integrationKey);
-  const connectionStatus = websiteProviderPending ? 'pending' : 'connected';
+  const connectionStatus = 'connected';
   const existing = await query<{ id: string }>(
     `SELECT id FROM workspace_platforms
      WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL
@@ -551,7 +550,7 @@ export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredenti
      ON CONFLICT (platform_id) DO UPDATE SET
        provider = EXCLUDED.provider,
        encrypted_access_token = EXCLUDED.encrypted_access_token,
-       encrypted_refresh_token = EXCLUDED.encrypted_refresh_token,
+       encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token, workspace_platform_oauth_credentials.encrypted_refresh_token),
        token_expires_at = EXCLUDED.token_expires_at,
        updated_at = NOW()`,
     [platformId, input.integrationKey, input.encryptedAccessToken, input.encryptedRefreshToken, input.tokenExpiresAt]
@@ -583,6 +582,29 @@ export async function getPlatformOAuthCredential(workspaceId: string, integratio
     [workspaceId, integrationKey]
   );
   return rows[0] ?? null;
+}
+
+export async function updatePlatformOAuthTokens(input: {
+  workspaceId: string;
+  integrationKey: string;
+  encryptedAccessToken: string;
+  encryptedRefreshToken: string | null;
+  tokenExpiresAt: string | null;
+}) {
+  await query(
+    `UPDATE workspace_platform_oauth_credentials c
+     SET encrypted_access_token = $3,
+         encrypted_refresh_token = COALESCE($4, c.encrypted_refresh_token),
+         token_expires_at = $5,
+         updated_at = NOW()
+     FROM workspace_platforms p
+     WHERE c.platform_id = p.id
+       AND p.workspace_id = $1
+       AND p.integration_key = $2
+       AND p.deleted_at IS NULL`,
+    [input.workspaceId, input.integrationKey, input.encryptedAccessToken, input.encryptedRefreshToken, input.tokenExpiresAt]
+  );
+  await markPlatformConnected(input.workspaceId, input.integrationKey);
 }
 
 export async function markPlatformConnectionError(workspaceId: string, integrationKey: string, message: string) {

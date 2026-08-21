@@ -1,6 +1,7 @@
 import { AppError } from '../../utils/app-error.js';
 import { decryptSecret } from '../../utils/secret-box.js';
 import { getPlatformOAuthCredential, markPlatformConnectionError } from '../onboarding/onboarding.repo.js';
+import { refreshStoredOAuthCredential } from '../onboarding/oauth.service.js';
 import type { WebsiteProvider } from './website.types.js';
 
 type ProviderResponse = { status: number; data: any };
@@ -42,6 +43,20 @@ async function providerRequest(provider: WebsiteProvider, url: string, token: st
 async function tokenFor(workspaceId: string, provider: 'wordpress' | 'webflow') {
   const credential = await getPlatformOAuthCredential(workspaceId, provider);
   if (!credential) throw new AppError(409, 'WEBSITE_PROVIDER_NOT_CONNECTED', `The ${provider} provider is not connected`);
+  const expiresAt = credential.tokenExpiresAt ? new Date(credential.tokenExpiresAt).getTime() : null;
+  const refreshWindowMs = 60_000;
+  if (expiresAt && Number.isFinite(expiresAt) && expiresAt <= Date.now() + refreshWindowMs) {
+    try {
+      return await refreshStoredOAuthCredential({
+        workspaceId,
+        provider,
+        encryptedRefreshToken: credential.encryptedRefreshToken,
+      });
+    } catch (error) {
+      await markPlatformConnectionError(workspaceId, provider, error instanceof Error ? error.message : 'Provider connection expired').catch(() => undefined);
+      throw new AppError(401, 'WEBSITE_PROVIDER_REAUTH_REQUIRED', `The ${provider} provider connection expired. Please reconnect it.`, { provider });
+    }
+  }
   try { return decryptSecret(credential.encryptedAccessToken); } catch { throw new AppError(500, 'WEBSITE_PROVIDER_TOKEN_INVALID', `The ${provider} provider token could not be decrypted`); }
 }
 

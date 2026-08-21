@@ -71,6 +71,20 @@ export async function findActiveJob(siteId: string) {
   return result.rows[0] ? mapJob(result.rows[0]) : null;
 }
 
+export async function expireStaleActiveJobs(siteId: string, olderThanMinutes = 10) {
+  await query(
+    `UPDATE website_generation_jobs
+     SET status = 'failed',
+         error_code = 'WEBSITE_GENERATION_TIMEOUT',
+         error_message = 'Website generation did not finish in time. Please try again.',
+         updated_at = NOW()
+     WHERE site_id = $1
+       AND status IN ('queued','planning','publishing')
+       AND updated_at < NOW() - ($2::int * INTERVAL '1 minute')`,
+    [siteId, olderThanMinutes],
+  );
+}
+
 export async function getJob(siteId: string, jobId: string) {
   const result = await query<any>(`SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs WHERE site_id = $1 AND id = $2 LIMIT 1`, [siteId, jobId]);
   return result.rows[0] ? mapJob(result.rows[0]) : null;
