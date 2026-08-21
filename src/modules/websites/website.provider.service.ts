@@ -34,7 +34,7 @@ export async function createWordpressPage(workspaceId: string, siteId: string, p
 }
 export async function publishWordpressPage(workspaceId: string, siteId: string, pageId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
-  return (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/pages/${encodeURIComponent(pageId)}/`, token, { method: 'POST', body: JSON.stringify({ status: 'publish' }) })).data;
+  return (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/${encodeURIComponent(pageId)}/`, token, { method: 'POST', body: JSON.stringify({ status: 'publish' }) })).data;
 }
 export async function webflowSites(workspaceId: string) {
   const token = await tokenFor(workspaceId, 'webflow');
