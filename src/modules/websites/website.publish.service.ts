@@ -1,6 +1,6 @@
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './website.repo.js';
-import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
+import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressFrontPage, updateWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 
 export async function publishWebsiteJob(workspaceId: string, siteId: string, jobId: string) {
   const site = await repo.getSite(workspaceId, siteId);
@@ -53,7 +53,10 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         createdPages.push({ id: pageId, url: String(publishedUrl), reused: Boolean(existing) });
       }
       if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
-      return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages } });
+      const homepageId = String(createdPages[0]?.id ?? '');
+      if (!homepageId) throw new AppError(502, 'WORDPRESS_HOMEPAGE_UNCONFIRMED', 'WordPress did not confirm the generated homepage', { provider: 'wordpress', providerResult: { pages: createdPages } });
+      await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
+      return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages, homepageId } });
     }
     const collectionId = typeof site.settings.collectionId === 'string' ? site.settings.collectionId : '';
     if (!collectionId || !site.externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_CONFIGURATION_MISSING', 'Webflow site ID and CMS collection ID are required for publishing');
