@@ -106,7 +106,7 @@ export async function generateWebsitePlan(input: {
   const context = await loadWebsiteContext(input.workspaceId, input.userId);
   const client = getOpenAIResponsesClient();
   const configuredModel = env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL;
-  const primaryModel = configuredModel === 'gpt-4.1-mini' ? 'gpt-5-mini' : configuredModel;
+  const primaryModel = configuredModel;
   const request = {
     model: primaryModel,
     instructions: [
@@ -133,7 +133,7 @@ export async function generateWebsitePlan(input: {
         '{"siteTitle":string,"brandVoice":string,"primaryLanguage":string,"pages":[{"title":string,"slug":string,"purpose":string,"content":string,"seoTitle":string,"seoDescription":string}],"globalSeo":{"title":string,"description":string,"keywords":string[]},"assets":[{"brief":string,"altText":string}]}'
       ].join('\n\n'),
     }],
-    // Groq Free Tier: keep the requested budget below the 8,000 TPM ceiling.
+    // Keep the website plan bounded across all configured providers.
     // The website plan is intentionally capped at 8 pages and compact metadata.
     max_output_tokens: 5000,
     store: false,

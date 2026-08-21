@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { env } from '../src/config/env.js';
 import {
   buildAssistantInstructions,
   buildSafetyIdentifier,
@@ -66,7 +67,8 @@ describe('OpenAI Responses adapter', () => {
 
     assert.equal(captured?.store, false);
     assert.equal(captured?.model, 'gpt-test');
-    assert.equal(typeof captured?.safety_identifier, 'string');
+    if (env.AI_PROVIDER === 'openai') assert.equal(typeof captured?.safety_identifier, 'string');
+    else assert.equal(captured?.safety_identifier, undefined);
     assert.equal(result.content, 'A grounded answer.');
     assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 7 });
   });

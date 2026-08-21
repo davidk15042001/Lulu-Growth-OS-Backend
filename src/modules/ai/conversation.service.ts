@@ -82,7 +82,7 @@ export async function respond(
   input: CreateMessageInput
 ) {
   if (!isAiGenerationConfigured()) {
-    throw new AppError(503, 'AI_NOT_CONFIGURED', 'OPENAI_API_KEY is not configured');
+    throw new AppError(503, 'AI_NOT_CONFIGURED', 'The configured AI provider is not configured');
   }
 
   const conversation = await getConversation(workspaceId, userId, conversationId);

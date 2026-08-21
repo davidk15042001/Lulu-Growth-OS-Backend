@@ -1,5 +1,6 @@
 import { AppError, conflictError, notFoundError } from '../../utils/app-error.js';
 import { createApproval, decideApproval } from '../approvals/approval.repo.js';
+import { env } from '../../config/env.js';
 import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import * as repo from './agent.repo.js';
 import type { AgentRole, AgentTool } from './agent.types.js';
@@ -81,7 +82,7 @@ async function executeRun(runId: string, workspaceId: string, userId: string, go
     }
     let finalResult: Record<string, unknown> = { goal, outputs, completedBy: pipeline.map((item) => item.role) };
     if (isAiGenerationConfigured()) {
-      const response = await withTimeout(getOpenAIResponsesClient().create({ model: process.env.OPENAI_MODEL, instructions: 'Synthesize the coordinated agent outputs into a concise business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
+      const response = await withTimeout(getOpenAIResponsesClient().create({ model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.OPENAI_MODEL, instructions: 'Synthesize the coordinated agent outputs into a concise business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
       finalResult = { ...finalResult, summary: response.output_text?.trim() ?? null };
     }
     await repo.updateRun(runId, { status: 'completed', result: finalResult, finished_at: new Date() });

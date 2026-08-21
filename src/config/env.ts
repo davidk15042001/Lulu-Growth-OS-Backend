@@ -24,7 +24,7 @@ const EnvSchema = z
     MAILCOW_SMTP_SECURE: booleanString.default(false),
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
-    AI_PROVIDER: z.enum(['openai', 'alibaba', 'groq']).default('openai'),
+    AI_PROVIDER: z.enum(['openai', 'alibaba', 'groq']).default('alibaba'),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
     DASHSCOPE_API_KEY: z.string().min(1).optional(),

@@ -76,7 +76,7 @@ export async function translateStrings(
   if (missing.length > 0) {
     const client = dependencies.client ?? getOpenAIResponsesClient();
     const response = await client.create({
-      model: env.OPENAI_MODEL,
+      model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.OPENAI_MODEL,
       instructions: buildTranslationInstructions(input.targetLanguage),
       input: JSON.stringify({
         targetLanguage: getSupportedLanguage(input.targetLanguage),
@@ -91,9 +91,9 @@ export async function translateStrings(
           schema: TRANSLATION_SCHEMA,
         },
       },
-      reasoning: { effort: 'low' },
+      reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : 'low' },
       max_output_tokens: env.OPENAI_MAX_OUTPUT_TOKENS,
-      safety_identifier: buildSafetyIdentifier(`translation:${input.requesterId}`),
+      ...(env.AI_PROVIDER === 'openai' ? { safety_identifier: buildSafetyIdentifier(`translation:${input.requesterId}`) } : {}),
       store: false,
     });
 

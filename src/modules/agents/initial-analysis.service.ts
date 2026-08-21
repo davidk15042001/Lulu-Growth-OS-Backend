@@ -1,5 +1,6 @@
 import { query } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
+import { env } from '../../config/env.js';
 import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
@@ -152,7 +153,7 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
   void (async () => {
     try {
       const response = await getOpenAIResponsesClient().create({
-        model: process.env.OPENAI_ANALYSIS_MODEL || process.env.OPENAI_MODEL || 'gpt-4.1-mini',
+        model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.OPENAI_MODEL,
         instructions: buildInstructions(),
         input: [{ role: 'user', content: [
           `Workspace analysis target: ${workspaceId}`,
