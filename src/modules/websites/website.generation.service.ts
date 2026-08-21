@@ -174,7 +174,7 @@ export async function generateWebsitePlan(input: {
       'Do not copy example companies, contacts, phone numbers, addresses, color palettes or content from the user brief unless they are explicitly part of verified workspace data.',
       'Treat connected platform names as integration metadata only; never claim that a site was published or that a platform is available unless a provider result confirms it.',
       'Return ONLY valid JSON without markdown fences and never claim that a website was published.',
-      'Create practical provider-compatible pages, content, SEO metadata and asset briefs. Limit the result to 8 pages.',
+      'Create practical provider-compatible pages, content, SEO metadata and asset briefs. The content field of every page must be complete publishable semantic HTML, with a substantial homepage and structured sections on every page; never return a short summary, markdown outline, placeholder copy or construction notice. Limit the result to 8 pages.',
     ].join(' '),
     input: [{
       role: 'user',
