@@ -34,6 +34,9 @@ async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress
     if (!selected || selected.provider !== provider) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'The selected website could not be found for this provider');
     return selected;
   }
+  const localSites = await repo.listSites(workspaceId);
+  const localSite = localSites.find((site) => site.provider === provider && site.externalSiteId && site.status !== 'error');
+  if (localSite) return localSite;
   if (provider === 'wordpress') {
     const target = await firstWordpressSite(workspaceId);
     const existing = await repo.findSiteByExternalSiteId(workspaceId, provider, target.id);
