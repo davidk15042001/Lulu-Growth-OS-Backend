@@ -49,9 +49,15 @@ export async function wordpressSites(workspaceId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
   return (await providerRequest('wordpress', 'https://public-api.wordpress.com/rest/v1.1/me/sites/', token)).data;
 }
-export async function createWordpressPage(workspaceId: string, siteId: string, page: { title: string; content: string; status?: 'draft' | 'publish' }) {
+export async function wordpressPages(workspaceId: string, siteId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
-  return (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/new/`, token, { method: 'POST', body: JSON.stringify({ type: 'page', title: page.title, content: page.content, status: page.status ?? 'draft' }) })).data;
+  const data = (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/?type=page&number=100&status=any`, token)).data;
+  return Array.isArray(data) ? data : Array.isArray(data?.posts) ? data.posts : [];
+}
+
+export async function createWordpressPage(workspaceId: string, siteId: string, page: { title: string; slug?: string; content: string; status?: 'draft' | 'publish' }) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  return (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/new/`, token, { method: 'POST', body: JSON.stringify({ type: 'page', title: page.title, ...(page.slug ? { slug: page.slug } : {}), content: page.content, status: page.status ?? 'draft' }) })).data;
 }
 export async function publishWordpressPage(workspaceId: string, siteId: string, pageId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');

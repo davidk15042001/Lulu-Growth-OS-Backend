@@ -1,6 +1,6 @@
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './website.repo.js';
-import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
+import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 
 export async function publishWebsiteJob(workspaceId: string, siteId: string, jobId: string) {
   const site = await repo.getSite(workspaceId, siteId);
@@ -18,16 +18,32 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       const plannedPages = Array.isArray(plan?.pages) ? plan.pages : [];
       if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
       const createdPages: any[] = [];
+      const existingPages = await withProviderConnectionError(workspaceId, 'wordpress', () => wordpressPages(workspaceId, externalSiteId));
       for (const page of plannedPages) {
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, content: page.content, status: 'draft' }));
-        const pageId = draft.ID ?? draft.id;
-        if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        const published = await withProviderConnectionError(workspaceId, 'wordpress', () => publishWordpressPage(workspaceId, externalSiteId, String(pageId)));
-        const publishedUrl = published.URL ?? published.url ?? published.link ?? null;
+        const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
+        const existing = existingPages.find((candidate: any) => {
+          const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
+          const candidateTitle = String(candidate.title ?? '').trim().toLowerCase();
+          return (desiredSlug && candidateSlug === desiredSlug) || candidateTitle === String(page.title ?? '').trim().toLowerCase();
+        });
+        let published: any = existing;
+        let pageId = existing?.ID ?? existing?.id;
+        const existingStatus = String(existing?.status ?? '').toLowerCase();
+        if (!pageId) {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, status: 'draft' }));
+          pageId = draft.ID ?? draft.id;
+          if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
+          published = draft;
+        }
+        const existingUrl = existing?.URL ?? existing?.url ?? existing?.link ?? null;
+        if (existingStatus !== 'publish' || !existingUrl) {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          published = await withProviderConnectionError(workspaceId, 'wordpress', () => publishWordpressPage(workspaceId, externalSiteId, String(pageId)));
+        }
+        const publishedUrl = published?.URL ?? published?.url ?? published?.link ?? null;
         if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });
-        createdPages.push({ id: pageId, url: String(publishedUrl) });
+        createdPages.push({ id: pageId, url: String(publishedUrl), reused: Boolean(existing) });
       }
       if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
       return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages } });
