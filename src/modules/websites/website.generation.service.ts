@@ -242,15 +242,22 @@ export async function generateWebsitePlan(input: {
     max_output_tokens: 5000,
     store: false,
   };
-  let response;
+  const instructionText = request.instructions as string;
+  const userContent = (request.input as Array<{ content: string }>)[0]?.content ?? '';
+  const createWebsiteResponse = () => env.AI_PROVIDER === 'alibaba'
+    ? client.createChat({ model: primaryModel, messages: [{ role: 'system', content: instructionText }, { role: 'user', content: userContent }], temperature: 0, response_format: { type: 'json_object' }, max_tokens: 4500 })
+    : client.create(request);
+  let response: unknown;
   try {
-    response = await client.create(request);
+    response = await createWebsiteResponse();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const modelUnavailable = /404|does not exist|do not have access|model/i.test(message);
     const tokenLimited = /413|TPM|tokens per minute|Requested .* reduce your message size|rate limit/i.test(message);
     if (tokenLimited) {
-      response = await client.create({ ...request, max_output_tokens: 3000 });
+      response = env.AI_PROVIDER === 'alibaba'
+        ? await client.createChat({ model: primaryModel, messages: [{ role: 'system', content: instructionText }, { role: 'user', content: userContent }], temperature: 0, response_format: { type: 'json_object' }, max_tokens: 3000 })
+        : await client.create({ ...request, max_output_tokens: 3000 });
     } else if (modelUnavailable && primaryModel !== 'gpt-5-mini' && env.AI_PROVIDER === 'openai') {
       response = await client.create({ ...request, model: 'gpt-5-mini', max_output_tokens: 5000 });
     } else {
@@ -267,7 +274,9 @@ export async function generateWebsitePlan(input: {
       instructions: `${request.instructions} Your first draft failed the quality gate. Rewrite it now with a substantial, polished homepage and useful pages. Never say the site is under construction, never say information is unverified, never use fake addresses, phone numbers or email addresses, and never return a short disclaimer. Use neutral, customer-specific value language when facts are missing.`,
       max_output_tokens: 5000,
     };
-    const retryResponse = await client.create(retryRequest);
+    const retryResponse = env.AI_PROVIDER === 'alibaba'
+      ? await client.createChat({ model: primaryModel, messages: [{ role: 'system', content: `${instructionText} ${retryRequest.instructions as string}` }, { role: 'user', content: userContent }], temperature: 0, response_format: { type: 'json_object' }, max_tokens: 4500 })
+      : await client.create(retryRequest);
     plan = extractJson(extractResponseText(retryResponse));
   }
   if (!plan.pages?.length || !plan.siteTitle || planNeedsQualityRetry(plan)) {

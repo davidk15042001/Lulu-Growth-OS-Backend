@@ -37,6 +37,7 @@ type ResponseResult = {
 
 export type ResponsesClient = {
   create(params: Record<string, unknown>): Promise<ResponseResult>;
+  createChat(params: Record<string, unknown>): Promise<unknown>;
 };
 
 let openAIClient: OpenAI | undefined;
@@ -73,6 +74,7 @@ export function getOpenAIResponsesClient(): ResponsesClient {
   const client = getConfiguredClient();
   return {
     create: (params) => client.responses.create(params as never) as Promise<ResponseResult>,
+    createChat: (params) => client.chat.completions.create(params as never),
   };
 }
 
