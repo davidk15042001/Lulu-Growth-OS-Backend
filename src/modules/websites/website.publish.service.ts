@@ -1,6 +1,6 @@
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './website.repo.js';
-import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
+import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 
 export async function publishWebsiteJob(workspaceId: string, siteId: string, jobId: string) {
   const site = await repo.getSite(workspaceId, siteId);
@@ -31,17 +31,24 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         const existingStatus = String(existing?.status ?? '').toLowerCase();
         if (!pageId) {
           await new Promise((resolve) => setTimeout(resolve, 750));
-          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, status: 'draft' }));
+          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoTitle: page.seoTitle, seoDescription: page.seoDescription, status: 'draft' }));
           pageId = draft.ID ?? draft.id;
           if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
           published = draft;
+        } else {
+          await new Promise((resolve) => setTimeout(resolve, 750));
+          published = await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressPage(workspaceId, externalSiteId, String(pageId), { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoDescription: page.seoDescription, status: 'draft' }));
         }
         const existingUrl = existing?.URL ?? existing?.url ?? existing?.link ?? null;
-        if (existingStatus !== 'publish' || !existingUrl) {
+        if (existingStatus !== 'publish' || !existingUrl || Boolean(existing)) {
           await new Promise((resolve) => setTimeout(resolve, 750));
           published = await withProviderConnectionError(workspaceId, 'wordpress', () => publishWordpressPage(workspaceId, externalSiteId, String(pageId)));
         }
         const publishedUrl = published?.URL ?? published?.url ?? published?.link ?? null;
+        const publishedContent = String(published?.content ?? '');
+        if (/hello world|example\.com|123 example street|hi@example\.com/i.test(publishedContent)) {
+          throw new AppError(502, 'WORDPRESS_PLACEHOLDER_CONTENT_DETECTED', 'WordPress still contains placeholder content; the generated customer content was not confirmed', { provider: 'wordpress', pageId, providerResult: published });
+        }
         if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });
         createdPages.push({ id: pageId, url: String(publishedUrl), reused: Boolean(existing) });
       }
