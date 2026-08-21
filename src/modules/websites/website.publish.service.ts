@@ -19,9 +19,11 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
       const createdPages: any[] = [];
       for (const page of plannedPages) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
         const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, content: page.content, status: 'draft' }));
         const pageId = draft.ID ?? draft.id;
         if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
+        await new Promise((resolve) => setTimeout(resolve, 750));
         const published = await withProviderConnectionError(workspaceId, 'wordpress', () => publishWordpressPage(workspaceId, externalSiteId, String(pageId)));
         const publishedUrl = published.URL ?? published.url ?? published.link ?? null;
         if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });

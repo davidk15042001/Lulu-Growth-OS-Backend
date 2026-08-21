@@ -10,12 +10,33 @@ async function providerRequest(provider: WebsiteProvider, url: string, token: st
   headers.set('authorization', `Bearer ${token}`);
   headers.set('accept', 'application/json');
   if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-  const response = await fetch(url, { ...init, headers });
-  const text = await response.text();
-  let data: any = {};
-  try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 500) }; }
-  if (!response.ok) throw new AppError(502, response.status === 401 || response.status === 403 ? 'WEBSITE_PROVIDER_WRITE_SCOPE_MISSING' : 'WEBSITE_PROVIDER_REQUEST_FAILED', `The ${provider} provider rejected the website request`, { providerHttpStatus: response.status, providerCode: data?.code, providerMessage: data?.message });
-  return { status: response.status, data };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const response = await fetch(url, { ...init, headers });
+    const text = await response.text();
+    let data: any = {};
+    try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 500) }; }
+    const providerMessage = String(data?.message ?? data?.error ?? data?.raw ?? '');
+    const rateLimited = response.status === 429 || /too many attempts|rate.?limit|rate limit/i.test(providerMessage);
+
+    if (response.ok) return { status: response.status, data };
+    if (rateLimited && attempt < 2) {
+      const retryAfter = Number(response.headers.get('retry-after'));
+      const waitMs = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 15000) : 2000 * (attempt + 1);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
+    if (rateLimited) {
+      throw new AppError(429, 'WEBSITE_PROVIDER_RATE_LIMITED', `The ${provider} provider is temporarily rate limiting website requests`, {
+        providerHttpStatus: response.status,
+        providerCode: data?.code,
+        providerMessage,
+        retryAfterSeconds: response.headers.get('retry-after'),
+      });
+    }
+    throw new AppError(502, response.status === 401 || response.status === 403 ? 'WEBSITE_PROVIDER_WRITE_SCOPE_MISSING' : 'WEBSITE_PROVIDER_REQUEST_FAILED', `The ${provider} provider rejected the website request`, { providerHttpStatus: response.status, providerCode: data?.code, providerMessage });
+  }
+  throw new AppError(429, 'WEBSITE_PROVIDER_RATE_LIMITED', `The ${provider} provider is temporarily rate limiting website requests`);
 }
 
 async function tokenFor(workspaceId: string, provider: 'wordpress' | 'webflow') {
