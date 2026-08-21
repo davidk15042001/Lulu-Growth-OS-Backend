@@ -28,7 +28,12 @@ export async function disconnectWebsiteProvider(workspaceId: string, provider: '
   await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
 }
 
-async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress' | 'webflow') {
+async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress' | 'webflow', selectedSiteId?: string) {
+  if (selectedSiteId) {
+    const selected = await repo.getSite(workspaceId, selectedSiteId);
+    if (!selected || selected.provider !== provider) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'The selected website could not be found for this provider');
+    return selected;
+  }
   if (provider === 'wordpress') {
     const target = await firstWordpressSite(workspaceId);
     const existing = await repo.findSiteByExternalSiteId(workspaceId, provider, target.id);
@@ -82,9 +87,9 @@ async function processAutoGeneration(input: { workspaceId: string; userId: strin
   }
 }
 
-export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; language?: string }) {
+export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; siteId?: string; language?: string }) {
   try {
-    const site = await getOrCreateProviderSite(input.workspaceId, input.provider);
+    const site = await getOrCreateProviderSite(input.workspaceId, input.provider, input.siteId);
     if (!site) throw new AppError(500, 'WEBSITE_SITE_CREATE_FAILED', 'The connected provider site could not be registered');
     const active = await repo.findActiveJob(site.id);
     if (active) return { site, job: active, reused: true };
