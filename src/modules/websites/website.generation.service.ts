@@ -126,6 +126,14 @@ function extractResponseText(response: unknown): string {
   return texts.join('\\n').trim();
 }
 
+function planNeedsQualityRetry(plan: WebsitePlan) {
+  const forbidden = /hello world|under construction|website is being built|no verified information|example\.com|123 example street|hi@example\.com|\(123\) 456-7890/i;
+  return plan.pages.some((page, index) => {
+    const content = String(page.content ?? '').trim();
+    return forbidden.test(content) || content.length < (index === 0 ? 700 : 260);
+  });
+}
+
 function extractJson(text: string): WebsitePlan {
   const normalized = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const withoutFences = normalized.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
@@ -249,9 +257,21 @@ export async function generateWebsitePlan(input: {
       throw error;
     }
   }
-  const plan = extractJson(extractResponseText(response));
+  let plan = extractJson(extractResponseText(response));
   if (!plan.pages?.length || !plan.siteTitle) {
     throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI generated an incomplete website plan');
+  }
+  if (planNeedsQualityRetry(plan)) {
+    const retryRequest = {
+      ...request,
+      instructions: `${request.instructions} Your first draft failed the quality gate. Rewrite it now with a substantial, polished homepage and useful pages. Never say the site is under construction, never say information is unverified, never use fake addresses, phone numbers or email addresses, and never return a short disclaimer. Use neutral, customer-specific value language when facts are missing.`,
+      max_output_tokens: 5000,
+    };
+    const retryResponse = await client.create(retryRequest);
+    plan = extractJson(extractResponseText(retryResponse));
+  }
+  if (!plan.pages?.length || !plan.siteTitle || planNeedsQualityRetry(plan)) {
+    throw new AppError(502, 'WEBSITE_GENERATION_QUALITY_FAILED', 'The AI generated content that did not meet the website quality requirements');
   }
   return plan;
 }
