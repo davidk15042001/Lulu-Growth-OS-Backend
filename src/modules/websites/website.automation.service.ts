@@ -37,6 +37,14 @@ async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress
   return repo.updateSiteSettings(site.workspaceId, site.id, { collectionId: target.collectionId });
 }
 
+function shouldDisconnectProvider(error: unknown) {
+  if (!(error instanceof AppError)) return false;
+  if (['WEBSITE_PROVIDER_NOT_CONNECTED', 'WEBSITE_PROVIDER_TOKEN_INVALID', 'WEBSITE_PROVIDER_WRITE_SCOPE_MISSING'].includes(error.code)) return true;
+  if (error.code !== 'WEBSITE_PROVIDER_REQUEST_FAILED' || !error.details || typeof error.details !== 'object') return false;
+  const status = (error.details as Record<string, unknown>).providerHttpStatus;
+  return status === 401 || status === 403;
+}
+
 function generationErrorMessage(error: unknown) {
   if (!(error instanceof AppError)) return error instanceof Error ? error.message : 'Automatic website generation failed';
   const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
@@ -64,7 +72,7 @@ async function processAutoGeneration(input: { workspaceId: string; userId: strin
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
     await repo.updateJob(input.siteId, input.jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message }).catch(() => undefined);
-    await disconnectWebsiteProvider(input.workspaceId, input.provider);
+    if (shouldDisconnectProvider(error)) await disconnectWebsiteProvider(input.workspaceId, input.provider);
   }
 }
 
@@ -79,7 +87,7 @@ export async function startAutomaticWebsiteGeneration(input: { workspaceId: stri
     void processAutoGeneration({ ...input, siteId: site.id, jobId: job.id });
     return { site, job, reused: false };
   } catch (error) {
-    await resetWebsiteProviderState(input.workspaceId, input.provider);
+    if (shouldDisconnectProvider(error)) await resetWebsiteProviderState(input.workspaceId, input.provider);
     throw error;
   }
 }
