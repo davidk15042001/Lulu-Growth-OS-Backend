@@ -34,10 +34,6 @@ router.route('/')
   .get(requireWorkspaceMember, controller.snapshot)
   .all(methodNotAllowed);
 
-router.route('/ai-token-test')
-  .get(requireWorkspaceMember, controller.tokenTest)
-  .all(methodNotAllowed);
-
 router.route('/company-information')
   .patch(requireWorkspaceEditor, controller.companyInformation)
   .all(methodNotAllowed);

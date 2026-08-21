@@ -42,10 +42,6 @@ router.route('/reset-password')
   .post(otpLimiter, controller.resetPassword)
   .all(methodNotAllowed);
 
-router.route('/ai-token-test')
-  .get(requireAuth, controller.tokenTest)
-  .all(methodNotAllowed);
-
 router.route('/me')
   .get(requireAuth, controller.me)
   .patch(requireAuth, controller.updateMe)

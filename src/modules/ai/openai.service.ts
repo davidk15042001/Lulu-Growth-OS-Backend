@@ -131,69 +131,6 @@ export async function generateAssistantResponse(
   };
 }
 
-const TOKEN_WORDS: Record<string, number> = {
-  zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
-  six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
-  '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-  '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
-};
-
-function normalizeUnicodeDigits(value: string) {
-  return value.replace(/[０-９٠-٩۰-۹]/g, (character) => {
-    const code = character.codePointAt(0) ?? 0;
-    if (code >= 0xff10 && code <= 0xff19) return String(code - 0xff10);
-    if (code >= 0x660 && code <= 0x669) return String(code - 0x660);
-    if (code >= 0x6f0 && code <= 0x6f9) return String(code - 0x6f0);
-    return character;
-  });
-}
-
-function parseTokenTestNumber(value: string) {
-  const normalized = normalizeUnicodeDigits(value.normalize('NFKC')).toLowerCase().replace(/[```*_#]/g, ' ');
-  const numericMatch = normalized.match(/(?:^|[^0-9])(10|[1-9])(?:$|[^0-9])/);
-  if (numericMatch) return Number(numericMatch[1]);
-  for (const [word, number] of Object.entries(TOKEN_WORDS)) {
-    if (new RegExp(`(?:^|[^a-z\\u4e00-\\u9fff])${word}(?:$|[^a-z\\u4e00-\\u9fff])`, 'i').test(normalized)) return number;
-  }
-  return null;
-}
-
-export async function generateTokenTestNumber(client: ResponsesClient = getOpenAIResponsesClient()) {
-  if (hasGroq) {
-    const groqRequest = {
-      model: env.GROQ_TOKEN_TEST_MODEL,
-      messages: [{ role: 'user', content: 'Reply with exactly one digit from 1 to 10 and nothing else. Do not include reasoning, markdown, words, or punctuation.' }],
-      temperature: 0,
-      max_tokens: 64,
-      reasoning_format: 'hidden',
-      reasoning_effort: 'none',
-    } as unknown as Parameters<OpenAI['chat']['completions']['create']>[0];
-    const completion = await getConfiguredClient().chat.completions.create(groqRequest) as unknown as OpenAI.Chat.Completions.ChatCompletion;
-    const number = parseTokenTestNumber(completion.choices[0]?.message?.content ?? '');
-    if (number === null || number < 1 || number > 10) {
-      throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The Groq provider returned an unusable token-test response. Expected a number from 1 to 10.');
-    }
-    return { number, model: completion.model, responseId: completion.id };
-  }
-
-  const request: Record<string, unknown> = {
-    model: hasAlibaba ? env.DASHSCOPE_TOKEN_TEST_MODEL : hasGroq ? env.GROQ_TOKEN_TEST_MODEL : configuredModel(),
-    instructions: 'Return exactly one ASCII digit from 1 to 10 and nothing else. Valid answers are only 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10. Do not explain, use words, markdown, or punctuation.',
-    input: 'Generate one number between 1 and 10 to verify the configured AI token.',
-    max_output_tokens: 32,
-    store: false,
-  };
-  if (env.AI_PROVIDER !== 'groq') {
-    request.reasoning = { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.OPENAI_REASONING_EFFORT };
-  }
-  const response = await client.create(request);
-  const number = parseTokenTestNumber(response.output_text);
-  if (number === null || number < 1 || number > 10) {
-    throw new AppError(502, 'AI_TOKEN_TEST_INVALID', 'The AI provider returned an unusable token-test response. Expected a number from 1 to 10.');
-  }
-  return { number, model: response.model, responseId: response.id };
-}
-
 export function isAiGenerationConfigured() {
   return hasAiProvider;
 }
