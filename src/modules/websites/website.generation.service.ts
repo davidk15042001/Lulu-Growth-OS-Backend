@@ -96,9 +96,39 @@ const WEBSITE_PLAN_SCHEMA = {
   additionalProperties: false,
 } as const;
 
+function extractResponseText(response: unknown): string {
+  if (!response || typeof response !== 'object') return '';
+  const value = response as Record<string, unknown>;
+  if (typeof value.output_text === 'string' && value.output_text.trim()) return value.output_text.trim();
+  const choices = Array.isArray(value.choices) ? value.choices : [];
+  for (const choice of choices) {
+    if (!choice || typeof choice !== 'object') continue;
+    const message = (choice as Record<string, unknown>).message;
+    if (!message || typeof message !== 'object') continue;
+    const messageValue = message as Record<string, unknown>;
+    if (typeof messageValue.content === 'string' && messageValue.content.trim()) return messageValue.content.trim();
+    if (typeof messageValue.reasoning_content === 'string' && messageValue.reasoning_content.trim()) return messageValue.reasoning_content.trim();
+  }
+  const output = Array.isArray(value.output) ? value.output : [];
+  const texts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const itemValue = item as Record<string, unknown>;
+    if (typeof itemValue.text === 'string') texts.push(itemValue.text);
+    const content = Array.isArray(itemValue.content) ? itemValue.content : [];
+    for (const part of content) {
+      if (!part || typeof part !== 'object') continue;
+      const partValue = part as Record<string, unknown>;
+      if (typeof partValue.text === 'string') texts.push(partValue.text);
+      if (partValue.text && typeof partValue.text === 'object' && typeof (partValue.text as Record<string, unknown>).value === 'string') texts.push((partValue.text as Record<string, unknown>).value as string);
+    }
+  }
+  return texts.join('\\n').trim();
+}
+
 function extractJson(text: string): WebsitePlan {
-  const withoutReasoning = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-  const withoutFences = withoutReasoning.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const normalized = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const withoutFences = normalized.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const candidates = [withoutFences];
   const firstBrace = withoutFences.indexOf('{');
   const lastBrace = withoutFences.lastIndexOf('}');
@@ -106,7 +136,8 @@ function extractJson(text: string): WebsitePlan {
   for (const candidate of candidates) {
     try {
       const parsed = JSON.parse(candidate) as WebsitePlan;
-      if (parsed && typeof parsed.siteTitle === 'string' && Array.isArray(parsed.pages) && parsed.pages.length > 0) return parsed;
+      const validPages = Array.isArray(parsed?.pages) && parsed.pages.length > 0 && parsed.pages.every((page) => page && typeof page.title === 'string' && typeof page.slug === 'string' && typeof page.content === 'string');
+      if (parsed && typeof parsed.siteTitle === 'string' && validPages) return parsed;
     } catch { /* try the next normalized candidate */ }
   }
   throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI response did not contain a valid website plan');
@@ -218,7 +249,7 @@ export async function generateWebsitePlan(input: {
       throw error;
     }
   }
-  const plan = extractJson(response.output_text);
+  const plan = extractJson(extractResponseText(response));
   if (!plan.pages?.length || !plan.siteTitle) {
     throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI generated an incomplete website plan');
   }
