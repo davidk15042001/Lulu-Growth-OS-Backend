@@ -48,13 +48,68 @@ type WebsiteContext = {
   initialAnalysis: Record<string, unknown> | null;
 };
 
+const WEBSITE_PLAN_SCHEMA = {
+  type: 'object',
+  properties: {
+    siteTitle: { type: 'string' },
+    brandVoice: { type: 'string' },
+    primaryLanguage: { type: 'string' },
+    pages: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          slug: { type: 'string' },
+          purpose: { type: 'string' },
+          content: { type: 'string' },
+          seoTitle: { type: 'string' },
+          seoDescription: { type: 'string' },
+        },
+        required: ['title', 'slug', 'purpose', 'content', 'seoTitle', 'seoDescription'],
+        additionalProperties: false,
+      },
+    },
+    globalSeo: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        keywords: { type: 'array', items: { type: 'string' } },
+      },
+      required: ['title', 'description', 'keywords'],
+      additionalProperties: false,
+    },
+    assets: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: { brief: { type: 'string' }, altText: { type: 'string' } },
+        required: ['brief', 'altText'],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ['siteTitle', 'brandVoice', 'primaryLanguage', 'pages', 'globalSeo', 'assets'],
+  additionalProperties: false,
+} as const;
+
 function extractJson(text: string): WebsitePlan {
-  const cleaned = text.trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-  try {
-    return JSON.parse(cleaned) as WebsitePlan;
-  } catch {
-    throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI response did not contain a valid website plan');
+  const withoutReasoning = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+  const withoutFences = withoutReasoning.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+  const candidates = [withoutFences];
+  const firstBrace = withoutFences.indexOf('{');
+  const lastBrace = withoutFences.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(withoutFences.slice(firstBrace, lastBrace + 1));
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as WebsitePlan;
+      if (parsed && typeof parsed.siteTitle === 'string' && Array.isArray(parsed.pages) && parsed.pages.length > 0) return parsed;
+    } catch { /* try the next normalized candidate */ }
   }
+  throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI response did not contain a valid website plan');
 }
 
 async function loadWebsiteContext(workspaceId: string, userId: string): Promise<WebsiteContext> {
@@ -133,6 +188,16 @@ export async function generateWebsitePlan(input: {
         '{"siteTitle":string,"brandVoice":string,"primaryLanguage":string,"pages":[{"title":string,"slug":string,"purpose":string,"content":string,"seoTitle":string,"seoDescription":string}],"globalSeo":{"title":string,"description":string,"keywords":string[]},"assets":[{"brief":string,"altText":string}]}'
       ].join('\n\n'),
     }],
+    text: {
+      verbosity: 'low',
+      format: {
+        type: 'json_schema',
+        name: 'website_plan',
+        strict: true,
+        schema: WEBSITE_PLAN_SCHEMA,
+      },
+    },
+    reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.OPENAI_REASONING_EFFORT },
     // Keep the website plan bounded across all configured providers.
     // The website plan is intentionally capped at 8 pages and compact metadata.
     max_output_tokens: 5000,
