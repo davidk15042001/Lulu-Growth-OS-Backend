@@ -2,12 +2,12 @@ import { Router } from 'express';
 import * as controller from './auth.controller.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
-import { authLimiter, otpLimiter } from '../../middlewares/rateLimit.middleware.js';
+import { otpLimiter } from '../../middlewares/rateLimit.middleware.js';
 
 const router = Router();
 
 router.route('/register')
-  .post(authLimiter, controller.register)
+  .post(controller.register)
   .all(methodNotAllowed);
 
 router.route('/verify-otp')
@@ -15,7 +15,7 @@ router.route('/verify-otp')
   .all(methodNotAllowed);
 
 router.route('/login')
-  .post(authLimiter, controller.login)
+  .post(controller.login)
   .all(methodNotAllowed);
 
 router.route('/refresh')
@@ -31,7 +31,7 @@ router.route('/logout-all')
   .all(methodNotAllowed);
 
 router.route('/forgot-password')
-  .post(authLimiter, controller.forgotPassword)
+  .post(controller.forgotPassword)
   .all(methodNotAllowed);
 
 router.route('/resend-otp')

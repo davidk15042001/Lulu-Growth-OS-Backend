@@ -40,23 +40,6 @@ export async function cleanupRateLimits(olderThanMs = 1000 * 60 * 60 * 24 * 2) {
   await query('DELETE FROM rate_limits WHERE window_start < $1', [cutoff]);
 }
 
-export const rateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 200,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  skip: (req) => req.path.startsWith('/v1/auth/'),
-  handler: (_req, res) => tooManyRequests(res),
-});
-
-export const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  handler: (_req, res) => tooManyRequests(res),
-});
-
 export const otpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 20,
@@ -65,10 +48,3 @@ export const otpLimiter = rateLimit({
   handler: (_req, res) => tooManyRequests(res),
 });
 
-export const translationLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  standardHeaders: 'draft-7',
-  legacyHeaders: false,
-  handler: (_req, res) => tooManyRequests(res, 'Too many translation requests'),
-});

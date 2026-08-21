@@ -52,6 +52,6 @@ export function notFoundError(res: Response, errorMessage = 'Resource not found'
   return jsonError(res, 404, 'NOT_FOUND', errorMessage);
 }
 
-export function tooManyRequests(res: Response, errorMessage = 'Too many requests') {
+export function tooManyRequests(res: Response, errorMessage = 'Der Login ist vorübergehend pausiert. Bitte warten Sie kurz und versuchen Sie es erneut.') {
   return jsonError(res, 429, 'TOO_MANY_REQUESTS', errorMessage);
 }

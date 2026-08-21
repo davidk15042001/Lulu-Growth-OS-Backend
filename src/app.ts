@@ -5,7 +5,6 @@ import helmet from 'helmet';
 import { env } from './config/env.js';
 import { requestLogger } from './config/logger.js';
 import { checkDatabase } from './db/pool.js';
-import { rateLimiter } from './middlewares/rateLimit.middleware.js';
 import { notFound } from './middlewares/notFound.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import v1Routes from './modules/v1.routes.js';
@@ -88,7 +87,6 @@ export function createApp() {
     }
   });
 
-  app.use('/api', rateLimiter);
   app.use('/api/v1', v1Routes);
   app.use(notFound);
   app.use(errorHandler);
