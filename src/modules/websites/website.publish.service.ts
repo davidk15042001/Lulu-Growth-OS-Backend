@@ -15,12 +15,19 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
     if (site.provider === 'wordpress') {
       const externalSiteId = site.externalSiteId;
       if (!externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_ID_MISSING', 'The connected WordPress site ID is missing');
+      const plannedPages = Array.isArray(plan?.pages) ? plan.pages : [];
+      if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
       const createdPages: any[] = [];
-      for (const page of plan.pages ?? []) {
+      for (const page of plannedPages) {
         const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, content: page.content, status: 'draft' }));
-        const published = await withProviderConnectionError(workspaceId, 'wordpress', () => publishWordpressPage(workspaceId, externalSiteId, String(draft.ID ?? draft.id)));
-        createdPages.push({ id: draft.ID ?? draft.id, url: published.URL ?? published.link ?? null });
+        const pageId = draft.ID ?? draft.id;
+        if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
+        const published = await withProviderConnectionError(workspaceId, 'wordpress', () => publishWordpressPage(workspaceId, externalSiteId, String(pageId)));
+        const publishedUrl = published.URL ?? published.url ?? published.link ?? null;
+        if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });
+        createdPages.push({ id: pageId, url: String(publishedUrl) });
       }
+      if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
       return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages } });
     }
     const collectionId = typeof site.settings.collectionId === 'string' ? site.settings.collectionId : '';
