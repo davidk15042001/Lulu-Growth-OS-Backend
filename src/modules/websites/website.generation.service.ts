@@ -138,6 +138,7 @@ async function createJsonCompletion(input: { label: string; system: string; user
       { role: 'user', content: input.user },
     ],
     response_format: { type: 'json_object' },
+    ...(env.AI_PROVIDER === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
     temperature: 0.2,
     ...tokenLimit,
   };
