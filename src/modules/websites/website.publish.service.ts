@@ -65,7 +65,8 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           ? homepageError.details as Record<string, unknown>
           : undefined;
         const providerMessage = String(details?.providerMessage ?? '');
-        const settingsEndpointDisabled = /api calls? to this endpoint have been disabled/i.test(providerMessage);
+        const errorMessage = homepageError instanceof Error ? homepageError.message : String(homepageError);
+        const settingsEndpointDisabled = /api calls? to this endpoint have been disabled/i.test(`${providerMessage} ${errorMessage}`);
         if (!settingsEndpointDisabled) throw homepageError;
         homepageWarning = 'WordPress published the generated pages, but its settings endpoint is disabled; set the generated homepage manually in WordPress Reading settings.';
       }
