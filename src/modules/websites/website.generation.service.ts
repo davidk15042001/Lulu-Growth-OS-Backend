@@ -330,8 +330,14 @@ async function generatePageContent(input: { plan: WebsitePlan; page: GeneratedPa
       `Verified context: ${JSON.stringify(input.context)}`,
     ].join('\n\n'),
   });
-  const content = stringValue(parseJsonObject(response, 'WEBSITE_PAGE_INVALID', `The AI response for ${input.page.title} was not valid JSON`).content);
-  return { ...input.page, content };
+  try {
+    const content = stringValue(parseJsonObject(response, 'WEBSITE_PAGE_INVALID', `The AI response for ${input.page.title} was not valid JSON`).content);
+    return { ...input.page, content };
+  } catch (error) {
+    if (input.qualityRetry) throw error;
+    logger.warn({ pageTitle: input.page.title }, 'Website page JSON invalid; requesting a clean JSON retry');
+    return generatePageContent({ ...input, qualityRetry: true });
+  }
 }
 
 export async function generateWebsitePlan(input: {
