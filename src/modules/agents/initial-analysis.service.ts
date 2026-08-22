@@ -153,7 +153,7 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
   void (async () => {
     try {
       const response = await getOpenAIResponsesClient().create({
-        model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.OPENAI_MODEL,
+        model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL,
         instructions: buildInstructions(),
         input: [{ role: 'user', content: [
           `Workspace analysis target: ${workspaceId}`,

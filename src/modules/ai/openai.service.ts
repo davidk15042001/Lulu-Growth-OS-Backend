@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
-import { env, hasAiProvider, hasAlibaba, hasGroq, hasOpenAI } from '../../config/env.js';
+import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 
 export type ConversationTurn = {
@@ -44,6 +44,7 @@ export type AiRequestOptions = { timeout?: number; maxRetries?: number };
 
 let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
+let deepSeekClient: OpenAI | undefined;
 let groqClient: OpenAI | undefined;
 
 function getConfiguredClient() {
@@ -55,6 +56,10 @@ function getConfiguredClient() {
     alibabaClient ??= new OpenAI({ apiKey: env.DASHSCOPE_API_KEY, baseURL: env.DASHSCOPE_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return alibabaClient;
   }
+  if (hasDeepSeek) {
+    deepSeekClient ??= new OpenAI({ apiKey: env.DEEPSEEK_API_KEY, baseURL: env.DEEPSEEK_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
+    return deepSeekClient;
+  }
   if (hasGroq) {
     groqClient ??= new OpenAI({ apiKey: env.GROQ_API_KEY, baseURL: env.GROQ_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return groqClient;
@@ -65,6 +70,7 @@ function getConfiguredClient() {
 function configuredModel(requestedModel?: string | null) {
   if (requestedModel) return requestedModel;
   if (hasAlibaba) return env.DASHSCOPE_MODEL;
+  if (hasDeepSeek) return env.DEEPSEEK_MODEL;
   if (hasGroq) return env.GROQ_MODEL;
   return env.OPENAI_MODEL;
 }

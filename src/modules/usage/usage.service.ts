@@ -45,6 +45,14 @@ function rateFor(provider: string, model: string): Rate {
     return { inputPerMillionUsd: 0.28, outputPerMillionUsd: 1.1 };
   }
 
+  if (normalizedProvider === 'deepseek' && normalizedModel.includes('deepseek-v4-pro')) {
+    return { inputPerMillionUsd: 1.32, outputPerMillionUsd: 3.96 };
+  }
+
+  if (normalizedProvider === 'deepseek' && normalizedModel.includes('deepseek-v4-flash')) {
+    return { inputPerMillionUsd: 0.44, outputPerMillionUsd: 1.32 };
+  }
+
   // The ledger remains complete for other providers. Their rates can be added
   // as explicit configuration later without changing the accounting schema.
   return DEFAULT_RATE;
@@ -153,7 +161,10 @@ export async function getWorkspaceCredits(workspaceId: string) {
     customerCostUsd: Number(row.customerCostUsd),
     tokensPerCredit: TOKENS_PER_CREDIT,
     customerMarkupMultiplier: CUSTOMER_MARKUP_MULTIPLIER,
-    model: env.DASHSCOPE_MODEL,
-    pricing: rateFor('alibaba', env.DASHSCOPE_MODEL),
+    model: env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL,
+    pricing: rateFor(
+      env.AI_PROVIDER,
+      env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL,
+    ),
   };
 }

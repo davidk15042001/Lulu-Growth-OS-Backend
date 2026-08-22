@@ -60,6 +60,7 @@ const forbiddenContent = /hello world|under construction|website is being built|
 
 function configuredModel() {
   if (env.AI_PROVIDER === 'alibaba') return env.DASHSCOPE_MODEL;
+  if (env.AI_PROVIDER === 'deepseek') return env.DEEPSEEK_MODEL;
   if (env.AI_PROVIDER === 'groq') return env.GROQ_MODEL;
   return env.OPENAI_MODEL;
 }
