@@ -15,6 +15,9 @@ export async function resetWebsiteProviderState(workspaceId: string, provider: '
 }
 
 export async function disconnectWebsiteProvider(workspaceId: string, provider: 'wordpress' | 'webflow') {
+  // Remove both the OAuth/platform record and cached website rows. Keeping the
+  // latter makes a deleted external site reappear as a stale local fallback.
+  await repo.deleteSitesByProvider(workspaceId, provider).catch(() => undefined);
   await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
 }
 
