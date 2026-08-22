@@ -130,11 +130,14 @@ export async function updateWordpressFrontPage(workspaceId: string, siteId: stri
   for (let attempt = 0; attempt < 5; attempt += 1) {
     if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
     verified = (await providerRequest('wordpress', endpoint, token)).data;
-    actualMode = String(verified?.show_on_front ?? '').trim().toLowerCase();
-    actualPageId = Number(verified?.page_on_front ?? 0);
+    const settings = verified?.settings && typeof verified.settings === 'object' ? verified.settings : verified;
+    const modeValue = settings?.show_on_front?.value ?? settings?.show_on_front;
+    const pageValue = settings?.page_on_front?.value ?? settings?.page_on_front;
+    actualMode = String(modeValue ?? '').trim().toLowerCase();
+    actualPageId = Number(pageValue ?? 0);
     if (actualMode === 'page' && actualPageId === expectedPageId) return verified;
   }
-  throw new AppError(502, 'WORDPRESS_HOMEPAGE_CONFIGURATION_FAILED', 'WordPress did not confirm the generated page as the homepage', { provider: 'wordpress', expectedPageId, actualMode, actualPageId, providerResult: verified });
+  throw new AppError(502, 'WORDPRESS_HOMEPAGE_CONFIGURATION_FAILED', `WordPress did not confirm the generated page as the homepage (expected page ${expectedPageId}, received mode ${actualMode || 'unknown'} and page ${actualPageId || 'unknown'})`, { provider: 'wordpress', expectedPageId, actualMode, actualPageId, providerResult: verified });
 }
 
 export async function webflowSites(workspaceId: string) {
