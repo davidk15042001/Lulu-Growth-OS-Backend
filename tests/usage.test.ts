@@ -16,4 +16,17 @@ describe('AI usage pricing', () => {
     assert.equal(usage.customerCostUsd, 6);
     assert.equal(usage.credits, 2_000);
   });
+
+  it('prices deepseek-v4-pro usage with the Singapore international list rate', () => {
+    const usage = calculateUsageCost({
+      provider: 'alibaba',
+      model: 'deepseek-v4-pro',
+      inputTokens: 1_000_000,
+      outputTokens: 1_000_000,
+    });
+
+    assert.deepEqual(usage.rate, { inputPerMillionUsd: 1.65, outputPerMillionUsd: 3.301 });
+    assert.ok(Math.abs(usage.providerCostUsd - 4.951) < 1e-9);
+    assert.ok(Math.abs(usage.customerCostUsd - 14.853) < 1e-9);
+  });
 });

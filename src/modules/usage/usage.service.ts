@@ -33,6 +33,18 @@ function rateFor(provider: string, model: string): Rate {
     return { inputPerMillionUsd: 0.4, outputPerMillionUsd: 1.6 };
   }
 
+  if (normalizedProvider === 'alibaba' && normalizedModel.includes('deepseek-v4-pro')) {
+    return { inputPerMillionUsd: 1.65, outputPerMillionUsd: 3.301 };
+  }
+
+  if (normalizedProvider === 'alibaba' && normalizedModel.includes('deepseek-v4-flash')) {
+    return { inputPerMillionUsd: 0.18, outputPerMillionUsd: 0.72 };
+  }
+
+  if (normalizedProvider === 'alibaba' && normalizedModel.includes('deepseek-v3.2')) {
+    return { inputPerMillionUsd: 0.28, outputPerMillionUsd: 1.1 };
+  }
+
   // The ledger remains complete for other providers. Their rates can be added
   // as explicit configuration later without changing the accounting schema.
   return DEFAULT_RATE;
