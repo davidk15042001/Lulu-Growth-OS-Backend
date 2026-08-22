@@ -55,8 +55,21 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
       const homepageId = String(createdPages[0]?.id ?? '');
       if (!homepageId) throw new AppError(502, 'WORDPRESS_HOMEPAGE_UNCONFIRMED', 'WordPress did not confirm the generated homepage', { provider: 'wordpress', providerResult: { pages: createdPages } });
-      await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
-      const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages, homepageId } });
+      let homepageConfigured = false;
+      let homepageWarning: string | undefined;
+      try {
+        await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
+        homepageConfigured = true;
+      } catch (homepageError) {
+        const details = homepageError instanceof AppError && homepageError.details && typeof homepageError.details === 'object'
+          ? homepageError.details as Record<string, unknown>
+          : undefined;
+        const providerMessage = String(details?.providerMessage ?? '');
+        const settingsEndpointDisabled = /api calls? to this endpoint have been disabled/i.test(providerMessage);
+        if (!settingsEndpointDisabled) throw homepageError;
+        homepageWarning = 'WordPress published the generated pages, but its settings endpoint is disabled; set the generated homepage manually in WordPress Reading settings.';
+      }
+      const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) } });
       await repo.updateSiteStatus(workspaceId, siteId, 'published');
       return publishedJob;
     }
