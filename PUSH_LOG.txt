@@ -47,3 +47,6 @@ Push-Zeitstempel: 2026-08-22 05:59:04 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-22 06:26:00 Europe/Berlin
 Änderungen: SQL-Migrationen werden vollständig in den Produktionsbuild übernommen und vor dem Serverneustart zuverlässig ausgeführt.
+
+Push-Zeitstempel: 2026-08-22 06:33:30 Europe/Berlin
+Änderungen: Synchronisations-Push für den korrigierten Produktions-Migrationslauf.
