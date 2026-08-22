@@ -117,10 +117,13 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       await repo.updateSiteStatus(input.workspaceId, input.siteId, 'preview');
     }
   } catch (error) {
-    logger.error({ jobId: input.id, siteId: input.siteId, provider: input.provider, error: error instanceof Error ? { name: error.name, message: error.message } : String(error) }, 'Website generation job failed');
+    const errorDetails = error instanceof AppError && error.details && typeof error.details === 'object'
+      ? error.details as Record<string, unknown>
+      : undefined;
+    logger.error({ jobId: input.id, siteId: input.siteId, provider: input.provider, error: error instanceof Error ? { name: error.name, message: error.message, details: errorDetails } : String(error) }, 'Website generation job failed');
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
-    await repo.updateJob(input.siteId, input.id, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message }).catch(() => undefined);
+    await repo.updateJob(input.siteId, input.id, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message, ...(errorDetails ? { providerResult: errorDetails } : {}) }).catch(() => undefined);
     if (shouldDisconnectProvider(error) && (input.provider === 'wordpress' || input.provider === 'webflow')) await disconnectWebsiteProvider(input.workspaceId, input.provider);
   } finally {
     clearInterval(heartbeatTimer);
