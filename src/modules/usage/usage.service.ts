@@ -29,6 +29,10 @@ function rateFor(provider: string, model: string): Rate {
     return { inputPerMillionUsd: 2, outputPerMillionUsd: 6 };
   }
 
+  if (normalizedProvider === 'alibaba' && normalizedModel.includes('qwen3.7-plus')) {
+    return { inputPerMillionUsd: 0.4, outputPerMillionUsd: 1.6 };
+  }
+
   // The ledger remains complete for other providers. Their rates can be added
   // as explicit configuration later without changing the accounting schema.
   return DEFAULT_RATE;
@@ -138,9 +142,6 @@ export async function getWorkspaceCredits(workspaceId: string) {
     tokensPerCredit: TOKENS_PER_CREDIT,
     customerMarkupMultiplier: CUSTOMER_MARKUP_MULTIPLIER,
     model: env.DASHSCOPE_MODEL,
-    pricing: {
-      inputPerMillionUsd: rateFor('alibaba', 'qwen3.8-max').inputPerMillionUsd,
-      outputPerMillionUsd: rateFor('alibaba', 'qwen3.8-max').outputPerMillionUsd,
-    },
+    pricing: rateFor('alibaba', env.DASHSCOPE_MODEL),
   };
 }

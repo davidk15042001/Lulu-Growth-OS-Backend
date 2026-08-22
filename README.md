@@ -140,7 +140,7 @@ AI conversation storage works without a provider key. Alibaba DashScope is the d
 AI_PROVIDER=alibaba
 DASHSCOPE_API_KEY=...
 DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL=qwen3.7-max
+DASHSCOPE_MODEL=qwen3.7-plus
 AI_REQUEST_TIMEOUT_MS=180000
 AI_MAX_RETRIES=1
 ```
