@@ -50,3 +50,6 @@ Push-Zeitstempel: 2026-08-22 06:26:00 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-22 06:33:30 Europe/Berlin
 Änderungen: Synchronisations-Push für den korrigierten Produktions-Migrationslauf.
+
+Push-Zeitstempel: 2026-08-22 06:37:41 Europe/Berlin
+Änderungen: Nicht-interaktive Serverbefehle benötigen keine Entwicklungs-Logger-Abhängigkeit mehr.

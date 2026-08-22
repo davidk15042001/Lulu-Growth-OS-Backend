@@ -25,7 +25,7 @@ const loggerOptions: any = {
   },
 };
 
-if (!isProd && !isServerless) {
+if (!isProd && !isServerless && process.stdout.isTTY) {
   loggerOptions.transport = {
     target: 'pino-pretty',
     options: { colorize: true, translateTime: 'SYS:standard', ignore: 'pid,hostname' },
