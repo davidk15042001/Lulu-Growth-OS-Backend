@@ -19,7 +19,7 @@
   },
   "scripts": {
     "dev": "nodemon --config nodemon.json",
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && node scripts/copy-build-assets.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/database/run.ts",
     "start": "node dist/server.js",
