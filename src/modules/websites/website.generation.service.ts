@@ -9,6 +9,7 @@ export type GeneratedPage = {
   title: string;
   slug: string;
   purpose: string;
+  sections: string[];
   content: string;
   seoTitle: string;
   seoDescription: string;
@@ -21,6 +22,13 @@ export type WebsitePlan = {
   pages: GeneratedPage[];
   globalSeo: { title: string; description: string; keywords: string[] };
   assets: { brief: string; altText: string }[];
+};
+
+export type WebsiteGenerationProgress = {
+  plan: WebsitePlan;
+  completedPages: number;
+  totalPages: number;
+  currentPageTitle: string | null;
 };
 
 type WebsiteContext = {
@@ -45,56 +53,16 @@ type WebsiteContext = {
     status: string;
   }>;
   connectedPlatforms: Array<{ name: string; category: string; status: string }>;
-  initialAnalysis: Record<string, unknown> | null;
+  initialAnalysis: unknown;
 };
 
-const WEBSITE_PLAN_SCHEMA = {
-  type: 'object',
-  properties: {
-    siteTitle: { type: 'string' },
-    brandVoice: { type: 'string' },
-    primaryLanguage: { type: 'string' },
-    pages: {
-      type: 'array',
-      minItems: 1,
-      maxItems: 8,
-      items: {
-        type: 'object',
-        properties: {
-          title: { type: 'string' },
-          slug: { type: 'string' },
-          purpose: { type: 'string' },
-          content: { type: 'string' },
-          seoTitle: { type: 'string' },
-          seoDescription: { type: 'string' },
-        },
-        required: ['title', 'slug', 'purpose', 'content', 'seoTitle', 'seoDescription'],
-        additionalProperties: false,
-      },
-    },
-    globalSeo: {
-      type: 'object',
-      properties: {
-        title: { type: 'string' },
-        description: { type: 'string' },
-        keywords: { type: 'array', items: { type: 'string' } },
-      },
-      required: ['title', 'description', 'keywords'],
-      additionalProperties: false,
-    },
-    assets: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: { brief: { type: 'string' }, altText: { type: 'string' } },
-        required: ['brief', 'altText'],
-        additionalProperties: false,
-      },
-    },
-  },
-  required: ['siteTitle', 'brandVoice', 'primaryLanguage', 'pages', 'globalSeo', 'assets'],
-  additionalProperties: false,
-} as const;
+const forbiddenContent = /hello world|under construction|website is being built|no verified information|example\.com|123 example street|hi@example\.com|\(123\) 456-7890|\bTODO\b/i;
+
+function configuredModel() {
+  if (env.AI_PROVIDER === 'alibaba') return env.DASHSCOPE_MODEL;
+  if (env.AI_PROVIDER === 'groq') return env.GROQ_MODEL;
+  return env.OPENAI_MODEL;
+}
 
 function extractResponseText(response: unknown): string {
   if (!response || typeof response !== 'object') return '';
@@ -105,9 +73,8 @@ function extractResponseText(response: unknown): string {
     if (!choice || typeof choice !== 'object') continue;
     const message = (choice as Record<string, unknown>).message;
     if (!message || typeof message !== 'object') continue;
-    const messageValue = message as Record<string, unknown>;
-    if (typeof messageValue.content === 'string' && messageValue.content.trim()) return messageValue.content.trim();
-    if (typeof messageValue.reasoning_content === 'string' && messageValue.reasoning_content.trim()) return messageValue.reasoning_content.trim();
+    const content = (message as Record<string, unknown>).content;
+    if (typeof content === 'string' && content.trim()) return content.trim();
   }
   const output = Array.isArray(value.output) ? value.output : [];
   const texts: string[] = [];
@@ -123,32 +90,152 @@ function extractResponseText(response: unknown): string {
       if (partValue.text && typeof partValue.text === 'object' && typeof (partValue.text as Record<string, unknown>).value === 'string') texts.push((partValue.text as Record<string, unknown>).value as string);
     }
   }
-  return texts.join('\\n').trim();
+  return texts.join('\n').trim();
 }
 
-function planNeedsQualityRetry(plan: WebsitePlan) {
-  const forbidden = /hello world|under construction|website is being built|no verified information|example\.com|123 example street|hi@example\.com|\(123\) 456-7890/i;
-  return plan.pages.some((page, index) => {
-    const content = String(page.content ?? '').trim();
-    return forbidden.test(content) || content.length < (index === 0 ? 700 : 260);
-  });
-}
-
-function extractJson(text: string): WebsitePlan {
+function jsonCandidates(text: string) {
   const normalized = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
   const withoutFences = normalized.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
   const candidates = [withoutFences];
   const firstBrace = withoutFences.indexOf('{');
   const lastBrace = withoutFences.lastIndexOf('}');
   if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(withoutFences.slice(firstBrace, lastBrace + 1));
-  for (const candidate of candidates) {
+  return candidates;
+}
+
+function parseJsonObject(text: string, code: string, message: string): Record<string, unknown> {
+  for (const candidate of jsonCandidates(text)) {
     try {
-      const parsed = JSON.parse(candidate) as WebsitePlan;
-      const validPages = Array.isArray(parsed?.pages) && parsed.pages.length > 0 && parsed.pages.every((page) => page && typeof page.title === 'string' && typeof page.slug === 'string' && typeof page.content === 'string');
-      if (parsed && typeof parsed.siteTitle === 'string' && validPages) return parsed;
-    } catch { /* try the next normalized candidate */ }
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      // Try the next normalized candidate.
+    }
   }
-  throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI response did not contain a valid website plan');
+  throw new AppError(502, code, message);
+}
+
+function isTimeoutError(error: unknown) {
+  return error instanceof Error && (/timed?\s*out|timeout/i.test(error.message) || ['AbortError', 'TimeoutError', 'APIConnectionTimeoutError'].includes(error.name));
+}
+
+function errorStatus(error: unknown) {
+  if (!error || typeof error !== 'object') return null;
+  const status = (error as Record<string, unknown>).status;
+  return typeof status === 'number' ? status : null;
+}
+
+async function createJsonCompletion(input: { label: string; system: string; user: string; maxTokens: number }) {
+  const client = getOpenAIResponsesClient();
+  const tokenLimit = env.AI_PROVIDER === 'openai'
+    ? { max_completion_tokens: input.maxTokens }
+    : { max_tokens: input.maxTokens };
+  const request = {
+    model: configuredModel(),
+    messages: [
+      { role: 'system', content: input.system },
+      { role: 'user', content: input.user },
+    ],
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    ...tokenLimit,
+  };
+
+  for (let attempt = 0; attempt <= env.AI_MAX_RETRIES; attempt += 1) {
+    try {
+      const response = await client.createChat(request, { timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: 0 });
+      const text = extractResponseText(response);
+      if (!text) throw new AppError(502, 'WEBSITE_AI_EMPTY_RESPONSE', `${input.label} returned an empty AI response`);
+      return text;
+    } catch (error) {
+      const status = errorStatus(error);
+      const retriable = isTimeoutError(error) || status === 408 || status === 409 || status === 429 || (status !== null && status >= 500);
+      if (retriable && attempt < env.AI_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000 * (attempt + 1)));
+        continue;
+      }
+      if (error instanceof AppError) throw error;
+      if (isTimeoutError(error)) throw new AppError(504, 'WEBSITE_AI_TIMEOUT', `${input.label} exceeded the AI time limit`);
+      if (status === 429) throw new AppError(429, 'WEBSITE_AI_RATE_LIMITED', `${input.label} was rate limited by the AI provider`);
+      throw new AppError(502, 'WEBSITE_AI_REQUEST_FAILED', `${input.label} failed at the AI provider`, { providerStatus: status, providerMessage: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  throw new AppError(502, 'WEBSITE_AI_REQUEST_FAILED', `${input.label} failed at the AI provider`);
+}
+
+function compactValue(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.length > 2_000 ? `${value.slice(0, 2_000)}…` : value;
+  if (depth >= 4) return Array.isArray(value) ? `[${value.length} items]` : '[nested data]';
+  if (Array.isArray(value)) return value.slice(0, 15).map((item) => compactValue(item, depth + 1));
+  if (typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).slice(0, 35).map(([key, item]) => [key, compactValue(item, depth + 1)]));
+  }
+  return String(value);
+}
+
+function slugify(value: string, fallback: string) {
+  const slug = value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+  return slug || fallback;
+}
+
+function stringValue(value: unknown, fallback = '') {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function stringArray(value: unknown, fallback: string[] = []) {
+  return Array.isArray(value) ? value.map((item) => stringValue(item)).filter(Boolean).slice(0, 12) : fallback;
+}
+
+function architectureFrom(value: Record<string, unknown>, requestedLanguage: string): WebsitePlan {
+  const rawPages = Array.isArray(value.pages) ? value.pages.slice(0, 6) : [];
+  if (!rawPages.length) throw new AppError(502, 'WEBSITE_ARCHITECTURE_INVALID', 'The AI response did not contain a usable website architecture');
+  const usedSlugs = new Set<string>();
+  const pages = rawPages.map((rawPage, index) => {
+    const page = rawPage && typeof rawPage === 'object' ? rawPage as Record<string, unknown> : {};
+    const title = stringValue(page.title, index === 0 ? 'Home' : `Page ${index + 1}`);
+    let slug = slugify(stringValue(page.slug, title), index === 0 ? 'home' : `page-${index + 1}`);
+    if (usedSlugs.has(slug)) slug = `${slug}-${index + 1}`;
+    usedSlugs.add(slug);
+    return {
+      title,
+      slug,
+      purpose: stringValue(page.purpose, `Explain ${title} and guide visitors to the next relevant action.`),
+      sections: stringArray(page.sections, ['Introduction', 'Key benefits', 'How it works', 'Next step']),
+      content: stringValue(page.content),
+      seoTitle: stringValue(page.seoTitle, title).slice(0, 70),
+      seoDescription: stringValue(page.seoDescription, `Learn more about ${title}.`).slice(0, 170),
+    };
+  });
+  const rawSeo = value.globalSeo && typeof value.globalSeo === 'object' ? value.globalSeo as Record<string, unknown> : {};
+  const assets = Array.isArray(value.assets) ? value.assets.slice(0, 12).map((rawAsset) => {
+    const asset = rawAsset && typeof rawAsset === 'object' ? rawAsset as Record<string, unknown> : {};
+    return { brief: stringValue(asset.brief), altText: stringValue(asset.altText) };
+  }).filter((asset) => asset.brief && asset.altText) : [];
+  return {
+    siteTitle: stringValue(value.siteTitle, pages[0]!.title),
+    brandVoice: stringValue(value.brandVoice, 'Clear, confident and helpful'),
+    primaryLanguage: stringValue(value.primaryLanguage, requestedLanguage),
+    pages,
+    globalSeo: {
+      title: stringValue(rawSeo.title, stringValue(value.siteTitle, pages[0]!.title)).slice(0, 70),
+      description: stringValue(rawSeo.description, pages[0]!.seoDescription).slice(0, 170),
+      keywords: stringArray(rawSeo.keywords).slice(0, 20),
+    },
+    assets,
+  };
+}
+
+function pageHasPublishableContent(page: GeneratedPage, index: number) {
+  const content = String(page.content ?? '').trim();
+  const minimumLength = index === 0 ? 1_200 : 650;
+  return content.length >= minimumLength && /<(main|section|article|header)\b/i.test(content) && /<h1\b/i.test(content) && !forbiddenContent.test(content);
+}
+
+export function isCompleteWebsitePlan(value: unknown): value is WebsitePlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as WebsitePlan;
+  return typeof plan.siteTitle === 'string' && Array.isArray(plan.pages) && plan.pages.length > 0 && plan.pages.every(pageHasPublishableContent);
 }
 
 async function loadWebsiteContext(workspaceId: string, userId: string): Promise<WebsiteContext> {
@@ -173,7 +260,7 @@ async function loadWebsiteContext(workspaceId: string, userId: string): Promise<
     },
     offerings: offerings
       .filter((offering) => offering.status === 'active' || offering.status === 'draft')
-      .slice(0, 100)
+      .slice(0, 30)
       .map((offering) => ({
         name: offering.name,
         type: offering.offeringType,
@@ -185,9 +272,61 @@ async function loadWebsiteContext(workspaceId: string, userId: string): Promise<
       })),
     connectedPlatforms: platforms
       .filter((platform) => platform.connectionStatus === 'connected' || platform.connectionStatus === 'active')
+      .slice(0, 30)
       .map((platform) => ({ name: platform.name, category: platform.category, status: platform.connectionStatus })),
-    initialAnalysis: initialAnalysis?.result ?? null,
+    initialAnalysis: compactValue(initialAnalysis?.result ?? null),
   };
+}
+
+async function generateArchitecture(input: { provider: string; language: string; prompt: string; context: WebsiteContext }) {
+  const response = await createJsonCompletion({
+    label: 'Website architecture generation',
+    maxTokens: 1_600,
+    system: [
+      'You are Lulu Website Architect.',
+      'Design a factual, conversion-focused website architecture from verified business context.',
+      'Return only one JSON object. Never write page HTML in this step.',
+      'Create between 3 and 6 useful pages. Do not invent facts, contacts, prices, customers, testimonials, statistics or certifications.',
+      'Required JSON: {siteTitle,brandVoice,primaryLanguage,pages:[{title,slug,purpose,sections,seoTitle,seoDescription}],globalSeo:{title,description,keywords},assets:[{brief,altText}]}.',
+    ].join(' '),
+    user: [
+      `Provider: ${input.provider}`,
+      `Language: ${input.language}`,
+      `Website brief: ${input.prompt}`,
+      'Verified context:',
+      JSON.stringify(input.context),
+    ].join('\n\n'),
+  });
+  return architectureFrom(parseJsonObject(response, 'WEBSITE_ARCHITECTURE_INVALID', 'The AI response did not contain a valid website architecture'), input.language);
+}
+
+async function generatePageContent(input: { plan: WebsitePlan; page: GeneratedPage; pageIndex: number; context: WebsiteContext; provider: string; language: string; qualityRetry: boolean }) {
+  const homepage = input.pageIndex === 0;
+  const response = await createJsonCompletion({
+    label: `Website page generation: ${input.page.title}`,
+    maxTokens: homepage ? 2_200 : 1_700,
+    system: [
+      'You are Lulu Website Copywriter and HTML Designer.',
+      'Return only a JSON object with one key named content.',
+      'The content value must be complete, responsive, semantic, provider-safe HTML for exactly one page.',
+      `Write in ${input.language}.`,
+      homepage ? 'Target roughly 800 to 1200 words with a strong hero, benefits, process, useful detail, FAQ when relevant and a final CTA.' : 'Target roughly 450 to 750 words with a clear H1, multiple substantive sections, useful detail, internal next steps and a specific CTA.',
+      'Use main, section, header, article, h1-h3, p, ul or ol, a and details or summary where appropriate.',
+      'Do not use JavaScript, external CSS, fake contact details, unsupported claims, placeholders, construction notices or Markdown.',
+      'Only use facts present in the verified context. When facts are missing, use neutral benefit-oriented language and omit unsupported specifics.',
+      input.qualityRetry ? 'The previous draft failed quality validation. Make this version more substantial and ensure it contains semantic HTML, one H1 and no placeholders.' : '',
+    ].filter(Boolean).join(' '),
+    user: [
+      `Provider: ${input.provider}`,
+      `Website title: ${input.plan.siteTitle}`,
+      `Brand voice: ${input.plan.brandVoice}`,
+      `Page specification: ${JSON.stringify({ title: input.page.title, slug: input.page.slug, purpose: input.page.purpose, sections: input.page.sections, seoTitle: input.page.seoTitle, seoDescription: input.page.seoDescription })}`,
+      `Other pages for internal linking: ${JSON.stringify(input.plan.pages.map((page) => ({ title: page.title, slug: page.slug })))}`,
+      `Verified context: ${JSON.stringify(input.context)}`,
+    ].join('\n\n'),
+  });
+  const content = stringValue(parseJsonObject(response, 'WEBSITE_PAGE_INVALID', `The AI response for ${input.page.title} was not valid JSON`).content);
+  return { ...input.page, content };
 }
 
 export async function generateWebsitePlan(input: {
@@ -196,92 +335,38 @@ export async function generateWebsitePlan(input: {
   prompt: string;
   language?: string;
   provider: string;
+  existingPlan?: Record<string, unknown>;
+  onProgress?: (progress: WebsiteGenerationProgress) => Promise<void>;
 }) {
   const context = await loadWebsiteContext(input.workspaceId, input.userId);
-  const client = getOpenAIResponsesClient();
-  const configuredModel = env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL;
-  const primaryModel = configuredModel;
-  const request = {
-    model: primaryModel,
-    instructions: [
-      'You are Lulu Website Architect.',
-      'Generate a production-ready website plan from the verified workspace context, the completed initial business analysis and the user brief.',
-      'The workspace context and completed initial analysis are the source of truth. Never invent company names, products, services, prices, certifications, locations, markets, statistics, customers, integrations or legal claims.',
-      'Reuse verified facts and strategic findings from the initial analysis. Treat hypotheses as hypotheses and never convert them into factual claims.',
-      'Respect all data gaps. If a fact is missing, omit it or use a neutral placeholder that clearly requires user confirmation. Do not present placeholders as facts.',
-      'Use the initial analysis sections for positioning, content, SEO, GEO, AEO and website architecture whenever they are present.',
-      'Do not copy example companies, contacts, phone numbers, addresses, color palettes or content from the user brief unless they are explicitly part of verified workspace data.',
-      'Treat connected platform names as integration metadata only; never claim that a site was published or that a platform is available unless a provider result confirms it.',
-      'Return ONLY valid JSON without markdown fences and never claim that a website was published.',
-      'Create practical provider-compatible pages, content, SEO metadata and asset briefs. The content field of every page must be complete publishable semantic HTML, with a substantial homepage and structured sections on every page; never return a short summary, markdown outline, placeholder copy or construction notice. Limit the result to 8 pages.',
-    ].join(' '),
-    input: [{
-      role: 'user',
-      content: [
-        `Provider target: ${input.provider}`,
-        `Requested language: ${input.language ?? 'en'}`,
-        `User website brief: ${input.prompt}`,
-        'Verified workspace context including the shared initial analysis:',
-        JSON.stringify(context, null, 2),
-        'Required JSON shape:',
-        '{"siteTitle":string,"brandVoice":string,"primaryLanguage":string,"pages":[{"title":string,"slug":string,"purpose":string,"content":string,"seoTitle":string,"seoDescription":string}],"globalSeo":{"title":string,"description":string,"keywords":string[]},"assets":[{"brief":string,"altText":string}]}'
-      ].join('\n\n'),
-    }],
-    text: {
-      verbosity: 'low',
-      format: {
-        type: 'json_schema',
-        name: 'website_plan',
-        strict: true,
-        schema: WEBSITE_PLAN_SCHEMA,
-      },
-    },
-    reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.OPENAI_REASONING_EFFORT },
-    // Keep the website plan bounded across all configured providers.
-    // The website plan is intentionally capped at 8 pages and compact metadata.
-    max_output_tokens: 5000,
-    store: false,
-  };
-  const instructionText = request.instructions as string;
-  const userContent = (request.input as Array<{ content: string }>)[0]?.content ?? '';
-  const createWebsiteResponse = () => env.AI_PROVIDER === 'alibaba'
-    ? client.createChat({ model: primaryModel, messages: [{ role: 'system', content: instructionText }, { role: 'user', content: userContent }], temperature: 0, response_format: { type: 'json_object' }, max_tokens: 4500 })
-    : client.create(request);
-  let response: unknown;
+  const language = input.language?.trim() || 'en';
+  let plan: WebsitePlan;
   try {
-    response = await createWebsiteResponse();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const modelUnavailable = /404|does not exist|do not have access|model/i.test(message);
-    const tokenLimited = /413|TPM|tokens per minute|Requested .* reduce your message size|rate limit/i.test(message);
-    if (tokenLimited) {
-      response = env.AI_PROVIDER === 'alibaba'
-        ? await client.createChat({ model: primaryModel, messages: [{ role: 'system', content: instructionText }, { role: 'user', content: userContent }], temperature: 0, response_format: { type: 'json_object' }, max_tokens: 3000 })
-        : await client.create({ ...request, max_output_tokens: 3000 });
-    } else if (modelUnavailable && primaryModel !== 'gpt-5-mini' && env.AI_PROVIDER === 'openai') {
-      response = await client.create({ ...request, model: 'gpt-5-mini', max_output_tokens: 5000 });
-    } else {
-      throw error;
+    plan = architectureFrom(input.existingPlan ?? {}, language);
+  } catch {
+    plan = await generateArchitecture({ provider: input.provider, language, prompt: input.prompt, context });
+  }
+
+  let completedPages = plan.pages.filter((page, index) => pageHasPublishableContent(page, index)).length;
+  const firstIncompletePage = plan.pages.findIndex((page, index) => !pageHasPublishableContent(page, index));
+  await input.onProgress?.({ plan, completedPages, totalPages: plan.pages.length, currentPageTitle: firstIncompletePage >= 0 ? plan.pages[firstIncompletePage]?.title ?? null : null });
+
+  for (let index = 0; index < plan.pages.length; index += 1) {
+    if (pageHasPublishableContent(plan.pages[index]!, index)) continue;
+    let generated = await generatePageContent({ plan, page: plan.pages[index]!, pageIndex: index, context, provider: input.provider, language, qualityRetry: false });
+    if (!pageHasPublishableContent(generated, index)) {
+      generated = await generatePageContent({ plan, page: generated, pageIndex: index, context, provider: input.provider, language, qualityRetry: true });
     }
+    if (!pageHasPublishableContent(generated, index)) {
+      throw new AppError(502, 'WEBSITE_GENERATION_QUALITY_FAILED', `The generated page ${generated.title} did not meet the website quality requirements`);
+    }
+    plan = { ...plan, pages: plan.pages.map((page, pageIndex) => pageIndex === index ? generated : page) };
+    completedPages += 1;
+    const nextIncompletePage = plan.pages.findIndex((page, pageIndex) => !pageHasPublishableContent(page, pageIndex));
+    await input.onProgress?.({ plan, completedPages, totalPages: plan.pages.length, currentPageTitle: nextIncompletePage >= 0 ? plan.pages[nextIncompletePage]?.title ?? null : null });
   }
-  let plan = extractJson(extractResponseText(response));
-  if (!plan.pages?.length || !plan.siteTitle) {
-    throw new AppError(502, 'WEBSITE_GENERATION_FAILED', 'The AI generated an incomplete website plan');
-  }
-  if (planNeedsQualityRetry(plan)) {
-    const retryRequest = {
-      ...request,
-      instructions: `${request.instructions} Your first draft failed the quality gate. Rewrite it now with a substantial, polished homepage and useful pages. Never say the site is under construction, never say information is unverified, never use fake addresses, phone numbers or email addresses, and never return a short disclaimer. Use neutral, customer-specific value language when facts are missing.`,
-      max_output_tokens: 5000,
-    };
-    const retryResponse = env.AI_PROVIDER === 'alibaba'
-      ? await client.createChat({ model: primaryModel, messages: [{ role: 'system', content: `${instructionText} ${retryRequest.instructions as string}` }, { role: 'user', content: userContent }], temperature: 0, response_format: { type: 'json_object' }, max_tokens: 4500 })
-      : await client.create(retryRequest);
-    plan = extractJson(extractResponseText(retryResponse));
-  }
-  if (!plan.pages?.length || !plan.siteTitle || planNeedsQualityRetry(plan)) {
-    throw new AppError(502, 'WEBSITE_GENERATION_QUALITY_FAILED', 'The AI generated content that did not meet the website quality requirements');
-  }
+
+  if (!isCompleteWebsitePlan(plan)) throw new AppError(502, 'WEBSITE_GENERATION_QUALITY_FAILED', 'The generated website did not meet the website quality requirements');
   return plan;
 }
 

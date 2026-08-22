@@ -36,9 +36,11 @@ type ResponseResult = {
 };
 
 export type ResponsesClient = {
-  create(params: Record<string, unknown>): Promise<ResponseResult>;
-  createChat(params: Record<string, unknown>): Promise<unknown>;
+  create(params: Record<string, unknown>, options?: AiRequestOptions): Promise<ResponseResult>;
+  createChat(params: Record<string, unknown>, options?: AiRequestOptions): Promise<unknown>;
 };
+
+export type AiRequestOptions = { timeout?: number; maxRetries?: number };
 
 let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
@@ -46,15 +48,15 @@ let groqClient: OpenAI | undefined;
 
 function getConfiguredClient() {
   if (hasOpenAI) {
-    openAIClient ??= new OpenAI({ apiKey: env.OPENAI_API_KEY });
+    openAIClient ??= new OpenAI({ apiKey: env.OPENAI_API_KEY, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return openAIClient;
   }
   if (hasAlibaba) {
-    alibabaClient ??= new OpenAI({ apiKey: env.DASHSCOPE_API_KEY, baseURL: env.DASHSCOPE_BASE_URL });
+    alibabaClient ??= new OpenAI({ apiKey: env.DASHSCOPE_API_KEY, baseURL: env.DASHSCOPE_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return alibabaClient;
   }
   if (hasGroq) {
-    groqClient ??= new OpenAI({ apiKey: env.GROQ_API_KEY, baseURL: env.GROQ_BASE_URL });
+    groqClient ??= new OpenAI({ apiKey: env.GROQ_API_KEY, baseURL: env.GROQ_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return groqClient;
   }
   throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
@@ -73,8 +75,8 @@ export function getOpenAIResponsesClient(): ResponsesClient {
   }
   const client = getConfiguredClient();
   return {
-    create: (params) => client.responses.create(params as never) as Promise<ResponseResult>,
-    createChat: (params) => client.chat.completions.create(params as never),
+    create: (params, options) => client.responses.create(params as never, options as never) as Promise<ResponseResult>,
+    createChat: (params, options) => client.chat.completions.create(params as never, options as never),
   };
 }
 

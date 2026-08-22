@@ -1,15 +1,35 @@
 import { randomBytes } from 'node:crypto';
 import { query } from '../../db/pool.js';
-import type { WebsiteDomain, WebsiteGenerationJob, WebsiteSite } from './website.types.js';
+import type { WebsiteDomain, WebsiteGenerationJob, WebsiteGenerationWorkItem, WebsiteSite } from './website.types.js';
 
 function mapSite(row: any, domains: WebsiteDomain[] = []): WebsiteSite {
   return { id: row.id, workspaceId: row.workspaceId, provider: row.provider, ownershipMode: row.ownershipMode, name: row.name, externalSiteId: row.externalSiteId ?? null, externalSiteUrl: row.externalSiteUrl ?? null, status: row.status, settings: row.settings ?? {}, domains, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
 function mapDomain(row: any): WebsiteDomain { return { id: row.id, siteId: row.siteId, hostname: row.hostname, verificationToken: row.verificationToken, verificationMethod: row.verificationMethod, status: row.status, verifiedAt: row.verifiedAt ?? null, lastError: row.lastError ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt }; }
-function mapJob(row: any): WebsiteGenerationJob { return { id: row.id, siteId: row.siteId, prompt: row.prompt, status: row.status, plan: row.plan ?? {}, preview: row.preview ?? {}, providerResult: row.providerResult ?? {}, errorCode: row.errorCode ?? null, errorMessage: row.errorMessage ?? null, createdBy: row.createdBy ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt }; }
+function mapJob(row: any): WebsiteGenerationJob {
+  return {
+    id: row.id,
+    siteId: row.siteId,
+    prompt: row.prompt,
+    status: row.status,
+    plan: row.plan ?? {},
+    preview: row.preview ?? {},
+    providerResult: row.providerResult ?? {},
+    errorCode: row.errorCode ?? null,
+    errorMessage: row.errorMessage ?? null,
+    createdBy: row.createdBy ?? null,
+    requestedLanguage: row.requestedLanguage ?? null,
+    autoPublish: Boolean(row.autoPublish),
+    attemptCount: Number(row.attemptCount ?? 0),
+    heartbeatAt: row.heartbeatAt ?? null,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 const siteSelect = `SELECT id, workspace_id AS "workspaceId", provider, ownership_mode AS "ownershipMode", name, external_site_id AS "externalSiteId", external_site_url AS "externalSiteUrl", status, settings, created_at AS "createdAt", updated_at AS "updatedAt" FROM workspace_sites`;
 const domainSelect = `SELECT id, site_id AS "siteId", hostname, verification_token AS "verificationToken", verification_method AS "verificationMethod", status, verified_at AS "verifiedAt", last_error AS "lastError", created_at AS "createdAt", updated_at AS "updatedAt" FROM workspace_site_domains`;
+const jobSelect = `SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", requested_language AS "requestedLanguage", auto_publish AS "autoPublish", attempt_count AS "attemptCount", heartbeat_at AS "heartbeatAt", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs`;
 
 export async function listSites(workspaceId: string) {
   const [sites, domains] = await Promise.all([
@@ -62,37 +82,124 @@ export async function markDomainVerified(siteId: string, domainId: string) {
   const result = await query<any>(`UPDATE workspace_site_domains SET status = 'verified', verified_at = NOW(), last_error = NULL WHERE id = $1 AND site_id = $2 RETURNING id`, [domainId, siteId]);
   return result.rowCount ? true : false;
 }
-export async function createJob(input: { siteId: string; prompt: string; createdBy: string }) {
-  const result = await query<any>(`INSERT INTO website_generation_jobs (site_id, prompt, created_by) VALUES ($1,$2,$3) RETURNING id`, [input.siteId, input.prompt.trim(), input.createdBy]);
-  return getJob(input.siteId, result.rows[0].id);
+export async function createJob(input: { siteId: string; prompt: string; createdBy: string; requestedLanguage?: string; autoPublish?: boolean }) {
+  const result = await query<any>(
+    `INSERT INTO website_generation_jobs (site_id, prompt, created_by, requested_language, auto_publish)
+     VALUES ($1,$2,$3,$4,$5)
+     ON CONFLICT (site_id) WHERE status IN ('queued','planning','generated','preview','publishing') DO NOTHING
+     RETURNING id`,
+    [input.siteId, input.prompt.trim(), input.createdBy, input.requestedLanguage ?? null, input.autoPublish ?? false],
+  );
+  if (result.rows[0]) return { job: await getJob(input.siteId, result.rows[0].id), created: true };
+  return { job: await findActiveJob(input.siteId), created: false };
 }
 export async function findActiveJob(siteId: string) {
-  const result = await query<any>(`SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs WHERE site_id = $1 AND status IN ('queued','planning','generated','preview','publishing') ORDER BY created_at DESC LIMIT 1`, [siteId]);
+  const result = await query<any>(`${jobSelect} WHERE site_id = $1 AND status IN ('queued','planning','generated','preview','publishing') ORDER BY created_at DESC LIMIT 1`, [siteId]);
   return result.rows[0] ? mapJob(result.rows[0]) : null;
 }
 
-export async function expireStaleActiveJobs(siteId: string, olderThanMinutes = 10) {
+export async function failExhaustedJobs(maxAttempts: number, leaseSeconds: number, siteId?: string) {
   await query(
     `UPDATE website_generation_jobs
      SET status = 'failed',
-         error_code = 'WEBSITE_GENERATION_TIMEOUT',
-         error_message = 'Website generation did not finish in time. Please try again.',
-         updated_at = NOW()
-     WHERE site_id = $1
-       AND status IN ('queued','planning','publishing')
-       AND (
-         updated_at < NOW() - ($2::int * INTERVAL '1 minute')
-         OR created_at < NOW() - ($2::int * INTERVAL '1 minute')
-       )`,
-    [siteId, olderThanMinutes],
+         error_code = 'WEBSITE_GENERATION_RETRY_EXHAUSTED',
+         error_message = 'Website generation was interrupted repeatedly and could not be resumed.',
+         worker_id = NULL,
+         locked_at = NULL,
+         heartbeat_at = NOW()
+     WHERE status IN ('planning','publishing','generated','preview')
+       AND (status NOT IN ('generated','preview') OR auto_publish = TRUE)
+       AND attempt_count >= $1
+       AND COALESCE(heartbeat_at, locked_at, updated_at) < NOW() - ($2::int * INTERVAL '1 second')
+       AND ($3::uuid IS NULL OR site_id = $3::uuid)`,
+    [maxAttempts, leaseSeconds, siteId ?? null],
   );
 }
 
 export async function getJob(siteId: string, jobId: string) {
-  const result = await query<any>(`SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs WHERE site_id = $1 AND id = $2 LIMIT 1`, [siteId, jobId]);
+  const result = await query<any>(`${jobSelect} WHERE site_id = $1 AND id = $2 LIMIT 1`, [siteId, jobId]);
   return result.rows[0] ? mapJob(result.rows[0]) : null;
 }
 export async function updateJob(siteId: string, jobId: string, patch: { status?: string; plan?: Record<string, unknown>; preview?: Record<string, unknown>; providerResult?: Record<string, unknown>; errorCode?: string | null; errorMessage?: string | null }) {
-  const result = await query<any>(`UPDATE website_generation_jobs SET status = COALESCE($3,status), plan = COALESCE($4,plan), preview = COALESCE($5,preview), provider_result = COALESCE($6,provider_result), error_code = $7, error_message = $8 WHERE site_id = $1 AND id = $2 RETURNING id`, [siteId, jobId, patch.status ?? null, patch.plan ? JSON.stringify(patch.plan) : null, patch.preview ? JSON.stringify(patch.preview) : null, patch.providerResult ? JSON.stringify(patch.providerResult) : null, patch.errorCode ?? null, patch.errorMessage ?? null]);
+  const result = await query<any>(
+    `UPDATE website_generation_jobs
+     SET status = COALESCE($3,status),
+         plan = COALESCE($4,plan),
+         preview = COALESCE($5,preview),
+         provider_result = COALESCE($6,provider_result),
+         error_code = $7,
+         error_message = $8,
+         worker_id = CASE WHEN $3 IN ('published','failed','cancelled') THEN NULL ELSE worker_id END,
+         locked_at = CASE WHEN $3 IN ('published','failed','cancelled') THEN NULL ELSE locked_at END,
+         heartbeat_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE heartbeat_at END
+     WHERE site_id = $1 AND id = $2 RETURNING id`,
+    [siteId, jobId, patch.status ?? null, patch.plan ? JSON.stringify(patch.plan) : null, patch.preview ? JSON.stringify(patch.preview) : null, patch.providerResult ? JSON.stringify(patch.providerResult) : null, patch.errorCode ?? null, patch.errorMessage ?? null],
+  );
   return result.rowCount ? getJob(siteId, jobId) : null;
+}
+
+export async function claimNextGenerationJob(workerId: string, leaseSeconds: number, maxAttempts: number): Promise<WebsiteGenerationWorkItem | null> {
+  const result = await query<any>(
+    `WITH candidate AS (
+       SELECT job.id
+       FROM website_generation_jobs AS job
+       WHERE (
+         job.status = 'queued'
+         OR (
+           job.status IN ('planning','publishing')
+           AND job.attempt_count < $3
+           AND COALESCE(job.heartbeat_at, job.locked_at, job.updated_at) < NOW() - ($2::int * INTERVAL '1 second')
+         )
+         OR (
+           job.status IN ('generated','preview')
+           AND job.auto_publish = TRUE
+           AND job.attempt_count < $3
+           AND (job.worker_id IS NULL OR COALESCE(job.heartbeat_at, job.locked_at, job.updated_at) < NOW() - ($2::int * INTERVAL '1 second'))
+         )
+       )
+       ORDER BY job.created_at
+       FOR UPDATE OF job SKIP LOCKED
+       LIMIT 1
+     )
+     UPDATE website_generation_jobs AS job
+     SET status = CASE
+           WHEN job.auto_publish = TRUE AND job.status IN ('generated','preview','publishing') THEN 'publishing'
+           ELSE 'planning'
+         END,
+         attempt_count = job.attempt_count + 1,
+         worker_id = $1,
+         locked_at = NOW(),
+         heartbeat_at = NOW(),
+         error_code = NULL,
+         error_message = NULL
+     FROM candidate, workspace_sites AS site
+     WHERE job.id = candidate.id AND site.id = job.site_id
+     RETURNING job.id, job.site_id AS "siteId", job.prompt, job.status, job.plan, job.preview,
+       job.provider_result AS "providerResult", job.error_code AS "errorCode", job.error_message AS "errorMessage",
+       job.created_by AS "createdBy", job.requested_language AS "requestedLanguage", job.auto_publish AS "autoPublish",
+       job.attempt_count AS "attemptCount", job.heartbeat_at AS "heartbeatAt", job.created_at AS "createdAt",
+       job.updated_at AS "updatedAt", site.workspace_id AS "workspaceId", site.provider, site.ownership_mode AS "ownershipMode"`,
+    [workerId, leaseSeconds, maxAttempts],
+  );
+  if (!result.rows[0]) return null;
+  return { ...mapJob(result.rows[0]), workspaceId: result.rows[0].workspaceId, provider: result.rows[0].provider, ownershipMode: result.rows[0].ownershipMode };
+}
+
+export async function heartbeatJob(siteId: string, jobId: string, workerId: string) {
+  const result = await query(
+    `UPDATE website_generation_jobs
+     SET heartbeat_at = NOW()
+     WHERE site_id = $1 AND id = $2 AND worker_id = $3 AND status IN ('planning','generated','preview','publishing')`,
+    [siteId, jobId, workerId],
+  );
+  return result.rowCount > 0;
+}
+
+export async function releaseJob(siteId: string, jobId: string, workerId: string) {
+  await query(
+    `UPDATE website_generation_jobs
+     SET worker_id = NULL, locked_at = NULL, heartbeat_at = NOW()
+     WHERE site_id = $1 AND id = $2 AND worker_id = $3`,
+    [siteId, jobId, workerId],
+  );
 }

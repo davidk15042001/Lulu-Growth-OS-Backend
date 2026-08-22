@@ -41,3 +41,6 @@ Push-Zeitstempel: 2026-08-22 04:18:19 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-22 04:57:52 Europe/Berlin
 Änderungen: Synchronisations-Push zur gemeinsamen Veröffentlichung von Frontend und Backend.
+
+Push-Zeitstempel: 2026-08-22 05:59:04 Europe/Berlin
+Änderungen: Produktionsreife Website-Generierung mit dauerhaftem DB-Worker, Checkpoints, sicheren Logs, Provider-Timeouts und Qualitätsprüfungen.

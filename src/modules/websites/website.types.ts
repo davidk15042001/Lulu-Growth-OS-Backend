@@ -43,6 +43,16 @@ export type WebsiteGenerationJob = {
   errorCode: string | null;
   errorMessage: string | null;
   createdBy: string | null;
+  requestedLanguage: string | null;
+  autoPublish: boolean;
+  attemptCount: number;
+  heartbeatAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type WebsiteGenerationWorkItem = WebsiteGenerationJob & {
+  workspaceId: string;
+  provider: WebsiteProvider;
+  ownershipMode: OwnershipMode;
 };

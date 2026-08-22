@@ -132,16 +132,20 @@ Content-Type: application/json
 }
 ```
 
-## OpenAI integration
+## AI integration
 
-AI conversation storage works without an OpenAI key. Actual response generation requires:
+AI conversation storage works without a provider key. Alibaba DashScope is the default provider:
 
 ```dotenv
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5.6-terra
+AI_PROVIDER=alibaba
+DASHSCOPE_API_KEY=...
+DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+DASHSCOPE_MODEL=qwen3.7-max
+AI_REQUEST_TIMEOUT_MS=180000
+AI_MAX_RETRIES=1
 ```
 
-Provider requests use the Responses API, `store: false`, configured reasoning effort, a privacy-preserving safety identifier, company context and the workspace's AI approval preferences. No API key is committed to the repository.
+Set `AI_PROVIDER=openai` with `OPENAI_API_KEY` and `OPENAI_MODEL=gpt-5-mini`, or `AI_PROVIDER=groq` with the corresponding Groq variables, to use another provider. Website generation is processed by a database-backed worker with resumable page checkpoints. No API key is committed to the repository.
 
 ## Health endpoints
 

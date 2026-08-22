@@ -13,7 +13,14 @@ async function providerRequest(provider: WebsiteProvider, url: string, token: st
   if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, { ...init, headers });
+    let response: Response;
+    try {
+      response = await fetch(url, { ...init, headers, signal: init.signal ?? AbortSignal.timeout(45_000) });
+    } catch (error) {
+      const timedOut = error instanceof Error && (error.name === 'AbortError' || error.name === 'TimeoutError' || /timed?\s*out/i.test(error.message));
+      if (timedOut && attempt < 2) continue;
+      throw new AppError(504, timedOut ? 'WEBSITE_PROVIDER_TIMEOUT' : 'WEBSITE_PROVIDER_NETWORK_ERROR', timedOut ? `The ${provider} provider request timed out` : `The ${provider} provider could not be reached`, { provider });
+    }
     const text = await response.text();
     let data: any = {};
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text.slice(0, 500) }; }

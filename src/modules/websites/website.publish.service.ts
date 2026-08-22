@@ -56,7 +56,9 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       const homepageId = String(createdPages[0]?.id ?? '');
       if (!homepageId) throw new AppError(502, 'WORDPRESS_HOMEPAGE_UNCONFIRMED', 'WordPress did not confirm the generated homepage', { provider: 'wordpress', providerResult: { pages: createdPages } });
       await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
-      return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages, homepageId } });
+      const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages, homepageId } });
+      await repo.updateSiteStatus(workspaceId, siteId, 'published');
+      return publishedJob;
     }
     const collectionId = typeof site.settings.collectionId === 'string' ? site.settings.collectionId : '';
     if (!collectionId || !site.externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_CONFIGURATION_MISSING', 'Webflow site ID and CMS collection ID are required for publishing');
@@ -70,7 +72,9 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
     const verifiedHostnames = new Set(site.domains.filter((domain) => domain.status === 'verified').map((domain) => domain.hostname.toLowerCase()));
     const customDomainIds = providerDomainItems.filter((domain: any) => verifiedHostnames.has(String(domain.url ?? domain.hostname ?? '').toLowerCase())).map((domain: any) => String(domain.id));
     const published = await withProviderConnectionError(workspaceId, 'webflow', () => publishWebflowSite(workspaceId, site.externalSiteId!, customDomainIds));
-    return repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'webflow', items, published } });
+    const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'webflow', items, published } });
+    await repo.updateSiteStatus(workspaceId, siteId, 'published');
+    return publishedJob;
   } catch (error) {
     await repo.updateJob(siteId, jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_PUBLISH_FAILED', errorMessage: error instanceof Error ? error.message : 'Website publishing failed' });
     throw error;
