@@ -51,4 +51,16 @@ router.route('/integrations/:platformId/sync')
   .post(requireWorkspaceEditor, controller.syncIntegration)
   .all(methodNotAllowed);
 
+router.route('/content-refresh')
+  .post(requireWorkspaceEditor, controller.startContentRefresh)
+  .all(methodNotAllowed);
+
+router.route('/content-refresh/:jobId')
+  .get(requireWorkspaceMember, controller.contentRefreshStatus)
+  .all(methodNotAllowed);
+
+router.route('/content-assets')
+  .get(requireWorkspaceMember, controller.contentAssets)
+  .all(methodNotAllowed);
+
 export default router;

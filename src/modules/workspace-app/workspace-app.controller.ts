@@ -4,6 +4,8 @@ import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
 import { createCheckout, syncCheckoutStatus, type BillingPlanKey } from '../billing/airwallex.service.js';
+import * as contentGeneration from '../content-generation/content-generation.service.js';
+import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
 import {
   createSavedViewSchema,
   inviteMemberSchema,
@@ -132,6 +134,30 @@ export async function billing(req: WorkspaceRequest, res: Response, next: NextFu
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'Billing state loaded', await service.getBilling(workspaceId, listUsageQuerySchema.parse(req.query)));
+  } catch (error) { next(error); }
+}
+
+export async function startContentRefresh(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const requested = Array.isArray(req.body?.modules) ? req.body.modules.filter((value: unknown): value is ContentModule => CONTENT_MODULES.includes(value as ContentModule)) : [...CONTENT_MODULES];
+    return createdResponse(res, 'Workspace content refresh started', await contentGeneration.startContentRefresh(workspaceId, req.user!.id, requested));
+  } catch (error) { next(error); }
+}
+
+export async function contentRefreshStatus(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Workspace content refresh status loaded', await contentGeneration.getContentRefresh(workspaceId, String(req.params.jobId)));
+  } catch (error) { next(error); }
+}
+
+export async function contentAssets(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const rawModule = typeof req.query.module === 'string' ? req.query.module : undefined;
+    const module = CONTENT_MODULES.includes(rawModule as ContentModule) ? rawModule as ContentModule : undefined;
+    return successResponse(res, 'Workspace content assets loaded', { items: await contentGeneration.listContentAssets(workspaceId, module) });
   } catch (error) { next(error); }
 }
 

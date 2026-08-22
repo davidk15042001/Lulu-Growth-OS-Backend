@@ -5,6 +5,7 @@ import { sendMail } from '../../utils/mailer.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
+import { startContentRefresh } from '../content-generation/content-generation.service.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -354,6 +355,7 @@ export async function handleWebhook(event: AirwallexObject) {
     if (mappedStatus === 'active') {
       await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
       void queueInitialBusinessAnalysis(workspaceId).catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment initial analysis could not be queued'));
+      void startContentRefresh(workspaceId, 'system').catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment content refresh could not be queued'));
     }
     const invoiceId = String(data.invoice_id ?? data.invoice?.id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? checkout.invoice_id ?? checkout.latest_invoice_id ?? '');
     const planKey = metadata.plan_key as BillingPlanKey | undefined;
