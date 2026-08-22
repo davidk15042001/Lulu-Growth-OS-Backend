@@ -8,6 +8,7 @@ import { env } from '../config/env.js';
 import { checkDatabase } from '../db/pool.js';
 import billingRoutes from './billing/billing.routes.js';
 import adminRoutes from './admin/admin.routes.js';
+import emailOAuthRoutes from './email/email.oauth.routes.js';
 
 const router = Router();
 
@@ -51,6 +52,7 @@ router.use('/translations', translationRoutes);
 router.use('/onboarding/oauth', oauthRoutes);
 router.use('/billing', billingRoutes);
 router.use('/admin', adminRoutes);
+router.use('/email', emailOAuthRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;

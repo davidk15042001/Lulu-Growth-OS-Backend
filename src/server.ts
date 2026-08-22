@@ -6,6 +6,7 @@ import { ensureMigrations } from './database/migrate.js';
 import { pool } from './db/pool.js';
 import { syncResourceCatalog } from './modules/resources/resource-catalog.repo.js';
 import { startAutomaticAnalysisWorker, stopAutomaticAnalysisWorker } from './modules/agents/agent.worker.js';
+import { startEmailSyncWorker, stopEmailSyncWorker } from './modules/email/email.service.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -21,6 +22,7 @@ async function bootstrap() {
   }
 
   startAutomaticAnalysisWorker();
+  if (hasDb) startEmailSyncWorker();
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT, environment: env.NODE_ENV }, 'Lulu Growth OS API listening');
   });
@@ -28,6 +30,7 @@ async function bootstrap() {
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'Shutting down API');
     stopAutomaticAnalysisWorker();
+    stopEmailSyncWorker();
     server.close(async () => {
       if (hasDb) {
         await pool.end();

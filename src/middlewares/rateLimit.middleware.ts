@@ -3,8 +3,8 @@ import type { Request, Response, NextFunction } from 'express';
 import { query } from '../db/pool.js';
 import { tooManyRequests } from '../utils/response.js';
 
-export function dbRateLimit(opts: { keyPrefix: string; windowMs: number; limit: number }) {
-  const { keyPrefix, windowMs, limit } = opts;
+export function dbRateLimit(opts: { keyPrefix: string; windowMs: number; limit: number; message?: string }) {
+  const { keyPrefix, windowMs, limit, message } = opts;
 
   return async function dbRateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
     try {
@@ -25,7 +25,7 @@ export function dbRateLimit(opts: { keyPrefix: string; windowMs: number; limit: 
 
       const current = rows[0]?.count ?? 1;
       if (current > limit) {
-        return tooManyRequests(res);
+        return tooManyRequests(res, message);
       }
 
       next();
