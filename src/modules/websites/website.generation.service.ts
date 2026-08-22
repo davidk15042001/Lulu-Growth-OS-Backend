@@ -1,5 +1,6 @@
 import { env } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
+import { logger } from '../../config/logger.js';
 import * as agentRepo from '../agents/agent.repo.js';
 import { getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
@@ -145,8 +146,10 @@ async function createJsonCompletion(input: { label: string; system: string; user
 
   for (let attempt = 0; attempt <= env.AI_MAX_RETRIES; attempt += 1) {
     try {
+      logger.info({ label: input.label, provider: env.AI_PROVIDER, model: request.model, maxTokens: input.maxTokens, attempt: attempt + 1 }, 'Website AI request started');
       const response = await client.createChat(request, { timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: 0 });
       const text = extractResponseText(response);
+      logger.info({ label: input.label, responseChars: text.length, attempt: attempt + 1 }, 'Website AI response received');
       if (!text) throw new AppError(502, 'WEBSITE_AI_EMPTY_RESPONSE', `${input.label} returned an empty AI response`);
       return text;
     } catch (error) {
@@ -355,6 +358,7 @@ export async function generateWebsitePlan(input: {
 
   for (let index = 0; index < plan.pages.length; index += 1) {
     if (pageHasPublishableContent(plan.pages[index]!, index)) continue;
+    logger.info({ pageIndex: index, pageTitle: plan.pages[index]?.title ?? null, totalPages: plan.pages.length }, 'Website page generation started');
     let generated = await generatePageContent({ plan, page: plan.pages[index]!, pageIndex: index, context, provider: input.provider, language, qualityRetry: false });
     if (!pageHasPublishableContent(generated, index)) {
       generated = await generatePageContent({ plan, page: generated, pageIndex: index, context, provider: input.provider, language, qualityRetry: true });
@@ -363,6 +367,7 @@ export async function generateWebsitePlan(input: {
       throw new AppError(502, 'WEBSITE_GENERATION_QUALITY_FAILED', `The generated page ${generated.title} did not meet the website quality requirements`);
     }
     plan = { ...plan, pages: plan.pages.map((page, pageIndex) => pageIndex === index ? generated : page) };
+    logger.info({ pageIndex: index, pageTitle: generated.title, completedPages: completedPages + 1, totalPages: plan.pages.length }, 'Website page generation completed');
     completedPages += 1;
     const nextIncompletePage = plan.pages.findIndex((page, pageIndex) => !pageHasPublishableContent(page, pageIndex));
     await input.onProgress?.({ plan, completedPages, totalPages: plan.pages.length, currentPageTitle: nextIncompletePage >= 0 ? plan.pages[nextIncompletePage]?.title ?? null : null });
