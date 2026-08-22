@@ -5,7 +5,7 @@ import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 
-const WEBSITE_GENERATION_TIMEOUT_MINUTES = 10;
+const WEBSITE_GENERATION_TIMEOUT_MINUTES = 30;
 
 export const DEFAULT_WEBSITE_PROMPT = `Create an exceptional, premium, production-ready website that feels like a top-tier digital agency delivered it. The result must be visually compelling, strategically complete, highly detailed and conversion-focused—not a basic blog, a generic template or a short information page. Use the verified Lulu workspace data, active or draft offerings, uploaded business context and completed initial AI analysis as the only source of truth for factual claims. Adapt the design, language, hierarchy and functionality to the customer's real industry, audience, positioning, geography, offers and business goals.
 
