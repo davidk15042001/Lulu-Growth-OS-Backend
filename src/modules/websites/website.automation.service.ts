@@ -1,5 +1,5 @@
 import { AppError } from '../../utils/app-error.js';
-import { firstWebflowSiteWithCollection, firstWordpressSite } from './website.provider.service.js';
+import { firstWebflowSiteWithCollection, wordpressSites } from './website.provider.service.js';
 import { logger } from '../../config/logger.js';
 import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
@@ -28,14 +28,10 @@ async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress
     return selected;
   }
   const localSites = await repo.listSites(workspaceId);
-  const localSite = localSites.find((site) => site.provider === provider && site.externalSiteId && site.status !== 'error');
-  if (localSite) return localSite;
-  if (provider === 'wordpress') {
-    const target = await firstWordpressSite(workspaceId);
-    const existing = await repo.findSiteByExternalSiteId(workspaceId, provider, target.id);
-    if (existing) return existing;
-    return repo.createSite({ workspaceId, provider, ownershipMode: 'connected', name: target.name, externalSiteId: target.id, externalSiteUrl: target.url });
-  }
+  const localProviderSites = localSites.filter((site) => site.provider === provider && site.externalSiteId && site.status !== 'error');
+  if (localProviderSites.length === 1) return localProviderSites[0];
+  if (localProviderSites.length > 1) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_SELECTION_REQUIRED', 'Select a WordPress website before starting generation');
+  if (provider === 'wordpress') throw new AppError(409, 'WEBSITE_PROVIDER_NO_SITE_AVAILABLE', 'No synchronized WordPress website is available. Refresh the provider sites and select one before generating.');
   const target = await firstWebflowSiteWithCollection(workspaceId);
   const existing = await repo.findSiteByExternalSiteId(workspaceId, provider, target.id);
   if (existing) return existing;
@@ -132,6 +128,23 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
     clearInterval(heartbeatTimer);
     await repo.releaseJob(input.siteId, input.id, workerId).catch(() => undefined);
   }
+}
+
+export async function syncWordpressProviderSites(workspaceId: string) {
+  const data = await wordpressSites(workspaceId);
+  const rawSites: unknown[] = Array.isArray(data) ? data : Array.isArray(data?.sites) ? data.sites : [];
+  const discovered = rawSites.map((value: unknown) => value as Record<string, unknown>).map((site: Record<string, unknown>) => ({
+    id: String(site.ID ?? site.id ?? '').trim(),
+    name: String(site.name ?? site.title ?? site.URL ?? site.domain ?? 'WordPress site').trim(),
+    url: site.URL ?? site.url ?? site.link ?? null,
+  })).filter((site: { id: string }) => site.id);
+  await repo.deleteSitesByProviderExcept(workspaceId, 'wordpress', discovered.map((site: { id: string }) => site.id));
+  for (const site of discovered) {
+    const existing = await repo.findSiteByExternalSiteId(workspaceId, 'wordpress', site.id);
+    if (existing) await repo.updateSiteExternalDetails(workspaceId, existing.id, site.name, typeof site.url === 'string' ? site.url : undefined);
+    else await repo.createSite({ workspaceId, provider: 'wordpress', ownershipMode: 'connected', name: site.name, externalSiteId: site.id, externalSiteUrl: typeof site.url === 'string' ? site.url : undefined });
+  }
+  return repo.listSites(workspaceId);
 }
 
 export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; siteId?: string; language?: string }) {

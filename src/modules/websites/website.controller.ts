@@ -4,7 +4,7 @@ import { createdResponse, successResponse } from '../../utils/response.js';
 import * as repo from './website.repo.js';
 import { automaticGenerationSchema, createDomainSchema, createJobSchema, createSiteSchema, domainParams, jobParams, siteIdParams } from './website.validator.js';
 import { publishWebsiteJob } from './website.publish.service.js';
-import { getActiveWebsiteGenerationJob, resetWebsiteProviderState, startAutomaticWebsiteGeneration } from './website.automation.service.js';
+import { getActiveWebsiteGenerationJob, resetWebsiteProviderState, startAutomaticWebsiteGeneration, syncWordpressProviderSites } from './website.automation.service.js';
 import { webflowCollections, webflowCustomDomains, webflowSites, wordpressMedia, wordpressPages, wordpressPosts } from './website.provider.service.js';
 import { requestWebsiteGenerationWorkerRun } from './website.worker.js';
 
@@ -53,6 +53,14 @@ export async function wordpressContent(req: Request, res: Response, next: NextFu
       posts,
       media,
     });
+  } catch (error) { next(error); }
+}
+
+export async function syncProvider(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const input = automaticGenerationSchema.pick({ provider: true }).parse(req.body);
+    if (input.provider !== 'wordpress') throw new AppError(400, 'WEBSITE_PROVIDER_SYNC_UNSUPPORTED', 'Only WordPress site synchronization is supported here');
+    return successResponse(res, 'WordPress websites synchronized', { items: await syncWordpressProviderSites(workspaceId(req)) });
   } catch (error) { next(error); }
 }
 

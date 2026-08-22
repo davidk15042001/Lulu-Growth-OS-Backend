@@ -9,6 +9,7 @@ router.route('/').get(controller.list).post(requireWorkspaceEditor, controller.c
 router.route('/:siteId/provider-content').get(controller.providerContent).all(methodNotAllowed);
 router.route('/:siteId/wordpress-content').get(controller.wordpressContent).all(methodNotAllowed);
 router.route('/automatic-generation').post(requireWorkspaceEditor, controller.automaticGenerate).all(methodNotAllowed);
+router.route('/sync-provider').post(requireWorkspaceEditor, controller.syncProvider).all(methodNotAllowed);
 router.route('/cleanup-provider').post(requireWorkspaceEditor, controller.cleanupProvider).all(methodNotAllowed);
 router.route('/:siteId/domains').post(requireWorkspaceEditor, controller.addDomain).all(methodNotAllowed);
 router.route('/:siteId/domains/:domainId/verify').post(requireWorkspaceEditor, controller.verifyDomain).all(methodNotAllowed);

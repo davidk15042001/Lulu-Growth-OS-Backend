@@ -52,6 +52,26 @@ export async function deleteSitesByProvider(workspaceId: string, provider: strin
   return result.rowCount ?? 0;
 }
 
+export async function deleteSitesByProviderExcept(workspaceId: string, provider: string, externalSiteIds: string[]) {
+  if (externalSiteIds.length === 0) return deleteSitesByProvider(workspaceId, provider);
+  const result = await query(
+    `DELETE FROM workspace_sites
+     WHERE workspace_id = $1 AND provider = $2
+       AND (external_site_id IS NULL OR NOT (external_site_id = ANY($3::text[])))`,
+    [workspaceId, provider, externalSiteIds],
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function updateSiteExternalDetails(workspaceId: string, siteId: string, name: string, externalSiteUrl?: string) {
+  const result = await query<any>(
+    `UPDATE workspace_sites SET name = $3, external_site_url = COALESCE($4, external_site_url), updated_at = NOW()
+     WHERE workspace_id = $1 AND id = $2 RETURNING id`,
+    [workspaceId, siteId, name.trim(), externalSiteUrl ?? null],
+  );
+  return result.rowCount ? getSite(workspaceId, siteId) : null;
+}
+
 export async function updateSiteStatus(workspaceId: string, siteId: string, status: string) {
   const result = await query<any>(`UPDATE workspace_sites SET status = $3 WHERE workspace_id = $1 AND id = $2 RETURNING id`, [workspaceId, siteId, status]);
   return result.rowCount ? getSite(workspaceId, siteId) : null;
