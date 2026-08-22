@@ -80,7 +80,10 @@ export async function expireStaleActiveJobs(siteId: string, olderThanMinutes = 1
          updated_at = NOW()
      WHERE site_id = $1
        AND status IN ('queued','planning','publishing')
-       AND updated_at < NOW() - ($2::int * INTERVAL '1 minute')`,
+       AND (
+         updated_at < NOW() - ($2::int * INTERVAL '1 minute')
+         OR created_at < NOW() - ($2::int * INTERVAL '1 minute')
+       )`,
     [siteId, olderThanMinutes],
   );
 }
