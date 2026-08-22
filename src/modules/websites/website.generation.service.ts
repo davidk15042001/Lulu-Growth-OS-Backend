@@ -358,7 +358,8 @@ export async function generateWebsitePlan(input: {
 
   for (let index = 0; index < plan.pages.length; index += 1) {
     if (pageHasPublishableContent(plan.pages[index]!, index)) continue;
-    logger.info({ pageIndex: index, pageTitle: plan.pages[index]?.title ?? null, totalPages: plan.pages.length }, 'Website page generation started');
+    await input.onProgress?.({ plan, completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null });
+    logger.info({ pageIndex: index, pageTitle: plan.pages[index]?.title ?? null, completedPages, totalPages: plan.pages.length }, 'Website page generation started');
     let generated = await generatePageContent({ plan, page: plan.pages[index]!, pageIndex: index, context, provider: input.provider, language, qualityRetry: false });
     if (!pageHasPublishableContent(generated, index)) {
       generated = await generatePageContent({ plan, page: generated, pageIndex: index, context, provider: input.provider, language, qualityRetry: true });

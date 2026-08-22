@@ -1,5 +1,6 @@
 import { AppError } from '../../utils/app-error.js';
 import { firstWebflowSiteWithCollection, firstWordpressSite } from './website.provider.service.js';
+import { logger } from '../../config/logger.js';
 import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
@@ -116,6 +117,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       await repo.updateSiteStatus(input.workspaceId, input.siteId, 'preview');
     }
   } catch (error) {
+    logger.error({ jobId: input.id, siteId: input.siteId, provider: input.provider, error: error instanceof Error ? { name: error.name, message: error.message } : String(error) }, 'Website generation job failed');
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
     await repo.updateJob(input.siteId, input.id, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message }).catch(() => undefined);
