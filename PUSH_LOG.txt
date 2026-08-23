@@ -65,3 +65,6 @@ Push-Zeitstempel: 2026-08-23 03:12:56 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 03:19:44 Europe/Berlin
 Änderungen: Synchronisations-Push zum Frontend-Release für die wiederhergestellte Billing-Navigation und globale Suchleiste.
+
+Push-Zeitstempel: 2026-08-23 13:24:29 Europe/Berlin
+Änderungen: Synchronisations-Push zum Frontend-Release für vereinheitlichte Billing-Pakete, Preise, Leistungen und planabhängige Funktionsfreigaben.
