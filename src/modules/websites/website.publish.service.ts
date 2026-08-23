@@ -5,7 +5,7 @@ import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWord
 import { appendGenerationActivity, type WebsiteGenerationActivity } from './website.activity.js';
 import type { WebsiteGenerationTargetMode } from './website.types.js';
 
-const WORDPRESS_THEME = { key: 'lulu-base', name: 'Lulu Base', version: '2.0.0', downloadPath: '/downloads/lulu-base.zip' } as const;
+const WORDPRESS_THEME_KEY = 'lulu-base';
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -38,6 +38,49 @@ export function wordpressOption(details: unknown, key: string) {
   const options = objectValue(value.options);
   const raw = options[key] ?? value[key];
   return objectValue(raw).value ?? raw ?? null;
+}
+
+function capabilityEnabled(capabilities: Record<string, unknown>, key: string) {
+  const value = capabilities[key];
+  return value === true || value === 1 || value === '1' || value === 'true';
+}
+
+export function wordpressDeliveryCapabilities(details: unknown) {
+  const value = objectValue(details);
+  const capabilities = objectValue(value.capabilities);
+  const plan = objectValue(value.plan);
+  return {
+    deliveryMode: 'gutenberg' as const,
+    canEditContent: capabilityEnabled(capabilities, 'edit_posts'),
+    canPublishContent: capabilityEnabled(capabilities, 'publish_posts'),
+    canManageHomepage: capabilityEnabled(capabilities, 'manage_options') || capabilityEnabled(capabilities, 'edit_theme_options'),
+    canInstallThemes: capabilityEnabled(capabilities, 'install_themes') || capabilityEnabled(capabilities, 'update_themes'),
+    fullSiteEditing: value.is_fse_active === true || value.is_fse_eligible === true || value.is_core_site_editor_enabled === true,
+    userCanManage: value.user_can_manage === true,
+    isWordpressComAtomic: value.is_wpcom_atomic === true,
+    planSlug: String(plan.product_slug ?? plan.slug ?? plan.product_name_short ?? '').trim() || null,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+export function wordpressGutenbergContent(page: unknown) {
+  const value = objectValue(page);
+  const generatedSections = Array.isArray(value.generatedSections)
+    ? value.generatedSections.map(objectValue).map((section) => String(section.html ?? '').trim()).filter(Boolean)
+    : [];
+  const rawContent = String(value.content ?? '').trim();
+  const mainMatch = rawContent.match(/^\s*<main\b[^>]*>([\s\S]*)<\/main>\s*$/i);
+  const fallbackContent = String(mainMatch?.[1] ?? rawContent).trim();
+  const sections = generatedSections.length ? generatedSections : fallbackContent ? [fallbackContent] : [];
+  if (!sections.length) return rawContent;
+  const blockSections = sections.map((section) => `<!-- wp:html -->\n${section}\n<!-- /wp:html -->`).join('\n');
+  return [
+    '<!-- wp:group {"align":"full","className":"lulu-generated-page"} -->',
+    '<div class="wp-block-group alignfull lulu-generated-page">',
+    blockSections,
+    '</div>',
+    '<!-- /wp:group -->',
+  ].join('\n');
 }
 
 export function wordpressHomepageWarning(error: unknown) {
@@ -93,8 +136,9 @@ export async function verifyWordpressSetup(workspaceId: string, siteId: string) 
   const actualMode = String(wordpressOption(details, 'show_on_front') ?? '').trim().toLowerCase();
   const actualHomepageId = Number(wordpressOption(details, 'page_on_front') ?? 0);
   const homepageConfigured = expectedHomepageId > 0 && actualMode === 'page' && actualHomepageId === expectedHomepageId;
+  const deliveryCapabilities = wordpressDeliveryCapabilities(details);
   const activeTheme = wordpressActiveTheme(details);
-  const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME.key || activeTheme.endsWith(`/${WORDPRESS_THEME.key}`)));
+  const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME_KEY || activeTheme.endsWith(`/${WORDPRESS_THEME_KEY}`)));
   const adminBaseUrl = site.externalSiteUrl ?? String(storedHomepage.pageUrl ?? '');
   const homepage = {
     ...storedHomepage,
@@ -105,15 +149,17 @@ export async function verifyWordpressSetup(workspaceId: string, siteId: string) 
     checkedAt: new Date().toISOString(),
   };
   const theme = {
-    ...WORDPRESS_THEME,
     ...storedTheme,
-    status: themeActive ? 'active' : 'action_required',
+    status: themeActive ? 'active' : 'not_required',
     activeTheme,
-    adminUrl: wordpressAdminUrl(adminBaseUrl, '/wp-admin/theme-install.php'),
-    reason: themeActive ? null : 'custom_theme_installation_requires_wordpress_dashboard',
+    deliveryMode: 'gutenberg',
+    installationAvailable: deliveryCapabilities.canInstallThemes,
+    adminUrl: null,
+    downloadPath: null,
+    reason: themeActive ? null : 'theme_independent_gutenberg_delivery',
     checkedAt: new Date().toISOString(),
   };
-  const setup = { homepage, theme };
+  const setup = { homepage, theme, capabilities: deliveryCapabilities };
   await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { ...setup, updatedAt: new Date().toISOString() } });
   const latestJob = await repo.findLatestJob(siteId);
   const completedPages = completedWordpressPages(latestJob);
@@ -136,6 +182,8 @@ export async function verifyWordpressSetup(workspaceId: string, siteId: string) 
         homepageConfigured,
         homepageSetup: homepage,
         themeSetup: theme,
+        deliveryMode: 'gutenberg',
+        deliveryCapabilities,
         reconciledAt: new Date().toISOString(),
       },
       errorCode: null,
@@ -184,6 +232,13 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (!externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_ID_MISSING', 'The connected WordPress site ID is missing');
       const plannedPages = Array.isArray(plan?.pages) ? plan.pages : [];
       if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
+      let wordpressDetails: unknown = {};
+      try {
+        wordpressDetails = await wordpressSiteDetails(workspaceId, externalSiteId);
+      } catch (capabilityInspectionError) {
+        logger.warn({ jobId, siteId, externalSiteId, error: capabilityInspectionError instanceof Error ? capabilityInspectionError.message : String(capabilityInspectionError) }, 'WordPress delivery capabilities could not be inspected; theme-independent publishing will continue');
+      }
+      const deliveryCapabilities = wordpressDeliveryCapabilities(wordpressDetails);
       const updatePublishingProgress = async (phase: string, completedPages: number, currentPageTitle: string | null, percent: number, activity?: Omit<WebsiteGenerationActivity, 'createdAt'>) => {
         const current = await assertPublishingNotCancelled(siteId, jobId);
         const preview = {
@@ -235,6 +290,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       const existingPages = await withProviderConnectionError(workspaceId, 'wordpress', () => wordpressPages(workspaceId, externalSiteId));
       for (const [pageIndex, page] of plannedPages.entries()) {
         const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
+        const gutenbergContent = wordpressGutenbergContent(page);
         const alreadyPublished = createdPages.find((candidate) => String(candidate.slug ?? '').trim().toLowerCase() === desiredSlug && candidate.url);
         if (alreadyPublished) {
           await updatePublishingProgress('publishing_pages', pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null, Math.round(55 + ((pageIndex + 1) / plannedPages.length) * 40), { id: `page-confirmed:${desiredSlug}`, code: 'page_already_published', tone: 'success', params: { page: String(page.title ?? '') } });
@@ -247,13 +303,13 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         const existingStatus = String(existing?.status ?? '').toLowerCase();
         if (!pageId) {
           await new Promise((resolve) => setTimeout(resolve, 750));
-          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoTitle: page.seoTitle, seoDescription: page.seoDescription, menuOrder: pageIndex + 1, status: 'draft' }));
+          const draft = await withProviderConnectionError(workspaceId, 'wordpress', () => createWordpressPage(workspaceId, externalSiteId, { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: gutenbergContent, seoTitle: page.seoTitle, seoDescription: page.seoDescription, menuOrder: pageIndex + 1, status: 'draft' }));
           pageId = draft.ID ?? draft.id;
           if (!pageId) throw new AppError(502, 'WORDPRESS_CREATE_UNCONFIRMED', 'WordPress did not return an ID for the created page', { provider: 'wordpress', providerResult: draft });
           published = draft;
         } else {
           await new Promise((resolve) => setTimeout(resolve, 750));
-          published = await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressPage(workspaceId, externalSiteId, String(pageId), { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: page.content, seoDescription: page.seoDescription, menuOrder: pageIndex + 1, status: 'draft' }));
+          published = await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressPage(workspaceId, externalSiteId, String(pageId), { title: page.title, ...(desiredSlug ? { slug: desiredSlug } : {}), content: gutenbergContent, seoDescription: page.seoDescription, menuOrder: pageIndex + 1, status: 'draft' }));
         }
         const existingUrl = existing?.URL ?? existing?.url ?? existing?.link ?? null;
         if (existingStatus !== 'publish' || !existingUrl || Boolean(existing)) {
@@ -266,7 +322,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           throw new AppError(502, 'WORDPRESS_PLACEHOLDER_CONTENT_DETECTED', 'WordPress still contains placeholder content; the generated customer content was not confirmed', { provider: 'wordpress', pageId, providerResult: published });
         }
         if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });
-        await recordPublishedPage({ id: pageId, url: String(publishedUrl), title: String(page.title ?? ''), slug: desiredSlug, status: 'published', reused: Boolean(existing), publishedAt: new Date().toISOString() }, pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null);
+        await recordPublishedPage({ id: pageId, url: String(publishedUrl), title: String(page.title ?? ''), slug: desiredSlug, status: 'published', deliveryMode: 'gutenberg', reused: Boolean(existing), publishedAt: new Date().toISOString() }, pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null);
       }
       if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
       const homepageId = String(createdPages[0]?.id ?? '');
@@ -285,14 +341,8 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         homepageErrorCode = warning.errorCode;
         logger.warn({ jobId, siteId, externalSiteId, homepageId, errorCode: warning.errorCode, error: warning.technicalMessage }, 'WordPress pages published; homepage requires manual confirmation');
       }
-      let activeTheme: string | null = null;
-      try {
-        const details = await wordpressSiteDetails(workspaceId, externalSiteId);
-        activeTheme = wordpressActiveTheme(details);
-      } catch (themeInspectionError) {
-        logger.warn({ jobId, siteId, externalSiteId, error: themeInspectionError instanceof Error ? themeInspectionError.message : String(themeInspectionError) }, 'WordPress active theme could not be inspected');
-      }
-      const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME.key || activeTheme.endsWith(`/${WORDPRESS_THEME.key}`)));
+      const activeTheme = wordpressActiveTheme(wordpressDetails);
+      const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME_KEY || activeTheme.endsWith(`/${WORDPRESS_THEME_KEY}`)));
       const homepageUrl = String(createdPages[0]?.url ?? site.externalSiteUrl ?? '');
       const adminBaseUrl = site.externalSiteUrl ?? homepageUrl;
       const homepageSetup = {
@@ -303,22 +353,22 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         ...(homepageWarning ? { warning: homepageWarning, errorCode: homepageErrorCode } : {}),
       };
       const themeSetup = {
-        ...WORDPRESS_THEME,
-        status: themeActive ? 'active' : 'action_required',
+        status: themeActive ? 'active' : 'not_required',
         activeTheme,
-        adminUrl: wordpressAdminUrl(adminBaseUrl, '/wp-admin/theme-install.php'),
-        reason: themeActive ? null : 'custom_theme_installation_requires_wordpress_dashboard',
+        deliveryMode: 'gutenberg',
+        installationAvailable: deliveryCapabilities.canInstallThemes,
+        adminUrl: null,
+        downloadPath: null,
+        reason: themeActive ? null : 'theme_independent_gutenberg_delivery',
       };
-      const setupWarning = homepageWarning ?? (!themeActive ? 'Install and activate the Lulu Base theme in WordPress to apply the complete generated design.' : undefined);
+      const setupWarning = homepageWarning;
       const beforePublished = await repo.getJob(siteId, jobId);
       let finalPreview = beforePublished?.preview ?? job.preview;
+      finalPreview = appendGenerationActivity(finalPreview, { id: 'gutenberg-layout-published', code: 'gutenberg_layout_published', tone: 'success', params: { pages: createdPages.length } });
       if (homepageWarning) {
         finalPreview = appendGenerationActivity(finalPreview, { id: 'homepage-action-required', code: 'homepage_action_required', tone: 'warning', params: { page: String(createdPages[0]?.title ?? 'Home') } });
       }
-      if (!themeActive) {
-        finalPreview = appendGenerationActivity(finalPreview, { id: 'theme-action-required', code: 'theme_action_required', tone: 'warning', params: { theme: WORDPRESS_THEME.name } });
-      }
-      await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { homepage: homepageSetup, theme: themeSetup, updatedAt: new Date().toISOString() } }).catch((settingsError) => {
+      await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { homepage: homepageSetup, theme: themeSetup, capabilities: deliveryCapabilities, updatedAt: new Date().toISOString() } }).catch((settingsError) => {
         logger.warn({ jobId, siteId, error: settingsError instanceof Error ? settingsError.message : String(settingsError) }, 'Published WordPress setup metadata could not be persisted');
       });
       const publishedJob = await repo.updateJob(siteId, jobId, {
@@ -330,7 +380,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           publishedPages: createdPages,
           progress: { phase: 'published', percent: 100, completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
         },
-        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}) },
+        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, deliveryMode: 'gutenberg', deliveryCapabilities, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}) },
       });
       if (!publishedJob) await assertPublishingNotCancelled(siteId, jobId);
       await repo.updateSiteStatus(workspaceId, siteId, 'published');

@@ -104,3 +104,6 @@ Push-Zeitstempel: 2026-08-23 19:24:50 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 20:03:30 Europe/Berlin
 Änderungen: Vollständig veröffentlichte WordPress-Seiten bleiben auch bei nicht erlaubter automatischer Startseiten-Konfiguration erfolgreich; Lulu prüft Theme und Startseite getrennt, speichert konkrete Einrichtungsschritte, bietet eine verifizierbare Wiederherstellung vollständig bestätigter Alt-Jobs und liefert dafür einen abgesicherten API-Endpunkt.
+
+Push-Zeitstempel: 2026-08-23 20:29:31 Europe/Berlin
+Änderungen: WordPress-Veröffentlichungen werden jetzt capability-basiert als theme-unabhängige Gutenberg-Blöcke gespeichert; Theme-Rechte werden nicht vorausgesetzt, eine Theme-Installation ist nicht mehr erforderlich und die statische Startseite wird nacheinander über die WordPress.com-v1.1- und wp/v2-API automatisch konfiguriert und verifiziert.

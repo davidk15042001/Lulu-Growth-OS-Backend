@@ -73,7 +73,7 @@ export async function wordpressSites(workspaceId: string) {
 }
 export async function wordpressSiteDetails(workspaceId: string, siteId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
-  const fields = 'ID,URL,name,plan,capabilities,is_wpcom_atomic,is_fse_active,options';
+  const fields = 'ID,URL,name,plan,capabilities,user_can_manage,jetpack,is_wpcom_atomic,is_fse_active,is_fse_eligible,is_core_site_editor_enabled,options';
   const options = 'theme_slug,stylesheet,template,show_on_front,page_on_front';
   return (await providerRequest(
     'wordpress',
@@ -129,26 +129,37 @@ export async function publishWordpressPage(workspaceId: string, siteId: string, 
 }
 export async function updateWordpressFrontPage(workspaceId: string, siteId: string, pageId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
-  const endpoint = `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/settings/`;
   const expectedPageId = Number(pageId);
-  await providerRequest('wordpress', endpoint, token, {
-    method: 'POST',
-    body: JSON.stringify({ show_on_front: 'page', page_on_front: expectedPageId }),
-  });
+  const endpoints = [
+    `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/settings/`,
+    `https://public-api.wordpress.com/wp/v2/sites/${encodeURIComponent(siteId)}/settings`,
+  ];
   let verified: any = null;
   let actualMode = '';
   let actualPageId = 0;
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
-    verified = (await providerRequest('wordpress', endpoint, token)).data;
-    const settings = verified?.settings && typeof verified.settings === 'object' ? verified.settings : verified;
-    const modeValue = settings?.show_on_front?.value ?? settings?.show_on_front;
-    const pageValue = settings?.page_on_front?.value ?? settings?.page_on_front;
-    actualMode = String(modeValue ?? '').trim().toLowerCase();
-    actualPageId = Number(pageValue ?? 0);
-    if (actualMode === 'page' && actualPageId === expectedPageId) return verified;
+  const errors: string[] = [];
+  for (const endpoint of endpoints) {
+    try {
+      await providerRequest('wordpress', endpoint, token, {
+        method: 'POST',
+        body: JSON.stringify({ show_on_front: 'page', page_on_front: expectedPageId }),
+      });
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+        verified = (await providerRequest('wordpress', endpoint, token)).data;
+        const settings = verified?.settings && typeof verified.settings === 'object' ? verified.settings : verified;
+        const modeValue = settings?.show_on_front?.value ?? settings?.show_on_front;
+        const pageValue = settings?.page_on_front?.value ?? settings?.page_on_front;
+        actualMode = String(modeValue ?? '').trim().toLowerCase();
+        actualPageId = Number(pageValue ?? 0);
+        if (actualMode === 'page' && actualPageId === expectedPageId) return verified;
+      }
+      errors.push(`${endpoint}: settings were not confirmed`);
+    } catch (error) {
+      errors.push(`${endpoint}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-  throw new AppError(502, 'WORDPRESS_HOMEPAGE_CONFIGURATION_FAILED', `WordPress did not confirm the generated page as the homepage (expected page ${expectedPageId}, received mode ${actualMode || 'unknown'} and page ${actualPageId || 'unknown'})`, { provider: 'wordpress', expectedPageId, actualMode, actualPageId, providerResult: verified });
+  throw new AppError(502, 'WORDPRESS_HOMEPAGE_CONFIGURATION_FAILED', `WordPress did not confirm the generated page as the homepage (expected page ${expectedPageId}, received mode ${actualMode || 'unknown'} and page ${actualPageId || 'unknown'})`, { provider: 'wordpress', expectedPageId, actualMode, actualPageId, attempts: errors, providerResult: verified });
 }
 
 export async function webflowSites(workspaceId: string) {

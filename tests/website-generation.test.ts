@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { isCompleteWebsitePlan } from '../src/modules/websites/website.generation.service.js';
 import { appendGenerationActivity, generationActivities } from '../src/modules/websites/website.activity.js';
 import { automaticGenerationSchema } from '../src/modules/websites/website.validator.js';
-import { completedWordpressPages, findReusableWordpressPage, wordpressActiveTheme, wordpressAdminUrl, wordpressHomepageWarning, wordpressOption } from '../src/modules/websites/website.publish.service.js';
+import { completedWordpressPages, findReusableWordpressPage, wordpressActiveTheme, wordpressAdminUrl, wordpressDeliveryCapabilities, wordpressGutenbergContent, wordpressHomepageWarning, wordpressOption } from '../src/modules/websites/website.publish.service.js';
 import { AppError } from '../src/utils/app-error.js';
 
 function pageContent(length: number) {
@@ -87,6 +87,42 @@ describe('WordPress completion setup', () => {
     assert.equal(wordpressActiveTheme({ options: { stylesheet: 'lulu-base' } }), 'lulu-base');
     assert.equal(wordpressActiveTheme({ options: { theme_slug: 'pub/twentytwentyfive' } }), 'pub/twentytwentyfive');
     assert.equal(wordpressActiveTheme({}), null);
+  });
+
+  it('never assumes theme installation rights and detects explicit WordPress capabilities', () => {
+    const standard = wordpressDeliveryCapabilities({ capabilities: { edit_posts: true, publish_posts: true }, is_fse_active: true });
+    assert.deepEqual({ ...standard, checkedAt: '<timestamp>' }, {
+      deliveryMode: 'gutenberg',
+      canEditContent: true,
+      canPublishContent: true,
+      canManageHomepage: false,
+      canInstallThemes: false,
+      fullSiteEditing: true,
+      userCanManage: false,
+      isWordpressComAtomic: false,
+      planSlug: null,
+      checkedAt: '<timestamp>',
+    });
+    assert.match(standard.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
+    const elevated = wordpressDeliveryCapabilities({ capabilities: { edit_theme_options: '1', install_themes: true }, user_can_manage: true, plan: { product_slug: 'personal-bundle' } });
+    assert.equal(elevated.canManageHomepage, true);
+    assert.equal(elevated.canInstallThemes, true);
+    assert.equal(elevated.userCanManage, true);
+    assert.equal(elevated.planSlug, 'personal-bundle');
+  });
+
+  it('serializes generated sections as theme-independent Gutenberg blocks', () => {
+    const content = wordpressGutenbergContent({
+      content: '<main data-lulu-template="lulu-standard-v1"><section>Fallback</section></main>',
+      generatedSections: [
+        { key: 'hero', title: 'Hero', html: '<section data-lulu-section="hero"><h1>Hello</h1></section>' },
+        { key: 'services', title: 'Services', html: '<section data-lulu-section="services"><p>Service</p></section>' },
+      ],
+    });
+    assert.match(content, /<!-- wp:group/);
+    assert.equal((content.match(/<!-- wp:html -->/g) ?? []).length, 2);
+    assert.match(content, /class="wp-block-group alignfull lulu-generated-page"/);
+    assert.doesNotMatch(content, /<main\b/i);
   });
 
   it('recovers only failed jobs with a complete set of confirmed WordPress pages', () => {
