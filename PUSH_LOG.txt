@@ -56,3 +56,6 @@ Push-Zeitstempel: 2026-08-22 06:37:41 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-22 07:15:23 Europe/Berlin
 Änderungen: Alibaba-Standardmodell auf qwen3.7-plus umgestellt und Kostenanzeige an das aktive Modell gekoppelt.
+
+Push-Zeitstempel: 2026-08-23 03:04:28 Europe/Berlin
+Änderungen: Synchronisations-Push zum Frontend-Release für korrigierte Live-Daten-Navigation, bereinigte Seitenrouten und den überarbeiteten Suchbutton.
