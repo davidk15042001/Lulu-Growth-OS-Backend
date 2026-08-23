@@ -73,8 +73,13 @@ export async function updateSiteExternalDetails(workspaceId: string, siteId: str
   return result.rowCount ? getSite(workspaceId, siteId) : null;
 }
 
+export const updateSiteStatusSql = `UPDATE workspace_sites
+  SET status = $3::text, updated_at = NOW()
+  WHERE workspace_id = $1::uuid AND id = $2::uuid
+  RETURNING id`;
+
 export async function updateSiteStatus(workspaceId: string, siteId: string, status: string) {
-  const result = await query<any>(`UPDATE workspace_sites SET status = $3 WHERE workspace_id = $1 AND id = $2 RETURNING id`, [workspaceId, siteId, status]);
+  const result = await query<any>(updateSiteStatusSql, [workspaceId, siteId, status]);
   return result.rowCount ? getSite(workspaceId, siteId) : null;
 }
 
@@ -173,24 +178,47 @@ export async function getJob(siteId: string, jobId: string) {
   const result = await query<any>(`${jobSelect} WHERE site_id = $1 AND id = $2 LIMIT 1`, [siteId, jobId]);
   return result.rows[0] ? mapJob(result.rows[0]) : null;
 }
+export const updateGenerationJobSql = `UPDATE website_generation_jobs
+  SET status = COALESCE($3::text,status),
+      plan = COALESCE($4::jsonb,plan),
+      preview = COALESCE($5::jsonb,preview),
+      provider_result = COALESCE($6::jsonb,provider_result),
+      error_code = $7::text,
+      error_message = $8::text,
+      worker_id = CASE WHEN $3::text IN ('published','failed','cancelled') THEN NULL ELSE worker_id END,
+      locked_at = CASE WHEN $3::text IN ('published','failed','cancelled') THEN NULL ELSE locked_at END,
+      heartbeat_at = CASE WHEN $3::text IS NOT NULL THEN NOW() ELSE heartbeat_at END
+  WHERE site_id = $1::uuid AND id = $2::uuid
+    AND (status <> 'cancelled' OR $3::text IS NULL OR $3::text = 'cancelled')
+  RETURNING id`;
+
+export const markGenerationJobFailedSql = `UPDATE website_generation_jobs
+  SET status = 'failed',
+      preview = jsonb_set(
+        COALESCE(preview, '{}'::jsonb),
+        '{progress}',
+        COALESCE(preview->'progress', '{}'::jsonb) || '{"phase":"failed"}'::jsonb,
+        TRUE
+      ),
+      error_code = $3::text,
+      error_message = $4::text,
+      worker_id = NULL,
+      locked_at = NULL,
+      heartbeat_at = NOW()
+  WHERE site_id = $1::uuid AND id = $2::uuid AND status <> 'cancelled'
+  RETURNING id`;
+
 export async function updateJob(siteId: string, jobId: string, patch: { status?: string; plan?: Record<string, unknown>; preview?: Record<string, unknown>; providerResult?: Record<string, unknown>; errorCode?: string | null; errorMessage?: string | null }) {
   const result = await query<any>(
-    `UPDATE website_generation_jobs
-     SET status = COALESCE($3,status),
-         plan = COALESCE($4,plan),
-         preview = COALESCE($5,preview),
-         provider_result = COALESCE($6,provider_result),
-         error_code = $7,
-         error_message = $8,
-         worker_id = CASE WHEN $3 IN ('published','failed','cancelled') THEN NULL ELSE worker_id END,
-         locked_at = CASE WHEN $3 IN ('published','failed','cancelled') THEN NULL ELSE locked_at END,
-         heartbeat_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE heartbeat_at END
-     WHERE site_id = $1 AND id = $2
-       AND (status <> 'cancelled' OR $3 IS NULL OR $3 = 'cancelled')
-     RETURNING id`,
+    updateGenerationJobSql,
     [siteId, jobId, patch.status ?? null, patch.plan ? JSON.stringify(patch.plan) : null, patch.preview ? JSON.stringify(patch.preview) : null, patch.providerResult ? JSON.stringify(patch.providerResult) : null, patch.errorCode ?? null, patch.errorMessage ?? null],
   );
   return result.rowCount ? getJob(siteId, jobId) : null;
+}
+
+export async function markGenerationJobFailed(siteId: string, jobId: string, errorCode: string, errorMessage: string) {
+  const result = await query(markGenerationJobFailedSql, [siteId, jobId, errorCode, errorMessage]);
+  return result.rowCount > 0;
 }
 
 export async function findLatestCancelledJob(siteId: string) {

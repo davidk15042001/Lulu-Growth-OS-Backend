@@ -3,7 +3,7 @@ import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import assert from 'node:assert/strict';
 import { RESOURCE_CATALOG } from '../src/domain/resource-catalog.js';
-import { failExhaustedJobsSql } from '../src/modules/websites/website.repo.js';
+import { failExhaustedJobsSql, markGenerationJobFailedSql, updateGenerationJobSql, updateSiteStatusSql } from '../src/modules/websites/website.repo.js';
 
 const migrationsDirectory = path.resolve('src/database/migrations');
 
@@ -134,12 +134,18 @@ async function main() {
        RETURNING id`,
       [workspaceId]
     );
+    const updatedWebsiteSite = await database.query<{ id: string }>(updateSiteStatusSql, [workspaceId, websiteSite.rows[0]?.id, 'generating']);
+    assert.equal(updatedWebsiteSite.rows[0]?.id, websiteSite.rows[0]?.id);
+    const updatedWebsiteSiteStatus = await database.query<{ status: string }>('SELECT status FROM workspace_sites WHERE id = $1', [websiteSite.rows[0]?.id]);
+    assert.equal(updatedWebsiteSiteStatus.rows[0]?.status, 'generating');
     const websiteJob = await database.query<{ id: string }>(
       `INSERT INTO website_generation_jobs (site_id, prompt, created_by, auto_publish, status, preview, plan, provider_result)
        VALUES ($1, 'Generate a progressive migration test website.', $2, TRUE, 'publishing', '{"progress":{"phase":"publishing_pages","percent":72,"completedSections":3,"totalSections":8}}'::jsonb, '{"pages":[{"slug":"home","generatedSections":[{"key":"hero","title":"Hero","html":"<section>Hero</section>"}]}]}'::jsonb, '{"pages":[{"slug":"home","id":"42"}]}'::jsonb)
        RETURNING id`,
       [websiteSite.rows[0]?.id, userId]
     );
+    const updatedWebsiteJob = await database.query<{ id: string }>(updateGenerationJobSql, [websiteSite.rows[0]?.id, websiteJob.rows[0]?.id, 'planning', null, null, null, null, null]);
+    assert.equal(updatedWebsiteJob.rows[0]?.id, websiteJob.rows[0]?.id);
     const cancelledWebsiteJob = await database.query<{ status: string; preview: { progress?: { phase?: string; percent?: number } } }>(
       `UPDATE website_generation_jobs
        SET status = 'cancelled',
@@ -191,6 +197,13 @@ async function main() {
     assert.equal(exhaustedWebsiteJob.rows[0]?.preview.activity?.at(-1)?.code, 'generation_retry_exhausted');
     assert.equal(exhaustedWebsiteJob.rows[0]?.preview.activity?.at(-1)?.params?.attempts, 3);
     assert.equal(exhaustedWebsiteJob.rows[0]?.provider_result.failureDetails?.reason, 'worker_lease_expired');
+    await database.query(markGenerationJobFailedSql, [websiteSite.rows[0]?.id, websiteJob.rows[0]?.id, 'WEBSITE_TEST_FAILURE', 'Typed fallback test']);
+    const fallbackWebsiteJob = await database.query<{ status: string; error_code: string; error_message: string; preview: { progress?: { phase?: string; percent?: number } } }>('SELECT status, error_code, error_message, preview FROM website_generation_jobs WHERE id = $1', [websiteJob.rows[0]?.id]);
+    assert.equal(fallbackWebsiteJob.rows[0]?.status, 'failed');
+    assert.equal(fallbackWebsiteJob.rows[0]?.error_code, 'WEBSITE_TEST_FAILURE');
+    assert.equal(fallbackWebsiteJob.rows[0]?.error_message, 'Typed fallback test');
+    assert.equal(fallbackWebsiteJob.rows[0]?.preview.progress?.phase, 'failed');
+    assert.equal(fallbackWebsiteJob.rows[0]?.preview.progress?.percent, 72);
     const exhaustedWebsiteSite = await database.query<{ status: string }>('SELECT status FROM workspace_sites WHERE id = $1', [websiteSite.rows[0]?.id]);
     assert.equal(exhaustedWebsiteSite.rows[0]?.status, 'error');
     const record = await database.query<{ id: string }>(

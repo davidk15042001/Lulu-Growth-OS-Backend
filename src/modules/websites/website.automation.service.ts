@@ -86,7 +86,13 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
   const heartbeat = async () => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
-    try { await repo.heartbeatJob(input.siteId, input.id, workerId); } finally { heartbeatRunning = false; }
+    try {
+      await repo.heartbeatJob(input.siteId, input.id, workerId);
+    } catch (error) {
+      logger.error({ jobId: input.id, siteId: input.siteId, workerId, error: error instanceof Error ? error.message : String(error) }, 'Website generation heartbeat failed');
+    } finally {
+      heartbeatRunning = false;
+    }
   };
   const heartbeatTimer = setInterval(() => void heartbeat(), 15_000);
   heartbeatTimer.unref();
@@ -192,14 +198,35 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
     logger.error({ jobId: input.id, siteId: input.siteId, provider: input.provider, error: error instanceof Error ? { name: error.name, message: error.message, details: errorDetails } : String(error) }, 'Website generation job failed');
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
+    const errorCode = error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED';
     const currentJob = await repo.getJob(input.siteId, input.id).catch(() => null);
-    await repo.updateJob(input.siteId, input.id, {
-      status: 'failed',
-      errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED',
-      errorMessage: message,
-      ...(currentJob ? { preview: appendGenerationActivity(currentJob.preview, { id: `generation-failed:${currentJob.attemptCount}`, code: 'generation_failed', tone: 'error', params: { message } }) } : {}),
-      ...(errorDetails ? { providerResult: { ...(currentJob?.providerResult ?? {}), failureDetails: errorDetails } } : {}),
-    }).catch(() => undefined);
+    try {
+      await repo.updateJob(input.siteId, input.id, {
+        status: 'failed',
+        errorCode,
+        errorMessage: message,
+        ...(currentJob ? { preview: appendGenerationActivity(currentJob.preview, { id: `generation-failed:${currentJob.attemptCount}`, code: 'generation_failed', tone: 'error', params: { message } }) } : {}),
+        ...(errorDetails ? { providerResult: { ...(currentJob?.providerResult ?? {}), failureDetails: errorDetails } } : {}),
+      });
+    } catch (persistenceError) {
+      logger.error({
+        jobId: input.id,
+        siteId: input.siteId,
+        originalError: error instanceof Error ? error.message : String(error),
+        persistenceError: persistenceError instanceof Error ? persistenceError.message : String(persistenceError),
+      }, 'Website generation failure status could not be persisted');
+      try {
+        await repo.markGenerationJobFailed(input.siteId, input.id, errorCode, message);
+      } catch (fallbackError) {
+        logger.fatal({
+          jobId: input.id,
+          siteId: input.siteId,
+          originalError: error instanceof Error ? error.message : String(error),
+          persistenceError: persistenceError instanceof Error ? persistenceError.message : String(persistenceError),
+          fallbackError: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        }, 'Website generation failure fallback could not be persisted');
+      }
+    }
     if (shouldDisconnectProvider(error) && (input.provider === 'wordpress' || input.provider === 'webflow')) await disconnectWebsiteProvider(input.workspaceId, input.provider);
   } finally {
     clearInterval(heartbeatTimer);
