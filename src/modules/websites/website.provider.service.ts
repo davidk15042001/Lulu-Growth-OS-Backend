@@ -71,6 +71,17 @@ export async function wordpressSites(workspaceId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
   return (await providerRequest('wordpress', 'https://public-api.wordpress.com/rest/v1.1/me/sites/', token)).data;
 }
+export async function wordpressSiteDetails(workspaceId: string, siteId: string) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const fields = 'ID,URL,name,plan,capabilities,is_wpcom_atomic,is_fse_active,options';
+  const options = 'theme_slug,stylesheet,template,show_on_front,page_on_front';
+  return (await providerRequest(
+    'wordpress',
+    `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/?fields=${encodeURIComponent(fields)}&options=${encodeURIComponent(options)}`,
+    token,
+    { signal: AbortSignal.timeout(12_000) },
+  )).data;
+}
 export async function wordpressPages(workspaceId: string, siteId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
   const data = (await providerRequest('wordpress', `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/?type=page&number=100&status=any`, token)).data;

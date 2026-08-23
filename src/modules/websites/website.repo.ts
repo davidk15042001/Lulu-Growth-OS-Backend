@@ -124,6 +124,11 @@ export async function findActiveJob(siteId: string) {
   return result.rows[0] ? mapJob(result.rows[0]) : null;
 }
 
+export async function findLatestJob(siteId: string) {
+  const result = await query<any>(`${jobSelect} WHERE site_id = $1 ORDER BY updated_at DESC LIMIT 1`, [siteId]);
+  return result.rows[0] ? mapJob(result.rows[0]) : null;
+}
+
 export const failExhaustedJobsSql = `WITH exhausted AS (
        UPDATE website_generation_jobs AS job
        SET status = 'failed',

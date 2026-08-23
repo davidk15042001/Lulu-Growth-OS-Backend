@@ -1,8 +1,152 @@
 import { AppError } from '../../utils/app-error.js';
+import { logger } from '../../config/logger.js';
 import * as repo from './website.repo.js';
-import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressFrontPage, updateWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
+import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressFrontPage, updateWordpressPage, wordpressPages, wordpressSiteDetails, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 import { appendGenerationActivity, type WebsiteGenerationActivity } from './website.activity.js';
 import type { WebsiteGenerationTargetMode } from './website.types.js';
+
+const WORDPRESS_THEME = { key: 'lulu-base', name: 'Lulu Base', version: '2.0.0', downloadPath: '/downloads/lulu-base.zip' } as const;
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function wordpressAdminUrl(siteUrl: string | null | undefined, path: string) {
+  if (!siteUrl) return null;
+  try {
+    const url = new URL(siteUrl);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    url.pathname = path.startsWith('/') ? path : `/${path}`;
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function wordpressActiveTheme(details: unknown) {
+  const value = objectValue(details);
+  const options = objectValue(value.options);
+  const theme = objectValue(value.theme);
+  const candidates = [options.theme_slug, options.stylesheet, options.template, value.theme_slug, value.stylesheet, value.template, typeof value.theme === 'string' ? value.theme : null, theme.slug, theme.stylesheet, theme.template];
+  return candidates.filter((candidate) => typeof candidate === 'string' || typeof candidate === 'number').map((candidate) => String(candidate).trim().toLowerCase()).find(Boolean) ?? null;
+}
+
+export function wordpressOption(details: unknown, key: string) {
+  const value = objectValue(details);
+  const options = objectValue(value.options);
+  const raw = options[key] ?? value[key];
+  return objectValue(raw).value ?? raw ?? null;
+}
+
+export function wordpressHomepageWarning(error: unknown) {
+  const errorCode = error instanceof AppError ? error.code : 'WORDPRESS_HOMEPAGE_CONFIGURATION_FAILED';
+  const providerDetails = error instanceof AppError ? objectValue(error.details) : {};
+  const providerMessage = String(providerDetails.providerMessage ?? '').trim();
+  const technicalMessage = error instanceof Error ? error.message : String(error);
+  return {
+    errorCode,
+    technicalMessage,
+    message: providerMessage
+      ? `All generated pages were published, but WordPress did not apply the generated Home page automatically (${providerMessage}). Select Home under WordPress Reading settings.`
+      : 'All generated pages were published, but WordPress did not confirm the generated Home page as the static homepage. Select Home under WordPress Reading settings.',
+  };
+}
+
+export function completedWordpressPages(job: unknown) {
+  const value = objectValue(job);
+  if (value.status !== 'failed') return null;
+  const plan = objectValue(value.plan);
+  const result = objectValue(value.providerResult);
+  const plannedPages = Array.isArray(plan.pages) ? plan.pages.map(objectValue) : [];
+  const publishedPages = Array.isArray(result.pages) ? result.pages.map(objectValue) : [];
+  if (!plannedPages.length || publishedPages.length < plannedPages.length) return null;
+  const confirmedPages = publishedPages.filter((page) => {
+    const id = String(page.id ?? '').trim();
+    const url = String(page.url ?? '').trim();
+    return Boolean(id && /^https?:\/\//i.test(url));
+  });
+  if (confirmedPages.length < plannedPages.length) return null;
+  const allPlannedPagesConfirmed = plannedPages.every((page, index) => {
+    const slug = String(page.slug ?? '').trim().toLowerCase();
+    const title = String(page.title ?? '').trim().toLowerCase();
+    return confirmedPages.some((publishedPage, publishedIndex) => {
+      const publishedSlug = String(publishedPage.slug ?? '').trim().toLowerCase();
+      const publishedTitle = String(publishedPage.title ?? '').trim().toLowerCase();
+      return (slug && slug === publishedSlug) || (title && title === publishedTitle) || (!slug && !title && index === publishedIndex);
+    });
+  });
+  return allPlannedPagesConfirmed ? confirmedPages.slice(0, plannedPages.length) : null;
+}
+
+export async function verifyWordpressSetup(workspaceId: string, siteId: string) {
+  const site = await repo.getSite(workspaceId, siteId);
+  if (!site || site.provider !== 'wordpress' || !site.externalSiteId) {
+    throw new AppError(404, 'WORDPRESS_SITE_NOT_FOUND', 'The connected WordPress site was not found');
+  }
+  const details = await wordpressSiteDetails(workspaceId, site.externalSiteId);
+  const storedSetup = objectValue(site.settings.wordpressSetup);
+  const storedHomepage = objectValue(storedSetup.homepage);
+  const storedTheme = objectValue(storedSetup.theme);
+  const expectedHomepageId = Number(storedHomepage.pageId ?? 0);
+  const actualMode = String(wordpressOption(details, 'show_on_front') ?? '').trim().toLowerCase();
+  const actualHomepageId = Number(wordpressOption(details, 'page_on_front') ?? 0);
+  const homepageConfigured = expectedHomepageId > 0 && actualMode === 'page' && actualHomepageId === expectedHomepageId;
+  const activeTheme = wordpressActiveTheme(details);
+  const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME.key || activeTheme.endsWith(`/${WORDPRESS_THEME.key}`)));
+  const adminBaseUrl = site.externalSiteUrl ?? String(storedHomepage.pageUrl ?? '');
+  const homepage = {
+    ...storedHomepage,
+    status: homepageConfigured ? 'confirmed' : 'action_required',
+    actualMode: actualMode || null,
+    actualPageId: actualHomepageId || null,
+    adminUrl: wordpressAdminUrl(adminBaseUrl, '/wp-admin/options-reading.php'),
+    checkedAt: new Date().toISOString(),
+  };
+  const theme = {
+    ...WORDPRESS_THEME,
+    ...storedTheme,
+    status: themeActive ? 'active' : 'action_required',
+    activeTheme,
+    adminUrl: wordpressAdminUrl(adminBaseUrl, '/wp-admin/theme-install.php'),
+    reason: themeActive ? null : 'custom_theme_installation_requires_wordpress_dashboard',
+    checkedAt: new Date().toISOString(),
+  };
+  const setup = { homepage, theme };
+  await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { ...setup, updatedAt: new Date().toISOString() } });
+  const latestJob = await repo.findLatestJob(siteId);
+  const completedPages = completedWordpressPages(latestJob);
+  let reconciledJob = latestJob;
+  if (latestJob && completedPages) {
+    const progress = { phase: 'published', percent: 100, completedPages: completedPages.length, totalPages: completedPages.length, currentPageTitle: null };
+    const preview = {
+      ...appendGenerationActivity(latestJob.preview, { id: 'published-job-reconciled', code: 'published_job_reconciled', tone: 'warning', params: { pages: completedPages.length } }),
+      provider: 'wordpress',
+      publishedPages: completedPages,
+      progress,
+    };
+    reconciledJob = await repo.updateJob(siteId, latestJob.id, {
+      status: 'published',
+      preview,
+      providerResult: {
+        ...latestJob.providerResult,
+        partial: false,
+        pages: completedPages,
+        homepageConfigured,
+        homepageSetup: homepage,
+        themeSetup: theme,
+        reconciledAt: new Date().toISOString(),
+      },
+      errorCode: null,
+      errorMessage: null,
+    });
+    await repo.updateSiteStatus(workspaceId, siteId, 'published');
+    logger.warn({ jobId: latestJob.id, siteId, pages: completedPages.length }, 'Recovered a failed WordPress job whose complete page set was already published');
+  }
+  const updatedSite = await repo.getSite(workspaceId, siteId);
+  return { site: updatedSite ?? site, setup, job: reconciledJob };
+}
 
 export function findReusableWordpressPage(existingPages: any[], page: Record<string, unknown>, targetMode: WebsiteGenerationTargetMode) {
   if (targetMode === 'new') return undefined;
@@ -129,31 +273,64 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (!homepageId) throw new AppError(502, 'WORDPRESS_HOMEPAGE_UNCONFIRMED', 'WordPress did not confirm the generated homepage', { provider: 'wordpress', providerResult: { pages: createdPages } });
       let homepageConfigured = false;
       let homepageWarning: string | undefined;
+      let homepageErrorCode: string | undefined;
       try {
         await updatePublishingProgress('configuring_homepage', plannedPages.length, null, 97, { id: 'homepage-configuring', code: 'homepage_configuring', tone: 'info', params: {} });
         await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
         homepageConfigured = true;
       } catch (homepageError) {
-        const details = homepageError instanceof AppError && homepageError.details && typeof homepageError.details === 'object'
-          ? homepageError.details as Record<string, unknown>
-          : undefined;
-        const providerMessage = String(details?.providerMessage ?? '');
-        const errorMessage = homepageError instanceof Error ? homepageError.message : String(homepageError);
-        const settingsEndpointDisabled = /api calls? to this endpoint have been disabled/i.test(`${providerMessage} ${errorMessage}`);
-        if (!settingsEndpointDisabled) throw homepageError;
-        homepageWarning = 'WordPress published the generated pages, but its settings endpoint is disabled; set the generated homepage manually in WordPress Reading settings.';
+        if (homepageError instanceof AppError && homepageError.code === 'WEBSITE_GENERATION_CANCELLED') throw homepageError;
+        const warning = wordpressHomepageWarning(homepageError);
+        homepageWarning = warning.message;
+        homepageErrorCode = warning.errorCode;
+        logger.warn({ jobId, siteId, externalSiteId, homepageId, errorCode: warning.errorCode, error: warning.technicalMessage }, 'WordPress pages published; homepage requires manual confirmation');
       }
+      let activeTheme: string | null = null;
+      try {
+        const details = await wordpressSiteDetails(workspaceId, externalSiteId);
+        activeTheme = wordpressActiveTheme(details);
+      } catch (themeInspectionError) {
+        logger.warn({ jobId, siteId, externalSiteId, error: themeInspectionError instanceof Error ? themeInspectionError.message : String(themeInspectionError) }, 'WordPress active theme could not be inspected');
+      }
+      const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME.key || activeTheme.endsWith(`/${WORDPRESS_THEME.key}`)));
+      const homepageUrl = String(createdPages[0]?.url ?? site.externalSiteUrl ?? '');
+      const adminBaseUrl = site.externalSiteUrl ?? homepageUrl;
+      const homepageSetup = {
+        status: homepageConfigured ? 'confirmed' : 'action_required',
+        pageId: homepageId,
+        pageUrl: homepageUrl || null,
+        adminUrl: wordpressAdminUrl(adminBaseUrl, '/wp-admin/options-reading.php'),
+        ...(homepageWarning ? { warning: homepageWarning, errorCode: homepageErrorCode } : {}),
+      };
+      const themeSetup = {
+        ...WORDPRESS_THEME,
+        status: themeActive ? 'active' : 'action_required',
+        activeTheme,
+        adminUrl: wordpressAdminUrl(adminBaseUrl, '/wp-admin/theme-install.php'),
+        reason: themeActive ? null : 'custom_theme_installation_requires_wordpress_dashboard',
+      };
+      const setupWarning = homepageWarning ?? (!themeActive ? 'Install and activate the Lulu Base theme in WordPress to apply the complete generated design.' : undefined);
       const beforePublished = await repo.getJob(siteId, jobId);
+      let finalPreview = beforePublished?.preview ?? job.preview;
+      if (homepageWarning) {
+        finalPreview = appendGenerationActivity(finalPreview, { id: 'homepage-action-required', code: 'homepage_action_required', tone: 'warning', params: { page: String(createdPages[0]?.title ?? 'Home') } });
+      }
+      if (!themeActive) {
+        finalPreview = appendGenerationActivity(finalPreview, { id: 'theme-action-required', code: 'theme_action_required', tone: 'warning', params: { theme: WORDPRESS_THEME.name } });
+      }
+      await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { homepage: homepageSetup, theme: themeSetup, updatedAt: new Date().toISOString() } }).catch((settingsError) => {
+        logger.warn({ jobId, siteId, error: settingsError instanceof Error ? settingsError.message : String(settingsError) }, 'Published WordPress setup metadata could not be persisted');
+      });
       const publishedJob = await repo.updateJob(siteId, jobId, {
         status: 'published',
         preview: {
-          ...appendGenerationActivity(beforePublished?.preview ?? job.preview, { id: 'website-published', code: homepageWarning ? 'website_published_with_warning' : 'website_published', tone: homepageWarning ? 'warning' : 'success', params: homepageWarning ? { warning: homepageWarning } : {} }),
+          ...appendGenerationActivity(finalPreview, { id: 'website-published', code: setupWarning ? 'website_published_setup_required' : 'website_published', tone: setupWarning ? 'warning' : 'success', params: {} }),
           provider: 'wordpress',
           automatic: job.autoPublish,
           publishedPages: createdPages,
           progress: { phase: 'published', percent: 100, completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
         },
-        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, partial: false, pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) },
+        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}) },
       });
       if (!publishedJob) await assertPublishingNotCancelled(siteId, jobId);
       await repo.updateSiteStatus(workspaceId, siteId, 'published');

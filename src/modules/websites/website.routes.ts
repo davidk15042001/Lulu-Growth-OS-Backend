@@ -8,6 +8,7 @@ router.use(requireWorkspaceMember);
 router.route('/').get(controller.list).post(requireWorkspaceEditor, controller.create).all(methodNotAllowed);
 router.route('/:siteId/provider-content').get(controller.providerContent).all(methodNotAllowed);
 router.route('/:siteId/wordpress-content').get(controller.wordpressContent).all(methodNotAllowed);
+router.route('/:siteId/wordpress-setup/verify').post(requireWorkspaceEditor, controller.verifyWordpressSiteSetup).all(methodNotAllowed);
 router.route('/automatic-generation').post(requireWorkspaceEditor, controller.automaticGenerate).all(methodNotAllowed);
 router.route('/sync-provider').post(requireWorkspaceEditor, controller.syncProvider).all(methodNotAllowed);
 router.route('/cleanup-provider').post(requireWorkspaceEditor, controller.cleanupProvider).all(methodNotAllowed);

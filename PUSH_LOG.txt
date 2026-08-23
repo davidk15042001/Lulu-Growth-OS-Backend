@@ -101,3 +101,6 @@ Push-Zeitstempel: 2026-08-23 19:18:37 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 19:24:50 Europe/Berlin
 Änderungen: Synchronisations-Push zum Frontend-Release, der das redundante kleine Website-Fehler-Popup entfernt und fehlgeschlagene Jobs ausschließlich im vollständigen Generierungsfenster darstellt.
+
+Push-Zeitstempel: 2026-08-23 20:03:30 Europe/Berlin
+Änderungen: Vollständig veröffentlichte WordPress-Seiten bleiben auch bei nicht erlaubter automatischer Startseiten-Konfiguration erfolgreich; Lulu prüft Theme und Startseite getrennt, speichert konkrete Einrichtungsschritte, bietet eine verifizierbare Wiederherstellung vollständig bestätigter Alt-Jobs und liefert dafür einen abgesicherten API-Endpunkt.

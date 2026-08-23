@@ -3,7 +3,7 @@ import { AppError } from '../../utils/app-error.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as repo from './website.repo.js';
 import { automaticGenerationSchema, createDomainSchema, createJobSchema, createSiteSchema, domainParams, jobParams, siteIdParams } from './website.validator.js';
-import { publishWebsiteJob } from './website.publish.service.js';
+import { publishWebsiteJob, verifyWordpressSetup } from './website.publish.service.js';
 import { getActiveWebsiteGenerationJob, resetWebsiteProviderState, startAutomaticWebsiteGeneration, syncWordpressProviderSites } from './website.automation.service.js';
 import { webflowCollections, webflowCustomDomains, webflowSites, wordpressMedia, wordpressPages, wordpressPosts } from './website.provider.service.js';
 import { requestWebsiteGenerationWorkerRun } from './website.worker.js';
@@ -53,6 +53,13 @@ export async function wordpressContent(req: Request, res: Response, next: NextFu
       posts,
       media,
     });
+  } catch (error) { next(error); }
+}
+
+export async function verifyWordpressSiteSetup(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.parse(req.params);
+    return successResponse(res, 'WordPress setup verified', await verifyWordpressSetup(params.workspaceId, params.siteId));
   } catch (error) { next(error); }
 }
 
