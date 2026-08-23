@@ -92,3 +92,6 @@ Push-Zeitstempel: 2026-08-23 18:24:02 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 18:42:38 Europe/Berlin
 Änderungen: Synchronisations-Push zum Frontend-Release, das die allgemeine Website-Übersicht entfernt und WordPress- sowie Webflow-Verbindungen direkt auf den jeweiligen Provider-Seiten verwaltet.
+
+Push-Zeitstempel: 2026-08-23 18:51:37 Europe/Berlin
+Änderungen: Synchronisations-Push zum Frontend-Fix für kontrastreiche Website-Zielauswahl und lesbaren Bestätigungsbutton im Generierungsdialog.
