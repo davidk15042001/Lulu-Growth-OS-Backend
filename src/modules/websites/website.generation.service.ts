@@ -165,8 +165,8 @@ type WebsiteContext = {
 
 const TEMPLATE_KEY = 'lulu-standard-v1' as const;
 const TEMPLATE_DESIGN_SOURCE = 'custom-bolt-forge' as const;
-const TEMPLATE_DESIGN_VERSION = '2026-08-23';
-const TEMPLATE_FONT_STYLE = `<style data-lulu-template-fonts>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');</style>`;
+const TEMPLATE_DESIGN_VERSION = '2026-08-23.2';
+const TEMPLATE_FONT_LINKS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">`;
 const PAGE_COUNT = 4;
 const forbiddenContent = /hello world|under construction|website is being built|no verified information|example\.com|123 example street|hi@example\.com|\(123\) 456-7890|\bTODO\b|xiangjinxin/i;
 
@@ -293,6 +293,27 @@ function stringArray(value: unknown, fallback: string[] = [], max = 8) {
   return parsed.length ? parsed : fallback;
 }
 
+function exactValues<T>(primary: T[], fallback: T[], count: number, key: (value: T) => string) {
+  const candidates = [...primary, ...fallback];
+  const unique: T[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const normalizedKey = key(candidate).trim().toLowerCase();
+    if (!normalizedKey || seen.has(normalizedKey)) continue;
+    seen.add(normalizedKey);
+    unique.push(candidate);
+  }
+  if (!unique.length) return [];
+  const result = unique.slice(0, count);
+  for (let index = 0; result.length < count; index += 1) result.push(unique[index % unique.length]!);
+  return result;
+}
+
+function exactStrings(value: unknown, fallback: string[], count: number) {
+  const parsed = Array.isArray(value) ? value.map((item) => stringValue(item, '', 160)).filter(Boolean) : [];
+  return exactValues(parsed, fallback, count, (item) => item);
+}
+
 function objectValue(value: unknown) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -331,33 +352,36 @@ function fallbackServiceCards(context: WebsiteContext): ContentCard[] {
     description: offering.description ?? offering.valueProposition ?? `Learn how ${offering.name} supports the requirements of your organization.`,
     cta: 'Learn more',
   }));
-  if (verified.length) return verified;
   const company = context.workspace.companyName;
-  return [
+  const contextual = [
     { title: 'Solutions', description: context.workspace.valueProposition ?? `${company} provides solutions aligned with verified customer and business requirements.`, cta: 'Explore solutions' },
     { title: 'Expert guidance', description: context.workspace.shortBrandDescription ?? `Discuss your requirements with ${company} and identify a suitable next step.`, cta: 'Talk to us' },
     { title: 'Business support', description: context.workspace.businessDescription ?? `${company} supports customers with a clear and focused service experience.`, cta: 'Learn more' },
+    { title: 'Customer focus', description: context.workspace.targetMarket ? `${company} focuses its offer on ${context.workspace.targetMarket}.` : `${company} aligns each next step with the customer's confirmed requirements.`, cta: 'Learn more' },
+    { title: 'Clear process', description: `Share the requirement with ${company}, review the relevant information and continue with a confirmed next step.`, cta: 'Contact us' },
+    { title: 'Company expertise', description: context.workspace.industry ? `${company} applies its verified experience in ${context.workspace.industry}.` : context.workspace.businessDescription ?? `${company} provides focused business solutions.`, cta: 'About us' },
   ];
+  return exactValues(verified, contextual, 6, (card) => `${card.title}|${card.description}`);
 }
 
-function cardsFrom(value: unknown, fallback: ContentCard[], max = 6) {
-  const cards = objectArray(value, max).map((card) => ({ title: stringValue(card.title, '', 120), description: stringValue(card.description, '', 500), cta: stringValue(card.cta, 'Learn more', 80) })).filter((card) => card.title && card.description);
-  return cards.length ? cards : fallback;
+function cardsFrom(value: unknown, fallback: ContentCard[], count = 6) {
+  const cards = objectArray(value, count).map((card) => ({ title: stringValue(card.title, '', 120), description: stringValue(card.description, '', 500), cta: stringValue(card.cta, 'Learn more', 80) })).filter((card) => card.title && card.description);
+  return exactValues(cards, fallback, count, (card) => `${card.title}|${card.description}`);
 }
 
-function sectionsFrom(value: unknown, fallback: ContentSection[], max = 5) {
-  const sections = objectArray(value, max).map((section) => ({ heading: stringValue(section.heading, '', 140), body: stringValue(section.body, '', 900) })).filter((section) => section.heading && section.body);
-  return sections.length ? sections : fallback;
+function sectionsFrom(value: unknown, fallback: ContentSection[], count = 5) {
+  const sections = objectArray(value, count).map((section) => ({ heading: stringValue(section.heading, '', 140), body: stringValue(section.body, '', 900) })).filter((section) => section.heading && section.body);
+  return exactValues(sections, fallback, count, (section) => `${section.heading}|${section.body}`);
 }
 
-function stepsFrom(value: unknown, fallback: ProcessStep[], max = 6) {
-  const steps = objectArray(value, max).map((step) => ({ title: stringValue(step.title, '', 120), description: stringValue(step.description, '', 420) })).filter((step) => step.title && step.description);
-  return steps.length ? steps : fallback;
+function stepsFrom(value: unknown, fallback: ProcessStep[], count = 3) {
+  const steps = objectArray(value, count).map((step) => ({ title: stringValue(step.title, '', 120), description: stringValue(step.description, '', 420) })).filter((step) => step.title && step.description);
+  return exactValues(steps, fallback, count, (step) => `${step.title}|${step.description}`);
 }
 
 function faqsFrom(value: unknown, fallback: FaqItem[]) {
   const faqs = objectArray(value, 6).map((faq) => ({ question: stringValue(faq.question, '', 180), answer: stringValue(faq.answer, '', 700) })).filter((faq) => faq.question && faq.answer);
-  return faqs.length >= 2 ? faqs : fallback;
+  return exactValues(faqs, fallback, 3, (faq) => `${faq.question}|${faq.answer}`);
 }
 
 function templateLabels(language: string) {
@@ -401,9 +425,10 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
   const fallbackCards = fallbackServiceCards(context);
   const fallbackIntro = context.workspace.shortBrandDescription ?? context.workspace.businessDescription ?? context.workspace.valueProposition ?? `${company} helps customers move from requirements to a clear next step.`;
   const fallbackTarget = context.workspace.targetMarket ?? 'customers looking for a reliable business partner';
-  const serviceCards = cardsFrom(services.items, fallbackCards);
-  const aboutSections = sectionsFrom(about.sections, [{ heading: 'What we do', body: context.workspace.businessDescription ?? fallbackIntro }, { heading: 'Our focus', body: context.workspace.valueProposition ?? fallbackIntro }, { heading: 'Who we support', body: `Our work is focused on ${fallbackTarget}.` }]);
+  const serviceCards = cardsFrom(services.items, fallbackCards, 4);
+  const aboutSections = sectionsFrom(about.sections, [{ heading: 'What we do', body: context.workspace.businessDescription ?? fallbackIntro }, { heading: 'Our focus', body: context.workspace.valueProposition ?? fallbackIntro }, { heading: 'Who we support', body: `Our work is focused on ${fallbackTarget}.` }], 3);
   const aboutCards = aboutSections.map((section) => ({ title: section.heading, description: section.body, cta: 'Learn more' }));
+  const trustFallback = [context.workspace.industry ?? '', context.workspace.countryRegion ?? '', ...context.workspace.positioningTags, ...serviceCards.map((card) => card.title), company].filter(Boolean);
   return {
     siteTitle: company,
     tagline: stringValue(value.tagline, fallbackIntro, 220),
@@ -416,10 +441,10 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
       introduction: stringValue(home.introduction, context.workspace.businessDescription ?? fallbackIntro, 700),
       primaryCta: stringValue(home.primaryCta, 'Start a conversation', 70),
       secondaryCta: stringValue(home.secondaryCta, 'Explore our services', 70),
-      trustItems: stringArray(home.trustItems, [...context.workspace.positioningTags, context.workspace.industry ?? '', context.workspace.countryRegion ?? ''].filter(Boolean), 6),
+      trustItems: exactStrings(home.trustItems, trustFallback, 5),
       audienceHeading: stringValue(home.audienceHeading, 'How we can help', 140),
       audienceIntroduction: stringValue(home.audienceIntroduction, `Focused support for ${fallbackTarget}.`, 500),
-      audienceCards: cardsFrom(home.audienceCards, serviceCards.slice(0, 4), 4),
+      audienceCards: cardsFrom(home.audienceCards, serviceCards, 4),
       servicesHeading: stringValue(home.servicesHeading, 'Solutions built around real requirements', 140),
       servicesIntroduction: stringValue(home.servicesIntroduction, context.workspace.valueProposition ?? fallbackIntro, 500),
       featureEyebrow: stringValue(home.featureEyebrow, 'Core strengths', 100),
@@ -432,10 +457,10 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
       splitEyebrow: stringValue(home.splitEyebrow, 'Focused delivery', 100),
       splitTitle: stringValue(home.splitTitle, `How ${company} supports your goals`, 180),
       splitText: stringValue(home.splitText, context.workspace.businessDescription ?? fallbackIntro, 700),
-      splitItems: stringArray(home.splitItems, [...context.workspace.positioningTags, ...serviceCards.map((card) => card.title)].filter(Boolean), 7),
+      splitItems: exactStrings(home.splitItems, [...context.workspace.positioningTags, ...serviceCards.map((card) => card.title), context.workspace.industry ?? '', fallbackTarget].filter(Boolean), 6),
       processHeading: stringValue(home.processHeading, 'A clear path forward', 140),
       processIntroduction: stringValue(home.processIntroduction, 'A straightforward process keeps requirements, decisions and next steps transparent.', 500),
-      processSteps: stepsFrom(home.processSteps, [{ title: 'Share your requirements', description: 'Tell us what you need, who it is for and what a successful outcome should look like.' }, { title: 'Review the right approach', description: 'We organize the available information and clarify the most relevant option.' }, { title: 'Move to the next step', description: 'Continue with a concrete conversation based on confirmed requirements.' }]),
+      processSteps: stepsFrom(home.processSteps, [{ title: 'Share your requirements', description: 'Tell us what you need, who it is for and what a successful outcome should look like.' }, { title: 'Review the right approach', description: 'We organize the available information and clarify the most relevant option.' }, { title: 'Move to the next step', description: 'Continue with a concrete conversation based on confirmed requirements.' }], 3),
       capabilityHeading: stringValue(home.capabilityHeading, 'Capability and quality', 160),
       capabilityIntroduction: stringValue(home.capabilityIntroduction, `A clear overview of how ${company} approaches delivery and customer requirements.`, 600),
       capabilityCards: cardsFrom(home.capabilityCards, aboutCards.slice(0, 2), 2),
@@ -458,7 +483,7 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
       introduction: stringValue(services.introduction, context.workspace.valueProposition ?? fallbackIntro, 700),
       items: serviceCards,
       processHeading: stringValue(services.processHeading, 'How we work', 140),
-      processSteps: stepsFrom(services.processSteps, [{ title: 'Understand', description: 'We begin with the verified business requirement and desired outcome.' }, { title: 'Align', description: 'The available solution is matched to the relevant audience and context.' }, { title: 'Proceed', description: 'A concrete next step is agreed without unsupported assumptions.' }]),
+      processSteps: stepsFrom(services.processSteps, [{ title: 'Understand', description: 'We begin with the verified business requirement and desired outcome.' }, { title: 'Align', description: 'The available solution is matched to the relevant audience and context.' }, { title: 'Proceed', description: 'A concrete next step is agreed without unsupported assumptions.' }], 3),
       ctaTitle: stringValue(services.ctaTitle, 'Find the right solution', 160),
       ctaText: stringValue(services.ctaText, 'Share your requirements and receive a focused response.', 500),
       ctaLabel: stringValue(services.ctaLabel, 'Start a conversation', 70),
@@ -467,7 +492,7 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
       title: stringValue(contact.title, `Contact ${company}`, 160),
       introduction: stringValue(contact.introduction, 'Share your requirements so the right person can understand the request and confirm the next step.', 700),
       preparationHeading: stringValue(contact.preparationHeading, 'Helpful information to include', 140),
-      preparationItems: stringArray(contact.preparationItems, ['What you need', 'Who the requirement is for', 'Your preferred timing', 'Any relevant files or specifications'], 8),
+      preparationItems: exactStrings(contact.preparationItems, ['What you need', 'Who the requirement is for', 'Your preferred timing', 'Any relevant files or specifications'], 4),
       nextStepTitle: stringValue(contact.nextStepTitle, 'What happens next', 140),
       nextStepText: stringValue(contact.nextStepText, `${company} will review the information provided and respond through the available business contact channel.`, 600),
     },
@@ -484,10 +509,10 @@ async function generateContentProfile(input: { provider: string; language: strin
     'Use concise, professional language. Avoid generic filler and repeated sentences.',
     'Required JSON keys: tagline, brandVoice, primaryLanguage, globalSeo, home, about, services, contact.',
     'globalSeo: {title,description,keywords}.',
-    'home: {eyebrow,headline,introduction,primaryCta,secondaryCta,trustItems,audienceHeading,audienceIntroduction,audienceCards:[{title,description,cta}],servicesHeading,servicesIntroduction,featureEyebrow,featureHeading,featureIntroduction,featureCards:[{title,description,cta}],highlightEyebrow,highlightTitle,highlightText,splitEyebrow,splitTitle,splitText,splitItems,processHeading,processIntroduction,processSteps:[{title,description}],capabilityHeading,capabilityIntroduction,capabilityCards:[{title,description,cta}],faqHeading,faqs:[{question,answer}],finalCtaTitle,finalCtaText,finalCtaLabel}.',
-    'about: {title,introduction,sections:[{heading,body}],ctaTitle,ctaText,ctaLabel}.',
-    'services: {title,introduction,items:[{title,description,cta}],processHeading,processSteps:[{title,description}],ctaTitle,ctaText,ctaLabel}.',
-    'contact: {title,introduction,preparationHeading,preparationItems,nextStepTitle,nextStepText}.',
+    'home: {eyebrow,headline,introduction,primaryCta,secondaryCta,trustItems:[exactly 5],audienceHeading,audienceIntroduction,audienceCards:[exactly 4 {title,description,cta}],servicesHeading,servicesIntroduction,featureEyebrow,featureHeading,featureIntroduction,featureCards:[exactly 3 {title,description,cta}],highlightEyebrow,highlightTitle,highlightText,splitEyebrow,splitTitle,splitText,splitItems:[exactly 6],processHeading,processIntroduction,processSteps:[exactly 3 {title,description}],capabilityHeading,capabilityIntroduction,capabilityCards:[exactly 2 {title,description,cta}],faqHeading,faqs:[exactly 3 {question,answer}],finalCtaTitle,finalCtaText,finalCtaLabel}.',
+    'about: {title,introduction,sections:[exactly 3 {heading,body}],ctaTitle,ctaText,ctaLabel}.',
+    'services: {title,introduction,items:[exactly 4 {title,description,cta}],processHeading,processSteps:[exactly 3 {title,description}],ctaTitle,ctaText,ctaLabel}.',
+    'contact: {title,introduction,preparationHeading,preparationItems:[exactly 4],nextStepTitle,nextStepText}.',
     input.cleanRetry ? 'The previous response was invalid. Return a complete, parseable JSON object with every required key.' : '',
   ].filter(Boolean).join(' ');
   const response = await createJsonCompletion({ maxTokens: 3_400, system, user: [`Provider: ${input.provider}`, `Language: ${input.language}`, `Website goal: ${input.prompt}`, 'Verified business context:', JSON.stringify(input.context)].join('\n\n') });
@@ -545,24 +570,34 @@ export function renderHome(profile: WebsiteContentProfile, palette: ThemePalette
   const home = profile.home;
   const labels = templateLabels(profile.primaryLanguage);
   const formLabels = contactFormLabels(profile.primaryLanguage);
+  const genericCard: ContentCard = { title: home.servicesHeading, description: home.servicesIntroduction, cta: home.secondaryCta };
+  const audienceCardData = exactValues(home.audienceCards, [...profile.services.items, ...home.featureCards, genericCard], 4, (card) => `${card.title}|${card.description}`);
+  const serviceCardData = exactValues(profile.services.items, [...home.audienceCards, ...home.featureCards, genericCard], 4, (card) => `${card.title}|${card.description}`);
+  const featureCardData = exactValues(home.featureCards, [...home.audienceCards, ...profile.services.items, genericCard], 3, (card) => `${card.title}|${card.description}`);
+  const processStepData = exactValues(home.processSteps, profile.services.processSteps, 3, (step) => `${step.title}|${step.description}`);
+  const capabilityCardData = exactValues(home.capabilityCards, [...home.featureCards, ...profile.services.items, genericCard], 2, (card) => `${card.title}|${card.description}`);
+  const faqData = exactValues(home.faqs, [{ question: home.finalCtaTitle, answer: home.finalCtaText }], 3, (faq) => `${faq.question}|${faq.answer}`);
+  const trustItemData = exactValues(home.trustItems, [...profile.services.items.map((card) => card.title), profile.siteTitle], 5, (item) => item);
+  const splitItemData = exactValues(home.splitItems, [...profile.services.items.map((card) => card.title), ...home.trustItems], 6, (item) => item);
+  const preparationItemData = exactValues(profile.contact.preparationItems, splitItemData, 4, (item) => item);
   const heroImage = safeImageUrl(images[0]?.url);
   const heroBackground = heroImage ? `background-image:linear-gradient(90deg,rgba(24,32,43,.90),rgba(24,32,43,.48)),url('${escapeHtml(heroImage)}');background-position:center;background-size:cover;` : `background:linear-gradient(125deg,${palette.secondary},${palette.primary});`;
-  const trust = home.trustItems.length ? `<section data-lulu-section="trust" style="width:100%;margin:0;border-bottom:1px solid #dce2e8;background:${palette.background}"><div style="display:flex;max-width:1280px;margin:0 auto;padding:16px;align-items:center;justify-content:center;gap:12px 32px;flex-wrap:wrap">${home.trustItems.map((item) => `<span style="color:${palette.ink};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px;font-weight:500;letter-spacing:.16em;text-transform:uppercase">${escapeHtml(item)}</span>`).join('')}</div></section>` : '';
-  const audienceCards = home.audienceCards.slice(0, 4).map((card, index) => `<article style="display:flex;min-width:0;flex-direction:column;border:1px solid #dce2e8;background:${palette.surface};padding:24px"><span aria-hidden="true" style="display:grid;width:28px;height:28px;place-items:center;background:${palette.primary};color:#fff;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:700">${String(index + 1).padStart(2, '0')}</span><h3 style="margin:16px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px;font-weight:600;line-height:1.2">${escapeHtml(card.title)}</h3><p style="margin:8px 0 0;flex:1;color:${palette.muted};font-size:14px;line-height:1.6">${escapeHtml(card.description)}</p><a href="${websiteCtaDestination(card.cta, '/services/')}" style="margin-top:20px;color:${palette.primary};font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
-  const serviceCards = profile.services.items.slice(0, 6).map((card) => `<article style="display:flex;min-width:0;flex-direction:column;border:1px solid #dce2e8;background:${palette.surface};padding:24px"><p style="margin:0;color:${palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(labels.services)}</p><h3 style="margin:10px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px;font-weight:600;line-height:1.2">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;flex:1;color:${palette.muted};font-size:14px;line-height:1.6">${escapeHtml(card.description)}</p><a href="${websiteCtaDestination(card.cta, '/services/')}" style="margin-top:18px;color:${palette.primary};font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
-  const featureCards = home.featureCards.slice(0, 3).map((card) => `<article style="border:1px solid #dce2e8;border-left:3px solid ${palette.accent};background:${palette.surface};padding:24px"><h3 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:28px;font-weight:700;line-height:1.15">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;color:${palette.muted};font-size:14px;line-height:1.65">${escapeHtml(card.description)}</p></article>`).join('');
-  const splitItems = home.splitItems.slice(0, 7).map((item) => `<li style="display:flex;align-items:flex-start;gap:10px;color:${palette.ink};font-size:14px;line-height:1.5"><span aria-hidden="true" style="width:6px;height:6px;margin-top:8px;flex:0 0 6px;background:${palette.accent}"></span>${escapeHtml(item)}</li>`).join('');
-  const steps = home.processSteps.slice(0, 7).map((step, index) => `<article style="min-width:0;border-top:3px solid ${palette.accent};padding:20px 14px 14px"><span style="display:block;margin-bottom:12px;color:${palette.primary};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px;font-weight:700">${String(index + 1).padStart(2, '0')}</span><h3 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px;font-weight:600;line-height:1.2">${escapeHtml(step.title)}</h3><p style="margin:9px 0 0;color:${palette.muted};font-size:14px;line-height:1.6">${escapeHtml(step.description)}</p></article>`).join('');
-  const capabilities = home.capabilityCards.slice(0, 2).map((card) => `<article style="border:1px solid #dce2e8;background:${palette.surface};padding:32px"><span aria-hidden="true" style="display:block;width:24px;height:3px;background:${palette.primary}"></span><h3 style="margin:16px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:28px;font-weight:600;line-height:1.2">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;color:${palette.muted};font-size:14px;line-height:1.65">${escapeHtml(card.description)}</p><a href="${websiteCtaDestination(card.cta, '/services/')}" style="display:inline-flex;margin-top:20px;color:${palette.primary};font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
-  const faqs = home.faqs.map((faq) => `<details style="padding:18px 0;border-bottom:1px solid #dce2e8"><summary style="cursor:pointer;color:${palette.ink};font-weight:700">${escapeHtml(faq.question)}</summary><p style="margin:12px 0 0;color:${palette.muted};line-height:1.7">${escapeHtml(faq.answer)}</p></details>`).join('');
+  const trust = `<section data-lulu-section="trust" style="width:100%;margin:0;border-bottom:1px solid #dce2e8;background:${palette.background}"><div style="display:flex;max-width:1280px;margin:0 auto;padding:16px;align-items:center;justify-content:center;gap:12px 32px;flex-wrap:wrap">${trustItemData.map((item) => `<span data-lulu-trust-item style="color:${palette.ink};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px;font-weight:500;letter-spacing:.16em;text-transform:uppercase">${escapeHtml(item)}</span>`).join('')}</div></section>`;
+  const audienceCards = audienceCardData.map((card, index) => `<article data-lulu-card="audience" style="display:flex;min-width:0;flex-direction:column;border:1px solid #dce2e8;background:${palette.surface};padding:24px"><span aria-hidden="true" style="display:grid;width:28px;height:28px;place-items:center;background:${palette.primary};color:#fff;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:700">${String(index + 1).padStart(2, '0')}</span><h3 style="margin:16px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px;font-weight:600;line-height:1.2">${escapeHtml(card.title)}</h3><p style="margin:8px 0 0;flex:1;color:${palette.muted};font-size:14px;line-height:1.6">${escapeHtml(card.description)}</p><a href="${websiteCtaDestination(card.cta, '/services/')}" style="margin-top:20px;color:${palette.primary};font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
+  const serviceCards = serviceCardData.map((card) => `<article data-lulu-card="service" style="display:flex;min-width:0;flex-direction:column;border:1px solid #dce2e8;background:${palette.surface};padding:24px"><p style="margin:0;color:${palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(labels.services)}</p><h3 style="margin:10px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px;font-weight:600;line-height:1.2">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;flex:1;color:${palette.muted};font-size:14px;line-height:1.6">${escapeHtml(card.description)}</p><a href="${websiteCtaDestination(card.cta, '/services/')}" style="margin-top:18px;color:${palette.primary};font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
+  const featureCards = featureCardData.map((card) => `<article data-lulu-card="feature" style="border:1px solid #dce2e8;border-left:3px solid ${palette.accent};background:${palette.surface};padding:24px"><h3 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:28px;font-weight:700;line-height:1.15">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;color:${palette.muted};font-size:14px;line-height:1.65">${escapeHtml(card.description)}</p></article>`).join('');
+  const splitItems = splitItemData.map((item) => `<li data-lulu-split-item style="display:flex;align-items:flex-start;gap:10px;color:${palette.ink};font-size:14px;line-height:1.5"><span aria-hidden="true" style="width:6px;height:6px;margin-top:8px;flex:0 0 6px;background:${palette.accent}"></span>${escapeHtml(item)}</li>`).join('');
+  const steps = processStepData.map((step, index) => `<article data-lulu-card="process" style="min-width:0;border-top:3px solid ${palette.accent};padding:20px 14px 14px"><span style="display:block;margin-bottom:12px;color:${palette.primary};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px;font-weight:700">${String(index + 1).padStart(2, '0')}</span><h3 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px;font-weight:600;line-height:1.2">${escapeHtml(step.title)}</h3><p style="margin:9px 0 0;color:${palette.muted};font-size:14px;line-height:1.6">${escapeHtml(step.description)}</p></article>`).join('');
+  const capabilities = capabilityCardData.map((card) => `<article data-lulu-card="capability" style="border:1px solid #dce2e8;background:${palette.surface};padding:32px"><span aria-hidden="true" style="display:block;width:24px;height:3px;background:${palette.primary}"></span><h3 style="margin:16px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:28px;font-weight:600;line-height:1.2">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;color:${palette.muted};font-size:14px;line-height:1.65">${escapeHtml(card.description)}</p><a href="${websiteCtaDestination(card.cta, '/services/')}" style="display:inline-flex;margin-top:20px;color:${palette.primary};font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
+  const faqs = faqData.map((faq) => `<details data-lulu-faq style="padding:18px 0;border-bottom:1px solid #dce2e8"><summary style="cursor:pointer;color:${palette.ink};font-weight:700">${escapeHtml(faq.question)}</summary><p style="margin:12px 0 0;color:${palette.muted};line-height:1.7">${escapeHtml(faq.answer)}</p></details>`).join('');
   const featureImage = imageMarkup(images[1]) || templatePlaceholderVisual(profile, palette);
   const splitImage = imageMarkup(images[2]) || templatePlaceholderVisual(profile, palette);
-  const preparationItems = profile.contact.preparationItems.slice(0, 5).map((item) => `<li style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,.22);color:#fff;font-size:14px">${escapeHtml(item)}</li>`).join('');
+  const preparationItems = preparationItemData.map((item) => `<li data-lulu-preparation-item style="padding:10px 0;border-bottom:1px solid rgba(255,255,255,.22);color:#fff;font-size:14px">${escapeHtml(item)}</li>`).join('');
   return {
     openingHtml: templatePageOpening(palette),
     sections: [
-      renderedSection('hero', home.eyebrow, `${TEMPLATE_FONT_STYLE}<section data-lulu-template="${TEMPLATE_KEY}" data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}" data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}" data-lulu-section="hero" style="width:100%;margin:0;overflow:hidden;${heroBackground}color:#fff"><div style="max-width:1280px;margin:0 auto;padding:clamp(80px,10vw,112px) 16px"><div style="max-width:850px"><p style="margin:0;color:${palette.accent};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:500;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:780px;margin:16px 0 0;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(40px,7vw,72px);font-weight:700;letter-spacing:-.01em;line-height:1.03">${escapeHtml(home.headline)}</h1><p style="max-width:680px;margin:20px 0 0;color:rgba(255,255,255,.82);font-size:18px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:32px">${button(home.primaryCta, websiteCtaDestination(home.primaryCta, '/contact/'), palette)}${button(home.secondaryCta, websiteCtaDestination(home.secondaryCta, '/services/'), palette, true)}</div></div></div></section>`),
-      ...(trust ? [renderedSection('trust', labels.trust, trust)] : []),
+      renderedSection('hero', home.eyebrow, `${TEMPLATE_FONT_LINKS}<section data-lulu-template="${TEMPLATE_KEY}" data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}" data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}" data-lulu-section="hero" style="width:100%;margin:0;overflow:hidden;${heroBackground}color:#fff"><div style="max-width:1280px;margin:0 auto;padding:clamp(80px,10vw,112px) 16px"><div style="max-width:850px"><p style="margin:0;color:${palette.accent};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:500;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:780px;margin:16px 0 0;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(40px,7vw,72px);font-weight:700;letter-spacing:-.01em;line-height:1.03">${escapeHtml(home.headline)}</h1><p style="max-width:680px;margin:20px 0 0;color:rgba(255,255,255,.82);font-size:18px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:32px">${button(home.primaryCta, websiteCtaDestination(home.primaryCta, '/contact/'), palette)}${button(home.secondaryCta, websiteCtaDestination(home.secondaryCta, '/services/'), palette, true)}</div></div></div></section>`),
+      renderedSection('trust', labels.trust, trust),
       renderedSection('buyer-routing', home.audienceHeading, `<section data-lulu-section="buyer-routing" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.surface}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(labels.solutions, home.audienceHeading, home.audienceIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px">${audienceCards}</div></div></section>`),
       renderedSection('portfolio', home.servicesHeading, `<section data-lulu-section="portfolio" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.background}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(labels.services, home.servicesHeading, home.servicesIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px">${serviceCards}</div><div style="margin-top:32px">${button(home.secondaryCta, '/services/', palette)}</div></div></section>`),
       renderedSection('core-strengths', home.featureHeading, `<section data-lulu-section="core-strengths" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.surface}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(home.featureEyebrow, home.featureHeading, home.featureIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px">${featureCards}</div></div></section>`),
@@ -584,7 +619,7 @@ function renderStandardPage(input: { eyebrow: string; title: string; introductio
   return {
     openingHtml: templatePageOpening(input.palette),
     sections: [
-      renderedSection('introduction', input.title, `${TEMPLATE_FONT_STYLE}<header data-lulu-template="${TEMPLATE_KEY}" data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}" data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}" data-lulu-section="introduction" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;border-bottom:1px solid #dce2e8;background-color:${input.palette.background};background-image:linear-gradient(to right,rgba(24,60,101,.07) 1px,transparent 1px),linear-gradient(to bottom,rgba(24,60,101,.07) 1px,transparent 1px);background-size:48px 48px"><div style="max-width:1280px;margin:0 auto"><p style="margin:0;color:${input.palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(input.eyebrow)}</p><h1 style="max-width:900px;margin:12px 0 0;color:${input.palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(40px,7vw,60px);font-weight:700;letter-spacing:-.01em;line-height:1.05">${escapeHtml(input.title)}</h1><p style="max-width:680px;margin:16px 0 0;color:${input.palette.muted};font-size:18px;line-height:1.65">${escapeHtml(input.introduction)}</p></div></header>`),
+      renderedSection('introduction', input.title, `${TEMPLATE_FONT_LINKS}<header data-lulu-template="${TEMPLATE_KEY}" data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}" data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}" data-lulu-section="introduction" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;border-bottom:1px solid #dce2e8;background-color:${input.palette.background};background-image:linear-gradient(to right,rgba(24,60,101,.07) 1px,transparent 1px),linear-gradient(to bottom,rgba(24,60,101,.07) 1px,transparent 1px);background-size:48px 48px"><div style="max-width:1280px;margin:0 auto"><p style="margin:0;color:${input.palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(input.eyebrow)}</p><h1 style="max-width:900px;margin:12px 0 0;color:${input.palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(40px,7vw,60px);font-weight:700;letter-spacing:-.01em;line-height:1.05">${escapeHtml(input.title)}</h1><p style="max-width:680px;margin:16px 0 0;color:${input.palette.muted};font-size:18px;line-height:1.65">${escapeHtml(input.introduction)}</p></div></header>`),
       ...(image ? [renderedSection('company-image', input.imageTitle ?? 'Company image', `<section data-lulu-section="company-image" style="width:100%;margin:0;padding:46px 16px 0;background:${input.palette.surface}"><div style="max-width:1280px;margin:0 auto">${image}</div></section>`)] : []),
       ...input.sections,
     ],
@@ -638,6 +673,25 @@ function renderPage(index: number, profile: WebsiteContentProfile, palette: Them
   return renderContact(profile, palette);
 }
 
+const HOME_TEMPLATE_SECTIONS = ['hero', 'trust', 'buyer-routing', 'portfolio', 'core-strengths', 'differentiator', 'split-feature', 'process', 'capabilities', 'business-call-to-action', 'request-form', 'faq', 'call-to-action'] as const;
+
+function occurrenceCount(content: string, marker: string) {
+  return content.split(marker).length - 1;
+}
+
+function hasExactHomeTemplateContract(content: string) {
+  return HOME_TEMPLATE_SECTIONS.every((key) => occurrenceCount(content, `data-lulu-section="${key}"`) === 1)
+    && occurrenceCount(content, 'data-lulu-card="audience"') === 4
+    && occurrenceCount(content, 'data-lulu-card="service"') === 4
+    && occurrenceCount(content, 'data-lulu-card="feature"') === 3
+    && occurrenceCount(content, 'data-lulu-card="process"') === 3
+    && occurrenceCount(content, 'data-lulu-card="capability"') === 2
+    && occurrenceCount(content, 'data-lulu-trust-item') === 5
+    && occurrenceCount(content, 'data-lulu-split-item') === 6
+    && occurrenceCount(content, 'data-lulu-preparation-item') === 4
+    && occurrenceCount(content, 'data-lulu-faq') === 3;
+}
+
 function pageHasPublishableContent(page: GeneratedPage, index: number) {
   const content = String(page.content ?? '').trim();
   const minimumLength = index === 0 ? 2_000 : 800;
@@ -647,6 +701,8 @@ function pageHasPublishableContent(page: GeneratedPage, index: number) {
     && content.includes(`data-lulu-template="${TEMPLATE_KEY}"`)
     && content.includes(`data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}"`)
     && content.includes(`data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}"`)
+    && !/<style\b|@import\s+url|@media\s*\(/i.test(content)
+    && (index !== 0 || hasExactHomeTemplateContract(content))
     && !forbiddenContent.test(content);
 }
 

@@ -113,3 +113,6 @@ Push-Zeitstempel: 2026-08-23 21:05:17 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 21:47:30 Europe/Berlin
 Änderungen: Das Custom-Bolt-Forge-Referenzdesign ist jetzt als versionierter, deterministischer WordPress-/Gutenberg-Renderer fest verankert: 13 eindeutige responsive Startseiten-Sections, Template-Typografie, 1280-Pixel-Raster, Header, Navigation, Footer, Formular und CTA-Struktur können nicht durch die KI verändert werden; die KI befüllt ausschließlich geprüfte Texte, Farben, SEO und verfügbare Bilder. Desktop-/Mobile-Vorschau und Versions-Quality-Gate verhindern alte vereinfachte Layouts.
+
+Push-Zeitstempel: 2026-08-23 22:25:11 Europe/Berlin
+Änderungen: Die WordPress-Ausgabe erfüllt jetzt den vollständigen Referenzvertrag: exakt 13 Sections sowie feste Mengen von 4 Zielgruppen-, 4 Leistungs-, 3 Stärken-, 3 Prozess- und 2 Capability-Karten, 5 Trust-Items, 6 Split-Items, 4 Formular-Hinweise und 3 FAQs. WordPress.com-sanitizer-unsichere Style-Blöcke wurden vollständig entfernt, sichtbare CSS-Fragmente werden vom Quality-Gate abgelehnt, Full-Width-Gutenberg, kurze Navigation, responsive Raster und ein sauber getrennter Footer verhindern Überlauf und zusammenlaufende Links.

@@ -7,7 +7,9 @@ import { completedWordpressPages, findReusableWordpressPage, findWordpressDuplic
 import { AppError } from '../src/utils/app-error.js';
 
 function pageContent(length: number) {
-  return `<main data-lulu-template="lulu-standard-v1" data-lulu-design-source="custom-bolt-forge" data-lulu-design-version="2026-08-23"><h1>Eine klare Überschrift</h1><section><p>${'Relevanter, überprüfter Inhalt für die Zielgruppe. '.repeat(length)}</p></section></main>`;
+  const sections = ['hero', 'trust', 'buyer-routing', 'portfolio', 'core-strengths', 'differentiator', 'split-feature', 'process', 'capabilities', 'business-call-to-action', 'request-form', 'faq', 'call-to-action'].map((key) => `<section data-lulu-section="${key}"></section>`).join('');
+  const markers = `${'<article data-lulu-card="audience"></article>'.repeat(4)}${'<article data-lulu-card="service"></article>'.repeat(4)}${'<article data-lulu-card="feature"></article>'.repeat(3)}${'<article data-lulu-card="process"></article>'.repeat(3)}${'<article data-lulu-card="capability"></article>'.repeat(2)}${'<span data-lulu-trust-item></span>'.repeat(5)}${'<li data-lulu-split-item></li>'.repeat(6)}${'<li data-lulu-preparation-item></li>'.repeat(4)}${'<details data-lulu-faq></details>'.repeat(3)}`;
+  return `<main data-lulu-template="lulu-standard-v1" data-lulu-design-source="custom-bolt-forge" data-lulu-design-version="2026-08-23.2"><h1>Eine klare Überschrift</h1>${sections}${markers}<p>${'Relevanter, überprüfter Inhalt für die Zielgruppe. '.repeat(length)}</p></main>`;
 }
 
 function planWith(content: string) {
@@ -42,7 +44,7 @@ describe('website generation quality gate', () => {
   it('rejects short output and placeholder content', () => {
     assert.equal(isCompleteWebsitePlan(planWith('<main><h1>Kurz</h1></main>')), false);
     assert.equal(isCompleteWebsitePlan(planWith(`${pageContent(55)}<p>hello world</p>`)), false);
-    assert.equal(isCompleteWebsitePlan(planWith(pageContent(55).replace('data-lulu-design-version="2026-08-23"', 'data-lulu-design-version="legacy"'))), false);
+    assert.equal(isCompleteWebsitePlan(planWith(pageContent(55).replace('data-lulu-design-version="2026-08-23.2"', 'data-lulu-design-version="legacy"'))), false);
   });
 
   it('maps generated CTA labels to deterministic destinations and builds a real contact form', () => {
@@ -71,11 +73,21 @@ describe('website generation quality gate', () => {
     const rendered = renderHome(profile, palette, []);
     const html = `${rendered.openingHtml}${rendered.sections.map((section) => section.html).join('')}${rendered.closingHtml}`;
     assert.match(html, /data-lulu-design-source="custom-bolt-forge"/);
-    assert.match(html, /data-lulu-design-version="2026-08-23"/);
+    assert.match(html, /data-lulu-design-version="2026-08-23\.2"/);
     assert.match(html, /max-width:1280px/);
     assert.match(html, /Barlow Condensed/);
     assert.deepEqual(rendered.sections.map((section) => section.key), ['hero', 'trust', 'buyer-routing', 'portfolio', 'core-strengths', 'differentiator', 'split-feature', 'process', 'capabilities', 'business-call-to-action', 'request-form', 'faq', 'call-to-action']);
     assert.equal(new Set(rendered.sections.map((section) => section.key)).size, rendered.sections.length);
+    assert.equal((html.match(/data-lulu-card="audience"/g) ?? []).length, 4);
+    assert.equal((html.match(/data-lulu-card="service"/g) ?? []).length, 4);
+    assert.equal((html.match(/data-lulu-card="feature"/g) ?? []).length, 3);
+    assert.equal((html.match(/data-lulu-card="process"/g) ?? []).length, 3);
+    assert.equal((html.match(/data-lulu-card="capability"/g) ?? []).length, 2);
+    assert.equal((html.match(/data-lulu-trust-item/g) ?? []).length, 5);
+    assert.equal((html.match(/data-lulu-split-item/g) ?? []).length, 6);
+    assert.equal((html.match(/data-lulu-preparation-item/g) ?? []).length, 4);
+    assert.equal((html.match(/data-lulu-faq/g) ?? []).length, 3);
+    assert.doesNotMatch(html, /<style\b|@import\s+url|@media\s*\(/i);
   });
 });
 
@@ -158,6 +170,8 @@ describe('WordPress completion setup', () => {
     assert.match(content, /<!-- wp:group/);
     assert.equal((content.match(/<!-- wp:html -->/g) ?? []).length, 2);
     assert.match(content, /class="wp-block-group alignfull lulu-generated-page"/);
+    assert.match(content, /class="wp-block-group alignfull lulu-generated-page"/);
+    assert.doesNotMatch(content, /class="wp-block-group alignfull lulu-generated-page" style="[^"]*(?:width|margin)/);
     assert.doesNotMatch(content, /<main\b/i);
   });
 
@@ -195,6 +209,7 @@ describe('WordPress completion setup', () => {
       globalSeo: { description: 'Verified AI services.' },
       pages: [
         { title: 'Home', slug: 'home' },
+        { title: 'About Acme AI and its verified business offering', slug: 'about' },
         { title: 'Services', slug: 'services' },
         { title: 'Contact', slug: 'contact' },
       ],
@@ -206,10 +221,14 @@ describe('WordPress completion setup', () => {
     assert.match(chrome.header, /data-lulu-global="header"/);
     assert.match(chrome.footer, /data-lulu-global="footer"/);
     assert.match(chrome.header, /data-lulu-design-source="custom-bolt-forge"/);
-    assert.match(chrome.header, /position:sticky/);
     assert.match(chrome.header, /max-width:1280px/);
+    assert.match(chrome.header, /grid-template-columns:repeat\(auto-fit/);
     assert.match(chrome.footer, /Barlow/);
     assert.match(chrome.header, /https:\/\/example\.com\/services\//);
+    assert.match(chrome.header, />About<\/a>/);
+    assert.doesNotMatch(chrome.header, /About Acme AI and its verified business offering/);
+    assert.doesNotMatch(`${chrome.header}${chrome.footer}`, /<style\b|@import\s+url|@media\s*\(/i);
+    assert.doesNotMatch(chrome.footer, /<footer\b/i);
     assert.doesNotMatch(`${chrome.header}${chrome.footer}`, /123 Example Street|hi@example\.com/i);
     assert.equal(wordpressTemplatePartForArea([{ id: 'old//header', area: 'header', theme: 'old' }, { id: 'active//header', area: 'header', theme: 'pub/active' }], 'header', 'pub/active')?.id, 'active//header');
   });
