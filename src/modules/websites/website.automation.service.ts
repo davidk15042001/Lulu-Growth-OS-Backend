@@ -93,12 +93,18 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
     if (!input.createdBy) throw new AppError(409, 'WEBSITE_GENERATION_USER_MISSING', 'The user who started this website generation no longer exists');
     await assertGenerationNotCancelled(input.siteId, input.id);
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'generating');
+    const storedProgress = input.preview?.progress && typeof input.preview.progress === 'object'
+      ? input.preview.progress as Record<string, unknown>
+      : {};
+    const resuming = Object.keys(input.plan ?? {}).length > 0;
     await repo.updateJob(input.siteId, input.id, {
       status: 'planning',
       preview: {
         provider: input.provider,
         automatic: input.autoPublish,
-        progress: { phase: 'analyzing_company', percent: 5, completedPages: 0, totalPages: 4, currentPageTitle: null },
+        progress: resuming
+          ? { ...storedProgress, phase: 'resuming', percent: typeof storedProgress.percent === 'number' ? storedProgress.percent : 5 }
+          : { phase: 'analyzing_company', percent: 5, completedPages: 0, totalPages: 4, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null },
       },
     });
     let imageAssets: Array<{ url: string; altText: string }> = [];
@@ -132,6 +138,9 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
               completedPages: progress.completedPages,
               totalPages: progress.totalPages,
               currentPageTitle: progress.currentPageTitle,
+              completedSections: progress.completedSections,
+              totalSections: progress.totalSections,
+              currentSectionTitle: progress.currentSectionTitle,
             },
           },
         });
@@ -145,7 +154,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       preview: {
         provider: input.provider,
         automatic: input.autoPublish,
-        progress: { phase: input.autoPublish ? 'publishing' : 'preview_ready', percent: input.autoPublish ? 55 : 100, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null },
+        progress: { phase: input.autoPublish ? 'publishing' : 'preview_ready', percent: input.autoPublish ? 55 : 100, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: plan.pages.reduce((total, page) => total + page.generatedSections.length, 0), totalSections: plan.pages.reduce((total, page) => total + page.generatedSections.length, 0), currentSectionTitle: null },
         pages: plan.pages.map((page) => ({ title: page.title, slug: page.slug, seoTitle: page.seoTitle, seoDescription: page.seoDescription })),
       },
     });
@@ -209,6 +218,11 @@ export async function startAutomaticWebsiteGeneration(input: { workspaceId: stri
     if (!site) throw new AppError(500, 'WEBSITE_SITE_CREATE_FAILED', 'The connected provider site could not be registered');
     const active = await repo.findActiveJob(site.id);
     if (active) return { site, job: active, reused: true };
+    const cancelled = await repo.findLatestCancelledJob(site.id);
+    if (cancelled) {
+      const resumed = await repo.resumeJob(site.id, cancelled.id);
+      if (resumed.job) return { site, job: resumed.job, reused: true };
+    }
     const created = await repo.createJob({
       siteId: site.id,
       prompt: DEFAULT_WEBSITE_PROMPT,

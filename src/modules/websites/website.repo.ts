@@ -160,6 +160,11 @@ export async function updateJob(siteId: string, jobId: string, patch: { status?:
   return result.rowCount ? getJob(siteId, jobId) : null;
 }
 
+export async function findLatestCancelledJob(siteId: string) {
+  const result = await query<any>(`${jobSelect} WHERE site_id = $1 AND status = 'cancelled' ORDER BY updated_at DESC LIMIT 1`, [siteId]);
+  return result.rows[0] ? mapJob(result.rows[0]) : null;
+}
+
 export async function cancelJob(siteId: string, jobId: string) {
   const result = await query(
     `UPDATE website_generation_jobs
@@ -182,6 +187,30 @@ export async function cancelJob(siteId: string, jobId: string) {
   );
   const job = await getJob(siteId, jobId);
   return { job, cancelled: (result.rowCount ?? 0) > 0 };
+}
+
+export async function resumeJob(siteId: string, jobId: string) {
+  const result = await query(
+    `UPDATE website_generation_jobs
+     SET status = 'queued',
+         preview = jsonb_set(
+           COALESCE(preview, '{}'::jsonb),
+           '{progress}',
+           COALESCE(preview->'progress', '{}'::jsonb) || '{"phase":"resuming"}'::jsonb,
+           TRUE
+         ),
+         error_code = NULL,
+         error_message = NULL,
+         attempt_count = 0,
+         worker_id = NULL,
+         locked_at = NULL,
+         heartbeat_at = NOW()
+     WHERE site_id = $1 AND id = $2 AND status = 'cancelled'
+     RETURNING id`,
+    [siteId, jobId],
+  );
+  const job = await getJob(siteId, jobId);
+  return { job, resumed: (result.rowCount ?? 0) > 0 };
 }
 
 export async function claimNextGenerationJob(workerId: string, leaseSeconds: number, maxAttempts: number): Promise<WebsiteGenerationWorkItem | null> {

@@ -6,11 +6,18 @@ import { getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceForUser } from '../workspaces/workspace.repo.js';
 
+export type GeneratedSection = {
+  key: string;
+  title: string;
+  html: string;
+};
+
 export type GeneratedPage = {
   title: string;
   slug: string;
   purpose: string;
   sections: string[];
+  generatedSections: GeneratedSection[];
   content: string;
   seoTitle: string;
   seoDescription: string;
@@ -112,6 +119,9 @@ export type WebsiteGenerationProgress = {
   completedPages: number;
   totalPages: number;
   currentPageTitle: string | null;
+  completedSections: number;
+  totalSections: number;
+  currentSectionTitle: string | null;
 };
 
 type WebsiteContext = {
@@ -335,9 +345,9 @@ function faqsFrom(value: unknown, fallback: FaqItem[]) {
 
 function templateLabels(language: string) {
   const normalized = language.trim().toLowerCase();
-  if (/^(de|de[-_]|german|deutsch)/.test(normalized)) return { home: 'Startseite', solutions: 'Lösungen', services: 'Leistungen', process: 'Ablauf' };
-  if (/^(zh|zh[-_]|chinese|中文|简体中文|繁體中文)/.test(normalized)) return { home: '首页', solutions: '解决方案', services: '服务', process: '流程' };
-  return { home: 'Home', solutions: 'Solutions', services: 'Services', process: 'Process' };
+  if (/^(de|de[-_]|german|deutsch)/.test(normalized)) return { home: 'Startseite', solutions: 'Lösungen', services: 'Leistungen', process: 'Ablauf', trust: 'Vertrauen', companyImage: 'Unternehmensbild' };
+  if (/^(zh|zh[-_]|chinese|中文|简体中文|繁體中文)/.test(normalized)) return { home: '首页', solutions: '解决方案', services: '服务', process: '流程', trust: '信任', companyImage: '企业图片' };
+  return { home: 'Home', solutions: 'Solutions', services: 'Services', process: 'Process', trust: 'Trust', companyImage: 'Company image' };
 }
 
 function profileFrom(value: Record<string, unknown>, language: string, context: WebsiteContext): WebsiteContentProfile {
@@ -451,50 +461,81 @@ function imageMarkup(asset: WebsiteImageAsset | undefined, minHeight = 330) {
   return `<img src="${escapeHtml(url)}" alt="${escapeHtml(asset?.altText || '')}" loading="lazy" style="display:block;width:100%;min-height:${minHeight}px;max-height:520px;object-fit:cover">`;
 }
 
-function renderHome(profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[]) {
+type RenderedSection = { key: string; title: string; html: string };
+type RenderedPage = { openingHtml: string; sections: RenderedSection[]; closingHtml: string };
+
+function renderedSection(key: string, title: string, html: string): RenderedSection {
+  return { key, title, html };
+}
+
+function composePage(page: RenderedPage, sections: GeneratedSection[]) {
+  return `${page.openingHtml}${sections.map((section) => section.html).join('')}${page.closingHtml}`;
+}
+
+function renderHome(profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[]): RenderedPage {
   const home = profile.home;
   const labels = templateLabels(profile.primaryLanguage);
   const heroImage = safeImageUrl(images[0]?.url);
   const heroBackground = heroImage ? `background-image:linear-gradient(90deg,rgba(24,32,43,.90),rgba(24,32,43,.48)),url('${escapeHtml(heroImage)}');background-position:center;background-size:cover;` : `background:linear-gradient(125deg,${palette.secondary},${palette.primary});`;
-  const trust = home.trustItems.length ? `<div style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;padding:16px 5%;background:${palette.background};border-bottom:1px solid #dce2e8">${home.trustItems.map((item) => `<span style="font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:${palette.ink}">${escapeHtml(item)}</span>`).join('')}</div>` : '';
+  const trust = home.trustItems.length ? `<section data-lulu-section="trust" style="display:flex;justify-content:center;gap:24px;flex-wrap:wrap;padding:16px 5%;background:${palette.background};border-bottom:1px solid #dce2e8">${home.trustItems.map((item) => `<span style="font-size:12px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:${palette.ink}">${escapeHtml(item)}</span>`).join('')}</section>` : '';
   const audienceCards = home.audienceCards.map((card) => `<article style="padding:26px;background:${palette.surface};border:1px solid #dce2e8"><h3 style="margin:0 0 12px;color:${palette.ink};font-size:25px">${escapeHtml(card.title)}</h3><p style="margin:0 0 16px;color:${palette.muted};line-height:1.65">${escapeHtml(card.description)}</p><a href="/services/" style="color:${palette.primary};font-weight:700;text-decoration:none">${escapeHtml(card.cta)} →</a></article>`).join('');
   const serviceCards = profile.services.items.slice(0, 6).map((card) => `<article style="padding:26px;background:${palette.background};border-left:4px solid ${palette.accent}"><h3 style="margin:0 0 12px;color:${palette.ink};font-size:24px">${escapeHtml(card.title)}</h3><p style="margin:0;color:${palette.muted};line-height:1.65">${escapeHtml(card.description)}</p></article>`).join('');
   const steps = home.processSteps.map((step, index) => `<article style="padding:22px;border-top:3px solid ${palette.accent}"><span style="display:block;margin-bottom:12px;color:${palette.primary};font-weight:800">0${index + 1}</span><h3 style="margin:0 0 10px;color:${palette.ink};font-size:23px">${escapeHtml(step.title)}</h3><p style="margin:0;color:${palette.muted};line-height:1.65">${escapeHtml(step.description)}</p></article>`).join('');
   const faqs = home.faqs.map((faq) => `<details style="padding:18px 0;border-bottom:1px solid #dce2e8"><summary style="cursor:pointer;color:${palette.ink};font-weight:700">${escapeHtml(faq.question)}</summary><p style="margin:12px 0 0;color:${palette.muted};line-height:1.7">${escapeHtml(faq.answer)}</p></details>`).join('');
   const featureImage = imageMarkup(images[1]);
-  return `<main data-lulu-template="${TEMPLATE_KEY}" style="margin:0;color:${palette.ink};font-family:Arial,sans-serif">
-    <section style="${heroBackground}color:#fff"><div style="max-width:1180px;margin:auto;padding:clamp(72px,10vw,116px) 24px"><p style="margin:0 0 14px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:850px;margin:0 0 20px;font-size:clamp(42px,7vw,76px);line-height:.98">${escapeHtml(home.headline)}</h1><p style="max-width:740px;margin:0;color:#eef2f5;font-size:20px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:30px">${button(home.primaryCta, '/contact/', palette)}${button(home.secondaryCta, '/services/', palette, true)}</div></div></section>
-    ${trust}
-    <section style="padding:76px 24px;background:${palette.surface}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.solutions, home.audienceHeading, home.audienceIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px">${audienceCards}</div></div></section>
-    <section style="padding:76px 24px;background:${palette.background}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.services, home.servicesHeading, home.servicesIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px">${serviceCards}</div></div></section>
-    <section style="padding:76px 24px;background:${palette.secondary};color:#fff"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:46px;align-items:center;max-width:1180px;margin:auto"><div><p style="margin:0 0 10px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(home.highlightEyebrow)}</p><h2 style="margin:0 0 18px;color:#fff;font-size:clamp(32px,5vw,52px);line-height:1.05">${escapeHtml(home.highlightTitle)}</h2><p style="margin:0;color:#dbe3ea;font-size:18px;line-height:1.75">${escapeHtml(home.highlightText)}</p></div>${featureImage}</div></section>
-    <section style="padding:76px 24px;background:${palette.surface}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.process, home.processHeading, home.processIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px">${steps}</div></div></section>
-    <section style="padding:76px 24px;background:${palette.background}"><div style="max-width:900px;margin:auto"><h2 style="margin:0 0 24px;color:${palette.ink};font-size:clamp(32px,5vw,48px)">${escapeHtml(home.faqHeading)}</h2>${faqs}</div></section>
-    <section id="contact" style="padding:70px 24px;background:${palette.primary};color:#fff"><div style="max-width:900px;margin:auto;text-align:center"><h2 style="margin:0 0 16px;color:#fff;font-size:clamp(34px,5vw,52px)">${escapeHtml(home.finalCtaTitle)}</h2><p style="margin:0 auto 26px;max-width:700px;color:#eef2f5;font-size:18px;line-height:1.7">${escapeHtml(home.finalCtaText)}</p>${button(home.finalCtaLabel, '/contact/', palette)}</div></section>
-  </main>`;
+  return {
+    openingHtml: `<main data-lulu-template="${TEMPLATE_KEY}" style="margin:0;color:${palette.ink};font-family:Arial,sans-serif">`,
+    sections: [
+      renderedSection('hero', home.eyebrow, `<section data-lulu-section="hero" style="${heroBackground}color:#fff"><div style="max-width:1180px;margin:auto;padding:clamp(72px,10vw,116px) 24px"><p style="margin:0 0 14px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:850px;margin:0 0 20px;font-size:clamp(42px,7vw,76px);line-height:.98">${escapeHtml(home.headline)}</h1><p style="max-width:740px;margin:0;color:#eef2f5;font-size:20px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:30px">${button(home.primaryCta, '/contact/', palette)}${button(home.secondaryCta, '/services/', palette, true)}</div></div></section>`),
+      ...(trust ? [renderedSection('trust', labels.trust, trust)] : []),
+      renderedSection('audience', home.audienceHeading, `<section data-lulu-section="audience" style="padding:76px 24px;background:${palette.surface}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.solutions, home.audienceHeading, home.audienceIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px">${audienceCards}</div></div></section>`),
+      renderedSection('services', home.servicesHeading, `<section data-lulu-section="services" style="padding:76px 24px;background:${palette.background}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.services, home.servicesHeading, home.servicesIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px">${serviceCards}</div></div></section>`),
+      renderedSection('differentiator', home.highlightTitle, `<section data-lulu-section="differentiator" style="padding:76px 24px;background:${palette.secondary};color:#fff"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:46px;align-items:center;max-width:1180px;margin:auto"><div><p style="margin:0 0 10px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(home.highlightEyebrow)}</p><h2 style="margin:0 0 18px;color:#fff;font-size:clamp(32px,5vw,52px);line-height:1.05">${escapeHtml(home.highlightTitle)}</h2><p style="margin:0;color:#dbe3ea;font-size:18px;line-height:1.75">${escapeHtml(home.highlightText)}</p></div>${featureImage}</div></section>`),
+      renderedSection('process', home.processHeading, `<section data-lulu-section="process" style="padding:76px 24px;background:${palette.surface}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.process, home.processHeading, home.processIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px">${steps}</div></div></section>`),
+      renderedSection('faq', home.faqHeading, `<section data-lulu-section="faq" style="padding:76px 24px;background:${palette.background}"><div style="max-width:900px;margin:auto"><h2 style="margin:0 0 24px;color:${palette.ink};font-size:clamp(32px,5vw,48px)">${escapeHtml(home.faqHeading)}</h2>${faqs}</div></section>`),
+      renderedSection('call-to-action', home.finalCtaTitle, `<section data-lulu-section="call-to-action" id="contact" style="padding:70px 24px;background:${palette.primary};color:#fff"><div style="max-width:900px;margin:auto;text-align:center"><h2 style="margin:0 0 16px;color:#fff;font-size:clamp(34px,5vw,52px)">${escapeHtml(home.finalCtaTitle)}</h2><p style="margin:0 auto 26px;max-width:700px;color:#eef2f5;font-size:18px;line-height:1.7">${escapeHtml(home.finalCtaText)}</p>${button(home.finalCtaLabel, '/contact/', palette)}</div></section>`),
+    ],
+    closingHtml: '</main>',
+  };
 }
 
-function renderStandardPage(input: { eyebrow: string; title: string; introduction: string; body: string; palette: ThemePalette; image?: WebsiteImageAsset }) {
+function renderStandardPage(input: { eyebrow: string; title: string; introduction: string; sections: RenderedSection[]; palette: ThemePalette; image?: WebsiteImageAsset; imageTitle?: string }): RenderedPage {
   const image = imageMarkup(input.image, 260);
-  return `<main data-lulu-template="${TEMPLATE_KEY}" style="margin:0;color:${input.palette.ink};font-family:Arial,sans-serif"><header style="padding:70px 24px;background:linear-gradient(125deg,${input.palette.secondary},${input.palette.primary});color:#fff"><div style="max-width:1000px;margin:auto"><p style="margin:0 0 12px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(input.eyebrow)}</p><h1 style="margin:0 0 18px;color:#fff;font-size:clamp(42px,7vw,68px);line-height:1">${escapeHtml(input.title)}</h1><p style="max-width:760px;margin:0;color:#eef2f5;font-size:19px;line-height:1.7">${escapeHtml(input.introduction)}</p></div></header>${image ? `<div style="max-width:1180px;margin:0 auto;padding:46px 24px 0">${image}</div>` : ''}<div style="max-width:1180px;margin:auto;padding:70px 24px">${input.body}</div></main>`;
+  return {
+    openingHtml: `<main data-lulu-template="${TEMPLATE_KEY}" style="margin:0;color:${input.palette.ink};font-family:Arial,sans-serif">`,
+    sections: [
+      renderedSection('introduction', input.title, `<header data-lulu-section="introduction" style="padding:70px 24px;background:linear-gradient(125deg,${input.palette.secondary},${input.palette.primary});color:#fff"><div style="max-width:1000px;margin:auto"><p style="margin:0 0 12px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(input.eyebrow)}</p><h1 style="margin:0 0 18px;color:#fff;font-size:clamp(42px,7vw,68px);line-height:1">${escapeHtml(input.title)}</h1><p style="max-width:760px;margin:0;color:#eef2f5;font-size:19px;line-height:1.7">${escapeHtml(input.introduction)}</p></div></header>`),
+      ...(image ? [renderedSection('company-image', input.imageTitle ?? 'Company image', `<section data-lulu-section="company-image" style="max-width:1180px;margin:0 auto;padding:46px 24px 0">${image}</section>`)] : []),
+      ...input.sections,
+    ],
+    closingHtml: '</main>',
+  };
 }
 
 function renderAbout(profile: WebsiteContentProfile, palette: ThemePalette, image?: WebsiteImageAsset) {
-  const body = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:22px">${profile.about.sections.map((section) => `<section style="padding:28px;background:${palette.background};border-top:4px solid ${palette.primary}"><h2 style="margin:0 0 14px;color:${palette.ink};font-size:30px">${escapeHtml(section.heading)}</h2><p style="margin:0;color:${palette.muted};line-height:1.75">${escapeHtml(section.body)}</p></section>`).join('')}</div><section style="margin-top:50px;padding:42px;background:${palette.primary};color:#fff"><h2 style="margin:0 0 14px;color:#fff;font-size:34px">${escapeHtml(profile.about.ctaTitle)}</h2><p style="margin:0 0 22px;color:#eef2f5;line-height:1.7">${escapeHtml(profile.about.ctaText)}</p>${button(profile.about.ctaLabel, '/contact/', palette)}</section>`;
-  return renderStandardPage({ eyebrow: profile.siteTitle, title: profile.about.title, introduction: profile.about.introduction, body, palette, ...(image ? { image } : {}) });
+  const sections = profile.about.sections.map((section, index) => renderedSection(`about-${index + 1}`, section.heading, `<section data-lulu-section="about-${index + 1}" style="padding:32px 24px"><div style="max-width:1180px;margin:auto;padding:28px;background:${palette.background};border-top:4px solid ${palette.primary}"><h2 style="margin:0 0 14px;color:${palette.ink};font-size:30px">${escapeHtml(section.heading)}</h2><p style="margin:0;color:${palette.muted};line-height:1.75">${escapeHtml(section.body)}</p></div></section>`));
+  sections.push(renderedSection('call-to-action', profile.about.ctaTitle, `<section data-lulu-section="call-to-action" style="padding:50px 24px"><div style="max-width:1180px;margin:auto;padding:42px;background:${palette.primary};color:#fff"><h2 style="margin:0 0 14px;color:#fff;font-size:34px">${escapeHtml(profile.about.ctaTitle)}</h2><p style="margin:0 0 22px;color:#eef2f5;line-height:1.7">${escapeHtml(profile.about.ctaText)}</p>${button(profile.about.ctaLabel, '/contact/', palette)}</div></section>`));
+  return renderStandardPage({ eyebrow: profile.siteTitle, title: profile.about.title, introduction: profile.about.introduction, sections, palette, imageTitle: templateLabels(profile.primaryLanguage).companyImage, ...(image ? { image } : {}) });
 }
 
 function renderServices(profile: WebsiteContentProfile, palette: ThemePalette, image?: WebsiteImageAsset) {
   const cards = profile.services.items.map((item) => `<article style="padding:28px;background:${palette.surface};border:1px solid #dce2e8"><h2 style="margin:0 0 14px;color:${palette.ink};font-size:29px">${escapeHtml(item.title)}</h2><p style="margin:0;color:${palette.muted};line-height:1.7">${escapeHtml(item.description)}</p></article>`).join('');
   const steps = profile.services.processSteps.map((step, index) => `<li style="display:grid;grid-template-columns:44px 1fr;gap:14px;padding:20px 0;border-bottom:1px solid #dce2e8"><strong style="color:${palette.primary}">0${index + 1}</strong><div><h3 style="margin:0 0 8px;color:${palette.ink};font-size:23px">${escapeHtml(step.title)}</h3><p style="margin:0;color:${palette.muted};line-height:1.65">${escapeHtml(step.description)}</p></div></li>`).join('');
-  const body = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:18px">${cards}</div><section style="margin-top:56px;padding:38px;background:${palette.background}"><h2 style="margin:0 0 18px;color:${palette.ink};font-size:36px">${escapeHtml(profile.services.processHeading)}</h2><ol style="list-style:none;margin:0;padding:0">${steps}</ol></section><section style="margin-top:50px;padding:42px;background:${palette.primary};color:#fff"><h2 style="margin:0 0 14px;color:#fff;font-size:34px">${escapeHtml(profile.services.ctaTitle)}</h2><p style="margin:0 0 22px;color:#eef2f5;line-height:1.7">${escapeHtml(profile.services.ctaText)}</p>${button(profile.services.ctaLabel, '/contact/', palette)}</section>`;
-  return renderStandardPage({ eyebrow: templateLabels(profile.primaryLanguage).services, title: profile.services.title, introduction: profile.services.introduction, body, palette, ...(image ? { image } : {}) });
+  const sections = [
+    renderedSection('services', profile.services.title, `<section data-lulu-section="services" style="padding:70px 24px"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:18px;max-width:1180px;margin:auto">${cards}</div></section>`),
+    renderedSection('process', profile.services.processHeading, `<section data-lulu-section="process" style="padding:56px 24px"><div style="max-width:1180px;margin:auto;padding:38px;background:${palette.background}"><h2 style="margin:0 0 18px;color:${palette.ink};font-size:36px">${escapeHtml(profile.services.processHeading)}</h2><ol style="list-style:none;margin:0;padding:0">${steps}</ol></div></section>`),
+    renderedSection('call-to-action', profile.services.ctaTitle, `<section data-lulu-section="call-to-action" style="padding:50px 24px"><div style="max-width:1180px;margin:auto;padding:42px;background:${palette.primary};color:#fff"><h2 style="margin:0 0 14px;color:#fff;font-size:34px">${escapeHtml(profile.services.ctaTitle)}</h2><p style="margin:0 0 22px;color:#eef2f5;line-height:1.7">${escapeHtml(profile.services.ctaText)}</p>${button(profile.services.ctaLabel, '/contact/', palette)}</div></section>`),
+  ];
+  return renderStandardPage({ eyebrow: templateLabels(profile.primaryLanguage).services, title: profile.services.title, introduction: profile.services.introduction, sections, palette, imageTitle: templateLabels(profile.primaryLanguage).companyImage, ...(image ? { image } : {}) });
 }
 
 function renderContact(profile: WebsiteContentProfile, palette: ThemePalette) {
   const items = profile.contact.preparationItems.map((item) => `<li style="padding:12px 0;border-bottom:1px solid #dce2e8;color:${palette.ink}">${escapeHtml(item)}</li>`).join('');
-  const body = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:28px"><section style="padding:30px;background:${palette.background}"><h2 style="margin:0 0 16px;color:${palette.ink};font-size:32px">${escapeHtml(profile.contact.preparationHeading)}</h2><ul style="list-style:none;margin:0;padding:0">${items}</ul></section><section style="padding:30px;background:${palette.secondary};color:#fff"><h2 style="margin:0 0 16px;color:#fff;font-size:32px">${escapeHtml(profile.contact.nextStepTitle)}</h2><p style="margin:0;color:#e5eaf0;font-size:17px;line-height:1.75">${escapeHtml(profile.contact.nextStepText)}</p></section></div>`;
-  return renderStandardPage({ eyebrow: profile.siteTitle, title: profile.contact.title, introduction: profile.contact.introduction, body, palette });
+  const sections = [
+    renderedSection('preparation', profile.contact.preparationHeading, `<section data-lulu-section="preparation" style="padding:70px 24px 28px"><div style="max-width:1180px;margin:auto;padding:30px;background:${palette.background}"><h2 style="margin:0 0 16px;color:${palette.ink};font-size:32px">${escapeHtml(profile.contact.preparationHeading)}</h2><ul style="list-style:none;margin:0;padding:0">${items}</ul></div></section>`),
+    renderedSection('next-step', profile.contact.nextStepTitle, `<section data-lulu-section="next-step" style="padding:28px 24px 70px"><div style="max-width:1180px;margin:auto;padding:30px;background:${palette.secondary};color:#fff"><h2 style="margin:0 0 16px;color:#fff;font-size:32px">${escapeHtml(profile.contact.nextStepTitle)}</h2><p style="margin:0;color:#e5eaf0;font-size:17px;line-height:1.75">${escapeHtml(profile.contact.nextStepText)}</p></div></section>`),
+  ];
+  return renderStandardPage({ eyebrow: profile.siteTitle, title: profile.contact.title, introduction: profile.contact.introduction, sections, palette });
 }
 
 function pageDefinitions(profile: WebsiteContentProfile) {
@@ -507,7 +548,7 @@ function pageDefinitions(profile: WebsiteContentProfile) {
   ];
 }
 
-function renderPage(index: number, profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[]) {
+function renderPage(index: number, profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[]): RenderedPage {
   if (index === 0) return renderHome(profile, palette, images);
   if (index === 1) return renderAbout(profile, palette, images[2] ?? images[1]);
   if (index === 2) return renderServices(profile, palette, images[3] ?? images[2]);
@@ -548,8 +589,24 @@ function existingTemplatePlan(value: Record<string, unknown> | undefined, langua
   const storedPages = Array.isArray(value.pages) ? value.pages : [];
   const pages = definitions.map((definition, index) => {
     const existing = storedPages.find((page) => objectValue(page).slug === definition.slug);
-    const content = stringValue(objectValue(existing).content);
-    return { ...definition, content: pageHasPublishableContent({ ...definition, content } as GeneratedPage, index) ? content : '' };
+    const existingPage = objectValue(existing);
+    const content = stringValue(existingPage.content);
+    const rendered = renderPage(index, profile, palette, images);
+    const complete = pageHasPublishableContent({ ...definition, generatedSections: [], content } as GeneratedPage, index);
+    const storedSectionKeys = new Set(
+      (Array.isArray(existingPage.generatedSections) ? existingPage.generatedSections : [])
+        .map((section) => stringValue(objectValue(section).key))
+        .filter(Boolean),
+    );
+    const generatedSections = rendered.sections
+      .filter((section) => complete || storedSectionKeys.has(section.key))
+      .map((section) => ({ ...section }));
+    return {
+      ...definition,
+      sections: rendered.sections.map((section) => section.title),
+      generatedSections,
+      content: complete ? content : composePage(rendered, generatedSections),
+    };
   });
   return { templateKey: TEMPLATE_KEY, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette, contentProfile: profile, pages, globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) } satisfies WebsitePlan;
 }
@@ -569,20 +626,42 @@ export async function generateWebsitePlan(input: {
   const images = (input.imageAssets ?? []).filter((asset) => safeImageUrl(asset.url)).slice(0, 8);
   let plan = existingTemplatePlan(input.existingPlan, language, context, images);
   if (!plan) {
-    await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null });
+    await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null });
     const profile = await generateContentProfile({ provider: input.provider, language, prompt: input.prompt, context });
-    plan = { templateKey: TEMPLATE_KEY, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile).map((definition) => ({ ...definition, content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
+    plan = { templateKey: TEMPLATE_KEY, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile).map((definition) => ({ ...definition, generatedSections: [], content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
   }
+  if (!plan) throw new AppError(500, 'WEBSITE_PLAN_MISSING', 'The website plan could not be initialized');
+  const planProfile = plan.contentProfile;
+  const planPalette = plan.palette;
+  const renderedPages = plan.pages.map((_, index) => renderPage(index, planProfile, planPalette, images));
+  plan = {
+    ...plan,
+    pages: plan.pages.map((page, index) => ({
+      ...page,
+      sections: renderedPages[index]!.sections.map((section) => section.title),
+      generatedSections: Array.isArray(page.generatedSections) ? page.generatedSections : [],
+    })),
+  };
+  const totalSections = renderedPages.reduce((total, page) => total + page.sections.length, 0);
+  let completedSections = plan.pages.reduce((total, page) => total + page.generatedSections.length, 0);
   let completedPages = plan.pages.filter(pageHasPublishableContent).length;
   for (let index = 0; index < plan.pages.length; index += 1) {
     if (pageHasPublishableContent(plan.pages[index]!, index)) continue;
-    await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedPages / plan.pages.length) * 30), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null });
-    const content = renderPage(index, plan.contentProfile, plan.palette, images);
-    plan = { ...plan, pages: plan.pages.map((page, pageIndex) => pageIndex === index ? { ...page, content } : page) };
-    completedPages += 1;
-    await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedPages / plan.pages.length) * 30), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index + 1]?.title ?? null });
+    const renderedPage = renderedPages[index]!;
+    const completedKeys = new Set(plan.pages[index]!.generatedSections.map((section) => section.key));
+    for (const section of renderedPage.sections) {
+      if (completedKeys.has(section.key)) continue;
+      await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedSections / totalSections) * 32), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null, completedSections, totalSections, currentSectionTitle: section.title });
+      const generatedSections: GeneratedSection[] = [...plan.pages[index]!.generatedSections, { ...section }];
+      const content = composePage(renderedPage, generatedSections);
+      plan = { ...plan, pages: plan.pages.map((page, pageIndex) => pageIndex === index ? { ...page, generatedSections, content } : page) };
+      completedKeys.add(section.key);
+      completedSections += 1;
+      if (generatedSections.length === renderedPage.sections.length && pageHasPublishableContent(plan.pages[index]!, index)) completedPages += 1;
+      await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedSections / totalSections) * 32), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null, completedSections, totalSections, currentSectionTitle: renderedPage.sections.find((candidate) => !completedKeys.has(candidate.key))?.title ?? null });
+    }
   }
   if (!isCompleteWebsitePlan(plan)) throw new AppError(502, 'WEBSITE_TEMPLATE_RENDER_FAILED', 'The standard website template could not be rendered with the generated content');
-  await input.onProgress?.({ plan, phase: 'template_ready', percent: 52, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null });
+  await input.onProgress?.({ plan, phase: 'template_ready', percent: 52, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: totalSections, totalSections, currentSectionTitle: null });
   return plan;
 }

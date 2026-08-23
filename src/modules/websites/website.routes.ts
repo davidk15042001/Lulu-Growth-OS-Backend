@@ -17,5 +17,6 @@ router.route('/:siteId/generation-jobs').post(requireWorkspaceEditor, controller
 router.route('/:siteId/generation-jobs/active').get(controller.getActiveJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId').get(controller.getJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId/cancel').post(requireWorkspaceEditor, controller.cancelJob).all(methodNotAllowed);
+router.route('/:siteId/generation-jobs/:jobId/resume').post(requireWorkspaceEditor, controller.resumeJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId/publish').post(requireWorkspaceEditor, controller.publishJob).all(methodNotAllowed);
 export default router;

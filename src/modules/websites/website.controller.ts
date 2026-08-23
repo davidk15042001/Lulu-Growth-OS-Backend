@@ -92,6 +92,15 @@ export async function createJob(req: WorkspaceRequest, res: Response, next: Next
       requestWebsiteGenerationWorkerRun();
       return createdResponse(res, 'Website generation already running', active);
     }
+    const cancelled = await repo.findLatestCancelledJob(params.siteId);
+    if (cancelled) {
+      const resumed = await repo.resumeJob(params.siteId, cancelled.id);
+      if (resumed.job) {
+        await repo.updateSiteStatus(params.workspaceId, params.siteId, 'generating');
+        requestWebsiteGenerationWorkerRun();
+        return createdResponse(res, 'Website generation resumed from the last checkpoint', resumed.job);
+      }
+    }
     const input = createJobSchema.parse(req.body);
     const created = await repo.createJob({ siteId: params.siteId, prompt: input.prompt, createdBy: req.user!.id, autoPublish: false });
     if (!created.job) throw new AppError(500, 'WEBSITE_GENERATION_FAILED', 'Website generation job could not be created');
@@ -122,6 +131,21 @@ export async function cancelJob(req: Request, res: Response, next: NextFunction)
       : 0;
     if (result.cancelled) await repo.updateSiteStatus(params.workspaceId, params.siteId, publishedPages > 0 ? 'preview' : 'connected');
     return successResponse(res, result.cancelled ? 'Website generation cancelled' : 'Website generation already finished', result.job);
+  } catch (error) { next(error); }
+}
+export async function resumeJob(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = jobParams.parse(req.params);
+    const site = await repo.getSite(params.workspaceId, params.siteId);
+    if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found');
+    const result = await repo.resumeJob(params.siteId, params.jobId);
+    if (!result.job) throw new AppError(404, 'WEBSITE_GENERATION_JOB_NOT_FOUND', 'Website generation job was not found');
+    if (!result.resumed && !['queued', 'planning', 'publishing'].includes(result.job.status)) {
+      throw new AppError(409, 'WEBSITE_GENERATION_NOT_RESUMABLE', 'Only a cancelled website generation can be resumed');
+    }
+    await repo.updateSiteStatus(params.workspaceId, params.siteId, 'generating');
+    requestWebsiteGenerationWorkerRun();
+    return successResponse(res, result.resumed ? 'Website generation resumed from the last checkpoint' : 'Website generation is already running', result.job);
   } catch (error) { next(error); }
 }
 export async function publishJob(req: Request, res: Response, next: NextFunction) { try { const params = jobParams.parse(req.params); return successResponse(res, 'Website published', await publishWebsiteJob(params.workspaceId, params.siteId, params.jobId)); } catch (error) { next(error); } }

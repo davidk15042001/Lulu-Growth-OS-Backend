@@ -77,3 +77,6 @@ Push-Zeitstempel: 2026-08-23 15:23:14 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 16:04:22 Europe/Berlin
 Änderungen: WordPress-Veröffentlichungen werden nach jeder bestätigten Seite dauerhaft als Zwischenstand mit URL und Fortschritt gespeichert; ein neuer sicherer Abbruch-Endpunkt stoppt laufende Jobs zwischen Arbeitsschritten, ohne bereits veröffentlichte Seiten oder Fehlerdiagnosen zu verlieren.
+
+Push-Zeitstempel: 2026-08-23 16:34:06 Europe/Berlin
+Änderungen: Website-Seiten werden jetzt abschnittsweise als dauerhafte JSON-Checkpoints aufgebaut; Abbrechen bewahrt fertige Sections und WordPress-Zwischenstände, während Fortsetzen denselben Job reaktiviert und exakt bei der nächsten fehlenden Section weiterarbeitet.
