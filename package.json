@@ -30,6 +30,7 @@
     "test": "tsx --test --test-force-exit",
     "test:migrations": "tsx scripts/verify-migrations.ts",
     "test:smoke": "node scripts/smoke-built-server.mjs",
+    "preview:wordpress-template": "tsx scripts/preview-wordpress-template.ts",
     "check": "npm run typecheck && npm run test:migrations && npm test && npm run build && npm run test:smoke"
   },
   "dependencies": {

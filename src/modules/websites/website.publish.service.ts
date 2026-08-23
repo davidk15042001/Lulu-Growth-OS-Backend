@@ -77,15 +77,17 @@ export function wordpressGutenbergContent(page: unknown) {
   const blockSections = sections.map((section) => {
     const shortcodeMatch = section.match(/<template\s+data-lulu-contact-form-shortcode[^>]*>([\s\S]*?)<\/template>/i);
     if (!shortcodeMatch) return `<!-- wp:html -->\n${section}\n<!-- /wp:html -->`;
+    const marker = '<!--LULU_WORDPRESS_FORM_SLOT-->';
     const html = section
-      .replace(/<form\s+data-lulu-contact-form-preview[^>]*>[\s\S]*?<\/form>/i, '')
+      .replace(/<form\s+data-lulu-contact-form-preview[^>]*>[\s\S]*?<\/form>/i, marker)
       .replace(/<template\s+data-lulu-contact-form-shortcode[^>]*>[\s\S]*?<\/template>/i, '');
     const shortcode = decodeShortcode(shortcodeMatch[1] ?? '').trim();
-    return `<!-- wp:html -->\n${html}\n<!-- /wp:html -->\n<!-- wp:shortcode -->\n${shortcode}\n<!-- /wp:shortcode -->`;
+    const [before, after = ''] = html.split(marker);
+    return `<!-- wp:html -->\n${before}\n<!-- /wp:html -->\n<!-- wp:shortcode -->\n${shortcode}\n<!-- /wp:shortcode -->\n<!-- wp:html -->\n${after}\n<!-- /wp:html -->`;
   }).join('\n');
   return [
-    '<!-- wp:group {"align":"full","className":"lulu-generated-page"} -->',
-    '<div class="wp-block-group alignfull lulu-generated-page">',
+    '<!-- wp:group {"align":"full","className":"lulu-generated-page","layout":{"type":"default"}} -->',
+    '<div class="wp-block-group alignfull lulu-generated-page" style="width:100%;max-width:none;margin:0;padding:0;--wp--style--block-gap:0px">',
     blockSections,
     '</div>',
     '<!-- /wp:group -->',
@@ -147,18 +149,32 @@ export function wordpressSiteChrome(plan: unknown, publishedPages: unknown[], si
   const published = publishedPages.map(objectValue);
   const siteTitle = String(planValue.siteTitle ?? 'Website').trim() || 'Website';
   const seo = objectValue(planValue.globalSeo);
+  const contentProfile = objectValue(planValue.contentProfile);
   const description = String(seo.description ?? '').trim();
+  const tagline = String(contentProfile.tagline ?? description).trim();
+  const primary = String(palette.primary ?? '#183c65');
   const secondary = String(palette.secondary ?? '#111827');
   const accent = String(palette.accent ?? '#22c55e');
+  const ink = String(palette.ink ?? '#233142');
+  const muted = String(palette.muted ?? '#657283');
   const baseUrl = safeWebsiteUrl(siteUrl, '/');
-  const links = pages.map((page, index) => {
+  const navigation = pages.map((page, index) => {
     const slug = String(page.slug ?? '').trim().toLowerCase();
     const record = published.find((candidate) => String(candidate.slug ?? '').trim().toLowerCase() === slug);
     const href = index === 0 ? baseUrl : safeWebsiteUrl(record?.url, `/${slug}/`);
-    return `<a href="${escapeWordpressHtml(href)}" style="color:#fff;font-weight:650;text-decoration:none">${escapeWordpressHtml(page.title)}</a>`;
-  }).join('');
-  const header = htmlBlock(`<div data-lulu-global="header" style="margin:0;background:${escapeWordpressHtml(secondary)};color:#fff"><div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;max-width:1180px;margin:auto;padding:22px 24px"><a href="${escapeWordpressHtml(baseUrl)}" style="color:#fff;font-size:22px;font-weight:800;text-decoration:none">${escapeWordpressHtml(siteTitle)}</a><nav aria-label="Primary navigation" style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">${links}</nav></div></div>`);
-  const footer = htmlBlock(`<div data-lulu-global="footer" style="margin:0;background:${escapeWordpressHtml(secondary)};color:#fff"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:28px;max-width:1180px;margin:auto;padding:52px 24px"><div><p style="margin:0 0 10px;font-size:22px;font-weight:800">${escapeWordpressHtml(siteTitle)}</p>${description ? `<p style="margin:0;color:#dbe3ea;line-height:1.7">${escapeWordpressHtml(description)}</p>` : ''}</div><div><p style="margin:0 0 14px;color:${escapeWordpressHtml(accent)};font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase">Navigation</p><nav aria-label="Footer navigation" style="display:flex;align-items:flex-start;gap:12px;flex-direction:column">${links}</nav></div></div><div style="max-width:1180px;margin:auto;padding:18px 24px;border-top:1px solid rgba(255,255,255,.18);color:#dbe3ea;font-size:13px">© ${new Date().getFullYear()} ${escapeWordpressHtml(siteTitle)}</div></div>`);
+    return { href, label: String(page.title ?? '').trim() || slug };
+  });
+  const headerLinks = navigation.map((item) => `<a href="${escapeWordpressHtml(item.href)}" style="padding:8px 4px;color:${escapeWordpressHtml(ink)};font-size:14px;font-weight:600;text-decoration:none">${escapeWordpressHtml(item.label)}</a>`).join('');
+  const footerLinks = navigation.map((item) => `<a href="${escapeWordpressHtml(item.href)}" style="color:#dbe3ea;font-size:14px;text-decoration:none">${escapeWordpressHtml(item.label)}</a>`).join('');
+  const contactItem = navigation.find((item) => /contact|kontakt|联系/i.test(item.label)) ?? navigation.at(-1);
+  const contactHref = contactItem?.href ?? `${baseUrl.replace(/\/$/, '')}/contact/`;
+  const contactLabel = contactItem?.label ?? 'Contact';
+  const initial = siteTitle.charAt(0).toUpperCase();
+  const responsiveHeaderStyle = `<style data-lulu-global-style>@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');@media(max-width:720px){[data-lulu-header-row]{min-height:64px!important;gap:12px!important;flex-wrap:nowrap!important}[data-lulu-brand]{min-width:0!important;flex:1}[data-lulu-brand-caption]{display:none!important}[data-lulu-desktop-nav],[data-lulu-header-cta]{display:none!important}[data-lulu-mobile-nav]{display:block!important}}</style>`;
+  const mobileLinks = navigation.map((item) => `<a href="${escapeWordpressHtml(item.href)}" style="display:block;padding:11px 14px;border-bottom:1px solid #dce2e8;color:${escapeWordpressHtml(ink)};font-size:14px;font-weight:600;text-decoration:none">${escapeWordpressHtml(item.label)}</a>`).join('');
+  const mobileNavigation = `<details data-lulu-mobile-nav style="display:none;position:relative;margin-left:auto"><summary aria-label="Open menu" style="display:grid;width:42px;height:42px;place-items:center;border:1px solid #dce2e8;background:#fff;color:${escapeWordpressHtml(ink)};cursor:pointer;font-size:22px;list-style:none">☰</summary><nav aria-label="Mobile navigation" style="position:absolute;right:0;top:48px;z-index:60;width:230px;border:1px solid #dce2e8;background:#fff;box-shadow:0 12px 28px rgba(15,23,42,.18)">${mobileLinks}</nav></details>`;
+  const header = htmlBlock(`<div data-lulu-global="header" data-lulu-design-source="custom-bolt-forge" style="width:100%;max-width:none;margin:0;font-family:Barlow,'Helvetica Neue',Arial,sans-serif">${responsiveHeaderStyle}<div style="background:${escapeWordpressHtml(secondary)};color:#fff"><div style="display:flex;max-width:1280px;margin:0 auto;padding:8px 16px;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap"><span style="color:rgba(255,255,255,.8);font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase">${escapeWordpressHtml(tagline || siteTitle)}</span><a href="${escapeWordpressHtml(contactHref)}" style="color:${escapeWordpressHtml(accent)};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:600;letter-spacing:.14em;text-decoration:none;text-transform:uppercase">${escapeWordpressHtml(contactLabel)} →</a></div></div><header style="position:sticky;top:0;z-index:50;border-bottom:1px solid #dce2e8;background:#fff"><div data-lulu-header-row style="display:flex;min-height:72px;max-width:1280px;margin:0 auto;padding:12px 16px;align-items:center;gap:24px;flex-wrap:wrap"><a data-lulu-brand href="${escapeWordpressHtml(baseUrl)}" style="display:flex;min-width:220px;align-items:center;gap:12px;color:${escapeWordpressHtml(ink)};text-decoration:none"><span aria-hidden="true" style="display:grid;width:36px;height:36px;flex:0 0 36px;place-items:center;background:${escapeWordpressHtml(primary)};color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:19px;font-weight:700">${escapeWordpressHtml(initial)}</span><span><strong style="display:block;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:20px;line-height:1.05">${escapeWordpressHtml(siteTitle)}</strong>${tagline ? `<small data-lulu-brand-caption style="display:block;margin-top:3px;color:${escapeWordpressHtml(muted)};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:9px;letter-spacing:.08em;text-transform:uppercase">${escapeWordpressHtml(tagline.slice(0, 72))}</small>` : ''}</span></a><nav data-lulu-desktop-nav aria-label="Primary navigation" style="display:flex;margin-left:auto;align-items:center;gap:14px;flex-wrap:wrap">${headerLinks}</nav><a data-lulu-header-cta href="${escapeWordpressHtml(contactHref)}" style="display:inline-flex;min-height:40px;align-items:center;justify-content:center;padding:10px 16px;background:${escapeWordpressHtml(primary)};border:1px solid ${escapeWordpressHtml(primary)};color:#fff;font-size:14px;font-weight:700;text-decoration:none">${escapeWordpressHtml(contactLabel)}</a>${mobileNavigation}</div></header></div>`);
+  const footer = htmlBlock(`<footer data-lulu-global="footer" data-lulu-design-source="custom-bolt-forge" style="width:100%;max-width:none;margin:0;background:${escapeWordpressHtml(secondary)};color:#fff;font-family:Barlow,'Helvetica Neue',Arial,sans-serif"><div style="display:grid;max-width:1280px;margin:0 auto;padding:56px 16px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:40px"><div style="grid-column:span 2"><div style="display:flex;align-items:center;gap:12px"><span aria-hidden="true" style="display:grid;width:36px;height:36px;place-items:center;background:${escapeWordpressHtml(primary)};color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:19px;font-weight:700">${escapeWordpressHtml(initial)}</span><strong style="font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:22px">${escapeWordpressHtml(siteTitle)}</strong></div>${description ? `<p style="max-width:430px;margin:16px 0 0;color:#bdc8d0;font-size:14px;line-height:1.7">${escapeWordpressHtml(description)}</p>` : ''}</div><div><p style="margin:0 0 16px;color:#aeb9c1;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase">Navigation</p><nav aria-label="Footer navigation" style="display:flex;align-items:flex-start;gap:10px;flex-direction:column">${footerLinks}</nav></div><div><p style="margin:0 0 16px;color:#aeb9c1;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.14em;text-transform:uppercase">${escapeWordpressHtml(contactLabel)}</p><a href="${escapeWordpressHtml(contactHref)}" style="display:inline-flex;min-height:42px;align-items:center;justify-content:center;padding:11px 17px;background:${escapeWordpressHtml(primary)};border:1px solid ${escapeWordpressHtml(primary)};color:#fff;font-size:14px;font-weight:700;text-decoration:none">${escapeWordpressHtml(contactLabel)}</a></div></div><div style="max-width:1280px;margin:0 auto;padding:20px 16px;border-top:1px solid rgba(255,255,255,.16);color:#aeb9c1;font-size:13px">© ${new Date().getFullYear()} ${escapeWordpressHtml(siteTitle)}</div></footer>`);
   return { header, footer, siteTitle, description };
 }
 
@@ -619,7 +635,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           publishedPages: createdPages,
           progress: { phase: 'published', percent: 100, completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
         },
-        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, deliveryMode: 'gutenberg', deliveryCapabilities, siteCustomization, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}), ...(customizationWarning ? { customizationWarning } : {}) },
+        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, designSource: plan?.designSource ?? null, deliveryMode: 'gutenberg', deliveryCapabilities, siteCustomization, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}), ...(customizationWarning ? { customizationWarning } : {}) },
       });
       if (!publishedJob) await assertPublishingNotCancelled(siteId, jobId);
       await repo.updateSiteStatus(workspaceId, siteId, 'published');

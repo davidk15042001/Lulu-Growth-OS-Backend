@@ -110,3 +110,6 @@ Push-Zeitstempel: 2026-08-23 20:29:31 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 21:05:17 Europe/Berlin
 Änderungen: WordPress-Neugenerierungen aktualisieren kanonische Seiten jetzt idempotent, archivieren ausschließlich eindeutig erkannte ältere Lulu-Duplikate als wiederherstellbare Entwürfe und konfigurieren Firmenname, SEO-Identität, alle aktiven Header- und Footer-Template-Parts sowie ein natives Kontaktformular; CTA-Ziele werden semantisch validiert und der Existing-Modus bewahrt kundeneigene globale Elemente.
+
+Push-Zeitstempel: 2026-08-23 21:47:30 Europe/Berlin
+Änderungen: Das Custom-Bolt-Forge-Referenzdesign ist jetzt als versionierter, deterministischer WordPress-/Gutenberg-Renderer fest verankert: 13 eindeutige responsive Startseiten-Sections, Template-Typografie, 1280-Pixel-Raster, Header, Navigation, Footer, Formular und CTA-Struktur können nicht durch die KI verändert werden; die KI befüllt ausschließlich geprüfte Texte, Farben, SEO und verfügbare Bilder. Desktop-/Mobile-Vorschau und Versions-Quality-Gate verhindern alte vereinfachte Layouts.

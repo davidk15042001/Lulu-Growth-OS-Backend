@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { isCompleteWebsitePlan, websiteCtaDestination, wordpressContactFormShortcode } from '../src/modules/websites/website.generation.service.js';
+import { isCompleteWebsitePlan, renderHome, websiteCtaDestination, wordpressContactFormShortcode } from '../src/modules/websites/website.generation.service.js';
 import { appendGenerationActivity, generationActivities } from '../src/modules/websites/website.activity.js';
 import { automaticGenerationSchema } from '../src/modules/websites/website.validator.js';
 import { completedWordpressPages, findReusableWordpressPage, findWordpressDuplicatePages, isLuluGeneratedWordpressPage, wordpressActiveTheme, wordpressAdminUrl, wordpressDeliveryCapabilities, wordpressGutenbergContent, wordpressHomepageWarning, wordpressOption, wordpressSiteChrome, wordpressTemplatePartForArea } from '../src/modules/websites/website.publish.service.js';
 import { AppError } from '../src/utils/app-error.js';
 
 function pageContent(length: number) {
-  return `<main data-lulu-template="lulu-standard-v1"><h1>Eine klare Überschrift</h1><section><p>${'Relevanter, überprüfter Inhalt für die Zielgruppe. '.repeat(length)}</p></section></main>`;
+  return `<main data-lulu-template="lulu-standard-v1" data-lulu-design-source="custom-bolt-forge" data-lulu-design-version="2026-08-23"><h1>Eine klare Überschrift</h1><section><p>${'Relevanter, überprüfter Inhalt für die Zielgruppe. '.repeat(length)}</p></section></main>`;
 }
 
 function planWith(content: string) {
@@ -22,6 +22,7 @@ function planWith(content: string) {
   });
   return {
     templateKey: 'lulu-standard-v1',
+    designSource: 'custom-bolt-forge',
     siteTitle: 'Lulu Test',
     brandVoice: 'Klar und hilfreich',
     primaryLanguage: 'de',
@@ -41,6 +42,7 @@ describe('website generation quality gate', () => {
   it('rejects short output and placeholder content', () => {
     assert.equal(isCompleteWebsitePlan(planWith('<main><h1>Kurz</h1></main>')), false);
     assert.equal(isCompleteWebsitePlan(planWith(`${pageContent(55)}<p>hello world</p>`)), false);
+    assert.equal(isCompleteWebsitePlan(planWith(pageContent(55).replace('data-lulu-design-version="2026-08-23"', 'data-lulu-design-version="legacy"'))), false);
   });
 
   it('maps generated CTA labels to deterministic destinations and builds a real contact form', () => {
@@ -52,6 +54,28 @@ describe('website generation quality gate', () => {
     assert.match(form, /type='email' required='1'/);
     assert.match(form, /type='textarea' required='1'/);
     assert.doesNotMatch(form, /Lulu's/);
+  });
+
+  it('renders the fixed Custom Bolt Forge visual structure independently from AI copy', () => {
+    const cards = [{ title: 'Solution', description: 'Verified solution details for the intended audience.', cta: 'Learn more' }];
+    const profile = {
+      siteTitle: 'Acme AI', tagline: 'Verified business software', brandVoice: 'Clear', primaryLanguage: 'en', globalSeo: { title: 'Acme AI', description: 'Verified business software', keywords: [] },
+      home: {
+        eyebrow: 'Business software', headline: 'A clear business headline', introduction: 'Verified introduction for the intended customer audience.', primaryCta: 'Contact us', secondaryCta: 'Explore services', trustItems: ['B2B', 'Software', 'Support'], audienceHeading: 'What do you need?', audienceIntroduction: 'Choose the most relevant route.', audienceCards: cards, servicesHeading: 'Services', servicesIntroduction: 'Verified services.', featureEyebrow: 'Core strengths', featureHeading: 'Built for real requirements', featureIntroduction: 'Focused delivery.', featureCards: cards, highlightEyebrow: 'Why choose us', highlightTitle: 'A focused partner', highlightText: 'Verified differentiation.', splitEyebrow: 'Delivery', splitTitle: 'How we support your goals', splitText: 'Verified delivery model.', splitItems: ['Discovery', 'Delivery', 'Support'], processHeading: 'How we work', processIntroduction: 'A clear process.', processSteps: [{ title: 'Understand', description: 'Review the requirements.' }], capabilityHeading: 'Capability and quality', capabilityIntroduction: 'Reliable delivery.', capabilityCards: cards, faqHeading: 'Questions', faqs: [{ question: 'How do we start?', answer: 'Contact the team.' }, { question: 'Who is this for?', answer: 'Business customers.' }], finalCtaTitle: 'Ready to start?', finalCtaText: 'Start a focused conversation.', finalCtaLabel: 'Contact us',
+      },
+      about: { title: 'About', introduction: 'About Acme.', sections: [{ heading: 'Focus', body: 'Verified focus.' }], ctaTitle: 'Talk to us', ctaText: 'Contact Acme.', ctaLabel: 'Contact us' },
+      services: { title: 'Services', introduction: 'Verified services.', items: cards, processHeading: 'Process', processSteps: [{ title: 'Understand', description: 'Review requirements.' }], ctaTitle: 'Find the right solution', ctaText: 'Share your requirements.', ctaLabel: 'Contact us' },
+      contact: { title: 'Contact Acme', introduction: 'Share your requirements.', preparationHeading: 'Helpful information', preparationItems: ['Requirement', 'Timing'], nextStepTitle: 'What happens next', nextStepText: 'The team reviews the request.' },
+    } as any;
+    const palette = { primary: '#183c65', secondary: '#303740', accent: '#e89110', ink: '#233142', muted: '#657283', surface: '#ffffff', background: '#f4f6f8' };
+    const rendered = renderHome(profile, palette, []);
+    const html = `${rendered.openingHtml}${rendered.sections.map((section) => section.html).join('')}${rendered.closingHtml}`;
+    assert.match(html, /data-lulu-design-source="custom-bolt-forge"/);
+    assert.match(html, /data-lulu-design-version="2026-08-23"/);
+    assert.match(html, /max-width:1280px/);
+    assert.match(html, /Barlow Condensed/);
+    assert.deepEqual(rendered.sections.map((section) => section.key), ['hero', 'trust', 'buyer-routing', 'portfolio', 'core-strengths', 'differentiator', 'split-feature', 'process', 'capabilities', 'business-call-to-action', 'request-form', 'faq', 'call-to-action']);
+    assert.equal(new Set(rendered.sections.map((section) => section.key)).size, rendered.sections.length);
   });
 });
 
@@ -146,6 +170,7 @@ describe('WordPress completion setup', () => {
     });
     assert.match(content, /<!-- wp:shortcode -->/);
     assert.match(content, /\[contact-form\]&\[\/contact-form\]/);
+    assert.match(content, /<section>\s*<!-- \/wp:html -->[\s\S]*<!-- wp:shortcode -->[\s\S]*<!-- wp:html -->\s*<\/section>/);
     assert.doesNotMatch(content, /data-lulu-contact-form-preview|data-lulu-contact-form-shortcode/);
   });
 
@@ -180,6 +205,10 @@ describe('WordPress completion setup', () => {
     ], 'https://example.com/');
     assert.match(chrome.header, /data-lulu-global="header"/);
     assert.match(chrome.footer, /data-lulu-global="footer"/);
+    assert.match(chrome.header, /data-lulu-design-source="custom-bolt-forge"/);
+    assert.match(chrome.header, /position:sticky/);
+    assert.match(chrome.header, /max-width:1280px/);
+    assert.match(chrome.footer, /Barlow/);
     assert.match(chrome.header, /https:\/\/example\.com\/services\//);
     assert.doesNotMatch(`${chrome.header}${chrome.footer}`, /123 Example Street|hi@example\.com/i);
     assert.equal(wordpressTemplatePartForArea([{ id: 'old//header', area: 'header', theme: 'old' }, { id: 'active//header', area: 'header', theme: 'pub/active' }], 'header', 'pub/active')?.id, 'active//header');
