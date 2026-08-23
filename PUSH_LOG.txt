@@ -86,3 +86,6 @@ Push-Zeitstempel: 2026-08-23 17:18:25 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 17:53:33 Europe/Berlin
 Änderungen: Jeder automatische Website-Job erfordert jetzt die bestätigte Zielwahl „bestehend“ oder „neu“ und speichert sie dauerhaft; der bestehende Modus aktualisiert passende WordPress-Seiten, während der neue Modus vorhandene Seiten nicht wiederverwendet und damit unbeabsichtigtes Überschreiben verhindert.
+
+Push-Zeitstempel: 2026-08-23 18:24:02 Europe/Berlin
+Änderungen: Der Retry-Exhausted-Pfad beendet unterbrochene Website-Worker jetzt konsistent, bewahrt den letzten Fortschritt, protokolliert Ursache, Versuche und Lease-Diagnosen im Activity Log, setzt den Site-Status auf Fehler und bestätigt, dass kein Hintergrundjob weiterläuft.

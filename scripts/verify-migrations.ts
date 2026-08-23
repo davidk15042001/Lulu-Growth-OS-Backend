@@ -3,6 +3,7 @@ import path from 'node:path';
 import { PGlite } from '@electric-sql/pglite';
 import assert from 'node:assert/strict';
 import { RESOURCE_CATALOG } from '../src/domain/resource-catalog.js';
+import { failExhaustedJobsSql } from '../src/modules/websites/website.repo.js';
 
 const migrationsDirectory = path.resolve('src/database/migrations');
 
@@ -169,6 +170,29 @@ async function main() {
     assert.equal(resumedWebsiteJob.rows[0]?.preview.progress?.completedSections, 3);
     assert.equal(resumedWebsiteJob.rows[0]?.plan.pages?.[0]?.generatedSections?.length, 1);
     assert.equal(resumedWebsiteJob.rows[0]?.provider_result.pages?.length, 1);
+    await database.query(
+      `UPDATE website_generation_jobs
+       SET status = 'planning', attempt_count = 3, worker_id = 'expired-worker',
+           locked_at = NOW() - INTERVAL '5 minutes', heartbeat_at = NOW() - INTERVAL '5 minutes'
+       WHERE id = $1`,
+      [websiteJob.rows[0]?.id],
+    );
+    await database.query(failExhaustedJobsSql, [3, 90, websiteSite.rows[0]?.id]);
+    const exhaustedWebsiteJob = await database.query<{
+      status: string;
+      error_code: string;
+      preview: { progress?: { phase?: string; percent?: number }; activity?: Array<{ code?: string; params?: { attempts?: number } }> };
+      provider_result: { failureDetails?: { reason?: string; attempts?: number } };
+    }>(`SELECT status, error_code, preview, provider_result FROM website_generation_jobs WHERE id = $1`, [websiteJob.rows[0]?.id]);
+    assert.equal(exhaustedWebsiteJob.rows[0]?.status, 'failed');
+    assert.equal(exhaustedWebsiteJob.rows[0]?.error_code, 'WEBSITE_GENERATION_RETRY_EXHAUSTED');
+    assert.equal(exhaustedWebsiteJob.rows[0]?.preview.progress?.phase, 'failed');
+    assert.equal(exhaustedWebsiteJob.rows[0]?.preview.progress?.percent, 72);
+    assert.equal(exhaustedWebsiteJob.rows[0]?.preview.activity?.at(-1)?.code, 'generation_retry_exhausted');
+    assert.equal(exhaustedWebsiteJob.rows[0]?.preview.activity?.at(-1)?.params?.attempts, 3);
+    assert.equal(exhaustedWebsiteJob.rows[0]?.provider_result.failureDetails?.reason, 'worker_lease_expired');
+    const exhaustedWebsiteSite = await database.query<{ status: string }>('SELECT status FROM workspace_sites WHERE id = $1', [websiteSite.rows[0]?.id]);
+    assert.equal(exhaustedWebsiteSite.rows[0]?.status, 'error');
     const record = await database.query<{ id: string }>(
       `INSERT INTO workspace_records (
          workspace_id, resource_type, name, created_by

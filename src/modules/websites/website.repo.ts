@@ -119,22 +119,54 @@ export async function findActiveJob(siteId: string) {
   return result.rows[0] ? mapJob(result.rows[0]) : null;
 }
 
-export async function failExhaustedJobs(maxAttempts: number, leaseSeconds: number, siteId?: string) {
-  await query(
-    `UPDATE website_generation_jobs
-     SET status = 'failed',
+export const failExhaustedJobsSql = `WITH exhausted AS (
+       UPDATE website_generation_jobs AS job
+       SET status = 'failed',
          error_code = 'WEBSITE_GENERATION_RETRY_EXHAUSTED',
-         error_message = 'Website generation was interrupted repeatedly and could not be resumed.',
+         error_message = format('Website generation was interrupted %s times by the background worker and was stopped safely. No generation is still running.', job.attempt_count),
+         preview = jsonb_set(
+           jsonb_set(
+             COALESCE(job.preview, '{}'::jsonb),
+             '{progress}',
+             COALESCE(CASE WHEN jsonb_typeof(job.preview->'progress') = 'object' THEN job.preview->'progress' END, '{}'::jsonb)
+               || jsonb_build_object('phase', 'failed'),
+             TRUE
+           ),
+           '{activity}',
+           COALESCE(CASE WHEN jsonb_typeof(job.preview->'activity') = 'array' THEN job.preview->'activity' END, '[]'::jsonb)
+             || jsonb_build_array(jsonb_build_object(
+               'id', 'generation-retry-exhausted',
+               'code', 'generation_retry_exhausted',
+               'tone', 'error',
+               'params', jsonb_build_object('attempts', job.attempt_count, 'leaseSeconds', $2),
+               'createdAt', to_jsonb(clock_timestamp())
+             )),
+           TRUE
+         ),
+         provider_result = COALESCE(job.provider_result, '{}'::jsonb) || jsonb_build_object(
+           'failureDetails', jsonb_build_object(
+             'reason', 'worker_lease_expired',
+             'attempts', job.attempt_count,
+             'leaseSeconds', $2,
+             'lastHeartbeatAt', job.heartbeat_at
+           )
+         ),
          worker_id = NULL,
          locked_at = NULL,
          heartbeat_at = NOW()
-     WHERE status IN ('planning','publishing','generated','preview')
-       AND (status NOT IN ('generated','preview') OR auto_publish = TRUE)
-       AND attempt_count >= $1
-       AND COALESCE(heartbeat_at, locked_at, updated_at) < NOW() - ($2::int * INTERVAL '1 second')
-       AND ($3::uuid IS NULL OR site_id = $3::uuid)`,
-    [maxAttempts, leaseSeconds, siteId ?? null],
-  );
+       WHERE job.status IN ('planning','publishing','generated','preview')
+         AND (job.status NOT IN ('generated','preview') OR job.auto_publish = TRUE)
+         AND job.attempt_count >= $1
+         AND COALESCE(job.heartbeat_at, job.locked_at, job.updated_at) < NOW() - ($2::int * INTERVAL '1 second')
+         AND ($3::uuid IS NULL OR job.site_id = $3::uuid)
+       RETURNING job.site_id
+     )
+     UPDATE workspace_sites AS site
+     SET status = 'error'
+     WHERE site.id IN (SELECT exhausted.site_id FROM exhausted)`;
+
+export async function failExhaustedJobs(maxAttempts: number, leaseSeconds: number, siteId?: string) {
+  await query(failExhaustedJobsSql, [maxAttempts, leaseSeconds, siteId ?? null]);
 }
 
 export async function getJob(siteId: string, jobId: string) {
