@@ -5,7 +5,7 @@ import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
-import type { WebsiteGenerationWorkItem } from './website.types.js';
+import type { WebsiteGenerationTargetMode, WebsiteGenerationWorkItem } from './website.types.js';
 import { appendGenerationActivity } from './website.activity.js';
 
 export const DEFAULT_WEBSITE_PROMPT = `Create factual, conversion-focused website copy from verified Lulu workspace data for the fixed Lulu Standard template. Generate only structured text and SEO content. The application owns the layout, pages, colors and HTML rendering. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
@@ -224,22 +224,39 @@ export async function syncWordpressProviderSites(workspaceId: string) {
   return repo.listSites(workspaceId);
 }
 
-export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; siteId?: string; language?: string }) {
+export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; targetMode: WebsiteGenerationTargetMode; siteId?: string; language?: string }) {
   try {
-    const site = await getOrCreateProviderSite(input.workspaceId, input.provider, input.siteId);
+    if (input.provider === 'wordpress' && !input.siteId) {
+      throw new AppError(409, 'WEBSITE_PROVIDER_SITE_SELECTION_REQUIRED', 'Select the WordPress website that should receive the generated content');
+    }
+    let site = await getOrCreateProviderSite(input.workspaceId, input.provider, input.siteId);
     if (!site) throw new AppError(500, 'WEBSITE_SITE_CREATE_FAILED', 'The connected provider site could not be registered');
     const active = await repo.findActiveJob(site.id);
     if (active) return { site, job: active, reused: true };
     const cancelled = await repo.findLatestCancelledJob(site.id);
-    if (cancelled) {
+    if (cancelled && cancelled.preview?.targetMode === input.targetMode) {
       const resumed = await repo.resumeJob(site.id, cancelled.id);
       if (resumed.job) return { site, job: resumed.job, reused: true };
     }
+    site = await repo.updateSiteSettings(input.workspaceId, site.id, {
+      generationTargetMode: input.targetMode,
+      generationTargetConfirmedAt: new Date().toISOString(),
+    }) ?? site;
+    const initialPreview = appendGenerationActivity(
+      { targetMode: input.targetMode },
+      {
+        id: `target-selected:${input.targetMode}`,
+        code: input.targetMode === 'new' ? 'target_new_selected' : 'target_existing_selected',
+        tone: 'info',
+        params: { mode: input.targetMode, site: site.name },
+      },
+    );
     const created = await repo.createJob({
       siteId: site.id,
       prompt: DEFAULT_WEBSITE_PROMPT,
       createdBy: input.userId,
       autoPublish: true,
+      preview: initialPreview,
       ...(input.language ? { requestedLanguage: input.language } : {}),
     });
     if (!created.job) throw new AppError(500, 'WEBSITE_GENERATION_JOB_CREATE_FAILED', 'The automatic website generation job could not be created');

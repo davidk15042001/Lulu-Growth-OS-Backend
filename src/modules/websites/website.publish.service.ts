@@ -2,6 +2,18 @@ import { AppError } from '../../utils/app-error.js';
 import * as repo from './website.repo.js';
 import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressFrontPage, updateWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 import { appendGenerationActivity, type WebsiteGenerationActivity } from './website.activity.js';
+import type { WebsiteGenerationTargetMode } from './website.types.js';
+
+export function findReusableWordpressPage(existingPages: any[], page: Record<string, unknown>, targetMode: WebsiteGenerationTargetMode) {
+  if (targetMode === 'new') return undefined;
+  const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
+  const desiredTitle = String(page.title ?? '').trim().toLowerCase();
+  return existingPages.find((candidate: any) => {
+    const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
+    const candidateTitle = String(candidate.title ?? '').trim().toLowerCase();
+    return (desiredSlug && candidateSlug === desiredSlug) || candidateTitle === desiredTitle;
+  });
+}
 
 async function assertPublishingNotCancelled(siteId: string, jobId: string) {
   const current = await repo.getJob(siteId, jobId);
@@ -18,6 +30,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
   if (!job) throw new AppError(404, 'WEBSITE_GENERATION_JOB_NOT_FOUND', 'Website generation job was not found');
   if (job.status !== 'preview' && job.status !== 'generated') throw new AppError(409, 'WEBSITE_PUBLISH_STATE_INVALID', 'Only a generated preview can be published');
   const plan = job.plan as any;
+  const targetMode = job.preview?.targetMode === 'new' ? 'new' : 'existing';
   const publishingJob = await repo.updateJob(siteId, jobId, { status: 'publishing', preview: appendGenerationActivity(job.preview, { id: 'publishing-started', code: 'publishing_started', tone: 'info', params: { provider: site.provider } }) });
   if (!publishingJob) await assertPublishingNotCancelled(siteId, jobId);
   try {
@@ -63,6 +76,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           providerResult: {
             ...current.providerResult,
             provider: 'wordpress',
+            targetMode,
             templateKey: plan?.templateKey ?? null,
             partial: completedPages < plannedPages.length,
             pages: createdPages,
@@ -83,11 +97,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           continue;
         }
         await updatePublishingProgress('publishing_pages', pageIndex, String(page.title ?? ''), Math.round(55 + (pageIndex / plannedPages.length) * 40), { id: `page-publishing:${desiredSlug || pageIndex}`, code: 'page_publishing', tone: 'info', params: { page: String(page.title ?? '') } });
-        const existing = existingPages.find((candidate: any) => {
-          const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
-          const candidateTitle = String(candidate.title ?? '').trim().toLowerCase();
-          return (desiredSlug && candidateSlug === desiredSlug) || candidateTitle === String(page.title ?? '').trim().toLowerCase();
-        });
+        const existing = findReusableWordpressPage(existingPages, page, targetMode);
         let published: any = existing;
         let pageId = existing?.ID ?? existing?.id;
         const existingStatus = String(existing?.status ?? '').toLowerCase();
@@ -143,7 +153,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           publishedPages: createdPages,
           progress: { phase: 'published', percent: 100, completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
         },
-        providerResult: { provider: 'wordpress', templateKey: plan?.templateKey ?? null, partial: false, pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) },
+        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, partial: false, pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) },
       });
       if (!publishedJob) await assertPublishingNotCancelled(siteId, jobId);
       await repo.updateSiteStatus(workspaceId, siteId, 'published');
@@ -166,7 +176,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
     await assertPublishingNotCancelled(siteId, jobId);
     const published = await withProviderConnectionError(workspaceId, 'webflow', () => publishWebflowSite(workspaceId, site.externalSiteId!, customDomainIds));
     const beforePublished = await repo.getJob(siteId, jobId);
-    const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', preview: appendGenerationActivity(beforePublished?.preview ?? job.preview, { id: 'website-published', code: 'website_published', tone: 'success', params: {} }), providerResult: { provider: 'webflow', items, published } });
+    const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', preview: appendGenerationActivity(beforePublished?.preview ?? job.preview, { id: 'website-published', code: 'website_published', tone: 'success', params: {} }), providerResult: { provider: 'webflow', targetMode, items, published } });
     await repo.updateSiteStatus(workspaceId, siteId, 'published');
     return publishedJob;
   } catch (error) {

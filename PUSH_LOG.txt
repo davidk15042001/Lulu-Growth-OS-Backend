@@ -83,3 +83,6 @@ Push-Zeitstempel: 2026-08-23 16:34:06 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 17:18:25 Europe/Berlin
 Änderungen: Website-Generierungsjobs speichern jetzt ein strukturiertes, dedupliziertes Aktivitätsprotokoll für Unternehmensdaten, Text- und SEO-Erstellung, Section-Checkpoints, CMS-Veröffentlichungen, Abbruch, Fortsetzen und Fehler; sämtliche Meldungen bleiben über Neuladen und Worker-Wiederholungen erhalten.
+
+Push-Zeitstempel: 2026-08-23 17:53:33 Europe/Berlin
+Änderungen: Jeder automatische Website-Job erfordert jetzt die bestätigte Zielwahl „bestehend“ oder „neu“ und speichert sie dauerhaft; der bestehende Modus aktualisiert passende WordPress-Seiten, während der neue Modus vorhandene Seiten nicht wiederverwendet und damit unbeabsichtigtes Überschreiben verhindert.

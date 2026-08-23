@@ -103,13 +103,13 @@ export async function markDomainVerified(siteId: string, domainId: string) {
   const result = await query<any>(`UPDATE workspace_site_domains SET status = 'verified', verified_at = NOW(), last_error = NULL WHERE id = $1 AND site_id = $2 RETURNING id`, [domainId, siteId]);
   return result.rowCount ? true : false;
 }
-export async function createJob(input: { siteId: string; prompt: string; createdBy: string; requestedLanguage?: string; autoPublish?: boolean }) {
+export async function createJob(input: { siteId: string; prompt: string; createdBy: string; requestedLanguage?: string; autoPublish?: boolean; preview?: Record<string, unknown> }) {
   const result = await query<any>(
-    `INSERT INTO website_generation_jobs (site_id, prompt, created_by, requested_language, auto_publish)
-     VALUES ($1,$2,$3,$4,$5)
+    `INSERT INTO website_generation_jobs (site_id, prompt, created_by, requested_language, auto_publish, preview)
+     VALUES ($1,$2,$3,$4,$5,$6)
      ON CONFLICT (site_id) WHERE status IN ('queued','planning','generated','preview','publishing') DO NOTHING
      RETURNING id`,
-    [input.siteId, input.prompt.trim(), input.createdBy, input.requestedLanguage ?? null, input.autoPublish ?? false],
+    [input.siteId, input.prompt.trim(), input.createdBy, input.requestedLanguage ?? null, input.autoPublish ?? false, JSON.stringify(input.preview ?? {})],
   );
   if (result.rows[0]) return { job: await getJob(input.siteId, result.rows[0].id), created: true };
   return { job: await findActiveJob(input.siteId), created: false };

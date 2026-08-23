@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { isCompleteWebsitePlan } from '../src/modules/websites/website.generation.service.js';
 import { appendGenerationActivity, generationActivities } from '../src/modules/websites/website.activity.js';
+import { automaticGenerationSchema } from '../src/modules/websites/website.validator.js';
+import { findReusableWordpressPage } from '../src/modules/websites/website.publish.service.js';
 
 function pageContent(length: number) {
   return `<main data-lulu-template="lulu-standard-v1"><h1>Eine klare Überschrift</h1><section><p>${'Relevanter, überprüfter Inhalt für die Zielgruppe. '.repeat(length)}</p></section></main>`;
@@ -49,5 +51,25 @@ describe('website generation activity log', () => {
     const activities = generationActivities(retried);
     assert.equal(activities.length, 1);
     assert.deepEqual(activities[0], event);
+  });
+});
+
+describe('website generation target selection', () => {
+  const siteId = '5895ec11-4459-4645-ac91-2380d083f758';
+
+  it('requires an explicit existing-or-new decision', () => {
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId }).success, false);
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'existing' }).success, true);
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'new' }).success, true);
+  });
+
+  it('rejects unsupported target modes', () => {
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'overwrite' }).success, false);
+  });
+
+  it('reuses matching WordPress pages only in existing mode', () => {
+    const pages = [{ ID: 42, slug: 'home', title: 'Home' }];
+    assert.equal(findReusableWordpressPage(pages, { slug: 'home', title: 'Home' }, 'existing')?.ID, 42);
+    assert.equal(findReusableWordpressPage(pages, { slug: 'home', title: 'Home' }, 'new'), undefined);
   });
 });

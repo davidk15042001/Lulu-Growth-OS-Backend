@@ -71,6 +71,7 @@ export async function automaticGenerate(req: WorkspaceRequest, res: Response, ne
       workspaceId: workspaceId(req),
       userId: req.user!.id,
       provider: input.provider,
+      targetMode: input.targetMode,
       ...(input.siteId ? { siteId: input.siteId } : {}),
       ...(input.language ? { language: input.language } : {}),
     });
