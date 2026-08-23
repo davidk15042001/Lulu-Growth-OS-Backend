@@ -2,6 +2,14 @@ import { AppError } from '../../utils/app-error.js';
 import * as repo from './website.repo.js';
 import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressFrontPage, updateWordpressPage, wordpressPages, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 
+async function assertPublishingNotCancelled(siteId: string, jobId: string) {
+  const current = await repo.getJob(siteId, jobId);
+  if (current?.status === 'cancelled') {
+    throw new AppError(409, 'WEBSITE_GENERATION_CANCELLED', 'Website generation was cancelled by the user');
+  }
+  return current;
+}
+
 export async function publishWebsiteJob(workspaceId: string, siteId: string, jobId: string) {
   const site = await repo.getSite(workspaceId, siteId);
   const job = await repo.getJob(siteId, jobId);
@@ -9,7 +17,8 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
   if (!job) throw new AppError(404, 'WEBSITE_GENERATION_JOB_NOT_FOUND', 'Website generation job was not found');
   if (job.status !== 'preview' && job.status !== 'generated') throw new AppError(409, 'WEBSITE_PUBLISH_STATE_INVALID', 'Only a generated preview can be published');
   const plan = job.plan as any;
-  await repo.updateJob(siteId, jobId, { status: 'publishing' });
+  const publishingJob = await repo.updateJob(siteId, jobId, { status: 'publishing' });
+  if (!publishingJob) await assertPublishingNotCancelled(siteId, jobId);
   try {
     if (site.provider === 'managed') throw new AppError(503, 'WEBSITE_MANAGED_HOSTING_NOT_CONFIGURED', 'Managed website hosting is not configured yet');
     if (site.provider === 'wordpress') {
@@ -17,22 +26,61 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (!externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_ID_MISSING', 'The connected WordPress site ID is missing');
       const plannedPages = Array.isArray(plan?.pages) ? plan.pages : [];
       if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
-      const updatePublishingProgress = async (phase: string, completedPages: number, currentPageTitle: string | null) => {
-        await repo.updateJob(siteId, jobId, {
+      const updatePublishingProgress = async (phase: string, completedPages: number, currentPageTitle: string | null, percent: number) => {
+        const current = await assertPublishingNotCancelled(siteId, jobId);
+        const updated = await repo.updateJob(siteId, jobId, {
           status: 'publishing',
           preview: {
-            ...job.preview,
+            ...(current?.preview ?? job.preview),
             provider: 'wordpress',
             automatic: job.autoPublish,
-            progress: { phase, completedPages, totalPages: plannedPages.length, currentPageTitle },
+            progress: { phase, percent, completedPages, totalPages: plannedPages.length, currentPageTitle },
           },
         });
+        if (!updated) await assertPublishingNotCancelled(siteId, jobId);
       };
-      const createdPages: any[] = [];
+      const storedPages = Array.isArray((job.providerResult as { pages?: unknown[] }).pages)
+        ? (job.providerResult as { pages: any[] }).pages.filter((page) => page && typeof page === 'object' && page.id && page.url)
+        : [];
+      const createdPages: any[] = [...storedPages];
+      const recordPublishedPage = async (entry: Record<string, unknown>, completedPages: number, currentPageTitle: string | null) => {
+        const existingIndex = createdPages.findIndex((page) => String(page.slug ?? '') === String(entry.slug ?? '') || String(page.id ?? '') === String(entry.id ?? ''));
+        if (existingIndex >= 0) createdPages[existingIndex] = entry;
+        else createdPages.push(entry);
+        const current = await repo.getJob(siteId, jobId);
+        if (!current) throw new AppError(404, 'WEBSITE_GENERATION_JOB_NOT_FOUND', 'Website generation job was not found');
+        const percent = Math.round(55 + (completedPages / plannedPages.length) * 40);
+        await repo.updateJob(siteId, jobId, {
+          preview: {
+            ...current.preview,
+            provider: 'wordpress',
+            automatic: job.autoPublish,
+            publishedPages: createdPages,
+            progress: { phase: current.status === 'cancelled' ? 'cancelled' : 'publishing_pages', percent, completedPages, totalPages: plannedPages.length, currentPageTitle },
+          },
+          providerResult: {
+            ...current.providerResult,
+            provider: 'wordpress',
+            templateKey: plan?.templateKey ?? null,
+            partial: completedPages < plannedPages.length,
+            pages: createdPages,
+          },
+        });
+        const latest = await repo.getJob(siteId, jobId);
+        if (current.status === 'cancelled' || latest?.status === 'cancelled') {
+          await repo.cancelJob(siteId, jobId);
+          throw new AppError(409, 'WEBSITE_GENERATION_CANCELLED', 'Website generation was cancelled by the user');
+        }
+      };
       const existingPages = await withProviderConnectionError(workspaceId, 'wordpress', () => wordpressPages(workspaceId, externalSiteId));
       for (const [pageIndex, page] of plannedPages.entries()) {
-        await updatePublishingProgress('publishing_pages', pageIndex, String(page.title ?? ''));
         const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
+        const alreadyPublished = createdPages.find((candidate) => String(candidate.slug ?? '').trim().toLowerCase() === desiredSlug && candidate.url);
+        if (alreadyPublished) {
+          await updatePublishingProgress('publishing_pages', pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null, Math.round(55 + ((pageIndex + 1) / plannedPages.length) * 40));
+          continue;
+        }
+        await updatePublishingProgress('publishing_pages', pageIndex, String(page.title ?? ''), Math.round(55 + (pageIndex / plannedPages.length) * 40));
         const existing = existingPages.find((candidate: any) => {
           const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
           const candidateTitle = String(candidate.title ?? '').trim().toLowerCase();
@@ -62,8 +110,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           throw new AppError(502, 'WORDPRESS_PLACEHOLDER_CONTENT_DETECTED', 'WordPress still contains placeholder content; the generated customer content was not confirmed', { provider: 'wordpress', pageId, providerResult: published });
         }
         if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });
-        createdPages.push({ id: pageId, url: String(publishedUrl), reused: Boolean(existing) });
-        await updatePublishingProgress('publishing_pages', pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null);
+        await recordPublishedPage({ id: pageId, url: String(publishedUrl), title: String(page.title ?? ''), slug: desiredSlug, status: 'published', reused: Boolean(existing), publishedAt: new Date().toISOString() }, pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null);
       }
       if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
       const homepageId = String(createdPages[0]?.id ?? '');
@@ -71,7 +118,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       let homepageConfigured = false;
       let homepageWarning: string | undefined;
       try {
-        await updatePublishingProgress('configuring_homepage', plannedPages.length, null);
+        await updatePublishingProgress('configuring_homepage', plannedPages.length, null, 97);
         await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
         homepageConfigured = true;
       } catch (homepageError) {
@@ -90,10 +137,12 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           ...job.preview,
           provider: 'wordpress',
           automatic: job.autoPublish,
-          progress: { phase: 'published', completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
+          publishedPages: createdPages,
+          progress: { phase: 'published', percent: 100, completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
         },
-        providerResult: { provider: 'wordpress', templateKey: plan?.templateKey ?? null, pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) },
+        providerResult: { provider: 'wordpress', templateKey: plan?.templateKey ?? null, partial: false, pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) },
       });
+      if (!publishedJob) await assertPublishingNotCancelled(siteId, jobId);
       await repo.updateSiteStatus(workspaceId, siteId, 'published');
       return publishedJob;
     }
@@ -101,6 +150,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
     if (!collectionId || !site.externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_CONFIGURATION_MISSING', 'Webflow site ID and CMS collection ID are required for publishing');
     const items: any[] = [];
     for (const page of plan.pages ?? []) {
+      await assertPublishingNotCancelled(siteId, jobId);
       const item = await withProviderConnectionError(workspaceId, 'webflow', () => createWebflowItem(workspaceId, collectionId, { name: page.title, slug: page.slug, content: page.content, seoTitle: page.seoTitle, seoDescription: page.seoDescription }, false));
       items.push({ id: item.id ?? item._id, slug: page.slug });
     }
@@ -108,11 +158,13 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
     const providerDomainItems = Array.isArray(providerDomains?.customDomains) ? providerDomains.customDomains : Array.isArray(providerDomains) ? providerDomains : [];
     const verifiedHostnames = new Set(site.domains.filter((domain) => domain.status === 'verified').map((domain) => domain.hostname.toLowerCase()));
     const customDomainIds = providerDomainItems.filter((domain: any) => verifiedHostnames.has(String(domain.url ?? domain.hostname ?? '').toLowerCase())).map((domain: any) => String(domain.id));
+    await assertPublishingNotCancelled(siteId, jobId);
     const published = await withProviderConnectionError(workspaceId, 'webflow', () => publishWebflowSite(workspaceId, site.externalSiteId!, customDomainIds));
     const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'webflow', items, published } });
     await repo.updateSiteStatus(workspaceId, siteId, 'published');
     return publishedJob;
   } catch (error) {
+    if (error instanceof AppError && error.code === 'WEBSITE_GENERATION_CANCELLED') throw error;
     await repo.updateJob(siteId, jobId, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_PUBLISH_FAILED', errorMessage: error instanceof Error ? error.message : 'Website publishing failed' });
     throw error;
   }

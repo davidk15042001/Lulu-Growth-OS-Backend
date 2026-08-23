@@ -108,6 +108,7 @@ export type WebsiteGenerationPhase = 'generating_content' | 'applying_template' 
 export type WebsiteGenerationProgress = {
   plan?: WebsitePlan;
   phase: WebsiteGenerationPhase;
+  percent: number;
   completedPages: number;
   totalPages: number;
   currentPageTitle: string | null;
@@ -568,20 +569,20 @@ export async function generateWebsitePlan(input: {
   const images = (input.imageAssets ?? []).filter((asset) => safeImageUrl(asset.url)).slice(0, 8);
   let plan = existingTemplatePlan(input.existingPlan, language, context, images);
   if (!plan) {
-    await input.onProgress?.({ phase: 'generating_content', completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null });
+    await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null });
     const profile = await generateContentProfile({ provider: input.provider, language, prompt: input.prompt, context });
     plan = { templateKey: TEMPLATE_KEY, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile).map((definition) => ({ ...definition, content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
   }
   let completedPages = plan.pages.filter(pageHasPublishableContent).length;
   for (let index = 0; index < plan.pages.length; index += 1) {
     if (pageHasPublishableContent(plan.pages[index]!, index)) continue;
-    await input.onProgress?.({ plan, phase: 'applying_template', completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null });
+    await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedPages / plan.pages.length) * 30), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null });
     const content = renderPage(index, plan.contentProfile, plan.palette, images);
     plan = { ...plan, pages: plan.pages.map((page, pageIndex) => pageIndex === index ? { ...page, content } : page) };
     completedPages += 1;
-    await input.onProgress?.({ plan, phase: 'applying_template', completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index + 1]?.title ?? null });
+    await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedPages / plan.pages.length) * 30), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index + 1]?.title ?? null });
   }
   if (!isCompleteWebsitePlan(plan)) throw new AppError(502, 'WEBSITE_TEMPLATE_RENDER_FAILED', 'The standard website template could not be rendered with the generated content');
-  await input.onProgress?.({ plan, phase: 'template_ready', completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null });
+  await input.onProgress?.({ plan, phase: 'template_ready', percent: 52, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null });
   return plan;
 }

@@ -127,6 +127,29 @@ async function main() {
        VALUES ($1)`,
       [workspaceId]
     );
+    const websiteSite = await database.query<{ id: string }>(
+      `INSERT INTO workspace_sites (workspace_id, provider, ownership_mode, name, external_site_id)
+       VALUES ($1, 'wordpress', 'connected', 'Migration Website', 'migration-site')
+       RETURNING id`,
+      [workspaceId]
+    );
+    const websiteJob = await database.query<{ id: string }>(
+      `INSERT INTO website_generation_jobs (site_id, prompt, created_by, auto_publish, status, preview)
+       VALUES ($1, 'Generate a progressive migration test website.', $2, TRUE, 'publishing', '{"progress":{"phase":"publishing_pages","percent":72}}'::jsonb)
+       RETURNING id`,
+      [websiteSite.rows[0]?.id, userId]
+    );
+    const cancelledWebsiteJob = await database.query<{ status: string; preview: { progress?: { phase?: string; percent?: number } } }>(
+      `UPDATE website_generation_jobs
+       SET status = 'cancelled',
+           preview = jsonb_set(COALESCE(preview, '{}'::jsonb), '{progress}', COALESCE(preview->'progress', '{}'::jsonb) || '{"phase":"cancelled"}'::jsonb, TRUE)
+       WHERE id = $1
+       RETURNING status, preview`,
+      [websiteJob.rows[0]?.id]
+    );
+    assert.equal(cancelledWebsiteJob.rows[0]?.status, 'cancelled');
+    assert.equal(cancelledWebsiteJob.rows[0]?.preview.progress?.phase, 'cancelled');
+    assert.equal(cancelledWebsiteJob.rows[0]?.preview.progress?.percent, 72);
     const record = await database.query<{ id: string }>(
       `INSERT INTO workspace_records (
          workspace_id, resource_type, name, created_by

@@ -74,3 +74,6 @@ Push-Zeitstempel: 2026-08-23 14:47:29 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 15:23:14 Europe/Berlin
 Änderungen: Synchronisations-Push zum Frontend-Release, das die globale Navigation vorübergehend auf Website und dessen Unterseiten beschränkt.
+
+Push-Zeitstempel: 2026-08-23 16:04:22 Europe/Berlin
+Änderungen: WordPress-Veröffentlichungen werden nach jeder bestätigten Seite dauerhaft als Zwischenstand mit URL und Fortschritt gespeichert; ein neuer sicherer Abbruch-Endpunkt stoppt laufende Jobs zwischen Arbeitsschritten, ohne bereits veröffentlichte Seiten oder Fehlerdiagnosen zu verlieren.

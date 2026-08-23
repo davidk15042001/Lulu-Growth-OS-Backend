@@ -20,7 +20,10 @@ child.stderr.on('data', (chunk) => {
 
 try {
   let response;
-  for (let attempt = 0; attempt < 30; attempt += 1) {
+  // Cold starts on production-sized bundles can take several seconds on busy
+  // CI hosts. Keep polling the health endpoint instead of reporting a false
+  // failure after the previous three-second window.
+  for (let attempt = 0; attempt < 120; attempt += 1) {
     try {
       response = await fetch(`http://127.0.0.1:${port}/health`);
       if (response.ok) break;

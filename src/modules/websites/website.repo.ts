@@ -152,10 +152,36 @@ export async function updateJob(siteId: string, jobId: string, patch: { status?:
          worker_id = CASE WHEN $3 IN ('published','failed','cancelled') THEN NULL ELSE worker_id END,
          locked_at = CASE WHEN $3 IN ('published','failed','cancelled') THEN NULL ELSE locked_at END,
          heartbeat_at = CASE WHEN $3 IS NOT NULL THEN NOW() ELSE heartbeat_at END
-     WHERE site_id = $1 AND id = $2 RETURNING id`,
+     WHERE site_id = $1 AND id = $2
+       AND (status <> 'cancelled' OR $3 IS NULL OR $3 = 'cancelled')
+     RETURNING id`,
     [siteId, jobId, patch.status ?? null, patch.plan ? JSON.stringify(patch.plan) : null, patch.preview ? JSON.stringify(patch.preview) : null, patch.providerResult ? JSON.stringify(patch.providerResult) : null, patch.errorCode ?? null, patch.errorMessage ?? null],
   );
   return result.rowCount ? getJob(siteId, jobId) : null;
+}
+
+export async function cancelJob(siteId: string, jobId: string) {
+  const result = await query(
+    `UPDATE website_generation_jobs
+     SET status = 'cancelled',
+         preview = jsonb_set(
+           COALESCE(preview, '{}'::jsonb),
+           '{progress}',
+           COALESCE(preview->'progress', '{}'::jsonb) || '{"phase":"cancelled"}'::jsonb,
+           TRUE
+         ),
+         error_code = 'WEBSITE_GENERATION_CANCELLED',
+         error_message = 'Website generation was cancelled by the user.',
+         worker_id = NULL,
+         locked_at = NULL,
+         heartbeat_at = NOW()
+     WHERE site_id = $1 AND id = $2
+       AND status IN ('queued','planning','generated','preview','publishing','cancelled')
+     RETURNING id`,
+    [siteId, jobId],
+  );
+  const job = await getJob(siteId, jobId);
+  return { job, cancelled: (result.rowCount ?? 0) > 0 };
 }
 
 export async function claimNextGenerationJob(workerId: string, leaseSeconds: number, maxAttempts: number): Promise<WebsiteGenerationWorkItem | null> {

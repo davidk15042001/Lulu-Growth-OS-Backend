@@ -72,6 +72,14 @@ function generationErrorMessage(error: unknown) {
   return diagnostic ? `${error.message} (${diagnostic})` : error.message;
 }
 
+async function assertGenerationNotCancelled(siteId: string, jobId: string) {
+  const job = await repo.getJob(siteId, jobId);
+  if (job?.status === 'cancelled') {
+    throw new AppError(409, 'WEBSITE_GENERATION_CANCELLED', 'Website generation was cancelled by the user');
+  }
+  return job;
+}
+
 export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationWorkItem, workerId: string) {
   let heartbeatRunning = false;
   const heartbeat = async () => {
@@ -83,13 +91,14 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
   heartbeatTimer.unref();
   try {
     if (!input.createdBy) throw new AppError(409, 'WEBSITE_GENERATION_USER_MISSING', 'The user who started this website generation no longer exists');
+    await assertGenerationNotCancelled(input.siteId, input.id);
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'generating');
     await repo.updateJob(input.siteId, input.id, {
       status: 'planning',
       preview: {
         provider: input.provider,
         automatic: input.autoPublish,
-        progress: { phase: 'analyzing_company', completedPages: 0, totalPages: 4, currentPageTitle: null },
+        progress: { phase: 'analyzing_company', percent: 5, completedPages: 0, totalPages: 4, currentPageTitle: null },
       },
     });
     let imageAssets: Array<{ url: string; altText: string }> = [];
@@ -110,7 +119,8 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       imageAssets,
       ...(input.requestedLanguage ? { language: input.requestedLanguage } : {}),
       onProgress: async (progress) => {
-        await repo.updateJob(input.siteId, input.id, {
+        await assertGenerationNotCancelled(input.siteId, input.id);
+        const updated = await repo.updateJob(input.siteId, input.id, {
           status: 'planning',
           ...(progress.plan ? { plan: progress.plan } : {}),
           preview: {
@@ -118,24 +128,28 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
             automatic: input.autoPublish,
             progress: {
               phase: progress.phase,
+              percent: progress.percent,
               completedPages: progress.completedPages,
               totalPages: progress.totalPages,
               currentPageTitle: progress.currentPageTitle,
             },
           },
         });
+        if (!updated) await assertGenerationNotCancelled(input.siteId, input.id);
       },
     });
-    await repo.updateJob(input.siteId, input.id, {
+    await assertGenerationNotCancelled(input.siteId, input.id);
+    const previewJob = await repo.updateJob(input.siteId, input.id, {
       status: 'preview',
       plan,
       preview: {
         provider: input.provider,
         automatic: input.autoPublish,
-        progress: { phase: input.autoPublish ? 'publishing' : 'preview_ready', completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null },
+        progress: { phase: input.autoPublish ? 'publishing' : 'preview_ready', percent: input.autoPublish ? 55 : 100, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null },
         pages: plan.pages.map((page) => ({ title: page.title, slug: page.slug, seoTitle: page.seoTitle, seoDescription: page.seoDescription })),
       },
     });
+    if (!previewJob) await assertGenerationNotCancelled(input.siteId, input.id);
     if (input.autoPublish) {
       await publishWebsiteJob(input.workspaceId, input.siteId, input.id);
       if (input.provider === 'wordpress' || input.provider === 'webflow') await onboardingRepo.markPlatformConnected(input.workspaceId, input.provider);
@@ -143,13 +157,28 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       await repo.updateSiteStatus(input.workspaceId, input.siteId, 'preview');
     }
   } catch (error) {
+    if (error instanceof AppError && error.code === 'WEBSITE_GENERATION_CANCELLED') {
+      const cancelledJob = await repo.getJob(input.siteId, input.id).catch(() => null);
+      const partialPages = Array.isArray((cancelledJob?.providerResult as { pages?: unknown[] } | undefined)?.pages)
+        ? (cancelledJob!.providerResult as { pages: unknown[] }).pages.length
+        : 0;
+      await repo.updateSiteStatus(input.workspaceId, input.siteId, partialPages > 0 ? 'preview' : 'connected').catch(() => undefined);
+      logger.info({ jobId: input.id, siteId: input.siteId, partialPages }, 'Website generation job cancelled');
+      return;
+    }
     const errorDetails = error instanceof AppError && error.details && typeof error.details === 'object'
       ? error.details as Record<string, unknown>
       : undefined;
     logger.error({ jobId: input.id, siteId: input.siteId, provider: input.provider, error: error instanceof Error ? { name: error.name, message: error.message, details: errorDetails } : String(error) }, 'Website generation job failed');
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'error').catch(() => undefined);
     const message = generationErrorMessage(error);
-    await repo.updateJob(input.siteId, input.id, { status: 'failed', errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED', errorMessage: message, ...(errorDetails ? { providerResult: errorDetails } : {}) }).catch(() => undefined);
+    const currentJob = await repo.getJob(input.siteId, input.id).catch(() => null);
+    await repo.updateJob(input.siteId, input.id, {
+      status: 'failed',
+      errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED',
+      errorMessage: message,
+      ...(errorDetails ? { providerResult: { ...(currentJob?.providerResult ?? {}), failureDetails: errorDetails } } : {}),
+    }).catch(() => undefined);
     if (shouldDisconnectProvider(error) && (input.provider === 'wordpress' || input.provider === 'webflow')) await disconnectWebsiteProvider(input.workspaceId, input.provider);
   } finally {
     clearInterval(heartbeatTimer);

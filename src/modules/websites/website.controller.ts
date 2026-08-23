@@ -110,4 +110,18 @@ export async function getJob(req: Request, res: Response, next: NextFunction) {
     return successResponse(res, 'Website generation job loaded', job);
   } catch (error) { next(error); }
 }
+export async function cancelJob(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = jobParams.parse(req.params);
+    const site = await repo.getSite(params.workspaceId, params.siteId);
+    if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found');
+    const result = await repo.cancelJob(params.siteId, params.jobId);
+    if (!result.job) throw new AppError(404, 'WEBSITE_GENERATION_JOB_NOT_FOUND', 'Website generation job was not found');
+    const publishedPages = Array.isArray((result.job.providerResult as { pages?: unknown[] }).pages)
+      ? (result.job.providerResult as { pages: unknown[] }).pages.length
+      : 0;
+    if (result.cancelled) await repo.updateSiteStatus(params.workspaceId, params.siteId, publishedPages > 0 ? 'preview' : 'connected');
+    return successResponse(res, result.cancelled ? 'Website generation cancelled' : 'Website generation already finished', result.job);
+  } catch (error) { next(error); }
+}
 export async function publishJob(req: Request, res: Response, next: NextFunction) { try { const params = jobParams.parse(req.params); return successResponse(res, 'Website published', await publishWebsiteJob(params.workspaceId, params.siteId, params.jobId)); } catch (error) { next(error); } }
