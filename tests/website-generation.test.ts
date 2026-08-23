@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { isCompleteWebsitePlan } from '../src/modules/websites/website.generation.service.js';
+import { isCompleteWebsitePlan, websiteCtaDestination, wordpressContactFormShortcode } from '../src/modules/websites/website.generation.service.js';
 import { appendGenerationActivity, generationActivities } from '../src/modules/websites/website.activity.js';
 import { automaticGenerationSchema } from '../src/modules/websites/website.validator.js';
-import { completedWordpressPages, findReusableWordpressPage, wordpressActiveTheme, wordpressAdminUrl, wordpressDeliveryCapabilities, wordpressGutenbergContent, wordpressHomepageWarning, wordpressOption } from '../src/modules/websites/website.publish.service.js';
+import { completedWordpressPages, findReusableWordpressPage, findWordpressDuplicatePages, isLuluGeneratedWordpressPage, wordpressActiveTheme, wordpressAdminUrl, wordpressDeliveryCapabilities, wordpressGutenbergContent, wordpressHomepageWarning, wordpressOption, wordpressSiteChrome, wordpressTemplatePartForArea } from '../src/modules/websites/website.publish.service.js';
 import { AppError } from '../src/utils/app-error.js';
 
 function pageContent(length: number) {
@@ -42,6 +42,17 @@ describe('website generation quality gate', () => {
     assert.equal(isCompleteWebsitePlan(planWith('<main><h1>Kurz</h1></main>')), false);
     assert.equal(isCompleteWebsitePlan(planWith(`${pageContent(55)}<p>hello world</p>`)), false);
   });
+
+  it('maps generated CTA labels to deterministic destinations and builds a real contact form', () => {
+    assert.equal(websiteCtaDestination('Explore our services', '/contact/'), '/services/');
+    assert.equal(websiteCtaDestination('Contact us', '/services/'), '/contact/');
+    assert.equal(websiteCtaDestination('Kontakt aufnehmen', '/services/'), '/contact/');
+    const form = wordpressContactFormShortcode('de', "Lulu's Company");
+    assert.match(form, /^\[contact-form/);
+    assert.match(form, /type='email' required='1'/);
+    assert.match(form, /type='textarea' required='1'/);
+    assert.doesNotMatch(form, /Lulu's/);
+  });
 });
 
 describe('website generation activity log', () => {
@@ -68,10 +79,11 @@ describe('website generation target selection', () => {
     assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'overwrite' }).success, false);
   });
 
-  it('reuses matching WordPress pages only in existing mode', () => {
+  it('reuses canonical WordPress slugs in both modes without overwriting unrelated pages by title', () => {
     const pages = [{ ID: 42, slug: 'home', title: 'Home' }];
     assert.equal(findReusableWordpressPage(pages, { slug: 'home', title: 'Home' }, 'existing')?.ID, 42);
-    assert.equal(findReusableWordpressPage(pages, { slug: 'home', title: 'Home' }, 'new'), undefined);
+    assert.equal(findReusableWordpressPage(pages, { slug: 'home', title: 'Home' }, 'new')?.ID, 42);
+    assert.equal(findReusableWordpressPage([{ ID: 44, slug: 'welcome', title: 'Home' }], { slug: 'home', title: 'Home' }, 'new'), undefined);
   });
 });
 
@@ -123,6 +135,54 @@ describe('WordPress completion setup', () => {
     assert.equal((content.match(/<!-- wp:html -->/g) ?? []).length, 2);
     assert.match(content, /class="wp-block-group alignfull lulu-generated-page"/);
     assert.doesNotMatch(content, /<main\b/i);
+  });
+
+  it('replaces the visual form preview with a native WordPress shortcode block when publishing', () => {
+    const content = wordpressGutenbergContent({
+      generatedSections: [{
+        key: 'contact-form',
+        html: '<section><form data-lulu-contact-form-preview><input disabled></form><template data-lulu-contact-form-shortcode>[contact-form]&amp;[/contact-form]</template></section>',
+      }],
+    });
+    assert.match(content, /<!-- wp:shortcode -->/);
+    assert.match(content, /\[contact-form\]&\[\/contact-form\]/);
+    assert.doesNotMatch(content, /data-lulu-contact-form-preview|data-lulu-contact-form-shortcode/);
+  });
+
+  it('identifies only recoverable Lulu duplicates and excludes the active canonical pages', () => {
+    const generated = (id: number, slug: string, status = 'publish') => ({ ID: id, slug, status, content: '<main data-lulu-template="lulu-standard-v1"><section data-lulu-section="hero">Lulu</section></main>' });
+    const duplicates = findWordpressDuplicatePages([
+      generated(1, 'home'),
+      generated(2, 'home-2'),
+      generated(3, 'about-3'),
+      { ID: 4, slug: 'about', status: 'publish', content: '<p>Customer-owned page</p>' },
+      generated(5, 'services-2', 'draft'),
+    ], [{ id: 1, slug: 'home' }, { id: 9, slug: 'about' }, { id: 10, slug: 'services' }]);
+    assert.deepEqual(duplicates.map((page) => page.ID), [2, 3]);
+    assert.equal(isLuluGeneratedWordpressPage(duplicates[0]), true);
+    assert.equal(isLuluGeneratedWordpressPage({ content: '<p>Normal page</p>' }), false);
+  });
+
+  it('builds verified global site chrome without WordPress placeholders', () => {
+    const chrome = wordpressSiteChrome({
+      siteTitle: 'Acme AI',
+      palette: { secondary: '#111827', accent: '#22c55e' },
+      globalSeo: { description: 'Verified AI services.' },
+      pages: [
+        { title: 'Home', slug: 'home' },
+        { title: 'Services', slug: 'services' },
+        { title: 'Contact', slug: 'contact' },
+      ],
+    }, [
+      { slug: 'home', url: 'https://example.com/home/' },
+      { slug: 'services', url: 'https://example.com/services/' },
+      { slug: 'contact', url: 'https://example.com/contact/' },
+    ], 'https://example.com/');
+    assert.match(chrome.header, /data-lulu-global="header"/);
+    assert.match(chrome.footer, /data-lulu-global="footer"/);
+    assert.match(chrome.header, /https:\/\/example\.com\/services\//);
+    assert.doesNotMatch(`${chrome.header}${chrome.footer}`, /123 Example Street|hi@example\.com/i);
+    assert.equal(wordpressTemplatePartForArea([{ id: 'old//header', area: 'header', theme: 'old' }, { id: 'active//header', area: 'header', theme: 'pub/active' }], 'header', 'pub/active')?.id, 'active//header');
   });
 
   it('recovers only failed jobs with a complete set of confirmed WordPress pages', () => {

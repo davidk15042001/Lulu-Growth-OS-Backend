@@ -107,3 +107,6 @@ Push-Zeitstempel: 2026-08-23 20:03:30 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 20:29:31 Europe/Berlin
 Änderungen: WordPress-Veröffentlichungen werden jetzt capability-basiert als theme-unabhängige Gutenberg-Blöcke gespeichert; Theme-Rechte werden nicht vorausgesetzt, eine Theme-Installation ist nicht mehr erforderlich und die statische Startseite wird nacheinander über die WordPress.com-v1.1- und wp/v2-API automatisch konfiguriert und verifiziert.
+
+Push-Zeitstempel: 2026-08-23 21:05:17 Europe/Berlin
+Änderungen: WordPress-Neugenerierungen aktualisieren kanonische Seiten jetzt idempotent, archivieren ausschließlich eindeutig erkannte ältere Lulu-Duplikate als wiederherstellbare Entwürfe und konfigurieren Firmenname, SEO-Identität, alle aktiven Header- und Footer-Template-Parts sowie ein natives Kontaktformular; CTA-Ziele werden semantisch validiert und der Existing-Modus bewahrt kundeneigene globale Elemente.

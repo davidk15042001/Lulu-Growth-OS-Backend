@@ -352,6 +352,30 @@ function templateLabels(language: string) {
   return { home: 'Home', solutions: 'Solutions', services: 'Services', process: 'Process', trust: 'Trust', companyImage: 'Company image' };
 }
 
+function contactFormLabels(language: string) {
+  const normalized = language.trim().toLowerCase();
+  if (/^(de|de[-_]|german|deutsch)/.test(normalized)) return { heading: 'Nachricht senden', introduction: 'Nutzen Sie das Formular, um uns sicher zu kontaktieren.', name: 'Name', email: 'E-Mail', message: 'Nachricht', submit: 'Nachricht senden', subject: 'Neue Website-Anfrage' };
+  if (/^(zh|zh[-_]|chinese|中文|简体中文|繁體中文)/.test(normalized)) return { heading: '发送消息', introduction: '请使用此表单安全地联系我们。', name: '姓名', email: '电子邮箱', message: '留言', submit: '发送消息', subject: '新的网站咨询' };
+  return { heading: 'Send a message', introduction: 'Use this form to contact us securely.', name: 'Name', email: 'Email', message: 'Message', submit: 'Send message', subject: 'New website enquiry' };
+}
+
+export function websiteCtaDestination(label: string, fallback: '/services/' | '/contact/') {
+  const normalized = label.trim().toLowerCase();
+  if (/contact|talk|conversation|get in touch|enquir|consult|kontakt|sprechen|gespräch|anfrag|联系|咨询|沟通/.test(normalized)) return '/contact/';
+  if (/service|solution|offer|learn|explore|discover|leistung|lösung|angebot|erfahren|entdecken|服务|方案|了解|探索/.test(normalized)) return '/services/';
+  return fallback;
+}
+
+function shortcodeAttribute(value: string) {
+  return value.replace(/[\[\]]/g, '').replace(/&/g, '&amp;').replace(/'/g, '&#039;').trim();
+}
+
+export function wordpressContactFormShortcode(language: string, companyName: string) {
+  const labels = contactFormLabels(language);
+  const subject = shortcodeAttribute(`${labels.subject}: ${companyName}`);
+  return `[contact-form subject='${subject}' submit_button_text='${shortcodeAttribute(labels.submit)}']\n[contact-field label='${shortcodeAttribute(labels.name)}' type='name' required='1'/]\n[contact-field label='${shortcodeAttribute(labels.email)}' type='email' required='1'/]\n[contact-field label='${shortcodeAttribute(labels.message)}' type='textarea' required='1'/]\n[/contact-form]`;
+}
+
 function profileFrom(value: Record<string, unknown>, language: string, context: WebsiteContext): WebsiteContentProfile {
   const company = context.workspace.companyName;
   const home = objectValue(value.home);
@@ -488,7 +512,7 @@ function renderHome(profile: WebsiteContentProfile, palette: ThemePalette, image
   return {
     openingHtml: `<main data-lulu-template="${TEMPLATE_KEY}" style="margin:0;color:${palette.ink};font-family:Arial,sans-serif">`,
     sections: [
-      renderedSection('hero', home.eyebrow, `<section data-lulu-section="hero" style="${heroBackground}color:#fff"><div style="max-width:1180px;margin:auto;padding:clamp(72px,10vw,116px) 24px"><p style="margin:0 0 14px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:850px;margin:0 0 20px;font-size:clamp(42px,7vw,76px);line-height:.98">${escapeHtml(home.headline)}</h1><p style="max-width:740px;margin:0;color:#eef2f5;font-size:20px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:30px">${button(home.primaryCta, '/contact/', palette)}${button(home.secondaryCta, '/services/', palette, true)}</div></div></section>`),
+      renderedSection('hero', home.eyebrow, `<section data-lulu-section="hero" style="${heroBackground}color:#fff"><div style="max-width:1180px;margin:auto;padding:clamp(72px,10vw,116px) 24px"><p style="margin:0 0 14px;color:#ffd27a;font-size:12px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:850px;margin:0 0 20px;font-size:clamp(42px,7vw,76px);line-height:.98">${escapeHtml(home.headline)}</h1><p style="max-width:740px;margin:0;color:#eef2f5;font-size:20px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:30px">${button(home.primaryCta, websiteCtaDestination(home.primaryCta, '/services/'), palette)}${button(home.secondaryCta, websiteCtaDestination(home.secondaryCta, '/contact/'), palette, true)}</div></div></section>`),
       ...(trust ? [renderedSection('trust', labels.trust, trust)] : []),
       renderedSection('audience', home.audienceHeading, `<section data-lulu-section="audience" style="padding:76px 24px;background:${palette.surface}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.solutions, home.audienceHeading, home.audienceIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px">${audienceCards}</div></div></section>`),
       renderedSection('services', home.servicesHeading, `<section data-lulu-section="services" style="padding:76px 24px;background:${palette.background}"><div style="max-width:1180px;margin:auto">${sectionTitle(labels.services, home.servicesHeading, home.servicesIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:18px">${serviceCards}</div></div></section>`),
@@ -533,8 +557,12 @@ function renderServices(profile: WebsiteContentProfile, palette: ThemePalette, i
 
 function renderContact(profile: WebsiteContentProfile, palette: ThemePalette) {
   const items = profile.contact.preparationItems.map((item) => `<li style="padding:12px 0;border-bottom:1px solid #dce2e8;color:${palette.ink}">${escapeHtml(item)}</li>`).join('');
+  const labels = contactFormLabels(profile.primaryLanguage);
+  const contactForm = wordpressContactFormShortcode(profile.primaryLanguage, profile.siteTitle);
+  const contactFormPreview = `<form data-lulu-contact-form-preview style="display:grid;gap:16px" aria-label="${escapeHtml(labels.heading)}"><label style="display:grid;gap:7px;color:${palette.ink};font-weight:700">${escapeHtml(labels.name)}<input disabled style="min-height:46px;border:1px solid #c7cdd4;background:#fff;padding:10px 12px"></label><label style="display:grid;gap:7px;color:${palette.ink};font-weight:700">${escapeHtml(labels.email)}<input disabled type="email" style="min-height:46px;border:1px solid #c7cdd4;background:#fff;padding:10px 12px"></label><label style="display:grid;gap:7px;color:${palette.ink};font-weight:700">${escapeHtml(labels.message)}<textarea disabled rows="5" style="border:1px solid #c7cdd4;background:#fff;padding:10px 12px"></textarea></label><button disabled type="button" style="width:max-content;border:0;background:${palette.accent};color:#17202a;padding:13px 20px;font-weight:800">${escapeHtml(labels.submit)}</button></form><template data-lulu-contact-form-shortcode>${escapeHtml(contactForm)}</template>`;
   const sections = [
     renderedSection('preparation', profile.contact.preparationHeading, `<section data-lulu-section="preparation" style="padding:70px 24px 28px"><div style="max-width:1180px;margin:auto;padding:30px;background:${palette.background}"><h2 style="margin:0 0 16px;color:${palette.ink};font-size:32px">${escapeHtml(profile.contact.preparationHeading)}</h2><ul style="list-style:none;margin:0;padding:0">${items}</ul></div></section>`),
+    renderedSection('contact-form', labels.heading, `<section data-lulu-section="contact-form" style="padding:28px 24px"><div style="max-width:760px;margin:auto;padding:34px;background:${palette.surface};border:1px solid #dce2e8"><h2 style="margin:0 0 12px;color:${palette.ink};font-size:32px">${escapeHtml(labels.heading)}</h2><p style="margin:0 0 24px;color:${palette.muted};line-height:1.7">${escapeHtml(labels.introduction)}</p>${contactFormPreview}</div></section>`),
     renderedSection('next-step', profile.contact.nextStepTitle, `<section data-lulu-section="next-step" style="padding:28px 24px 70px"><div style="max-width:1180px;margin:auto;padding:30px;background:${palette.secondary};color:#fff"><h2 style="margin:0 0 16px;color:#fff;font-size:32px">${escapeHtml(profile.contact.nextStepTitle)}</h2><p style="margin:0;color:#e5eaf0;font-size:17px;line-height:1.75">${escapeHtml(profile.contact.nextStepText)}</p></div></section>`),
   ];
   return renderStandardPage({ eyebrow: profile.siteTitle, title: profile.contact.title, introduction: profile.contact.introduction, sections, palette });

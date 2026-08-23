@@ -127,6 +127,83 @@ export async function publishWordpressPage(workspaceId: string, siteId: string, 
   }
   return verification;
 }
+
+export async function setWordpressPageStatus(workspaceId: string, siteId: string, pageId: string, status: 'draft' | 'publish' | 'private') {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const endpoint = `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/posts/${encodeURIComponent(pageId)}/`;
+  await providerRequest('wordpress', endpoint, token, { method: 'POST', body: JSON.stringify({ status }) });
+  const verification = (await providerRequest('wordpress', endpoint, token)).data;
+  if (String(verification?.status ?? '').toLowerCase() !== status) {
+    throw new AppError(502, 'WORDPRESS_PAGE_STATUS_VERIFICATION_FAILED', `WordPress did not confirm page ${pageId} as ${status}`, {
+      provider: 'wordpress',
+      pageId,
+      expectedStatus: status,
+      verifiedStatus: verification?.status,
+    });
+  }
+  return verification;
+}
+
+export async function updateWordpressSiteIdentity(workspaceId: string, siteId: string, identity: { title: string; description: string }) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const endpoints = [
+    {
+      url: `https://public-api.wordpress.com/wp/v2/sites/${encodeURIComponent(siteId)}/settings`,
+      payload: { title: identity.title, description: identity.description },
+      read: (data: any) => ({ title: data?.title, description: data?.description }),
+    },
+    {
+      url: `https://public-api.wordpress.com/rest/v1.1/sites/${encodeURIComponent(siteId)}/settings/`,
+      payload: { blogname: identity.title, blogdescription: identity.description },
+      read: (data: any) => {
+        const settings = data?.settings && typeof data.settings === 'object' ? data.settings : data;
+        return {
+          title: settings?.blogname?.value ?? settings?.blogname,
+          description: settings?.blogdescription?.value ?? settings?.blogdescription,
+        };
+      },
+    },
+  ];
+  const errors: string[] = [];
+  for (const endpoint of endpoints) {
+    try {
+      await providerRequest('wordpress', endpoint.url, token, { method: 'POST', body: JSON.stringify(endpoint.payload) });
+      const verified = (await providerRequest('wordpress', endpoint.url, token)).data;
+      const actual = endpoint.read(verified);
+      if (String(actual.title ?? '').trim() === identity.title.trim()) return { ...actual, endpoint: endpoint.url };
+      errors.push(`${endpoint.url}: site title was not confirmed`);
+    } catch (error) {
+      errors.push(`${endpoint.url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  throw new AppError(502, 'WORDPRESS_SITE_IDENTITY_CONFIGURATION_FAILED', 'WordPress did not confirm the generated company name and site description', {
+    provider: 'wordpress',
+    attempts: errors,
+  });
+}
+
+export async function wordpressTemplateParts(workspaceId: string, siteId: string) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const endpoint = `https://public-api.wordpress.com/wp/v2/sites/${encodeURIComponent(siteId)}/template-parts?context=edit&per_page=100`;
+  const data = (await providerRequest('wordpress', endpoint, token)).data;
+  return Array.isArray(data) ? data : Array.isArray(data?.template_parts) ? data.template_parts : [];
+}
+
+export async function updateWordpressTemplatePart(workspaceId: string, siteId: string, partId: string, content: string) {
+  const token = await tokenFor(workspaceId, 'wordpress');
+  const endpoint = `https://public-api.wordpress.com/wp/v2/sites/${encodeURIComponent(siteId)}/template-parts/${encodeURIComponent(partId)}`;
+  await providerRequest('wordpress', endpoint, token, { method: 'POST', body: JSON.stringify({ content, status: 'publish' }) });
+  const verification = (await providerRequest('wordpress', `${endpoint}?context=edit`, token)).data;
+  const verifiedContent = verification?.content?.raw ?? verification?.content?.rendered ?? verification?.content ?? '';
+  if (!String(verifiedContent).includes('data-lulu-global=')) {
+    throw new AppError(502, 'WORDPRESS_TEMPLATE_PART_VERIFICATION_FAILED', `WordPress did not confirm template part ${partId}`, {
+      provider: 'wordpress',
+      partId,
+    });
+  }
+  return verification;
+}
+
 export async function updateWordpressFrontPage(workspaceId: string, siteId: string, pageId: string) {
   const token = await tokenFor(workspaceId, 'wordpress');
   const expectedPageId = Number(pageId);

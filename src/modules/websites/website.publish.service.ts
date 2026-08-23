@@ -1,7 +1,7 @@
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
 import * as repo from './website.repo.js';
-import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, updateWordpressFrontPage, updateWordpressPage, wordpressPages, wordpressSiteDetails, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
+import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, setWordpressPageStatus, updateWordpressFrontPage, updateWordpressPage, updateWordpressSiteIdentity, updateWordpressTemplatePart, wordpressPages, wordpressSiteDetails, wordpressTemplateParts, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 import { appendGenerationActivity, type WebsiteGenerationActivity } from './website.activity.js';
 import type { WebsiteGenerationTargetMode } from './website.types.js';
 
@@ -73,7 +73,16 @@ export function wordpressGutenbergContent(page: unknown) {
   const fallbackContent = String(mainMatch?.[1] ?? rawContent).trim();
   const sections = generatedSections.length ? generatedSections : fallbackContent ? [fallbackContent] : [];
   if (!sections.length) return rawContent;
-  const blockSections = sections.map((section) => `<!-- wp:html -->\n${section}\n<!-- /wp:html -->`).join('\n');
+  const decodeShortcode = (value: string) => value.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#039;/g, "'").replace(/&amp;/g, '&');
+  const blockSections = sections.map((section) => {
+    const shortcodeMatch = section.match(/<template\s+data-lulu-contact-form-shortcode[^>]*>([\s\S]*?)<\/template>/i);
+    if (!shortcodeMatch) return `<!-- wp:html -->\n${section}\n<!-- /wp:html -->`;
+    const html = section
+      .replace(/<form\s+data-lulu-contact-form-preview[^>]*>[\s\S]*?<\/form>/i, '')
+      .replace(/<template\s+data-lulu-contact-form-shortcode[^>]*>[\s\S]*?<\/template>/i, '');
+    const shortcode = decodeShortcode(shortcodeMatch[1] ?? '').trim();
+    return `<!-- wp:html -->\n${html}\n<!-- /wp:html -->\n<!-- wp:shortcode -->\n${shortcode}\n<!-- /wp:shortcode -->`;
+  }).join('\n');
   return [
     '<!-- wp:group {"align":"full","className":"lulu-generated-page"} -->',
     '<div class="wp-block-group alignfull lulu-generated-page">',
@@ -81,6 +90,101 @@ export function wordpressGutenbergContent(page: unknown) {
     '</div>',
     '<!-- /wp:group -->',
   ].join('\n');
+}
+
+function escapeWordpressHtml(value: unknown) {
+  return String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+}
+
+function wordpressPageContent(page: unknown) {
+  const value = objectValue(page);
+  const content = value.content;
+  if (typeof content === 'string') return content;
+  const wrapped = objectValue(content);
+  return String(wrapped.raw ?? wrapped.rendered ?? '');
+}
+
+export function isLuluGeneratedWordpressPage(page: unknown) {
+  const content = wordpressPageContent(page);
+  return /data-lulu-template=["']lulu-standard-v1["']|class=["'][^"']*lulu-generated-page|data-lulu-section=/i.test(content);
+}
+
+function canonicalWordpressSlug(value: unknown) {
+  return String(value ?? '').trim().toLowerCase().replace(/-\d+$/, '');
+}
+
+export function findWordpressDuplicatePages(existingPages: unknown[], publishedPages: unknown[]) {
+  const activeIds = new Set(publishedPages.map(objectValue).map((page) => String(page.id ?? page.ID ?? '')).filter(Boolean));
+  const managedSlugs = new Set(publishedPages.map(objectValue).map((page) => canonicalWordpressSlug(page.slug)).filter(Boolean));
+  return existingPages.map(objectValue).filter((page) => {
+    const id = String(page.ID ?? page.id ?? '');
+    const status = String(page.status ?? '').trim().toLowerCase();
+    return Boolean(id)
+      && !activeIds.has(id)
+      && !['draft', 'trash'].includes(status)
+      && managedSlugs.has(canonicalWordpressSlug(page.slug))
+      && isLuluGeneratedWordpressPage(page);
+  });
+}
+
+function safeWebsiteUrl(value: unknown, fallback = '/') {
+  try {
+    const url = new URL(String(value ?? ''));
+    return ['http:', 'https:'].includes(url.protocol) ? url.toString() : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function htmlBlock(markup: string) {
+  return `<!-- wp:html -->\n${markup}\n<!-- /wp:html -->`;
+}
+
+export function wordpressSiteChrome(plan: unknown, publishedPages: unknown[], siteUrl: string) {
+  const planValue = objectValue(plan);
+  const palette = objectValue(planValue.palette);
+  const pages = Array.isArray(planValue.pages) ? planValue.pages.map(objectValue) : [];
+  const published = publishedPages.map(objectValue);
+  const siteTitle = String(planValue.siteTitle ?? 'Website').trim() || 'Website';
+  const seo = objectValue(planValue.globalSeo);
+  const description = String(seo.description ?? '').trim();
+  const secondary = String(palette.secondary ?? '#111827');
+  const accent = String(palette.accent ?? '#22c55e');
+  const baseUrl = safeWebsiteUrl(siteUrl, '/');
+  const links = pages.map((page, index) => {
+    const slug = String(page.slug ?? '').trim().toLowerCase();
+    const record = published.find((candidate) => String(candidate.slug ?? '').trim().toLowerCase() === slug);
+    const href = index === 0 ? baseUrl : safeWebsiteUrl(record?.url, `/${slug}/`);
+    return `<a href="${escapeWordpressHtml(href)}" style="color:#fff;font-weight:650;text-decoration:none">${escapeWordpressHtml(page.title)}</a>`;
+  }).join('');
+  const header = htmlBlock(`<div data-lulu-global="header" style="margin:0;background:${escapeWordpressHtml(secondary)};color:#fff"><div style="display:flex;align-items:center;justify-content:space-between;gap:24px;flex-wrap:wrap;max-width:1180px;margin:auto;padding:22px 24px"><a href="${escapeWordpressHtml(baseUrl)}" style="color:#fff;font-size:22px;font-weight:800;text-decoration:none">${escapeWordpressHtml(siteTitle)}</a><nav aria-label="Primary navigation" style="display:flex;align-items:center;gap:22px;flex-wrap:wrap">${links}</nav></div></div>`);
+  const footer = htmlBlock(`<div data-lulu-global="footer" style="margin:0;background:${escapeWordpressHtml(secondary)};color:#fff"><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:28px;max-width:1180px;margin:auto;padding:52px 24px"><div><p style="margin:0 0 10px;font-size:22px;font-weight:800">${escapeWordpressHtml(siteTitle)}</p>${description ? `<p style="margin:0;color:#dbe3ea;line-height:1.7">${escapeWordpressHtml(description)}</p>` : ''}</div><div><p style="margin:0 0 14px;color:${escapeWordpressHtml(accent)};font-size:12px;font-weight:800;letter-spacing:.12em;text-transform:uppercase">Navigation</p><nav aria-label="Footer navigation" style="display:flex;align-items:flex-start;gap:12px;flex-direction:column">${links}</nav></div></div><div style="max-width:1180px;margin:auto;padding:18px 24px;border-top:1px solid rgba(255,255,255,.18);color:#dbe3ea;font-size:13px">© ${new Date().getFullYear()} ${escapeWordpressHtml(siteTitle)}</div></div>`);
+  return { header, footer, siteTitle, description };
+}
+
+export function wordpressTemplatePartForArea(parts: unknown[], area: 'header' | 'footer', activeTheme: string | null) {
+  const candidates = parts.map(objectValue).filter((part) => String(part.area ?? '').toLowerCase() === area);
+  if (!candidates.length) return null;
+  if (activeTheme) {
+    const normalizedTheme = activeTheme.toLowerCase();
+    const active = candidates.find((part) => {
+      const theme = String(part.theme ?? '').toLowerCase();
+      return theme === normalizedTheme || theme.endsWith(`/${normalizedTheme}`) || normalizedTheme.endsWith(`/${theme}`);
+    });
+    if (active) return active;
+  }
+  return candidates[0] ?? null;
+}
+
+function wordpressTemplatePartsForArea(parts: unknown[], area: 'header' | 'footer', activeTheme: string | null) {
+  const candidates = parts.map(objectValue).filter((part) => String(part.area ?? '').toLowerCase() === area);
+  if (!activeTheme) return candidates;
+  const normalizedTheme = activeTheme.toLowerCase();
+  const active = candidates.filter((part) => {
+    const theme = String(part.theme ?? '').toLowerCase();
+    return theme === normalizedTheme || theme.endsWith(`/${normalizedTheme}`) || normalizedTheme.endsWith(`/${theme}`);
+  });
+  return active.length ? active : candidates;
 }
 
 export function wordpressHomepageWarning(error: unknown) {
@@ -132,6 +236,7 @@ export async function verifyWordpressSetup(workspaceId: string, siteId: string) 
   const storedSetup = objectValue(site.settings.wordpressSetup);
   const storedHomepage = objectValue(storedSetup.homepage);
   const storedTheme = objectValue(storedSetup.theme);
+  const storedSiteCustomization = objectValue(storedSetup.siteCustomization);
   const expectedHomepageId = Number(storedHomepage.pageId ?? 0);
   const actualMode = String(wordpressOption(details, 'show_on_front') ?? '').trim().toLowerCase();
   const actualHomepageId = Number(wordpressOption(details, 'page_on_front') ?? 0);
@@ -159,7 +264,7 @@ export async function verifyWordpressSetup(workspaceId: string, siteId: string) 
     reason: themeActive ? null : 'theme_independent_gutenberg_delivery',
     checkedAt: new Date().toISOString(),
   };
-  const setup = { homepage, theme, capabilities: deliveryCapabilities };
+  const setup = { homepage, theme, siteCustomization: storedSiteCustomization, capabilities: deliveryCapabilities };
   await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { ...setup, updatedAt: new Date().toISOString() } });
   const latestJob = await repo.findLatestJob(siteId);
   const completedPages = completedWordpressPages(latestJob);
@@ -197,14 +302,16 @@ export async function verifyWordpressSetup(workspaceId: string, siteId: string) 
 }
 
 export function findReusableWordpressPage(existingPages: any[], page: Record<string, unknown>, targetMode: WebsiteGenerationTargetMode) {
-  if (targetMode === 'new') return undefined;
   const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
   const desiredTitle = String(page.title ?? '').trim().toLowerCase();
-  return existingPages.find((candidate: any) => {
+  const exactSlug = existingPages.find((candidate: any) => {
     const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
-    const candidateTitle = String(candidate.title ?? '').trim().toLowerCase();
-    return (desiredSlug && candidateSlug === desiredSlug) || candidateTitle === desiredTitle;
+    const status = String(candidate.status ?? '').trim().toLowerCase();
+    return desiredSlug && candidateSlug === desiredSlug && status !== 'trash';
   });
+  if (exactSlug) return exactSlug;
+  if (targetMode === 'new') return undefined;
+  return existingPages.find((candidate: any) => String(candidate.title ?? '').trim().toLowerCase() === desiredTitle && String(candidate.status ?? '').trim().toLowerCase() !== 'trash');
 }
 
 async function assertPublishingNotCancelled(siteId: string, jobId: string) {
@@ -213,6 +320,115 @@ async function assertPublishingNotCancelled(siteId: string, jobId: string) {
     throw new AppError(409, 'WEBSITE_GENERATION_CANCELLED', 'Website generation was cancelled by the user');
   }
   return current;
+}
+
+async function customizeWordpressSite(input: {
+  workspaceId: string;
+  externalSiteId: string;
+  siteUrl: string;
+  plan: unknown;
+  existingPages: unknown[];
+  publishedPages: unknown[];
+  activeTheme: string | null;
+  homepageId: string;
+  previousHomepageId: string;
+  homepageConfigured: boolean;
+  targetMode: WebsiteGenerationTargetMode;
+}) {
+  const plan = objectValue(input.plan);
+  const chrome = wordpressSiteChrome(plan, input.publishedPages, input.siteUrl);
+  const result: Record<string, any> = {
+    status: 'confirmed',
+    siteIdentity: { status: 'pending' },
+    header: { status: 'pending' },
+    footer: { status: 'pending' },
+    duplicatePages: { status: 'pending', archived: [] },
+    contactForm: { status: String(JSON.stringify(plan.pages ?? '')).includes('[contact-form') ? 'confirmed' : 'missing' },
+    ctaLinks: { status: 'confirmed' },
+    checkedAt: new Date().toISOString(),
+  };
+  if (input.targetMode === 'existing') {
+    return {
+      ...result,
+      status: result.contactForm.status === 'confirmed' ? 'confirmed' : 'partial',
+      mode: 'content_only',
+      siteIdentity: { status: 'preserved' },
+      header: { status: 'preserved' },
+      footer: { status: 'preserved' },
+      duplicatePages: { status: 'preserved', archived: [] },
+      warnings: result.contactForm.status === 'confirmed' ? [] : ['The generated contact form was not confirmed in the website plan'],
+    };
+  }
+  result.mode = 'full_site';
+  const warnings: string[] = [];
+
+  try {
+    await updateWordpressSiteIdentity(input.workspaceId, input.externalSiteId, { title: chrome.siteTitle, description: chrome.description });
+    result.siteIdentity = { status: 'confirmed', title: chrome.siteTitle, description: chrome.description };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    warnings.push(message);
+    result.siteIdentity = { status: 'failed', message };
+  }
+
+  try {
+    const parts = await wordpressTemplateParts(input.workspaceId, input.externalSiteId);
+    for (const area of ['header', 'footer'] as const) {
+      const areaParts = wordpressTemplatePartsForArea(parts, area, input.activeTheme);
+      const partIds = areaParts.map((part) => String(part.id ?? '')).filter(Boolean);
+      if (!partIds.length) {
+        result[area] = { status: 'not_supported', message: `No writable ${area} template part was exposed by WordPress` };
+        warnings.push(`WordPress did not expose a writable ${area} template part`);
+        continue;
+      }
+      const updatedPartIds: string[] = [];
+      const partErrors: string[] = [];
+      for (const partId of partIds) {
+        try {
+          await updateWordpressTemplatePart(input.workspaceId, input.externalSiteId, partId, chrome[area]);
+          updatedPartIds.push(partId);
+        } catch (error) {
+          partErrors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      if (partErrors.length) warnings.push(...partErrors);
+      result[area] = updatedPartIds.length === partIds.length
+        ? { status: 'confirmed', partIds: updatedPartIds }
+        : { status: updatedPartIds.length ? 'partial' : 'failed', partIds: updatedPartIds, errors: partErrors };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    warnings.push(message);
+    result.header = { status: 'not_supported', message };
+    result.footer = { status: 'not_supported', message };
+  }
+
+  const protectedHomepageId = input.homepageConfigured ? input.homepageId : input.previousHomepageId;
+  const duplicatePages = findWordpressDuplicatePages(input.existingPages, input.publishedPages)
+    .filter((page) => String(page.ID ?? page.id ?? '') !== protectedHomepageId);
+  const archived: Array<{ id: string; title: string; slug: string }> = [];
+  const cleanupErrors: string[] = [];
+  for (const page of duplicatePages) {
+    const id = String(page.ID ?? page.id ?? '');
+    if (!id) continue;
+    try {
+      await setWordpressPageStatus(input.workspaceId, input.externalSiteId, id, 'draft');
+      archived.push({ id, title: String(page.title ?? ''), slug: String(page.slug ?? '') });
+    } catch (error) {
+      cleanupErrors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  if (cleanupErrors.length) {
+    warnings.push(...cleanupErrors);
+    result.duplicatePages = { status: 'partial', archived, errors: cleanupErrors };
+  } else {
+    result.duplicatePages = { status: 'confirmed', archived };
+  }
+  if (result.contactForm.status !== 'confirmed') warnings.push('The generated contact form was not confirmed in the website plan');
+  result.status = warnings.length ? 'partial' : 'confirmed';
+  result.warnings = warnings;
+  result.checkedAt = new Date().toISOString();
+  return result;
 }
 
 export async function publishWebsiteJob(workspaceId: string, siteId: string, jobId: string) {
@@ -239,6 +455,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         logger.warn({ jobId, siteId, externalSiteId, error: capabilityInspectionError instanceof Error ? capabilityInspectionError.message : String(capabilityInspectionError) }, 'WordPress delivery capabilities could not be inspected; theme-independent publishing will continue');
       }
       const deliveryCapabilities = wordpressDeliveryCapabilities(wordpressDetails);
+      const previousHomepageId = String(wordpressOption(wordpressDetails, 'page_on_front') ?? '');
       const updatePublishingProgress = async (phase: string, completedPages: number, currentPageTitle: string | null, percent: number, activity?: Omit<WebsiteGenerationActivity, 'createdAt'>) => {
         const current = await assertPublishingNotCancelled(siteId, jobId);
         const preview = {
@@ -342,6 +559,20 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         logger.warn({ jobId, siteId, externalSiteId, homepageId, errorCode: warning.errorCode, error: warning.technicalMessage }, 'WordPress pages published; homepage requires manual confirmation');
       }
       const activeTheme = wordpressActiveTheme(wordpressDetails);
+      await updatePublishingProgress('customizing_site', plannedPages.length, null, 98, { id: 'site-customization-started', code: 'site_customization_started', tone: 'info', params: {} });
+      const siteCustomization = await customizeWordpressSite({
+        workspaceId,
+        externalSiteId,
+        siteUrl: site.externalSiteUrl ?? String(createdPages[0]?.url ?? ''),
+        plan,
+        existingPages,
+        publishedPages: createdPages,
+        activeTheme,
+        homepageId,
+        previousHomepageId,
+        homepageConfigured,
+        targetMode,
+      });
       const themeActive = Boolean(activeTheme && (activeTheme === WORDPRESS_THEME_KEY || activeTheme.endsWith(`/${WORDPRESS_THEME_KEY}`)));
       const homepageUrl = String(createdPages[0]?.url ?? site.externalSiteUrl ?? '');
       const adminBaseUrl = site.externalSiteUrl ?? homepageUrl;
@@ -361,14 +592,22 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         downloadPath: null,
         reason: themeActive ? null : 'theme_independent_gutenberg_delivery',
       };
-      const setupWarning = homepageWarning;
+      const customizationWarning = siteCustomization.status === 'partial'
+        ? 'The generated pages are live, but WordPress did not allow every global site customization. The confirmed changes remain saved.'
+        : undefined;
+      const setupWarning = homepageWarning ?? customizationWarning;
       const beforePublished = await repo.getJob(siteId, jobId);
       let finalPreview = beforePublished?.preview ?? job.preview;
       finalPreview = appendGenerationActivity(finalPreview, { id: 'gutenberg-layout-published', code: 'gutenberg_layout_published', tone: 'success', params: { pages: createdPages.length } });
+      if (siteCustomization.siteIdentity?.status === 'confirmed') finalPreview = appendGenerationActivity(finalPreview, { id: 'site-identity-configured', code: 'site_identity_configured', tone: 'success', params: { title: String(siteCustomization.siteIdentity.title ?? '') } });
+      if (siteCustomization.header?.status === 'confirmed' && siteCustomization.footer?.status === 'confirmed') finalPreview = appendGenerationActivity(finalPreview, { id: 'global-chrome-configured', code: 'global_chrome_configured', tone: 'success', params: {} });
+      if (siteCustomization.contactForm?.status === 'confirmed') finalPreview = appendGenerationActivity(finalPreview, { id: 'contact-form-embedded', code: 'contact_form_embedded', tone: 'success', params: {} });
+      if (Array.isArray(siteCustomization.duplicatePages?.archived) && siteCustomization.duplicatePages.archived.length) finalPreview = appendGenerationActivity(finalPreview, { id: 'duplicate-pages-archived', code: 'duplicate_pages_archived', tone: 'success', params: { pages: siteCustomization.duplicatePages.archived.length } });
+      if (customizationWarning) finalPreview = appendGenerationActivity(finalPreview, { id: 'site-customization-partial', code: 'site_customization_partial', tone: 'warning', params: {} });
       if (homepageWarning) {
         finalPreview = appendGenerationActivity(finalPreview, { id: 'homepage-action-required', code: 'homepage_action_required', tone: 'warning', params: { page: String(createdPages[0]?.title ?? 'Home') } });
       }
-      await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { homepage: homepageSetup, theme: themeSetup, capabilities: deliveryCapabilities, updatedAt: new Date().toISOString() } }).catch((settingsError) => {
+      await repo.updateSiteSettings(workspaceId, siteId, { wordpressSetup: { homepage: homepageSetup, theme: themeSetup, siteCustomization, capabilities: deliveryCapabilities, updatedAt: new Date().toISOString() } }).catch((settingsError) => {
         logger.warn({ jobId, siteId, error: settingsError instanceof Error ? settingsError.message : String(settingsError) }, 'Published WordPress setup metadata could not be persisted');
       });
       const publishedJob = await repo.updateJob(siteId, jobId, {
@@ -380,7 +619,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
           publishedPages: createdPages,
           progress: { phase: 'published', percent: 100, completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
         },
-        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, deliveryMode: 'gutenberg', deliveryCapabilities, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}) },
+        providerResult: { provider: 'wordpress', targetMode, templateKey: plan?.templateKey ?? null, deliveryMode: 'gutenberg', deliveryCapabilities, siteCustomization, partial: false, pages: createdPages, homepageId, homepageConfigured, homepageSetup, themeSetup, ...(homepageWarning ? { homepageWarning } : {}), ...(customizationWarning ? { customizationWarning } : {}) },
       });
       if (!publishedJob) await assertPublishingNotCancelled(siteId, jobId);
       await repo.updateSiteStatus(workspaceId, siteId, 'published');
