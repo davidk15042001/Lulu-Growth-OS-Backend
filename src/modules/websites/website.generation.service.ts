@@ -5,6 +5,7 @@ import * as agentRepo from '../agents/agent.repo.js';
 import { getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceForUser } from '../workspaces/workspace.repo.js';
+import type { WebsiteGenerationActivity } from './website.activity.js';
 
 export type GeneratedSection = {
   key: string;
@@ -122,6 +123,7 @@ export type WebsiteGenerationProgress = {
   completedSections: number;
   totalSections: number;
   currentSectionTitle: string | null;
+  activity?: Omit<WebsiteGenerationActivity, 'createdAt'>;
 };
 
 type WebsiteContext = {
@@ -626,9 +628,11 @@ export async function generateWebsitePlan(input: {
   const images = (input.imageAssets ?? []).filter((asset) => safeImageUrl(asset.url)).slice(0, 8);
   let plan = existingTemplatePlan(input.existingPlan, language, context, images);
   if (!plan) {
-    await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null });
+    await input.onProgress?.({ phase: 'generating_content', percent: 12, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'company-context-loaded', code: 'company_context_loaded', tone: 'success', params: { offerings: context.offerings.length, platforms: context.connectedPlatforms.length } } });
+    await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-started', code: 'content_profile_started', tone: 'info', params: {} } });
     const profile = await generateContentProfile({ provider: input.provider, language, prompt: input.prompt, context });
     plan = { templateKey: TEMPLATE_KEY, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile).map((definition) => ({ ...definition, generatedSections: [], content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
+    await input.onProgress?.({ plan, phase: 'applying_template', percent: 20, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: plan.pages[0]?.title ?? null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-ready', code: 'content_profile_ready', tone: 'success', params: {} } });
   }
   if (!plan) throw new AppError(500, 'WEBSITE_PLAN_MISSING', 'The website plan could not be initialized');
   const planProfile = plan.contentProfile;
@@ -658,10 +662,10 @@ export async function generateWebsitePlan(input: {
       completedKeys.add(section.key);
       completedSections += 1;
       if (generatedSections.length === renderedPage.sections.length && pageHasPublishableContent(plan.pages[index]!, index)) completedPages += 1;
-      await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedSections / totalSections) * 32), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null, completedSections, totalSections, currentSectionTitle: renderedPage.sections.find((candidate) => !completedKeys.has(candidate.key))?.title ?? null });
+      await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedSections / totalSections) * 32), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null, completedSections, totalSections, currentSectionTitle: renderedPage.sections.find((candidate) => !completedKeys.has(candidate.key))?.title ?? null, activity: { id: `section-saved:${plan.pages[index]!.slug}:${section.key}`, code: 'section_saved', tone: 'success', params: { page: plan.pages[index]!.title, section: section.title, completed: completedSections, total: totalSections } } });
     }
   }
   if (!isCompleteWebsitePlan(plan)) throw new AppError(502, 'WEBSITE_TEMPLATE_RENDER_FAILED', 'The standard website template could not be rendered with the generated content');
-  await input.onProgress?.({ plan, phase: 'template_ready', percent: 52, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: totalSections, totalSections, currentSectionTitle: null });
+  await input.onProgress?.({ plan, phase: 'template_ready', percent: 52, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: totalSections, totalSections, currentSectionTitle: null, activity: { id: 'template-ready', code: 'template_ready', tone: 'success', params: { pages: plan.pages.length, sections: totalSections } } });
   return plan;
 }

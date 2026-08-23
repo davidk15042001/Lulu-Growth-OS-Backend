@@ -80,3 +80,6 @@ Push-Zeitstempel: 2026-08-23 16:04:22 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 16:34:06 Europe/Berlin
 Änderungen: Website-Seiten werden jetzt abschnittsweise als dauerhafte JSON-Checkpoints aufgebaut; Abbrechen bewahrt fertige Sections und WordPress-Zwischenstände, während Fortsetzen denselben Job reaktiviert und exakt bei der nächsten fehlenden Section weiterarbeitet.
+
+Push-Zeitstempel: 2026-08-23 17:18:25 Europe/Berlin
+Änderungen: Website-Generierungsjobs speichern jetzt ein strukturiertes, dedupliziertes Aktivitätsprotokoll für Unternehmensdaten, Text- und SEO-Erstellung, Section-Checkpoints, CMS-Veröffentlichungen, Abbruch, Fortsetzen und Fehler; sämtliche Meldungen bleiben über Neuladen und Worker-Wiederholungen erhalten.

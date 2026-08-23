@@ -6,6 +6,7 @@ import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import type { WebsiteGenerationWorkItem } from './website.types.js';
+import { appendGenerationActivity } from './website.activity.js';
 
 export const DEFAULT_WEBSITE_PROMPT = `Create factual, conversion-focused website copy from verified Lulu workspace data for the fixed Lulu Standard template. Generate only structured text and SEO content. The application owns the layout, pages, colors and HTML rendering. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
 
@@ -97,15 +98,20 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       ? input.preview.progress as Record<string, unknown>
       : {};
     const resuming = Object.keys(input.plan ?? {}).length > 0;
+    const initialPreview: Record<string, unknown> = {
+      ...input.preview,
+      provider: input.provider,
+      automatic: input.autoPublish,
+      progress: resuming
+        ? { ...storedProgress, phase: 'resuming', percent: typeof storedProgress.percent === 'number' ? storedProgress.percent : 5 }
+        : { phase: 'analyzing_company', percent: 5, completedPages: 0, totalPages: 4, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null },
+    };
+    let previewState: Record<string, unknown> = resuming
+      ? initialPreview
+      : appendGenerationActivity(initialPreview, { id: 'job-started', code: 'job_started', tone: 'info', params: {} });
     await repo.updateJob(input.siteId, input.id, {
       status: 'planning',
-      preview: {
-        provider: input.provider,
-        automatic: input.autoPublish,
-        progress: resuming
-          ? { ...storedProgress, phase: 'resuming', percent: typeof storedProgress.percent === 'number' ? storedProgress.percent : 5 }
-          : { phase: 'analyzing_company', percent: 5, completedPages: 0, totalPages: 4, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null },
-      },
+      preview: previewState,
     });
     let imageAssets: Array<{ url: string; altText: string }> = [];
     const generationSite = await repo.getSite(input.workspaceId, input.siteId);
@@ -126,37 +132,42 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       ...(input.requestedLanguage ? { language: input.requestedLanguage } : {}),
       onProgress: async (progress) => {
         await assertGenerationNotCancelled(input.siteId, input.id);
+        const nextPreview = {
+          ...previewState,
+          provider: input.provider,
+          automatic: input.autoPublish,
+          progress: {
+            phase: progress.phase,
+            percent: progress.percent,
+            completedPages: progress.completedPages,
+            totalPages: progress.totalPages,
+            currentPageTitle: progress.currentPageTitle,
+            completedSections: progress.completedSections,
+            totalSections: progress.totalSections,
+            currentSectionTitle: progress.currentSectionTitle,
+          },
+        };
+        previewState = progress.activity ? appendGenerationActivity(nextPreview, progress.activity) : nextPreview;
         const updated = await repo.updateJob(input.siteId, input.id, {
           status: 'planning',
           ...(progress.plan ? { plan: progress.plan } : {}),
-          preview: {
-            provider: input.provider,
-            automatic: input.autoPublish,
-            progress: {
-              phase: progress.phase,
-              percent: progress.percent,
-              completedPages: progress.completedPages,
-              totalPages: progress.totalPages,
-              currentPageTitle: progress.currentPageTitle,
-              completedSections: progress.completedSections,
-              totalSections: progress.totalSections,
-              currentSectionTitle: progress.currentSectionTitle,
-            },
-          },
+          preview: previewState,
         });
         if (!updated) await assertGenerationNotCancelled(input.siteId, input.id);
       },
     });
     await assertGenerationNotCancelled(input.siteId, input.id);
+    previewState = appendGenerationActivity({
+      ...previewState,
+      provider: input.provider,
+      automatic: input.autoPublish,
+      progress: { phase: input.autoPublish ? 'publishing' : 'preview_ready', percent: input.autoPublish ? 55 : 100, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: plan.pages.reduce((total, page) => total + page.generatedSections.length, 0), totalSections: plan.pages.reduce((total, page) => total + page.generatedSections.length, 0), currentSectionTitle: null },
+      pages: plan.pages.map((page) => ({ title: page.title, slug: page.slug, seoTitle: page.seoTitle, seoDescription: page.seoDescription })),
+    }, { id: 'preview-ready', code: 'preview_ready', tone: 'success', params: { pages: plan.pages.length } });
     const previewJob = await repo.updateJob(input.siteId, input.id, {
       status: 'preview',
       plan,
-      preview: {
-        provider: input.provider,
-        automatic: input.autoPublish,
-        progress: { phase: input.autoPublish ? 'publishing' : 'preview_ready', percent: input.autoPublish ? 55 : 100, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: plan.pages.reduce((total, page) => total + page.generatedSections.length, 0), totalSections: plan.pages.reduce((total, page) => total + page.generatedSections.length, 0), currentSectionTitle: null },
-        pages: plan.pages.map((page) => ({ title: page.title, slug: page.slug, seoTitle: page.seoTitle, seoDescription: page.seoDescription })),
-      },
+      preview: previewState,
     });
     if (!previewJob) await assertGenerationNotCancelled(input.siteId, input.id);
     if (input.autoPublish) {
@@ -186,6 +197,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       status: 'failed',
       errorCode: error instanceof AppError ? error.code : 'WEBSITE_AUTO_GENERATION_FAILED',
       errorMessage: message,
+      ...(currentJob ? { preview: appendGenerationActivity(currentJob.preview, { id: `generation-failed:${currentJob.attemptCount}`, code: 'generation_failed', tone: 'error', params: { message } }) } : {}),
       ...(errorDetails ? { providerResult: { ...(currentJob?.providerResult ?? {}), failureDetails: errorDetails } } : {}),
     }).catch(() => undefined);
     if (shouldDisconnectProvider(error) && (input.provider === 'wordpress' || input.provider === 'webflow')) await disconnectWebsiteProvider(input.workspaceId, input.provider);

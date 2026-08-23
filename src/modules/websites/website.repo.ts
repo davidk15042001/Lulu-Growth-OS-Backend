@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { query } from '../../db/pool.js';
 import type { WebsiteDomain, WebsiteGenerationJob, WebsiteGenerationWorkItem, WebsiteSite } from './website.types.js';
+import type { WebsiteGenerationActivity } from './website.activity.js';
 
 function mapSite(row: any, domains: WebsiteDomain[] = []): WebsiteSite {
   return { id: row.id, workspaceId: row.workspaceId, provider: row.provider, ownershipMode: row.ownershipMode, name: row.name, externalSiteId: row.externalSiteId ?? null, externalSiteUrl: row.externalSiteUrl ?? null, status: row.status, settings: row.settings ?? {}, domains, createdAt: row.createdAt, updatedAt: row.updatedAt };
@@ -181,12 +182,13 @@ export async function cancelJob(siteId: string, jobId: string) {
          locked_at = NULL,
          heartbeat_at = NOW()
      WHERE site_id = $1 AND id = $2
-       AND status IN ('queued','planning','generated','preview','publishing','cancelled')
+       AND status IN ('queued','planning','generated','preview','publishing')
      RETURNING id`,
     [siteId, jobId],
   );
-  const job = await getJob(siteId, jobId);
-  return { job, cancelled: (result.rowCount ?? 0) > 0 };
+  const cancelled = (result.rowCount ?? 0) > 0;
+  if (cancelled) await appendJobActivity(siteId, jobId, { id: `job-cancelled:${new Date().toISOString()}`, code: 'job_cancelled', tone: 'warning', params: {} });
+  return { job: await getJob(siteId, jobId), cancelled };
 }
 
 export async function resumeJob(siteId: string, jobId: string) {
@@ -209,8 +211,28 @@ export async function resumeJob(siteId: string, jobId: string) {
      RETURNING id`,
     [siteId, jobId],
   );
-  const job = await getJob(siteId, jobId);
-  return { job, resumed: (result.rowCount ?? 0) > 0 };
+  const resumed = (result.rowCount ?? 0) > 0;
+  if (resumed) await appendJobActivity(siteId, jobId, { id: `job-resumed:${new Date().toISOString()}`, code: 'job_resumed', tone: 'info', params: {} });
+  return { job: await getJob(siteId, jobId), resumed };
+}
+
+export async function appendJobActivity(siteId: string, jobId: string, event: Omit<WebsiteGenerationActivity, 'createdAt'> & { createdAt?: string }) {
+  const value = { ...event, createdAt: event.createdAt ?? new Date().toISOString() };
+  await query(
+    `UPDATE website_generation_jobs
+     SET preview = jsonb_set(
+       COALESCE(preview, '{}'::jsonb),
+       '{activity}',
+       COALESCE(CASE WHEN jsonb_typeof(preview->'activity') = 'array' THEN preview->'activity' END, '[]'::jsonb) || jsonb_build_array($3::jsonb),
+       TRUE
+     )
+     WHERE site_id = $1 AND id = $2
+       AND NOT EXISTS (
+         SELECT 1 FROM jsonb_array_elements(COALESCE(CASE WHEN jsonb_typeof(preview->'activity') = 'array' THEN preview->'activity' END, '[]'::jsonb)) AS activity
+         WHERE activity->>'id' = $4
+       )`,
+    [siteId, jobId, JSON.stringify(value), value.id],
+  );
 }
 
 export async function claimNextGenerationJob(workerId: string, leaseSeconds: number, maxAttempts: number): Promise<WebsiteGenerationWorkItem | null> {
