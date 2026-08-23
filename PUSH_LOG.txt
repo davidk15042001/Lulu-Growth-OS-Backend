@@ -59,3 +59,6 @@ Push-Zeitstempel: 2026-08-22 07:15:23 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 03:04:28 Europe/Berlin
 Änderungen: Synchronisations-Push zum Frontend-Release für korrigierte Live-Daten-Navigation, bereinigte Seitenrouten und den überarbeiteten Suchbutton.
+
+Push-Zeitstempel: 2026-08-23 03:12:56 Europe/Berlin
+Änderungen: Synchronisations-Push zum Frontend-Release, das normale Seiteninhalte auch ohne vorhandene Live-Datensätze anzeigt.
