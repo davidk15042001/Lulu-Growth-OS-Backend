@@ -98,3 +98,6 @@ Push-Zeitstempel: 2026-08-23 18:51:37 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 19:18:37 Europe/Berlin
 Änderungen: Website-Status- und Job-Updates verwenden jetzt explizit typisierte PostgreSQL-Parameter, wodurch der Generierungsabbruch „could not determine data type of parameter $3“ behoben ist; ein getesteter Minimal-Fallback beendet Jobs auch bei einem Fehler im detaillierten Status-Write zuverlässig, und Heartbeat- sowie Persistenzfehler werden vollständig protokolliert.
+
+Push-Zeitstempel: 2026-08-23 19:24:50 Europe/Berlin
+Änderungen: Synchronisations-Push zum Frontend-Release, der das redundante kleine Website-Fehler-Popup entfernt und fehlgeschlagene Jobs ausschließlich im vollständigen Generierungsfenster darstellt.
