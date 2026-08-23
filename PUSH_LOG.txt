@@ -68,3 +68,6 @@ Push-Zeitstempel: 2026-08-23 03:19:44 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 13:24:29 Europe/Berlin
 Änderungen: Synchronisations-Push zum Frontend-Release für vereinheitlichte Billing-Pakete, Preise, Leistungen und planabhängige Funktionsfreigaben.
+
+Push-Zeitstempel: 2026-08-23 14:47:29 Europe/Berlin
+Änderungen: Die WordPress-Generierung verwendet jetzt eine einzige strukturierte KI-Texterstellung und rendert vier geprüfte Seiten deterministisch aus dem Lulu-Standard-Template; vorhandene Medien, Farben, SEO und exakte Veröffentlichungsphasen werden übernommen.

@@ -17,9 +17,21 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       if (!externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_ID_MISSING', 'The connected WordPress site ID is missing');
       const plannedPages = Array.isArray(plan?.pages) ? plan.pages : [];
       if (!plannedPages.length) throw new AppError(502, 'WEBSITE_PLAN_EMPTY', 'The generated website plan contains no pages');
+      const updatePublishingProgress = async (phase: string, completedPages: number, currentPageTitle: string | null) => {
+        await repo.updateJob(siteId, jobId, {
+          status: 'publishing',
+          preview: {
+            ...job.preview,
+            provider: 'wordpress',
+            automatic: job.autoPublish,
+            progress: { phase, completedPages, totalPages: plannedPages.length, currentPageTitle },
+          },
+        });
+      };
       const createdPages: any[] = [];
       const existingPages = await withProviderConnectionError(workspaceId, 'wordpress', () => wordpressPages(workspaceId, externalSiteId));
       for (const [pageIndex, page] of plannedPages.entries()) {
+        await updatePublishingProgress('publishing_pages', pageIndex, String(page.title ?? ''));
         const desiredSlug = String(page.slug ?? '').trim().toLowerCase();
         const existing = existingPages.find((candidate: any) => {
           const candidateSlug = String(candidate.slug ?? '').trim().toLowerCase();
@@ -51,6 +63,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         }
         if (!publishedUrl) throw new AppError(502, 'WORDPRESS_PUBLISH_UNCONFIRMED', 'WordPress did not confirm a published URL for the page', { provider: 'wordpress', providerResult: published });
         createdPages.push({ id: pageId, url: String(publishedUrl), reused: Boolean(existing) });
+        await updatePublishingProgress('publishing_pages', pageIndex + 1, plannedPages[pageIndex + 1]?.title ? String(plannedPages[pageIndex + 1].title) : null);
       }
       if (createdPages.length !== plannedPages.length) throw new AppError(502, 'WORDPRESS_PUBLISH_INCOMPLETE', 'WordPress did not confirm all generated pages', { provider: 'wordpress', providerResult: { pages: createdPages } });
       const homepageId = String(createdPages[0]?.id ?? '');
@@ -58,6 +71,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
       let homepageConfigured = false;
       let homepageWarning: string | undefined;
       try {
+        await updatePublishingProgress('configuring_homepage', plannedPages.length, null);
         await withProviderConnectionError(workspaceId, 'wordpress', () => updateWordpressFrontPage(workspaceId, externalSiteId, homepageId));
         homepageConfigured = true;
       } catch (homepageError) {
@@ -70,7 +84,16 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
         if (!settingsEndpointDisabled) throw homepageError;
         homepageWarning = 'WordPress published the generated pages, but its settings endpoint is disabled; set the generated homepage manually in WordPress Reading settings.';
       }
-      const publishedJob = await repo.updateJob(siteId, jobId, { status: 'published', providerResult: { provider: 'wordpress', pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) } });
+      const publishedJob = await repo.updateJob(siteId, jobId, {
+        status: 'published',
+        preview: {
+          ...job.preview,
+          provider: 'wordpress',
+          automatic: job.autoPublish,
+          progress: { phase: 'published', completedPages: plannedPages.length, totalPages: plannedPages.length, currentPageTitle: null },
+        },
+        providerResult: { provider: 'wordpress', templateKey: plan?.templateKey ?? null, pages: createdPages, homepageId, homepageConfigured, ...(homepageWarning ? { homepageWarning } : {}) },
+      });
       await repo.updateSiteStatus(workspaceId, siteId, 'published');
       return publishedJob;
     }

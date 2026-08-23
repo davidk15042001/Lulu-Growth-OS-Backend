@@ -1,5 +1,5 @@
 import { AppError } from '../../utils/app-error.js';
-import { firstWebflowSiteWithCollection, wordpressSites } from './website.provider.service.js';
+import { firstWebflowSiteWithCollection, wordpressMedia, wordpressSites } from './website.provider.service.js';
 import { logger } from '../../config/logger.js';
 import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
@@ -7,7 +7,17 @@ import { publishWebsiteJob } from './website.publish.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import type { WebsiteGenerationWorkItem } from './website.types.js';
 
-export const DEFAULT_WEBSITE_PROMPT = `Create a premium, production-ready and conversion-focused website from verified Lulu workspace data. Adapt the structure, language, visual direction and calls to action to the customer's real business, audience, offers and goals. Build three to six high-value pages rather than a generic template. Use complete semantic HTML, useful SEO metadata, clear internal navigation and provider-safe presentation. Represent the most important customer journey and business functions with substantive sections, cards, process steps, FAQs and calls to action where relevant. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
+export const DEFAULT_WEBSITE_PROMPT = `Create factual, conversion-focused website copy from verified Lulu workspace data for the fixed Lulu Standard template. Generate only structured text and SEO content. The application owns the layout, pages, colors and HTML rendering. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
+
+function wordpressImageAssets(value: unknown) {
+  const items = Array.isArray(value) ? value : [];
+  return items.map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : {}).map((item) => {
+    const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata as Record<string, unknown> : {};
+    const url = String(item.URL ?? item.url ?? item.source_url ?? metadata.file ?? '').trim();
+    const altText = String(item.alt ?? item.alt_text ?? item.caption ?? item.title ?? '').replace(/<[^>]+>/g, '').trim();
+    return { url, altText: altText || 'Company image' };
+  }).filter((asset) => /^https?:\/\//i.test(asset.url)).slice(0, 8);
+}
 
 export async function resetWebsiteProviderState(workspaceId: string, provider: 'wordpress' | 'webflow') {
   await repo.deleteSitesByProvider(workspaceId, provider).catch(() => undefined);
@@ -74,23 +84,40 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
   try {
     if (!input.createdBy) throw new AppError(409, 'WEBSITE_GENERATION_USER_MISSING', 'The user who started this website generation no longer exists');
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'generating');
-    await repo.updateJob(input.siteId, input.id, { status: 'planning' });
+    await repo.updateJob(input.siteId, input.id, {
+      status: 'planning',
+      preview: {
+        provider: input.provider,
+        automatic: input.autoPublish,
+        progress: { phase: 'analyzing_company', completedPages: 0, totalPages: 4, currentPageTitle: null },
+      },
+    });
+    let imageAssets: Array<{ url: string; altText: string }> = [];
+    const generationSite = await repo.getSite(input.workspaceId, input.siteId);
+    if (input.provider === 'wordpress' && generationSite?.externalSiteId) {
+      try {
+        imageAssets = wordpressImageAssets(await wordpressMedia(input.workspaceId, generationSite.externalSiteId));
+      } catch (error) {
+        logger.warn({ jobId: input.id, siteId: input.siteId, error: error instanceof Error ? error.message : String(error) }, 'WordPress media could not be loaded; rendering the standard template without images');
+      }
+    }
     const plan = await generateWebsitePlan({
       workspaceId: input.workspaceId,
       userId: input.createdBy,
       prompt: input.prompt,
       provider: input.provider,
       existingPlan: input.plan,
+      imageAssets,
       ...(input.requestedLanguage ? { language: input.requestedLanguage } : {}),
       onProgress: async (progress) => {
         await repo.updateJob(input.siteId, input.id, {
           status: 'planning',
-          plan: progress.plan,
+          ...(progress.plan ? { plan: progress.plan } : {}),
           preview: {
             provider: input.provider,
             automatic: input.autoPublish,
             progress: {
-              phase: 'generating_pages',
+              phase: progress.phase,
               completedPages: progress.completedPages,
               totalPages: progress.totalPages,
               currentPageTitle: progress.currentPageTitle,
