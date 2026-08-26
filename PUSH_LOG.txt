@@ -119,3 +119,6 @@ Push-Zeitstempel: 2026-08-23 22:25:11 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-26 05:08:57 Europe/Berlin
 Änderungen: Ein ausfallsicherer Hintergrundprozess entfernt bei weiterhin unbezahlten Onboardings nach fünf Tagen sämtliche in S3 und PostgreSQL gespeicherten Onboarding-Dateien, setzt den Workspace auf den Datei-Upload zurück und erzwingt serverseitig mindestens einen erneuten Upload. Aktive bezahlte oder intern freigeschaltete Workspaces sind ausgeschlossen; Trial- und offene Checkout-Zustände gelten nicht mehr fälschlich als Zahlungsbestätigung. Migration, Claim-Lease, Wiederholungslogik und der neue persistierte Plattform-Fortschritt sind vollständig getestet.
+
+Push-Zeitstempel: 2026-08-26 05:35:08 Europe/Berlin
+Änderungen: Synchronisations-Push zum Frontend-Release für die unmittelbare Checkout-Weiterleitung bei der Paketauswahl und die bereinigte Billing-Navigation; an den Backend-Zahlungsendpunkten waren keine funktionalen Änderungen erforderlich.
