@@ -13,6 +13,7 @@ const EnvSchema = z
     DATABASE_SSL: booleanString.default(false),
     DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
     RUN_MIGRATIONS_ON_STARTUP: booleanString.default(true),
+    BACKGROUND_WORKERS_ENABLED: booleanString.default(true),
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     ACCESS_TOKEN_TTL: z.string().min(2).default('24h'),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(3650).default(3650),

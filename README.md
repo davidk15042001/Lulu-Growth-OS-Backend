@@ -32,6 +32,7 @@ Docker is optional. A hosted PostgreSQL database such as Supabase can be used th
    ```
 
 2. Copy `.env.example` to `.env` and replace `JWT_SECRET` with a random value of at least 32 characters.
+   Leave `BACKGROUND_WORKERS_ENABLED=true` for local all-in-one development.
 
 3. Start PostgreSQL with Docker when Docker is available:
 
@@ -162,4 +163,6 @@ Set `PAYG_SERVER_COST_USD_PER_DAY` to the real daily AWS cost allocated to one a
 
 ## Deployment
 
-Set all production environment variables, especially `DATABASE_URL`, `DATABASE_SSL=true`, `JWT_SECRET`, `CORS_ORIGIN`, `RESEND_API_KEY` and optionally `OPENAI_API_KEY`. Set `REFRESH_COOKIE_SAME_SITE=none` when the HTTPS frontend and API are hosted on different sites; use `lax` when they share a site. Migrations are serialized with a PostgreSQL advisory lock. Set `RUN_MIGRATIONS_ON_STARTUP=false` only when migrations run in a separate release step.
+Set all production environment variables, especially `DATABASE_URL`, `DATABASE_SSL=true`, `JWT_SECRET`, `CORS_ORIGIN`, the configured mail provider variables, and optionally your selected AI provider key. Set `REFRESH_COOKIE_SAME_SITE=none` when the HTTPS frontend and API are hosted on different sites; use `lax` when they share a site. Migrations are serialized with a PostgreSQL advisory lock. Set `RUN_MIGRATIONS_ON_STARTUP=false` only when migrations run in a separate release step.
+
+Use `BACKGROUND_WORKERS_ENABLED=false` on stateless API replicas so they only serve HTTP traffic. Run a separate worker process or worker deployment with `BACKGROUND_WORKERS_ENABLED=true` to handle email sync, website generation, onboarding cleanup, pay-as-you-go billing, and other background jobs without duplicating work across autoscaled API instances.

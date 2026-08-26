@@ -20,28 +20,34 @@ async function bootstrap() {
     await syncResourceCatalog();
   }
 
-  if (process.env.VERCEL) {
-    return;
+  const workersEnabled = env.BACKGROUND_WORKERS_ENABLED && !process.env.VERCEL;
+
+  if (workersEnabled) {
+    startAutomaticAnalysisWorker();
+    if (hasDb) {
+      startEmailSyncWorker();
+      startWebsiteGenerationWorker();
+      startOnboardingFileCleanupWorker();
+      startPaygBillingWorker();
+    }
   }
 
-  startAutomaticAnalysisWorker();
-  if (hasDb) {
-    startEmailSyncWorker();
-    startWebsiteGenerationWorker();
-    startOnboardingFileCleanupWorker();
-    startPaygBillingWorker();
-  }
   const server = app.listen(env.PORT, () => {
-    logger.info({ port: env.PORT, environment: env.NODE_ENV }, 'Lulu Growth OS API listening');
+    logger.info(
+      { port: env.PORT, environment: env.NODE_ENV, workersEnabled },
+      'Lulu Growth OS API listening',
+    );
   });
 
   const shutdown = (signal: string) => {
     logger.info({ signal }, 'Shutting down API');
-    stopAutomaticAnalysisWorker();
-    stopEmailSyncWorker();
-    stopWebsiteGenerationWorker();
-    stopOnboardingFileCleanupWorker();
-    stopPaygBillingWorker();
+    if (workersEnabled) {
+      stopAutomaticAnalysisWorker();
+      stopEmailSyncWorker();
+      stopWebsiteGenerationWorker();
+      stopOnboardingFileCleanupWorker();
+      stopPaygBillingWorker();
+    }
     server.close(async () => {
       if (hasDb) {
         await pool.end();
