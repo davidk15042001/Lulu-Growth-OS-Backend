@@ -40,7 +40,14 @@ export async function saveBusinessDescription(
   userId: string,
   input: BusinessDescriptionInput
 ) {
-  await repo.saveBusinessDescription(workspaceId, input);
+  const saved = await repo.saveBusinessDescription(workspaceId, input);
+  if (!saved) {
+    throw new AppError(
+      422,
+      'ONBOARDING_FILE_REUPLOAD_REQUIRED',
+      'Upload at least one onboarding file before continuing',
+    );
+  }
   return workspaceService.getWorkspace(workspaceId, userId);
 }
 
@@ -94,6 +101,11 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
   if (!(await repo.archivePlatform(workspaceId, platformId))) {
     throw notFoundError('Platform not found');
   }
+}
+
+export async function continueFromExistingPlatforms(workspaceId: string, userId: string) {
+  await repo.setOnboardingStep(workspaceId, 'billing');
+  return workspaceService.getWorkspace(workspaceId, userId);
 }
 
 export async function getAiPreferences(workspaceId: string) {

@@ -75,6 +75,10 @@ router.route('/platforms/:platformId')
   .delete(requireWorkspaceEditor, controller.deletePlatform)
   .all(methodNotAllowed);
 
+router.route('/existing-platforms/continue')
+  .post(requireWorkspaceEditor, controller.continueExistingPlatforms)
+  .all(methodNotAllowed);
+
 router.route('/platforms/:provider/connect')
   .get(requireWorkspaceEditor, controller.startOAuth)
   .all(methodNotAllowed);

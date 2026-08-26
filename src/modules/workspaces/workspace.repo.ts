@@ -18,6 +18,8 @@ export type Workspace = {
   positioningTags: string[];
   onboardingStep: string;
   onboardingCompletedAt: string | null;
+  onboardingFileReuploadRequired: boolean;
+  onboardingFilesPurgedAt: string | null;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -39,6 +41,8 @@ const workspaceSelect = `
   w.positioning_tags AS "positioningTags",
   w.onboarding_step AS "onboardingStep",
   w.onboarding_completed_at AS "onboardingCompletedAt",
+  w.onboarding_file_reupload_required AS "onboardingFileReuploadRequired",
+  w.onboarding_files_purged_at AS "onboardingFilesPurgedAt",
   w.created_by AS "createdBy",
   w.created_at AS "createdAt",
   w.updated_at AS "updatedAt",
@@ -129,6 +133,8 @@ export async function findWorkspaceById(workspaceId: string) {
             w.value_proposition AS "valueProposition", w.target_market AS "targetMarket",
             w.short_brand_description AS "shortBrandDescription", w.positioning_tags AS "positioningTags",
             w.onboarding_step AS "onboardingStep", w.onboarding_completed_at AS "onboardingCompletedAt",
+            w.onboarding_file_reupload_required AS "onboardingFileReuploadRequired",
+            w.onboarding_files_purged_at AS "onboardingFilesPurgedAt",
             w.created_by AS "createdBy", w.created_at AS "createdAt", w.updated_at AS "updatedAt",
             'owner'::text AS role,
             COALESCE((SELECT plan_key FROM workspace_subscriptions ws2 WHERE ws2.workspace_id = w.id ORDER BY ws2.updated_at DESC LIMIT 1), 'starter') AS "planKey"

@@ -153,6 +153,15 @@ export async function deletePlatform(req: WorkspaceRequest, res: Response, next:
   }
 }
 
+export async function continueExistingPlatforms(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const workspace = await service.continueFromExistingPlatforms(workspaceId(req), req.user!.id);
+    return successResponse(res, 'Existing platforms step completed', workspace);
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function getAiPreferences(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const preferences = await service.getAiPreferences(workspaceId(req));

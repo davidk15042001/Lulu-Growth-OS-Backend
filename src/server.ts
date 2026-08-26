@@ -7,6 +7,7 @@ import { pool } from './db/pool.js';
 import { syncResourceCatalog } from './modules/resources/resource-catalog.repo.js';
 import { startAutomaticAnalysisWorker, stopAutomaticAnalysisWorker } from './modules/agents/agent.worker.js';
 import { startEmailSyncWorker, stopEmailSyncWorker } from './modules/email/email.service.js';
+import { startOnboardingFileCleanupWorker, stopOnboardingFileCleanupWorker } from './modules/onboarding/onboarding-cleanup.worker.js';
 import { startWebsiteGenerationWorker, stopWebsiteGenerationWorker } from './modules/websites/website.worker.js';
 
 async function bootstrap() {
@@ -26,6 +27,7 @@ async function bootstrap() {
   if (hasDb) {
     startEmailSyncWorker();
     startWebsiteGenerationWorker();
+    startOnboardingFileCleanupWorker();
   }
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT, environment: env.NODE_ENV }, 'Lulu Growth OS API listening');
@@ -36,6 +38,7 @@ async function bootstrap() {
     stopAutomaticAnalysisWorker();
     stopEmailSyncWorker();
     stopWebsiteGenerationWorker();
+    stopOnboardingFileCleanupWorker();
     server.close(async () => {
       if (hasDb) {
         await pool.end();

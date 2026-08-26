@@ -43,6 +43,7 @@ const EnvSchema = z
     WEBSITE_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
     WEBSITE_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(90),
     WEBSITE_JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    ONBOARDING_FILE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
     EMAIL_FROM: z.string().optional(),
     FRONTEND_BASE_URL: z.string().url().optional(),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),

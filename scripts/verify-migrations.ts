@@ -4,6 +4,8 @@ import { PGlite } from '@electric-sql/pglite';
 import assert from 'node:assert/strict';
 import { RESOURCE_CATALOG } from '../src/domain/resource-catalog.js';
 import { failExhaustedJobsSql, markGenerationJobFailedSql, updateGenerationJobSql, updateSiteStatusSql } from '../src/modules/websites/website.repo.js';
+import { claimExpiredOnboardingWorkspaceSql, finishOnboardingFileCleanupSql } from '../src/modules/onboarding/onboarding-cleanup.repo.js';
+import { saveBusinessDescriptionSql } from '../src/modules/onboarding/onboarding.repo.js';
 
 const migrationsDirectory = path.resolve('src/database/migrations');
 
@@ -128,6 +130,80 @@ async function main() {
        VALUES ($1)`,
       [workspaceId]
     );
+    const retention = await database.query<{ onboarding_files_expires_at: string }>(
+      `SELECT onboarding_files_expires_at FROM workspaces WHERE id = $1`,
+      [workspaceId],
+    );
+    assert.ok(retention.rows[0]?.onboarding_files_expires_at);
+    const onboardingDocument = await database.query<{ id: string }>(
+      `INSERT INTO onboarding_documents (
+         workspace_id, uploaded_by, file_name, mime_type, size_bytes, storage_key, content
+       ) VALUES ($1, $2, 'company-profile.txt', 'text/plain', 7, $3, $4)
+       RETURNING id`,
+      [workspaceId, userId, `workspaces/${workspaceId}/onboarding/documents/migration-test`, Buffer.from('profile')],
+    );
+    const onboardingDocumentId = onboardingDocument.rows[0]?.id;
+    assert.ok(onboardingDocumentId);
+    await database.query(
+      `UPDATE workspaces SET onboarding_files_expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1`,
+      [workspaceId],
+    );
+    const cleanupClaim = await database.query<{ workspaceId: string }>(claimExpiredOnboardingWorkspaceSql, [30]);
+    assert.equal(cleanupClaim.rows[0]?.workspaceId, workspaceId);
+    await database.query(
+      `DELETE FROM onboarding_documents WHERE workspace_id = $1 AND id = $2`,
+      [workspaceId, onboardingDocumentId],
+    );
+    await database.query(finishOnboardingFileCleanupSql, [workspaceId, 5]);
+    const cleanedWorkspace = await database.query<{
+      onboarding_step: string;
+      onboarding_file_reupload_required: boolean;
+      onboarding_files_purged_at: string | null;
+      onboarding_file_cleanup_started_at: string | null;
+    }>(
+      `SELECT onboarding_step, onboarding_file_reupload_required,
+              onboarding_files_purged_at, onboarding_file_cleanup_started_at
+       FROM workspaces WHERE id = $1`,
+      [workspaceId],
+    );
+    assert.equal(cleanedWorkspace.rows[0]?.onboarding_step, 'business_description');
+    assert.equal(cleanedWorkspace.rows[0]?.onboarding_file_reupload_required, true);
+    assert.ok(cleanedWorkspace.rows[0]?.onboarding_files_purged_at);
+    assert.equal(cleanedWorkspace.rows[0]?.onboarding_file_cleanup_started_at, null);
+    const blockedDescriptionSave = await database.query<{ id: string }>(saveBusinessDescriptionSql, [
+      workspaceId,
+      'Existing text must not bypass the re-upload requirement.',
+      null,
+      null,
+      null,
+      [],
+    ]);
+    assert.equal(blockedDescriptionSave.rows.length, 0);
+    await database.query(
+      `INSERT INTO onboarding_documents (
+         workspace_id, uploaded_by, file_name, mime_type, size_bytes, storage_key, content
+       ) VALUES ($1, $2, 'reuploaded-profile.txt', 'text/plain', 7, $3, $4)`,
+      [workspaceId, userId, `workspaces/${workspaceId}/onboarding/documents/reuploaded`, Buffer.from('profile')],
+    );
+    const acceptedDescriptionSave = await database.query<{ id: string }>(saveBusinessDescriptionSql, [
+      workspaceId,
+      'Freshly uploaded company profile.',
+      null,
+      null,
+      null,
+      [],
+    ]);
+    assert.equal(acceptedDescriptionSave.rows[0]?.id, workspaceId);
+    await database.query(
+      `UPDATE workspace_subscriptions SET status = 'active' WHERE workspace_id = $1`,
+      [workspaceId],
+    );
+    await database.query(
+      `UPDATE workspaces SET onboarding_files_expires_at = NOW() - INTERVAL '1 minute' WHERE id = $1`,
+      [workspaceId],
+    );
+    const paidCleanupClaim = await database.query<{ workspaceId: string }>(claimExpiredOnboardingWorkspaceSql, [30]);
+    assert.equal(paidCleanupClaim.rows.length, 0);
     const websiteSite = await database.query<{ id: string }>(
       `INSERT INTO workspace_sites (workspace_id, provider, ownership_mode, name, external_site_id)
        VALUES ($1, 'wordpress', 'connected', 'Migration Website', 'migration-site')

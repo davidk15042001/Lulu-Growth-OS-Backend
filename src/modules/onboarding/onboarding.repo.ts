@@ -99,16 +99,27 @@ export async function saveCompanyInformation(workspaceId: string, input: Company
   );
 }
 
-export async function saveBusinessDescription(workspaceId: string, input: BusinessDescriptionInput) {
-  await query(
-    `UPDATE workspaces
+export const saveBusinessDescriptionSql = `
+  UPDATE workspaces
      SET business_description = $2,
          value_proposition = $3,
          target_market = $4,
          short_brand_description = $5,
          positioning_tags = $6,
-         onboarding_step = 'existing_platforms'
-     WHERE id = $1 AND deleted_at IS NULL`,
+         onboarding_step = 'existing_platforms',
+         onboarding_file_reupload_required = FALSE
+     WHERE id = $1
+       AND deleted_at IS NULL
+       AND (
+         onboarding_file_reupload_required = FALSE
+         OR EXISTS (SELECT 1 FROM onboarding_documents d WHERE d.workspace_id = workspaces.id)
+       )
+     RETURNING id
+`;
+
+export async function saveBusinessDescription(workspaceId: string, input: BusinessDescriptionInput) {
+  const { rowCount } = await query(
+    saveBusinessDescriptionSql,
     [
       workspaceId,
       input.businessDescription,
@@ -118,6 +129,7 @@ export async function saveBusinessDescription(workspaceId: string, input: Busine
       input.positioningTags,
     ]
   );
+  return rowCount > 0;
 }
 
 export async function listOfferings(workspaceId: string) {
@@ -388,9 +400,9 @@ export async function getCompletionState(workspaceId: string) {
        EXISTS (
          SELECT 1 FROM workspace_subscriptions s
          WHERE s.workspace_id = w.id
-           AND s.status IN ('active', 'trialing')
+           AND s.status = 'active'
            AND s.provider IN ('internal', 'airwallex')
-           AND s.plan_key IN ('explorer', 'starter', 'ai')
+           AND s.plan_key IN ('viewer', 'starter', 'ai', 'test')
        ) AS "hasBillingConfirmation"
      FROM workspaces w
      WHERE w.id = $1 AND w.deleted_at IS NULL`,

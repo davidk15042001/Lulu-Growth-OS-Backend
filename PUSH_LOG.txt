@@ -116,3 +116,6 @@ Push-Zeitstempel: 2026-08-23 21:47:30 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-23 22:25:11 Europe/Berlin
 Änderungen: Die WordPress-Ausgabe erfüllt jetzt den vollständigen Referenzvertrag: exakt 13 Sections sowie feste Mengen von 4 Zielgruppen-, 4 Leistungs-, 3 Stärken-, 3 Prozess- und 2 Capability-Karten, 5 Trust-Items, 6 Split-Items, 4 Formular-Hinweise und 3 FAQs. WordPress.com-sanitizer-unsichere Style-Blöcke wurden vollständig entfernt, sichtbare CSS-Fragmente werden vom Quality-Gate abgelehnt, Full-Width-Gutenberg, kurze Navigation, responsive Raster und ein sauber getrennter Footer verhindern Überlauf und zusammenlaufende Links.
+
+Push-Zeitstempel: 2026-08-26 05:08:57 Europe/Berlin
+Änderungen: Ein ausfallsicherer Hintergrundprozess entfernt bei weiterhin unbezahlten Onboardings nach fünf Tagen sämtliche in S3 und PostgreSQL gespeicherten Onboarding-Dateien, setzt den Workspace auf den Datei-Upload zurück und erzwingt serverseitig mindestens einen erneuten Upload. Aktive bezahlte oder intern freigeschaltete Workspaces sind ausgeschlossen; Trial- und offene Checkout-Zustände gelten nicht mehr fälschlich als Zahlungsbestätigung. Migration, Claim-Lease, Wiederholungslogik und der neue persistierte Plattform-Fortschritt sind vollständig getestet.
