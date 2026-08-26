@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { calculateUsageCost } from '../src/modules/usage/usage.service.js';
 import { deterministicBillingRequestId } from '../src/modules/billing/airwallex.service.js';
+import { AWS_USAGE_CUSTOMER_MULTIPLIER } from '../src/modules/billing/payg-billing.repo.js';
 
 describe('AI usage pricing', () => {
   it('prices qwen3.7-plus usage with the Singapore international list rate', () => {
@@ -14,7 +15,8 @@ describe('AI usage pricing', () => {
 
     assert.deepEqual(usage.rate, { inputPerMillionUsd: 0.4, outputPerMillionUsd: 1.6 });
     assert.equal(usage.providerCostUsd, 2);
-    assert.equal(usage.customerCostUsd, 6);
+    assert.equal(usage.customerCostUsd, 15);
+    assert.deepEqual(usage.customerRate, { inputPerMillionUsd: 5, outputPerMillionUsd: 10 });
     assert.equal(usage.credits, 2_000);
   });
 
@@ -28,7 +30,20 @@ describe('AI usage pricing', () => {
 
     assert.deepEqual(usage.rate, { inputPerMillionUsd: 1.65, outputPerMillionUsd: 3.301 });
     assert.ok(Math.abs(usage.providerCostUsd - 4.951) < 1e-9);
-    assert.ok(Math.abs(usage.customerCostUsd - 14.853) < 1e-9);
+    assert.equal(usage.customerCostUsd, 15);
+  });
+
+  it('charges customers exactly $5 per million input tokens and $10 per million output tokens', () => {
+    const usage = calculateUsageCost({
+      provider: 'unknown',
+      model: 'unknown',
+      inputTokens: 2_000_000,
+      outputTokens: 3_000_000,
+    });
+
+    assert.equal(usage.providerCostUsd, 0);
+    assert.equal(usage.customerCostUsd, 40);
+    assert.equal(AWS_USAGE_CUSTOMER_MULTIPLIER, 2);
   });
 });
 

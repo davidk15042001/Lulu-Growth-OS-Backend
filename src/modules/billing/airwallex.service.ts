@@ -17,7 +17,7 @@ const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof
   viewer: { amountMinor: 0, label: 'Viewer' },
   starter: { amountMinor: 420000, priceEnv: 'AIRWALLEX_STARTER_PRICE_ID', label: 'Starter' },
   ai: { amountMinor: 3000000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI' },
-  test: { amountMinor: 0, label: 'Test' },
+  test: { amountMinor: 0, priceEnv: 'AIRWALLEX_TEST_PRICE_ID', label: 'Test' },
 };
 
 function providerError(code: string, message: string, details?: Record<string, unknown>, status = 502) {
@@ -91,6 +91,27 @@ async function airwallexPostWithoutBody(path: string, operation: string) {
   return data;
 }
 
+async function airwallexPostBody(path: string, body: AirwallexObject, operation: string) {
+  const token = await login();
+  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'x-client-id': env.AIRWALLEX_CLIENT_ID!,
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({})) as AirwallexObject;
+  if (!response.ok) {
+    const providerCode = data.code ?? data.error_code ?? null;
+    const providerMessage = data.message ?? data.error ?? null;
+    logger.warn({ path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
+    throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
+  }
+  return data;
+}
+
 export function deterministicBillingRequestId(seed: string) {
   const bytes = crypto.createHash('sha256').update(seed).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
@@ -115,11 +136,11 @@ export async function createPaygInvoiceDraft(input: {
     days_until_due: env.PAYG_INVOICE_DAYS_UNTIL_DUE,
     default_tax_percent: 0,
     memo: `Lulu AI pay-as-you-go usage ${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`,
-    footer: 'API and server usage is billed in arrears every 14 days.',
+    footer: 'API and AWS infrastructure usage is collected automatically every Monday. A payment link is available only if automatic collection fails.',
     metadata: {
       workspace_id: input.workspaceId,
       payg_period_id: input.periodId,
-      billing_type: 'payg_14_day',
+      billing_type: 'payg_weekly_monday',
     },
     ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
     ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
@@ -145,7 +166,7 @@ export async function addPaygInvoiceLineItems(input: {
   const periodLabel = `${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`;
   const lineItems = [
     { key: 'api', name: 'Lulu AI API usage', description: `AI and external API usage for ${periodLabel}`, amount: input.apiCostUsd },
-    { key: 'server', name: 'Lulu AI server usage', description: `Allocated server usage for ${periodLabel}`, amount: input.serverCostUsd },
+    { key: 'server', name: 'Lulu AI AWS infrastructure usage', description: `AWS infrastructure usage for ${periodLabel}, billed at 2× provider cost`, amount: input.serverCostUsd },
   ].filter((item) => item.amount > 0).map((item) => ({
     description: item.description,
     quantity: 1,
@@ -157,7 +178,7 @@ export async function addPaygInvoiceLineItems(input: {
       product: {
         name: item.name,
         description: item.description,
-        unit: '14-day period',
+        unit: 'weekly period',
         metadata: { billing_type: 'payg' },
       },
     },
@@ -176,6 +197,30 @@ export function finalizePaygInvoice(invoiceId: string) {
     `/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/finalize`,
     'PAYG_INVOICE_FINALIZE',
   );
+}
+
+export function payPaygInvoice(invoiceId: string, paymentSourceId: string) {
+  return airwallexPostBody(
+    `/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/pay`,
+    { payment_source_id: paymentSourceId },
+    'PAYG_INVOICE_PAYMENT',
+  );
+}
+
+export async function createPaygBillingCustomer(input: {
+  workspaceId: string;
+  name: string;
+  email?: string | null;
+}) {
+  return airwallexRequest('/api/v1/billing/billing_customers/create', {
+    name: input.name,
+    type: 'BUSINESS',
+    default_billing_currency: 'USD',
+    description: 'Lulu AI pay-as-you-go customer',
+    metadata: { workspace_id: input.workspaceId, billing_type: 'payg_weekly_monday' },
+    ...(input.email ? { email: input.email } : {}),
+    ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { default_legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+  }, deterministicBillingRequestId(`payg-customer:${input.workspaceId}`), 'PAYG_CUSTOMER_CREATE');
 }
 
 export async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
@@ -257,12 +302,6 @@ async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey
 
 const TEST_PLAN_PASSWORD = '#Plumbum50#';
 
-async function activateTestPlan(input: { workspaceId: string; password?: string }) {
-  if (input.password !== TEST_PLAN_PASSWORD) throw new AppError(422, 'TEST_PASSWORD_INVALID', 'The Test plan password is invalid.');
-  await activateInternalPlan(input.workspaceId, 'test', { source: 'test-password', activatedAt: new Date().toISOString() });
-  return { planKey: 'test' as const, free: true as const, status: 'active' as const };
-}
-
 export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string; password?: string }) {
   const config = planConfig[input.planKey];
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
@@ -272,7 +311,9 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     await activateInternalPlan(input.workspaceId, 'viewer', { source: 'viewer-plan', activatedAt: new Date().toISOString() });
     return { planKey: 'viewer' as const, free: true as const, status: 'active' as const };
   }
-  if (input.planKey === 'test') return activateTestPlan(input);
+  if (input.planKey === 'test' && input.password !== TEST_PLAN_PASSWORD) {
+    throw new AppError(422, 'TEST_PASSWORD_INVALID', 'The Test plan password is invalid.');
+  }
 
   if (!env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID) {
     throw providerError(
@@ -296,6 +337,10 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       duration: { period: 1, period_unit: 'YEAR' },
       default_invoice_template: { invoice_memo: `Lulu AI ${config.label} annual subscription` },
       metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
+    },
+    payment_options: {
+      payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
+      payment_method_types: ['card'],
     },
     ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
     ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
@@ -375,6 +420,9 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
   );
 
   if (!completed) return { checkoutId, planKey: local.rows[0].plan_key, status: 'pending' as const, providerStatus };
+  if (local.rows[0].plan_key === 'test' && typeof paymentSourceId !== 'string') {
+    throw new AppError(409, 'TEST_PAYMENT_METHOD_REQUIRED', 'A saved card is required before the Test plan can be activated.');
+  }
 
   await query(
     `UPDATE workspace_subscriptions
@@ -382,7 +430,7 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
      WHERE workspace_id=$1`,
     [workspaceId, customerId, subscriptionId, local.rows[0].plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId, paymentSourceId })]
   );
-  if (local.rows[0].plan_key === 'starter' || local.rows[0].plan_key === 'ai') {
+  if (local.rows[0].plan_key === 'starter' || local.rows[0].plan_key === 'ai' || local.rows[0].plan_key === 'test') {
     await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
   }
   await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
@@ -464,6 +512,7 @@ export async function handleWebhook(event: AirwallexObject) {
         pdfUrl: typeof invoice.pdf_url === 'string' ? invoice.pdf_url : null,
         paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
         paymentSourceId: typeof invoice.payment_source_id === 'string' ? invoice.payment_source_id : null,
+        eventType,
       });
       await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
       return { processed: handled, eventId, paygPeriodId, status: String(invoice.payment_status ?? 'UNPAID').toLowerCase() };
@@ -479,14 +528,17 @@ export async function handleWebhook(event: AirwallexObject) {
       return { processed: false, eventId, reason: 'unsupported_subscription_status', code: 'AIRWALLEX_SUBSCRIPTION_STATUS_UNSUPPORTED' };
     }
 
+    const webhookPaymentSourceId = subscription.payment_source_id ?? checkout.payment_source_id ?? null;
+    const effectiveStatus = mappedStatus === 'active' && metadata.plan_key === 'test' && typeof webhookPaymentSourceId !== 'string'
+      ? 'trialing'
+      : mappedStatus;
     await query(
       `UPDATE workspace_subscriptions SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=COALESCE($4, plan_key), status=$5, current_period_starts_at=COALESCE($6::timestamptz, current_period_starts_at), current_period_ends_at=COALESCE($7::timestamptz, current_period_ends_at), metadata=metadata || $8::jsonb, updated_at=NOW() WHERE workspace_id=$1`,
-      [workspaceId, subscription.billing_customer_id ?? checkout.billing_customer_id ?? null, subscription.id ?? checkout.subscription_id ?? null, metadata.plan_key ?? null, mappedStatus, subscription.current_period_starts_at ?? null, subscription.current_period_ends_at ?? null, JSON.stringify({ lastWebhookEventId: eventId, lastWebhookType: eventType, invoiceId: data.invoice_id ?? null })]
+      [workspaceId, subscription.billing_customer_id ?? checkout.billing_customer_id ?? null, subscription.id ?? checkout.subscription_id ?? null, metadata.plan_key ?? null, effectiveStatus, subscription.current_period_starts_at ?? null, subscription.current_period_ends_at ?? null, JSON.stringify({ lastWebhookEventId: eventId, lastWebhookType: eventType, invoiceId: data.invoice_id ?? null, paymentSourceId: webhookPaymentSourceId })]
     );
-    if (mappedStatus === 'active') {
-      if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai') {
-        const paymentSourceId = subscription.payment_source_id ?? checkout.payment_source_id ?? null;
-        await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
+    if (effectiveStatus === 'active') {
+      if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai' || metadata.plan_key === 'test') {
+        await ensurePaygProfile(workspaceId, typeof webhookPaymentSourceId === 'string' ? webhookPaymentSourceId : null);
       }
       await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
       void queueInitialBusinessAnalysis(workspaceId).catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment initial analysis could not be queued'));
@@ -494,7 +546,7 @@ export async function handleWebhook(event: AirwallexObject) {
     }
     const invoiceId = String(data.invoice_id ?? data.invoice?.id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? checkout.invoice_id ?? checkout.latest_invoice_id ?? '');
     const planKey = metadata.plan_key as BillingPlanKey | undefined;
-    if (invoiceId && (mappedStatus === 'active' || eventType.includes('INVOICE') || eventType.includes('PAID'))) {
+    if (invoiceId && (effectiveStatus === 'active' || eventType.includes('INVOICE') || eventType.includes('PAID'))) {
       try {
         if (planKey === 'starter' || planKey === 'ai' || planKey === 'test') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
       } catch (error) {
@@ -502,7 +554,7 @@ export async function handleWebhook(event: AirwallexObject) {
       }
     }
     await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
-    return { processed: true, eventId, status: mappedStatus };
+    return { processed: true, eventId, status: effectiveStatus };
   } catch (error) {
     const errorCode = error instanceof AppError ? error.code : 'AIRWALLEX_WEBHOOK_PROCESSING_FAILED';
     await query(`UPDATE airwallex_webhook_events SET processing_at=NULL, last_error_code=$2 WHERE event_id=$1`, [eventId, errorCode]).catch((updateError) => logger.error({ updateError, eventId }, 'Could not release Airwallex webhook claim'));

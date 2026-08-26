@@ -46,7 +46,6 @@ const EnvSchema = z
     ONBOARDING_FILE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
     PAYG_BILLING_WORKER_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
     PAYG_SERVER_COST_USD_PER_DAY: z.coerce.number().min(0).max(100_000).default(0),
-    PAYG_SERVER_MARKUP_MULTIPLIER: z.coerce.number().min(1).max(100).default(1),
     PAYG_INVOICE_DAYS_UNTIL_DUE: z.coerce.number().int().min(1).max(30).default(7),
     EMAIL_FROM: z.string().optional(),
     FRONTEND_BASE_URL: z.string().url().optional(),

@@ -3,19 +3,24 @@ import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   addPaygInvoiceLineItems,
+  createPaygBillingCustomer,
   createPaygInvoiceDraft,
   fetchAirwallexInvoice,
   finalizePaygInvoice,
+  payPaygInvoice,
 } from './airwallex.service.js';
 import {
+  AWS_USAGE_CUSTOMER_MULTIPLIER,
   allocateDailyServerUsage,
   claimDuePaygPeriod,
   failPaygPeriod,
   finalizePaygPeriod,
+  listUnprovisionedTestBillingCustomers,
   markPaygLineItemsAdded,
   markPaygPeriodSkipped,
   repairCompletedProfilePointers,
   savePaygProviderInvoice,
+  saveTestBillingCustomer,
   type PaygPeriod,
 } from './payg-billing.repo.js';
 
@@ -25,6 +30,26 @@ let interval: NodeJS.Timeout | null = null;
 
 function invoiceAmount(value: string) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+async function settleFinalizedInvoice(period: PaygPeriod, invoiceId: string, invoice: Record<string, any>) {
+  if (String(invoice.payment_status ?? '').toUpperCase() === 'PAID') {
+    await finalizePaygPeriod(period, invoice);
+    return;
+  }
+  if (!period.paymentSourceId) {
+    await finalizePaygPeriod(period, invoice);
+    logger.warn({ periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'PAYG invoice needs a payment source; AI access was blocked and the hosted payment link remains available');
+    return;
+  }
+  try {
+    const paid = await payPaygInvoice(invoiceId, period.paymentSourceId);
+    await finalizePaygPeriod(period, paid, true);
+  } catch (error) {
+    const latest = await fetchAirwallexInvoice(invoiceId, `payg-payment-failure:${period.id}`).catch(() => null);
+    await finalizePaygPeriod(period, latest ?? invoice, true);
+    logger.warn({ error, periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Automatic PAYG payment failed; AI access was blocked and the hosted payment link remains available');
+  }
 }
 
 async function issuePeriodInvoice(period: PaygPeriod) {
@@ -42,7 +67,7 @@ async function issuePeriodInvoice(period: PaygPeriod) {
     currentInvoice = await fetchAirwallexInvoice(invoiceId, period.id);
     const status = String(currentInvoice?.status ?? '').toUpperCase();
     if (status === 'FINALIZED') {
-      await finalizePaygPeriod(period, currentInvoice ?? {});
+      await settleFinalizedInvoice(period, invoiceId, currentInvoice ?? {});
       return;
     }
   }
@@ -76,8 +101,26 @@ async function issuePeriodInvoice(period: PaygPeriod) {
   }
 
   const finalized = await finalizePaygInvoice(invoiceId);
-  await finalizePaygPeriod(period, finalized);
+  await settleFinalizedInvoice(period, invoiceId, finalized);
   logger.info({ periodId: period.id, workspaceId: period.workspaceId, invoiceId, apiCostUsd, serverCostUsd }, 'PAYG invoice finalized');
+}
+
+async function provisionTestBillingCustomers() {
+  for (const workspace of await listUnprovisionedTestBillingCustomers()) {
+    try {
+      const customer = await createPaygBillingCustomer({
+        workspaceId: workspace.workspaceId,
+        name: workspace.workspaceName,
+        email: workspace.customerEmail,
+      });
+      const customerId = String(customer.id ?? '');
+      if (!customerId) throw new AppError(502, 'AIRWALLEX_PAYG_CUSTOMER_ID_MISSING', 'Airwallex did not return a Billing Customer ID.');
+      await saveTestBillingCustomer(workspace.workspaceId, customerId);
+      logger.info({ workspaceId: workspace.workspaceId, customerId }, 'Test workspace enrolled in weekly PAYG billing');
+    } catch (error) {
+      logger.error({ error, workspaceId: workspace.workspaceId }, 'Test workspace PAYG customer provisioning failed');
+    }
+  }
 }
 
 export async function runPaygBillingCycle() {
@@ -85,8 +128,9 @@ export async function runPaygBillingCycle() {
   running = true;
   try {
     await repairCompletedProfilePointers();
+    await provisionTestBillingCustomers();
     const providerCost = env.PAYG_SERVER_COST_USD_PER_DAY;
-    await allocateDailyServerUsage(providerCost, providerCost * env.PAYG_SERVER_MARKUP_MULTIPLIER);
+    await allocateDailyServerUsage(providerCost, providerCost * AWS_USAGE_CUSTOMER_MULTIPLIER);
 
     for (let processed = 0; processed < MAX_PERIODS_PER_CYCLE; processed += 1) {
       const period = await claimDuePaygPeriod();
@@ -112,7 +156,7 @@ export function startPaygBillingWorker() {
   void runPaygBillingCycle();
   interval = setInterval(() => void runPaygBillingCycle(), env.PAYG_BILLING_WORKER_INTERVAL_MINUTES * 60_000);
   interval.unref();
-  logger.info({ intervalMinutes: env.PAYG_BILLING_WORKER_INTERVAL_MINUTES, serverCostUsdPerDay: env.PAYG_SERVER_COST_USD_PER_DAY }, 'PAYG billing worker started');
+  logger.info({ intervalMinutes: env.PAYG_BILLING_WORKER_INTERVAL_MINUTES, awsProviderCostUsdPerDay: env.PAYG_SERVER_COST_USD_PER_DAY, awsCustomerMultiplier: AWS_USAGE_CUSTOMER_MULTIPLIER }, 'Weekly Monday PAYG billing worker started');
 }
 
 export function stopPaygBillingWorker() {

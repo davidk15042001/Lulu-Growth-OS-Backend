@@ -2,7 +2,10 @@ import { query } from '../../db/pool.js';
 import { env } from '../../config/env.js';
 
 export const TOKENS_PER_CREDIT = 1_000;
-export const CUSTOMER_MARKUP_MULTIPLIER = 3;
+export const CUSTOMER_API_RATE: Rate = {
+  inputPerMillionUsd: 5,
+  outputPerMillionUsd: 10,
+};
 
 type UsageInput = {
   workspaceId: string;
@@ -65,10 +68,11 @@ function nonNegativeInteger(value: number | null | undefined) {
 export function calculateUsageCost(input: Pick<UsageInput, 'provider' | 'model' | 'inputTokens' | 'outputTokens'>) {
   const inputTokens = nonNegativeInteger(input.inputTokens);
   const outputTokens = nonNegativeInteger(input.outputTokens);
-  const rate = rateFor(input.provider, input.model);
-  const providerCostUsd = (inputTokens / 1_000_000) * rate.inputPerMillionUsd
-    + (outputTokens / 1_000_000) * rate.outputPerMillionUsd;
-  const customerCostUsd = providerCostUsd * CUSTOMER_MARKUP_MULTIPLIER;
+  const providerRate = rateFor(input.provider, input.model);
+  const providerCostUsd = (inputTokens / 1_000_000) * providerRate.inputPerMillionUsd
+    + (outputTokens / 1_000_000) * providerRate.outputPerMillionUsd;
+  const customerCostUsd = (inputTokens / 1_000_000) * CUSTOMER_API_RATE.inputPerMillionUsd
+    + (outputTokens / 1_000_000) * CUSTOMER_API_RATE.outputPerMillionUsd;
   const totalTokens = inputTokens + outputTokens;
   return {
     inputTokens,
@@ -77,7 +81,8 @@ export function calculateUsageCost(input: Pick<UsageInput, 'provider' | 'model' 
     credits: totalTokens / TOKENS_PER_CREDIT,
     providerCostUsd,
     customerCostUsd,
-    rate,
+    rate: providerRate,
+    customerRate: CUSTOMER_API_RATE,
   };
 }
 
@@ -166,9 +171,10 @@ export async function getWorkspaceCredits(workspaceId: string) {
     providerCostUsd: Number(row.providerCostUsd),
     customerCostUsd: Number(row.customerCostUsd),
     tokensPerCredit: TOKENS_PER_CREDIT,
-    customerMarkupMultiplier: CUSTOMER_MARKUP_MULTIPLIER,
+    customerMarkupMultiplier: null,
     model: env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL,
-    pricing: rateFor(
+    pricing: CUSTOMER_API_RATE,
+    providerPricing: rateFor(
       env.AI_PROVIDER,
       env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.OPENAI_MODEL,
     ),

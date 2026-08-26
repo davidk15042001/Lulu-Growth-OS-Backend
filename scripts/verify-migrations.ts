@@ -139,6 +139,13 @@ async function main() {
        ) VALUES ($1, NOW() - INTERVAL '14 days', NOW())`,
       [workspaceId],
     );
+    const paygProfile = await database.query<{ interval_days: number; ai_access_blocked: boolean }>(
+      `SELECT interval_days, ai_access_blocked
+       FROM workspace_payg_profiles WHERE workspace_id=$1`,
+      [workspaceId],
+    );
+    assert.equal(paygProfile.rows[0]?.interval_days, 7);
+    assert.equal(paygProfile.rows[0]?.ai_access_blocked, false);
     const paygPeriod = await database.query<{ id: string }>(
       `INSERT INTO workspace_payg_periods (
          workspace_id, period_start, period_end, api_cost_usd, server_cost_usd
@@ -152,6 +159,7 @@ async function main() {
       [paygPeriod.rows[0]?.id],
     );
     assert.equal(Number(paygTotal.rows[0]?.total_cost_usd), 4);
+    await database.query(`UPDATE workspace_payg_periods SET status='payment_failed' WHERE id=$1`, [paygPeriod.rows[0]?.id]);
     await database.query(
       `INSERT INTO workspace_server_usage_ledger (
          workspace_id, usage_date, provider_cost_usd, customer_cost_usd, payg_period_id

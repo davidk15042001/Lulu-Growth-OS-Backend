@@ -4,6 +4,7 @@ import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasOpenAI } from 
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
 import { recordUsage } from '../usage/usage.service.js';
+import { assertAiBillingAccess } from '../billing/payg-billing.repo.js';
 
 export type ConversationTurn = {
   role: 'user' | 'assistant';
@@ -110,11 +111,13 @@ export function getOpenAIResponsesClient(): ResponsesClient {
   };
   return {
     create: async (params, options) => {
+      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId);
       const response = await client.responses.create(params as never, providerOptions(options) as never) as ResponseResult;
       await recordBilledUsage(params, response, options);
       return response;
     },
     createChat: async (params, options) => {
+      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId);
       const response = await client.chat.completions.create(params as never, providerOptions(options) as never);
       await recordBilledUsage(params, response, options);
       return response;
@@ -144,6 +147,7 @@ export function buildAssistantInstructions(context: AssistantContext) {
 export async function generateAssistantResponse(
   input: {
     userId: string;
+    workspaceId?: string;
     context: AssistantContext;
     turns: ConversationTurn[];
     model?: string | null;
@@ -159,7 +163,10 @@ export async function generateAssistantResponse(
     store: false,
   };
   if (env.AI_PROVIDER === 'openai') request.safety_identifier = buildSafetyIdentifier(input.userId);
-  const response = await client.create(request);
+  const response = await client.create(
+    request,
+    input.workspaceId ? { billing: { workspaceId: input.workspaceId, userId: input.userId } } : undefined,
+  );
 
   const content = response.output_text.trim();
   if (!content) {

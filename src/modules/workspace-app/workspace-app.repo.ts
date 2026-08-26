@@ -442,6 +442,10 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
       periodStart: string;
       periodEnd: string;
       collectionMethod: string;
+      aiAccessBlocked: boolean;
+      blockedAt: string | null;
+      blockReason: string | null;
+      paymentLink: string | null;
       apiCostUsd: string;
       serverCostUsd: string;
       inputTokens: string;
@@ -453,6 +457,10 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
               p.current_period_start AS "periodStart",
               p.current_period_end AS "periodEnd",
               p.collection_method AS "collectionMethod",
+              p.ai_access_blocked AS "aiAccessBlocked",
+              p.blocked_at AS "blockedAt",
+              p.block_reason AS "blockReason",
+              blocked.hosted_invoice_url AS "paymentLink",
               COALESCE(api.customer_cost_usd, 0)::numeric AS "apiCostUsd",
               COALESCE(server.customer_cost_usd, 0)::numeric AS "serverCostUsd",
               COALESCE(api.input_tokens, 0)::bigint AS "inputTokens",
@@ -460,6 +468,7 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
               COALESCE(api.event_count, 0)::int AS "apiEvents",
               COALESCE(server.usage_days, 0)::int AS "serverDays"
        FROM workspace_payg_profiles p
+       LEFT JOIN workspace_payg_periods blocked ON blocked.id=p.blocked_period_id
        LEFT JOIN LATERAL (
          SELECT SUM(customer_cost_usd) AS customer_cost_usd,
                 SUM(input_tokens) AS input_tokens,
@@ -521,6 +530,10 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
       periodEnd: current.periodEnd,
       nextInvoiceAt: current.periodEnd,
       collectionMethod: current.collectionMethod,
+      aiAccessBlocked: current.aiAccessBlocked,
+      blockedAt: current.blockedAt,
+      blockReason: current.blockReason,
+      paymentLink: current.paymentLink,
       apiCost: Number(current.apiCostUsd),
       serverCost: Number(current.serverCostUsd),
       estimatedTotal: Number(current.apiCostUsd) + Number(current.serverCostUsd),

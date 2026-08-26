@@ -1,5 +1,11 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
+import { AppError } from '../../utils/app-error.js';
+
+const nextBerlinMondaySql = `(date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days') AT TIME ZONE 'Europe/Berlin'`;
+const currentBerlinMondaySql = `date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin'`;
+
+export const AWS_USAGE_CUSTOMER_MULTIPLIER = 2;
 
 export type PaygPeriod = {
   id: string;
@@ -20,17 +26,34 @@ export type PaygPeriod = {
 export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: string | null) {
   await query(
     `INSERT INTO workspace_payg_profiles (
-       workspace_id, current_period_start, current_period_end,
+       workspace_id, interval_days, current_period_start, current_period_end,
        provider_payment_source_id, collection_method
-     ) VALUES ($1, NOW(), NOW() + INTERVAL '14 days', $2,
+     ) VALUES ($1, 7, ${currentBerlinMondaySql}, ${nextBerlinMondaySql}, $2,
        CASE WHEN $2::text IS NULL THEN 'CHARGE_ON_CHECKOUT' ELSE 'AUTO_CHARGE' END)
      ON CONFLICT (workspace_id) DO UPDATE SET
        enabled=TRUE,
+       interval_days=7,
        provider_payment_source_id=COALESCE(EXCLUDED.provider_payment_source_id, workspace_payg_profiles.provider_payment_source_id),
        collection_method=CASE
          WHEN COALESCE(EXCLUDED.provider_payment_source_id, workspace_payg_profiles.provider_payment_source_id) IS NULL
            THEN 'CHARGE_ON_CHECKOUT'
          ELSE 'AUTO_CHARGE'
+       END,
+       ai_access_blocked=CASE
+         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN FALSE
+         ELSE workspace_payg_profiles.ai_access_blocked
+       END,
+       blocked_at=CASE
+         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN NULL
+         ELSE workspace_payg_profiles.blocked_at
+       END,
+       block_reason=CASE
+         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN NULL
+         ELSE workspace_payg_profiles.block_reason
+       END,
+       blocked_period_id=CASE
+         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN NULL
+         ELSE workspace_payg_profiles.blocked_period_id
        END`,
     [workspaceId, paymentSourceId ?? null],
   );
@@ -50,7 +73,7 @@ export async function allocateDailyServerUsage(providerCostUsd: number, customer
      WHERE p.enabled=TRUE
        AND s.provider='airwallex'
        AND s.status='active'
-       AND s.plan_key IN ('starter', 'ai')
+       AND s.plan_key IN ('starter', 'ai', 'test')
      ON CONFLICT (workspace_id, usage_date) DO NOTHING`,
     [providerCostUsd, customerCostUsd],
   );
@@ -61,7 +84,9 @@ async function advanceCompletedProfile(client: PoolClient, workspaceId: string, 
   await query(
     `UPDATE workspace_payg_profiles
      SET current_period_start=$3::timestamptz,
-         current_period_end=$3::timestamptz + INTERVAL '14 days'
+         current_period_end=(
+           date_trunc('week', $3::timestamptz AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days'
+         ) AT TIME ZONE 'Europe/Berlin'
      WHERE workspace_id=$1
        AND current_period_start=$2::timestamptz
        AND current_period_end=$3::timestamptz`,
@@ -74,12 +99,14 @@ export async function repairCompletedProfilePointers() {
   const result = await query(
     `UPDATE workspace_payg_profiles p
      SET current_period_start=finished.period_end,
-         current_period_end=finished.period_end + INTERVAL '14 days'
+         current_period_end=(
+           date_trunc('week', finished.period_end AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days'
+         ) AT TIME ZONE 'Europe/Berlin'
      FROM workspace_payg_periods finished
      WHERE finished.workspace_id=p.workspace_id
        AND finished.period_start=p.current_period_start
        AND finished.period_end=p.current_period_end
-       AND finished.status IN ('payment_due', 'paid', 'skipped')
+       AND finished.status IN ('payment_due', 'payment_failed', 'paid', 'skipped')
        AND p.current_period_end <= NOW()`,
   );
   return result.rowCount;
@@ -107,7 +134,7 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
          AND p.current_period_end <= NOW()
          AND s.provider='airwallex'
          AND s.status='active'
-         AND s.plan_key IN ('starter', 'ai')
+         AND s.plan_key IN ('starter', 'ai', 'test')
          AND s.provider_customer_id IS NOT NULL
          AND NOT EXISTS (
            SELECT 1 FROM workspace_payg_periods active
@@ -228,8 +255,11 @@ export async function markPaygLineItemsAdded(periodId: string) {
 export async function finalizePaygPeriod(
   period: PaygPeriod,
   invoice: { status?: string; payment_status?: string; hosted_url?: string; pdf_url?: string; paid_at?: string },
+  paymentAttempted = false,
 ) {
   const paid = String(invoice.payment_status ?? '').toUpperCase() === 'PAID';
+  const blockAccess = !paid && (paymentAttempted || !period.paymentSourceId);
+  const status = paid ? 'paid' : paymentAttempted ? 'payment_failed' : 'payment_due';
   await withTransaction(async (client) => {
     await query(
       `UPDATE workspace_payg_periods
@@ -241,11 +271,43 @@ export async function finalizePaygPeriod(
            processing_started_at=NOW(),
            metadata=metadata || $6::jsonb
        WHERE id=$1`,
-      [period.id, paid ? 'paid' : 'payment_due', invoice.hosted_url ?? null, invoice.pdf_url ?? null, invoice.paid_at ?? null, JSON.stringify({ providerStatus: invoice.status ?? null, providerPaymentStatus: invoice.payment_status ?? null })],
+      [period.id, status, invoice.hosted_url ?? null, invoice.pdf_url ?? null, invoice.paid_at ?? null, JSON.stringify({ providerStatus: invoice.status ?? null, providerPaymentStatus: invoice.payment_status ?? null, paymentAttempted })],
       client,
     );
+    if (paid) {
+      await clearWorkspaceAiBlock(client, period.workspaceId);
+    } else if (blockAccess) {
+      await blockWorkspaceAi(client, period.workspaceId, period.id, period.paymentSourceId ? 'AUTOMATIC_PAYMENT_FAILED' : 'PAYMENT_SOURCE_REQUIRED');
+    }
     await advanceCompletedProfile(client, period.workspaceId, period.periodStart, period.periodEnd);
   });
+}
+
+async function blockWorkspaceAi(client: PoolClient, workspaceId: string, periodId: string, reason: string) {
+  await query(
+    `UPDATE workspace_payg_profiles
+     SET ai_access_blocked=TRUE, blocked_at=COALESCE(blocked_at, NOW()),
+         block_reason=$3, blocked_period_id=$2
+     WHERE workspace_id=$1`,
+    [workspaceId, periodId, reason],
+    client,
+  );
+}
+
+async function clearWorkspaceAiBlock(client: PoolClient, workspaceId: string) {
+  await query(
+    `UPDATE workspace_payg_profiles p
+     SET ai_access_blocked=FALSE, blocked_at=NULL, block_reason=NULL, blocked_period_id=NULL
+     WHERE p.workspace_id=$1
+       AND NOT EXISTS (
+         SELECT 1 FROM workspace_payg_periods pp
+         WHERE pp.workspace_id=p.workspace_id
+           AND pp.status IN ('payment_due', 'payment_failed')
+           AND pp.paid_at IS NULL
+       )`,
+    [workspaceId],
+    client,
+  );
 }
 
 export async function failPaygPeriod(periodId: string, code: string, message: string) {
@@ -266,27 +328,111 @@ export async function applyPaygInvoiceWebhook(input: {
   pdfUrl?: string | null;
   paidAt?: string | null;
   paymentSourceId?: string | null;
+  eventType?: string | null;
 }) {
   const paid = input.paymentStatus.toUpperCase() === 'PAID';
-  const { rowCount } = await query(
-    `UPDATE workspace_payg_periods
-     SET status=CASE WHEN $3 THEN 'paid' ELSE status END,
-         provider_invoice_id=COALESCE($2, provider_invoice_id),
-         hosted_invoice_url=COALESCE($4, hosted_invoice_url),
-         invoice_pdf_url=COALESCE($5, invoice_pdf_url),
-         paid_at=CASE WHEN $3 THEN COALESCE($6::timestamptz, NOW()) ELSE paid_at END,
-         metadata=metadata || jsonb_build_object('lastPaymentStatus', $7::text)
-     WHERE id=$1`,
-    [input.periodId, input.providerInvoiceId ?? null, paid, input.hostedUrl ?? null, input.pdfUrl ?? null, input.paidAt ?? null, input.paymentStatus],
-  );
-  if (input.paymentSourceId) {
-    await query(
-      `UPDATE workspace_payg_profiles p
-       SET provider_payment_source_id=$2, collection_method='AUTO_CHARGE'
-       FROM workspace_payg_periods pp
-       WHERE pp.id=$1 AND p.workspace_id=pp.workspace_id`,
-      [input.periodId, input.paymentSourceId],
+  const failureSignal = `${input.paymentStatus} ${input.eventType ?? ''}`.toUpperCase();
+  const failed = !paid && /(FAILED|DECLINED|PAST_DUE|OVERDUE|PAYMENT_FAILURE)/.test(failureSignal);
+  return withTransaction(async (client) => {
+    const updated = await query<{ workspaceId: string }>(
+      `UPDATE workspace_payg_periods
+       SET status=CASE WHEN $3 THEN 'paid' WHEN $8 THEN 'payment_failed' ELSE status END,
+           provider_invoice_id=COALESCE($2, provider_invoice_id),
+           hosted_invoice_url=COALESCE($4, hosted_invoice_url),
+           invoice_pdf_url=COALESCE($5, invoice_pdf_url),
+           paid_at=CASE WHEN $3 THEN COALESCE($6::timestamptz, NOW()) ELSE paid_at END,
+           metadata=metadata || jsonb_build_object('lastPaymentStatus', $7::text, 'lastPaymentEventType', $9::text)
+       WHERE id=$1
+       RETURNING workspace_id AS "workspaceId"`,
+      [input.periodId, input.providerInvoiceId ?? null, paid, input.hostedUrl ?? null, input.pdfUrl ?? null, input.paidAt ?? null, input.paymentStatus, failed, input.eventType ?? null],
+      client,
     );
-  }
-  return rowCount > 0;
+    const workspaceId = updated.rows[0]?.workspaceId;
+    if (!workspaceId) return false;
+    if (input.paymentSourceId) {
+      await query(
+        `UPDATE workspace_payg_profiles
+         SET provider_payment_source_id=$2, collection_method='AUTO_CHARGE'
+         WHERE workspace_id=$1`,
+        [workspaceId, input.paymentSourceId],
+        client,
+      );
+    }
+    if (paid) await clearWorkspaceAiBlock(client, workspaceId);
+    else if (failed) await blockWorkspaceAi(client, workspaceId, input.periodId, 'AUTOMATIC_PAYMENT_FAILED');
+    return true;
+  });
+}
+
+export async function assertAiBillingAccess(workspaceId: string) {
+  const { rows } = await query<{
+    blocked: boolean;
+    reason: string | null;
+    hostedInvoiceUrl: string | null;
+    invoicePdfUrl: string | null;
+  }>(
+    `SELECT p.ai_access_blocked AS blocked, p.block_reason AS reason,
+            pp.hosted_invoice_url AS "hostedInvoiceUrl",
+            pp.invoice_pdf_url AS "invoicePdfUrl"
+     FROM workspace_payg_profiles p
+     LEFT JOIN workspace_payg_periods pp ON pp.id=p.blocked_period_id
+     WHERE p.workspace_id=$1`,
+    [workspaceId],
+  );
+  const state = rows[0];
+  if (!state?.blocked) return;
+  throw new AppError(402, 'AI_USAGE_PAYMENT_REQUIRED', 'AI functions are blocked until the outstanding usage invoice is paid.', {
+    reason: state.reason,
+    paymentLink: state.hostedInvoiceUrl,
+    invoicePdfUrl: state.invoicePdfUrl,
+  });
+}
+
+export async function listUnprovisionedTestBillingCustomers(limit = 25) {
+  const { rows } = await query<{
+    workspaceId: string;
+    workspaceName: string;
+    customerEmail: string | null;
+  }>(
+    `SELECT s.workspace_id AS "workspaceId", w.name AS "workspaceName",
+            owner.email AS "customerEmail"
+     FROM workspace_subscriptions s
+     JOIN workspaces w ON w.id=s.workspace_id AND w.deleted_at IS NULL
+     LEFT JOIN LATERAL (
+       SELECT u.email
+       FROM workspace_members wm
+       JOIN users u ON u.id=wm.user_id
+       WHERE wm.workspace_id=s.workspace_id AND wm.role='owner'
+       ORDER BY wm.joined_at
+       LIMIT 1
+     ) owner ON TRUE
+     WHERE s.plan_key='test'
+       AND s.status='active'
+       AND s.provider_customer_id IS NULL
+     ORDER BY s.updated_at
+     LIMIT $1`,
+    [limit],
+  );
+  return rows;
+}
+
+export async function saveTestBillingCustomer(workspaceId: string, providerCustomerId: string) {
+  await withTransaction(async (client) => {
+    await query(
+      `UPDATE workspace_subscriptions
+       SET provider='airwallex', provider_customer_id=$2,
+           metadata=metadata || jsonb_build_object('paygCustomerProvisionedAt', NOW()), updated_at=NOW()
+       WHERE workspace_id=$1 AND plan_key='test' AND status='active'`,
+      [workspaceId, providerCustomerId],
+      client,
+    );
+  });
+  await ensurePaygProfile(workspaceId);
+  await query(
+    `UPDATE workspace_payg_profiles
+     SET ai_access_blocked=TRUE, blocked_at=COALESCE(blocked_at, NOW()),
+         block_reason='PAYMENT_SOURCE_SETUP_REQUIRED'
+     WHERE workspace_id=$1 AND provider_payment_source_id IS NULL`,
+    [workspaceId],
+  );
 }

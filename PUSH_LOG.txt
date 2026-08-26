@@ -125,3 +125,6 @@ Push-Zeitstempel: 2026-08-26 05:35:08 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-26 09:42:57 Europe/Berlin
 Änderungen: API- und Serverkosten werden für bezahlte Workspaces revisionssicher in festen 14-Tage-Zeiträumen erfasst und über separate Airwallex-Rechnungspositionen abgerechnet. Migration 0025, tägliche Serverkosten-Zuordnung, zentrale KI-Verbrauchserfassung, idempotenter Hintergrundprozess, Lease-/Retry-Logik, gespeicherte Zahlungsmittel, Webhook-Synchronisierung und Billing-API sind integriert. Der reale Server-Tagessatz bleibt über PAYG_SERVER_COST_USD_PER_DAY konfigurierbar; bei null entstehen keine Servergebühren.
+
+Push-Zeitstempel: 2026-08-26 15:54:15 Europe/Berlin
+Änderungen: Der Testplan bleibt ohne Zugangsgebühr, erfordert vor dem Dashboard aber das Testpasswort und eine über Airwallex gespeicherte Bankkarte. API-Verbrauch wird exakt mit 5 USD je Million Input- und 10 USD je Million Output-Tokens, AWS-Verbrauch mit dem Doppelten der Providerkosten berechnet und jeden Montag automatisch von der Karte eingezogen. Bei fehlender Karte oder fehlgeschlagener Abbuchung werden Zahlungslink und Rechnung gespeichert und sämtliche Workspace-KI-Funktionen bis zur erfolgreichen Zahlung zentral gesperrt; Migration, Altbestands-Provisionierung, Webhooks und Hintergrundprozess sind integriert.

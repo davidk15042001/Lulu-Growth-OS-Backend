@@ -7,8 +7,6 @@ import {
   isAiGenerationConfigured,
 } from './openai.service.js';
 import { AppError } from '../../utils/app-error.js';
-import { env } from '../../config/env.js';
-import { recordUsage } from '../usage/usage.service.js';
 import type {
   CreateConversationInput,
   CreateMessageInput,
@@ -95,6 +93,7 @@ export async function respond(
 
   const generated = await generateAssistantResponse({
     userId,
+    workspaceId,
     model: conversation.model,
     turns,
     context: {
@@ -124,16 +123,6 @@ export async function respond(
       ...(generated.usage.outputTokens === null ? {} : { outputTokens: generated.usage.outputTokens }),
     }
   );
-
-  await recordUsage({
-    workspaceId,
-    userId,
-    provider: env.AI_PROVIDER,
-    model: generated.model,
-    inputTokens: generated.usage.inputTokens,
-    outputTokens: generated.usage.outputTokens,
-    responseId: generated.responseId,
-  });
 
   return { userMessage, assistantMessage, model: generated.model };
 }
