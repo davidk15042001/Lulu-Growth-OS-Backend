@@ -168,7 +168,7 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
         ].join('\n\n') }],
         max_output_tokens: 30000,
         store: false,
-      });
+      }, { billing: { workspaceId } });
       const result = extractJson(response.output_text);
       const actualMetrics = normaliseActualMetrics(result.actualMetrics);
       const sections = result.sections && typeof result.sections === 'object'

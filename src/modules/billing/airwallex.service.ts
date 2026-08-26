@@ -6,6 +6,7 @@ import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
 import { startContentRefresh } from '../content-generation/content-generation.service.js';
+import { applyPaygInvoiceWebhook, ensurePaygProfile } from './payg-billing.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -70,7 +71,114 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
   return data;
 }
 
-async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
+async function airwallexPostWithoutBody(path: string, operation: string) {
+  const token = await login();
+  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      'x-client-id': env.AIRWALLEX_CLIENT_ID!,
+    },
+  });
+  const data = await response.json().catch(() => ({})) as AirwallexObject;
+  if (!response.ok) {
+    const providerCode = data.code ?? data.error_code ?? null;
+    const providerMessage = data.message ?? data.error ?? null;
+    logger.warn({ path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
+    throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
+  }
+  return data;
+}
+
+export function deterministicBillingRequestId(seed: string) {
+  const bytes = crypto.createHash('sha256').update(seed).digest().subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+export async function createPaygInvoiceDraft(input: {
+  periodId: string;
+  workspaceId: string;
+  periodStart: string;
+  periodEnd: string;
+  billingCustomerId: string;
+  paymentSourceId?: string | null;
+}) {
+  const autoCharge = Boolean(input.paymentSourceId);
+  return airwallexRequest('/api/v1/billing/invoices/create', {
+    billing_customer_id: input.billingCustomerId,
+    collection_method: autoCharge ? 'AUTO_CHARGE' : 'CHARGE_ON_CHECKOUT',
+    currency: 'USD',
+    days_until_due: env.PAYG_INVOICE_DAYS_UNTIL_DUE,
+    default_tax_percent: 0,
+    memo: `Lulu AI pay-as-you-go usage ${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`,
+    footer: 'API and server usage is billed in arrears every 14 days.',
+    metadata: {
+      workspace_id: input.workspaceId,
+      payg_period_id: input.periodId,
+      billing_type: 'payg_14_day',
+    },
+    ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+    ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
+    ...(autoCharge
+      ? { payment_source_id: input.paymentSourceId }
+      : {
+          payment_options: {
+            payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
+            payment_method_types: ['card', 'googlepay', 'applepay'],
+          },
+        }),
+  }, deterministicBillingRequestId(`payg-invoice:${input.periodId}`), 'PAYG_INVOICE_CREATE');
+}
+
+export async function addPaygInvoiceLineItems(input: {
+  periodId: string;
+  invoiceId: string;
+  apiCostUsd: number;
+  serverCostUsd: number;
+  periodStart: string;
+  periodEnd: string;
+}) {
+  const periodLabel = `${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`;
+  const lineItems = [
+    { key: 'api', name: 'Lulu AI API usage', description: `AI and external API usage for ${periodLabel}`, amount: input.apiCostUsd },
+    { key: 'server', name: 'Lulu AI server usage', description: `Allocated server usage for ${periodLabel}`, amount: input.serverCostUsd },
+  ].filter((item) => item.amount > 0).map((item) => ({
+    description: item.description,
+    quantity: 1,
+    metadata: { usage_type: item.key, payg_period_id: input.periodId },
+    price: {
+      pricing_model: 'FLAT',
+      flat_amount: Number(item.amount.toFixed(8)),
+      tax_included: false,
+      product: {
+        name: item.name,
+        description: item.description,
+        unit: '14-day period',
+        metadata: { billing_type: 'payg' },
+      },
+    },
+  }));
+  if (lineItems.length === 0) return null;
+  return airwallexRequest(
+    `/api/v1/billing/invoices/${encodeURIComponent(input.invoiceId)}/add_line_items`,
+    { line_items: lineItems },
+    deterministicBillingRequestId(`payg-line-items:${input.periodId}`),
+    'PAYG_LINE_ITEMS_ADD',
+  );
+}
+
+export function finalizePaygInvoice(invoiceId: string) {
+  return airwallexPostWithoutBody(
+    `/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/finalize`,
+    'PAYG_INVOICE_FINALIZE',
+  );
+}
+
+export async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
   const token = await login();
   const response = await fetch(`${env.AIRWALLEX_BASE_URL}/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}`, {
     method: 'GET',
@@ -251,6 +359,7 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
   const completed = providerStatus === 'COMPLETED' || String(subscription.status ?? '').toUpperCase() === 'ACTIVE';
   const customerId = checkout.billing_customer_id ?? checkout.customer_id ?? subscription.billing_customer_id ?? null;
   const subscriptionId = checkout.subscription_id ?? subscription.id ?? null;
+  const paymentSourceId = checkout.payment_source_id ?? subscription.payment_source_id ?? null;
   const invoiceId = checkout.invoice_id ?? checkout.latest_invoice_id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? null;
 
   await query(
@@ -271,8 +380,11 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
     `UPDATE workspace_subscriptions
      SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=$4, status='active', metadata=metadata || $5::jsonb, updated_at=NOW()
      WHERE workspace_id=$1`,
-    [workspaceId, customerId, subscriptionId, local.rows[0].plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId })]
+    [workspaceId, customerId, subscriptionId, local.rows[0].plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId, paymentSourceId })]
   );
+  if (local.rows[0].plan_key === 'starter' || local.rows[0].plan_key === 'ai') {
+    await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
+  }
   await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
   void queueInitialBusinessAnalysis(workspaceId).catch((error) => logger.error({ error, workspaceId }, 'Post-payment initial analysis could not be queued'));
   return { checkoutId, planKey: local.rows[0].plan_key, status: 'active' as const, providerStatus, subscriptionId, invoiceId };
@@ -329,13 +441,32 @@ export async function handleWebhook(event: AirwallexObject) {
   if (!claim.claimed) return { duplicate: true, eventId, processed: claim.processed };
 
   try {
-    const data = (event.data ?? event.object ?? {}) as AirwallexObject;
-    const metadata = (data.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
+    const eventData = (event.data ?? event.object ?? {}) as AirwallexObject;
+    const data = eventData.object && typeof eventData.object === 'object'
+      ? eventData.object as AirwallexObject
+      : eventData;
+    const metadata = (data.metadata ?? data.invoice?.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
     const workspaceId = typeof metadata.workspace_id === 'string' ? metadata.workspace_id : null;
     if (!workspaceId) {
       await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL WHERE event_id=$1`, [eventId]);
       logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
       return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
+    }
+
+    const paygPeriodId = typeof metadata.payg_period_id === 'string' ? metadata.payg_period_id : null;
+    if (paygPeriodId) {
+      const invoice = (data.invoice ?? data) as AirwallexObject;
+      const handled = await applyPaygInvoiceWebhook({
+        periodId: paygPeriodId,
+        providerInvoiceId: typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null,
+        paymentStatus: String(invoice.payment_status ?? (eventType.includes('PAID') ? 'PAID' : 'UNPAID')),
+        hostedUrl: typeof invoice.hosted_url === 'string' ? invoice.hosted_url : null,
+        pdfUrl: typeof invoice.pdf_url === 'string' ? invoice.pdf_url : null,
+        paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
+        paymentSourceId: typeof invoice.payment_source_id === 'string' ? invoice.payment_source_id : null,
+      });
+      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
+      return { processed: handled, eventId, paygPeriodId, status: String(invoice.payment_status ?? 'UNPAID').toLowerCase() };
     }
 
     const subscription = (data.subscription ?? data) as AirwallexObject;
@@ -353,6 +484,10 @@ export async function handleWebhook(event: AirwallexObject) {
       [workspaceId, subscription.billing_customer_id ?? checkout.billing_customer_id ?? null, subscription.id ?? checkout.subscription_id ?? null, metadata.plan_key ?? null, mappedStatus, subscription.current_period_starts_at ?? null, subscription.current_period_ends_at ?? null, JSON.stringify({ lastWebhookEventId: eventId, lastWebhookType: eventType, invoiceId: data.invoice_id ?? null })]
     );
     if (mappedStatus === 'active') {
+      if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai') {
+        const paymentSourceId = subscription.payment_source_id ?? checkout.payment_source_id ?? null;
+        await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
+      }
       await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
       void queueInitialBusinessAnalysis(workspaceId).catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment initial analysis could not be queued'));
       void startContentRefresh(workspaceId, 'system').catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment content refresh could not be queued'));

@@ -147,6 +147,12 @@ AI_MAX_RETRIES=1
 
 Set `AI_PROVIDER=openai` with `OPENAI_API_KEY` and `OPENAI_MODEL=gpt-5-mini`, or `AI_PROVIDER=groq` with the corresponding Groq variables, to use another provider. Website generation is processed by a database-backed worker with resumable page checkpoints. No API key is committed to the repository.
 
+## Pay-as-you-go billing
+
+Paid Starter and AI workspaces receive a separate 14-day usage period. AI/provider requests are recorded from their returned token usage, while the daily server allocation is configured with `PAYG_SERVER_COST_USD_PER_DAY`. The billing worker creates an Airwallex invoice with separate API and server line items after each period. A saved payment source is charged automatically; otherwise Airwallex provides a hosted invoice payment page and can save the payment source for later periods. Test and Viewer workspaces are never enrolled in PAYG billing.
+
+Set `PAYG_SERVER_COST_USD_PER_DAY` to the real daily USD cost allocated to one paid workspace before enabling live billing. The safe default is `0`, so deployment cannot invent infrastructure charges. The worker interval and invoice due window are controlled by `PAYG_BILLING_WORKER_INTERVAL_MINUTES` and `PAYG_INVOICE_DAYS_UNTIL_DUE`.
+
 ## Health endpoints
 
 - `GET /health` checks the API process.

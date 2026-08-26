@@ -6,7 +6,7 @@ export const CUSTOMER_MARKUP_MULTIPLIER = 3;
 
 type UsageInput = {
   workspaceId: string;
-  userId: string;
+  userId?: string | null;
   provider: string;
   model: string;
   inputTokens?: number | null;
@@ -93,7 +93,7 @@ export async function recordUsage(input: UsageInput) {
      RETURNING id, created_at AS "createdAt"`,
     [
       input.workspaceId,
-      input.userId,
+      input.userId ?? null,
       input.provider,
       input.model,
       calculated.inputTokens,
@@ -120,11 +120,17 @@ export async function getWorkspaceCredits(workspaceId: string) {
   }>(
     `WITH subscription_period AS (
        SELECT
-         COALESCE(current_period_starts_at, created_at) AS period_start,
-         COALESCE(current_period_ends_at, COALESCE(current_period_starts_at, created_at) + INTERVAL '1 year') AS period_end
-       FROM workspace_subscriptions
-       WHERE workspace_id = $1
-       ORDER BY updated_at DESC
+         p.current_period_start AS period_start,
+         p.current_period_end AS period_end
+       FROM workspace_payg_profiles p
+       WHERE p.workspace_id = $1
+       UNION ALL
+       SELECT
+         COALESCE(s.current_period_starts_at, s.created_at) AS period_start,
+         COALESCE(s.current_period_ends_at, COALESCE(s.current_period_starts_at, s.created_at) + INTERVAL '1 year') AS period_end
+       FROM workspace_subscriptions s
+       WHERE s.workspace_id = $1
+         AND NOT EXISTS (SELECT 1 FROM workspace_payg_profiles p WHERE p.workspace_id=$1)
        LIMIT 1
      )
      SELECT

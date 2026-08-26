@@ -417,7 +417,7 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
     values.push(filters.to);
     usageConditions.push(`period_start <= $${values.length}`);
   }
-  const [subscription, usage] = await Promise.all([
+  const [subscription, usage, paygCurrent, paygInvoices] = await Promise.all([
     query(
       `SELECT workspace_id AS "workspaceId", provider, plan_key AS "planKey", status, seats,
               trial_ends_at AS "trialEndsAt", current_period_starts_at AS "currentPeriodStartsAt",
@@ -435,8 +435,107 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
        ORDER BY period_start DESC, metric_key`,
       values
     ),
+    query<{
+      enabled: boolean;
+      currency: string;
+      intervalDays: number;
+      periodStart: string;
+      periodEnd: string;
+      collectionMethod: string;
+      apiCostUsd: string;
+      serverCostUsd: string;
+      inputTokens: string;
+      outputTokens: string;
+      apiEvents: number;
+      serverDays: number;
+    }>(
+      `SELECT p.enabled, p.currency, p.interval_days AS "intervalDays",
+              p.current_period_start AS "periodStart",
+              p.current_period_end AS "periodEnd",
+              p.collection_method AS "collectionMethod",
+              COALESCE(api.customer_cost_usd, 0)::numeric AS "apiCostUsd",
+              COALESCE(server.customer_cost_usd, 0)::numeric AS "serverCostUsd",
+              COALESCE(api.input_tokens, 0)::bigint AS "inputTokens",
+              COALESCE(api.output_tokens, 0)::bigint AS "outputTokens",
+              COALESCE(api.event_count, 0)::int AS "apiEvents",
+              COALESCE(server.usage_days, 0)::int AS "serverDays"
+       FROM workspace_payg_profiles p
+       LEFT JOIN LATERAL (
+         SELECT SUM(customer_cost_usd) AS customer_cost_usd,
+                SUM(input_tokens) AS input_tokens,
+                SUM(output_tokens) AS output_tokens,
+                COUNT(*) AS event_count
+         FROM ai_usage_ledger
+         WHERE workspace_id=p.workspace_id
+           AND payg_period_id IS NULL
+           AND created_at >= p.current_period_start
+           AND created_at < p.current_period_end
+       ) api ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT SUM(customer_cost_usd) AS customer_cost_usd,
+                COUNT(*) AS usage_days
+         FROM workspace_server_usage_ledger
+         WHERE workspace_id=p.workspace_id
+           AND payg_period_id IS NULL
+           AND created_at >= p.current_period_start
+           AND created_at < p.current_period_end
+       ) server ON TRUE
+       WHERE p.workspace_id=$1`,
+      [workspaceId],
+    ),
+    query<{
+      id: string;
+      periodStart: string;
+      periodEnd: string;
+      status: string;
+      currency: string;
+      apiCostUsd: string;
+      serverCostUsd: string;
+      totalCostUsd: string;
+      hostedInvoiceUrl: string | null;
+      invoicePdfUrl: string | null;
+      finalizedAt: string | null;
+      paidAt: string | null;
+    }>(
+      `SELECT id, period_start AS "periodStart", period_end AS "periodEnd",
+              status, currency, api_cost_usd AS "apiCostUsd",
+              server_cost_usd AS "serverCostUsd", total_cost_usd AS "totalCostUsd",
+              hosted_invoice_url AS "hostedInvoiceUrl", invoice_pdf_url AS "invoicePdfUrl",
+              finalized_at AS "finalizedAt", paid_at AS "paidAt"
+       FROM workspace_payg_periods
+       WHERE workspace_id=$1
+       ORDER BY period_end DESC
+       LIMIT 12`,
+      [workspaceId],
+    ),
   ]);
-  return { subscription: subscription.rows[0] ?? null, usage: usage.rows };
+  const current = paygCurrent.rows[0];
+  return {
+    subscription: subscription.rows[0] ?? null,
+    usage: usage.rows,
+    payg: current ? {
+      enabled: current.enabled,
+      currency: current.currency,
+      intervalDays: current.intervalDays,
+      periodStart: current.periodStart,
+      periodEnd: current.periodEnd,
+      nextInvoiceAt: current.periodEnd,
+      collectionMethod: current.collectionMethod,
+      apiCost: Number(current.apiCostUsd),
+      serverCost: Number(current.serverCostUsd),
+      estimatedTotal: Number(current.apiCostUsd) + Number(current.serverCostUsd),
+      inputTokens: Number(current.inputTokens),
+      outputTokens: Number(current.outputTokens),
+      apiEvents: current.apiEvents,
+      serverDays: current.serverDays,
+      invoices: paygInvoices.rows.map((invoice) => ({
+        ...invoice,
+        apiCost: Number(invoice.apiCostUsd),
+        serverCost: Number(invoice.serverCostUsd),
+        totalCost: Number(invoice.totalCostUsd),
+      })),
+    } : null,
+  };
 }
 
 export async function queueIntegrationSync(workspaceId: string, platformId: string) {

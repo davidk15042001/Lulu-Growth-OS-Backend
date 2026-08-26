@@ -238,7 +238,7 @@ function errorStatus(error: unknown) {
   return typeof status === 'number' ? status : null;
 }
 
-async function createJsonCompletion(input: { system: string; user: string; maxTokens: number }) {
+async function createJsonCompletion(input: { workspaceId: string; userId: string; system: string; user: string; maxTokens: number }) {
   const client = getOpenAIResponsesClient();
   const tokenLimit = env.AI_PROVIDER === 'openai' ? { max_completion_tokens: input.maxTokens } : { max_tokens: input.maxTokens };
   const request = {
@@ -253,7 +253,7 @@ async function createJsonCompletion(input: { system: string; user: string; maxTo
   for (let attempt = 0; attempt <= env.AI_MAX_RETRIES; attempt += 1) {
     try {
       logger.info({ label: 'Website structured content generation', provider: env.AI_PROVIDER, model: request.model, maxTokens: input.maxTokens, attempt: attempt + 1 }, 'Website AI request started');
-      const response = await client.createChat(request, { timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: 0 });
+      const response = await client.createChat(request, { timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: 0, billing: { workspaceId: input.workspaceId, userId: input.userId } });
       const text = extractResponseText(response);
       logger.info({ label: 'Website structured content generation', responseChars: text.length, attempt: attempt + 1 }, 'Website AI response received');
       if (!text) throw new AppError(502, 'WEBSITE_AI_EMPTY_RESPONSE', 'Website content generation returned an empty AI response');
@@ -499,7 +499,7 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
   };
 }
 
-async function generateContentProfile(input: { provider: string; language: string; prompt: string; context: WebsiteContext; cleanRetry?: boolean }) {
+async function generateContentProfile(input: { workspaceId: string; userId: string; provider: string; language: string; prompt: string; context: WebsiteContext; cleanRetry?: boolean }) {
   const system = [
     'You are Lulu Website Copywriter.',
     'Create only factual website copy from the verified business context.',
@@ -515,7 +515,7 @@ async function generateContentProfile(input: { provider: string; language: strin
     'contact: {title,introduction,preparationHeading,preparationItems:[exactly 4],nextStepTitle,nextStepText}.',
     input.cleanRetry ? 'The previous response was invalid. Return a complete, parseable JSON object with every required key.' : '',
   ].filter(Boolean).join(' ');
-  const response = await createJsonCompletion({ maxTokens: 3_400, system, user: [`Provider: ${input.provider}`, `Language: ${input.language}`, `Website goal: ${input.prompt}`, 'Verified business context:', JSON.stringify(input.context)].join('\n\n') });
+  const response = await createJsonCompletion({ workspaceId: input.workspaceId, userId: input.userId, maxTokens: 3_400, system, user: [`Provider: ${input.provider}`, `Language: ${input.language}`, `Website goal: ${input.prompt}`, 'Verified business context:', JSON.stringify(input.context)].join('\n\n') });
   try {
     return profileFrom(parseJsonObject(response), input.language, input.context);
   } catch (error) {
@@ -773,7 +773,7 @@ export async function generateWebsitePlan(input: {
   if (!plan) {
     await input.onProgress?.({ phase: 'generating_content', percent: 12, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'company-context-loaded', code: 'company_context_loaded', tone: 'success', params: { offerings: context.offerings.length, platforms: context.connectedPlatforms.length } } });
     await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-started', code: 'content_profile_started', tone: 'info', params: {} } });
-    const profile = await generateContentProfile({ provider: input.provider, language, prompt: input.prompt, context });
+    const profile = await generateContentProfile({ workspaceId: input.workspaceId, userId: input.userId, provider: input.provider, language, prompt: input.prompt, context });
     plan = { templateKey: TEMPLATE_KEY, designSource: TEMPLATE_DESIGN_SOURCE, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile).map((definition) => ({ ...definition, generatedSections: [], content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
     await input.onProgress?.({ plan, phase: 'applying_template', percent: 20, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: plan.pages[0]?.title ?? null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-ready', code: 'content_profile_ready', tone: 'success', params: {} } });
   }

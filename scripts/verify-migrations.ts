@@ -42,6 +42,9 @@ async function main() {
       'workspace_invitations',
       'workspace_subscriptions',
       'workspace_usage_counters',
+      'workspace_payg_profiles',
+      'workspace_payg_periods',
+      'workspace_server_usage_ledger',
       'idempotency_keys',
       'workspace_offerings',
       'workspace_platforms',
@@ -129,6 +132,31 @@ async function main() {
       `INSERT INTO workspace_ai_preferences (workspace_id)
        VALUES ($1)`,
       [workspaceId]
+    );
+    await database.query(
+      `INSERT INTO workspace_payg_profiles (
+         workspace_id, current_period_start, current_period_end
+       ) VALUES ($1, NOW() - INTERVAL '14 days', NOW())`,
+      [workspaceId],
+    );
+    const paygPeriod = await database.query<{ id: string }>(
+      `INSERT INTO workspace_payg_periods (
+         workspace_id, period_start, period_end, api_cost_usd, server_cost_usd
+       ) VALUES ($1, NOW() - INTERVAL '14 days', NOW(), 1.25, 2.75)
+       RETURNING id`,
+      [workspaceId],
+    );
+    assert.ok(paygPeriod.rows[0]?.id);
+    const paygTotal = await database.query<{ total_cost_usd: string }>(
+      `SELECT total_cost_usd FROM workspace_payg_periods WHERE id=$1`,
+      [paygPeriod.rows[0]?.id],
+    );
+    assert.equal(Number(paygTotal.rows[0]?.total_cost_usd), 4);
+    await database.query(
+      `INSERT INTO workspace_server_usage_ledger (
+         workspace_id, usage_date, provider_cost_usd, customer_cost_usd, payg_period_id
+       ) VALUES ($1, CURRENT_DATE, 2.75, 2.75, $2)`,
+      [workspaceId, paygPeriod.rows[0]?.id],
     );
     const retention = await database.query<{ onboarding_files_expires_at: string }>(
       `SELECT onboarding_files_expires_at FROM workspaces WHERE id = $1`,

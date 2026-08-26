@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
+import { logger } from '../../config/logger.js';
+import { recordUsage } from '../usage/usage.service.js';
 
 export type ConversationTurn = {
   role: 'user' | 'assistant';
@@ -40,7 +42,11 @@ export type ResponsesClient = {
   createChat(params: Record<string, unknown>, options?: AiRequestOptions): Promise<unknown>;
 };
 
-export type AiRequestOptions = { timeout?: number; maxRetries?: number };
+export type AiRequestOptions = {
+  timeout?: number;
+  maxRetries?: number;
+  billing?: { workspaceId: string; userId?: string | null };
+};
 
 let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
@@ -80,9 +86,39 @@ export function getOpenAIResponsesClient(): ResponsesClient {
     throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
   }
   const client = getConfiguredClient();
+  const providerOptions = (options?: AiRequestOptions) => options
+    ? { ...(options.timeout !== undefined ? { timeout: options.timeout } : {}), ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}) }
+    : undefined;
+  const recordBilledUsage = async (params: Record<string, unknown>, response: any, options?: AiRequestOptions) => {
+    if (!options?.billing) return;
+    const usage = response?.usage ?? {};
+    const inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokens ?? null;
+    const outputTokens = usage.output_tokens ?? usage.completion_tokens ?? usage.completionTokens ?? null;
+    try {
+      await recordUsage({
+        workspaceId: options.billing.workspaceId,
+        userId: options.billing.userId ?? null,
+        provider: env.AI_PROVIDER,
+        model: String(response?.model ?? params.model ?? configuredModel()),
+        inputTokens: typeof inputTokens === 'number' ? inputTokens : null,
+        outputTokens: typeof outputTokens === 'number' ? outputTokens : null,
+        responseId: typeof response?.id === 'string' ? response.id : null,
+      });
+    } catch (error) {
+      logger.error({ error, workspaceId: options.billing.workspaceId, responseId: response?.id ?? null }, 'AI usage could not be recorded for PAYG billing');
+    }
+  };
   return {
-    create: (params, options) => client.responses.create(params as never, options as never) as Promise<ResponseResult>,
-    createChat: (params, options) => client.chat.completions.create(params as never, options as never),
+    create: async (params, options) => {
+      const response = await client.responses.create(params as never, providerOptions(options) as never) as ResponseResult;
+      await recordBilledUsage(params, response, options);
+      return response;
+    },
+    createChat: async (params, options) => {
+      const response = await client.chat.completions.create(params as never, providerOptions(options) as never);
+      await recordBilledUsage(params, response, options);
+      return response;
+    },
   };
 }
 
