@@ -15,7 +15,7 @@ const EnvSchema = z
     RUN_MIGRATIONS_ON_STARTUP: booleanString.default(true),
     BACKGROUND_WORKERS_ENABLED: booleanString.default(true),
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
-    ACCESS_TOKEN_TTL: z.string().min(2).default('24h'),
+    ACCESS_TOKEN_TTL: z.string().min(2).default('7d'),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(3650).default(3650),
     REFRESH_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).optional(),
     BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
