@@ -17,6 +17,7 @@ import workspaceAppRoutes from '../workspace-app/workspace-app.routes.js';
 import websiteRoutes from '../websites/website.routes.js';
 import usageRoutes from '../usage/usage.routes.js';
 import emailRoutes from '../email/email.routes.js';
+import searchIntelligenceRoutes from '../search-intelligence/search-intelligence.routes.js';
 import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 
 const router = Router();
@@ -46,6 +47,7 @@ router.use('/:workspaceId/ai', conversationRoutes);
 router.use('/:workspaceId/approvals', approvalRoutes);
 router.use('/:workspaceId/agent-runs', agentRoutes);
 router.use('/:workspaceId/websites', websiteRoutes);
+router.use('/:workspaceId/search-intelligence', searchIntelligenceRoutes);
 router.use('/:workspaceId/usage', usageRoutes);
 router.use('/:workspaceId/email', emailRoutes);
 
