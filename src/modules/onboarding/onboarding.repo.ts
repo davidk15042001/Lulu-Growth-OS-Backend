@@ -1,4 +1,4 @@
-import { query } from '../../db/pool.js';
+import { query, withTransaction } from '../../db/pool.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import type {
   AiPreferencesInput,
@@ -159,6 +159,30 @@ export type Competitor = {
   lastReviewedAt: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type GeneratedCompetitorInput = {
+  name: string;
+  websiteUrl: string | null;
+  competitorType: 'direct' | 'indirect' | 'substitute' | 'emerging';
+  market: string | null;
+  positioning: string | null;
+  pricingSummary: string | null;
+  strengths: string[];
+  weaknesses: string[];
+  differentiators: string[];
+  featureOverlap: string[];
+  threatLevel: string | null;
+  strategicPriority: string | null;
+  sourceQuality: string | null;
+  monitoringFrequency: string | null;
+  notes: string | null;
+  lastReviewedAt: string | null;
+  rank: number;
+  visibility: string | null;
+  growth: string | null;
+  intelligence: string | null;
+  competitivePosition: string | null;
 };
 
 const competitorSelect = `
@@ -608,6 +632,126 @@ export async function archiveCompetitor(workspaceId: string, competitorId: strin
     [workspaceId, competitorId]
   );
   return rowCount > 0;
+}
+
+function titleCase(value: string | null | undefined) {
+  if (!value) return null;
+  return value
+    .trim()
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(' ');
+}
+
+export async function replaceGeneratedCompetitors(
+  workspaceId: string,
+  userId: string,
+  competitors: GeneratedCompetitorInput[]
+) {
+  return withTransaction(async (client) => {
+    await query(
+      `UPDATE workspace_competitors
+       SET deleted_at = NOW()
+       WHERE workspace_id = $1 AND deleted_at IS NULL`,
+      [workspaceId],
+      client
+    );
+
+    await query(
+      `UPDATE workspace_records
+       SET deleted_at = NOW(),
+           updated_by = $2,
+           version = version + 1
+       WHERE workspace_id = $1
+         AND resource_type = 'marketing_competitors'
+         AND deleted_at IS NULL`,
+      [workspaceId, userId],
+      client
+    );
+
+    const created: Competitor[] = [];
+    for (const competitor of competitors) {
+      const { rows } = await query<Competitor>(
+        `INSERT INTO workspace_competitors (
+           workspace_id, name, website_url, competitor_type, market, positioning,
+           pricing_summary, strengths, weaknesses, differentiators, feature_overlap,
+           threat_level, strategic_priority, source_quality, monitoring_frequency,
+           notes, last_reviewed_at
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6,
+           $7, $8, $9, $10, $11,
+           $12, $13, $14, $15,
+           $16, $17
+         )
+         RETURNING ${competitorSelect}`,
+        [
+          workspaceId,
+          competitor.name,
+          competitor.websiteUrl,
+          competitor.competitorType,
+          competitor.market,
+          competitor.positioning,
+          competitor.pricingSummary,
+          competitor.strengths,
+          competitor.weaknesses,
+          competitor.differentiators,
+          competitor.featureOverlap,
+          competitor.threatLevel,
+          competitor.strategicPriority,
+          competitor.sourceQuality,
+          competitor.monitoringFrequency,
+          competitor.notes,
+          competitor.lastReviewedAt,
+        ],
+        client
+      );
+      const createdCompetitor = rows[0];
+      if (!createdCompetitor) continue;
+      created.push(createdCompetitor);
+
+      await query(
+        `INSERT INTO workspace_records (
+           workspace_id, resource_type, name, description, status, stage,
+           external_id, source, tags, data, created_by, updated_by
+         ) VALUES (
+           $1, 'marketing_competitors', $2, $3, 'active', $4,
+           NULL, 'ai_competitor_discovery', $5, $6::jsonb, $7, $7
+         )`,
+        [
+          workspaceId,
+          competitor.name,
+          competitor.notes ?? competitor.positioning,
+          competitor.threatLevel,
+          ['ai-generated', 'competitor-discovery', competitor.competitorType],
+          JSON.stringify({
+            competitorId: createdCompetitor.id,
+            rank: competitor.rank,
+            name: competitor.name,
+            type: titleCase(competitor.competitorType) ?? 'Direct',
+            market: competitor.market ?? '—',
+            position: titleCase(competitor.competitivePosition) ?? 'Peer',
+            growth: competitor.growth ?? 'Stable',
+            visibility: competitor.visibility ?? 'High',
+            priority: titleCase(competitor.strategicPriority) ?? 'High',
+            intelligence: titleCase(competitor.intelligence) ?? 'Partial',
+            updated: new Date().toISOString(),
+            websiteUrl: competitor.websiteUrl,
+            positioning: competitor.positioning,
+            strengths: competitor.strengths,
+            weaknesses: competitor.weaknesses,
+            differentiators: competitor.differentiators,
+            featureOverlap: competitor.featureOverlap,
+            sourceQuality: competitor.sourceQuality,
+          }),
+          userId,
+        ],
+        client
+      );
+    }
+
+    return created;
+  });
 }
 
 export async function listPlatforms(workspaceId: string) {

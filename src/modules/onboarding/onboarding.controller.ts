@@ -216,6 +216,15 @@ export async function createCompetitor(req: WorkspaceRequest, res: Response, nex
   }
 }
 
+export async function discoverCompetitors(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const items = await service.discoverCompetitors(workspaceId(req), req.user!.id);
+    return successResponse(res, 'Competitors discovered', { items });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function updateCompetitor(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = onboardingRecordParamsSchema.parse(req.params);

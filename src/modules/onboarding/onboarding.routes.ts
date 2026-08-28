@@ -98,6 +98,10 @@ router.route('/competitors')
   .post(requireWorkspaceEditor, controller.createCompetitor)
   .all(methodNotAllowed);
 
+router.route('/competitors/discover')
+  .post(requireWorkspaceEditor, controller.discoverCompetitors)
+  .all(methodNotAllowed);
+
 router.route('/competitors/:competitorId')
   .patch(requireWorkspaceEditor, controller.updateCompetitor)
   .delete(requireWorkspaceEditor, controller.deleteCompetitor)
