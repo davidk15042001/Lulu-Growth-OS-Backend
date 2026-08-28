@@ -8,22 +8,28 @@ import type {
   AiPreferencesInput,
   BusinessDescriptionInput,
   CompanyInformationInput,
+  CreateCompetitorInput,
+  CreateCustomerSegmentInput,
   CreateOfferingInput,
   CreatePlatformInput,
+  UpdateCompetitorInput,
+  UpdateCustomerSegmentInput,
   UpdateOfferingInput,
   UpdatePlatformInput,
 } from './onboarding.validator.js';
 
 export async function getSnapshot(workspaceId: string, userId: string) {
-  const [workspace, offerings, platforms, aiPreferences, completion] = await Promise.all([
+  const [workspace, offerings, customerSegments, competitors, platforms, aiPreferences, completion] = await Promise.all([
     workspaceService.getWorkspace(workspaceId, userId),
     repo.listOfferings(workspaceId),
+    repo.listCustomerSegments(workspaceId),
+    repo.listCompetitors(workspaceId),
     repo.listPlatforms(workspaceId),
     repo.getAiPreferences(workspaceId),
     repo.getCompletionState(workspaceId),
   ]);
 
-  return { workspace, offerings, platforms, aiPreferences: aiPreferences ?? null, completion };
+  return { workspace, offerings, customerSegments, competitors, platforms, aiPreferences: aiPreferences ?? null, completion };
 }
 
 export async function saveCompanyInformation(
@@ -74,6 +80,54 @@ export async function updateOffering(
 export async function archiveOffering(workspaceId: string, offeringId: string) {
   if (!(await repo.archiveOffering(workspaceId, offeringId))) {
     throw notFoundError('Offering not found');
+  }
+}
+
+export function listCustomerSegments(workspaceId: string) {
+  return repo.listCustomerSegments(workspaceId);
+}
+
+export async function createCustomerSegment(workspaceId: string, input: CreateCustomerSegmentInput) {
+  return repo.createCustomerSegment(workspaceId, input);
+}
+
+export async function updateCustomerSegment(
+  workspaceId: string,
+  customerSegmentId: string,
+  input: UpdateCustomerSegmentInput
+) {
+  const segment = await repo.updateCustomerSegment(workspaceId, customerSegmentId, input);
+  if (!segment) throw notFoundError('Customer segment not found');
+  return segment;
+}
+
+export async function archiveCustomerSegment(workspaceId: string, customerSegmentId: string) {
+  if (!(await repo.archiveCustomerSegment(workspaceId, customerSegmentId))) {
+    throw notFoundError('Customer segment not found');
+  }
+}
+
+export function listCompetitors(workspaceId: string) {
+  return repo.listCompetitors(workspaceId);
+}
+
+export async function createCompetitor(workspaceId: string, input: CreateCompetitorInput) {
+  return repo.createCompetitor(workspaceId, input);
+}
+
+export async function updateCompetitor(
+  workspaceId: string,
+  competitorId: string,
+  input: UpdateCompetitorInput
+) {
+  const competitor = await repo.updateCompetitor(workspaceId, competitorId, input);
+  if (!competitor) throw notFoundError('Competitor not found');
+  return competitor;
+}
+
+export async function archiveCompetitor(workspaceId: string, competitorId: string) {
+  if (!(await repo.archiveCompetitor(workspaceId, competitorId))) {
+    throw notFoundError('Competitor not found');
   }
 }
 

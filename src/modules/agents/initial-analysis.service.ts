@@ -2,7 +2,7 @@ import { query } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { env } from '../../config/env.js';
 import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
-import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
+import { listCompetitors, listCustomerSegments, listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import * as agentRepo from './agent.repo.js';
 
@@ -38,8 +38,10 @@ async function hasInitialAnalysis(workspaceId: string) {
 async function loadInitialAnalysisContext(workspaceId: string) {
   const workspace = await findWorkspaceById(workspaceId);
   if (!workspace) throw new AppError(404, 'INITIAL_ANALYSIS_WORKSPACE_NOT_FOUND', 'The workspace for the initial analysis was not found');
-  const [offerings, platforms, records] = await Promise.all([
+  const [offerings, customerSegments, competitors, platforms, records] = await Promise.all([
     listOfferings(workspaceId),
+    listCustomerSegments(workspaceId),
+    listCompetitors(workspaceId),
     listPlatforms(workspaceId),
     query<{ resourceType: string; name: string; description: string | null; data: Record<string, unknown> }>(
       `SELECT resource_type AS "resourceType", name, description, data
@@ -61,8 +63,25 @@ async function loadInitialAnalysisContext(workspaceId: string) {
       targetMarket: workspace.targetMarket,
       shortBrandDescription: workspace.shortBrandDescription,
       positioningTags: workspace.positioningTags ?? [],
+      legalForm: workspace.legalForm,
+      foundingYear: workspace.foundingYear,
+      employeeCount: workspace.employeeCount,
+      annualRevenueRange: workspace.annualRevenueRange,
+      businessModelType: workspace.businessModelType,
+      companyStage: workspace.companyStage,
+      salesModel: workspace.salesModel,
+      salesCycleDays: workspace.salesCycleDays,
+      primaryIcp: workspace.primaryIcp,
+      usp: workspace.usp,
+      mission: workspace.mission,
+      vision: workspace.vision,
+      primaryChallenges: workspace.primaryChallenges ?? [],
+      languages: workspace.languages ?? [],
+      regulatedIndustries: workspace.regulatedIndustries ?? [],
     },
     offerings: offerings.filter((item) => item.status === 'active' || item.status === 'draft').slice(0, 200),
+    customerSegments: customerSegments.slice(0, 100),
+    competitors: competitors.slice(0, 100),
     connectedPlatforms: platforms.filter((item) => ['connected', 'active'].includes(item.connectionStatus)).map((item) => ({
       name: item.name,
       category: item.category,
@@ -124,6 +143,7 @@ function buildInstructions() {
     'Analyse every requested category in depth. Where evidence is missing, return an explicit data gap instead of fabricating content.',
     'Return ONLY valid JSON without markdown fences. Use concise but substantive paragraphs and arrays of structured findings.',
     'The result must contain executiveSummary, confidence, dataGaps, verifiedFacts, sections, priorities, actualMetrics and knowledgeBaseDraft.',
+    'Use the structured workspace profile, customer segments, competitor intelligence, active offerings and connected platform context whenever available.',
     `Cover every actual metric category, including all customer, conversion, commerce, support, website, marketing, advertising, SEO/GEO/AEO, competition, market, finance, operations, brand, partner, experiment, forecast, scenario, risk, anomaly, data-quality and privacy/compliance categories: ${actualMetricCategories.join(', ')}.`,
     'For every actual metric return value, unit, period, source, sourceStatus, confidence, limitations and whether it is measured, derived, forecast, unavailable or not applicable.',
     'Each section must contain title, status, verifiedFacts, derivedInsights, hypotheses, risks, opportunities, questionsToResolve and recommendedNextData.',

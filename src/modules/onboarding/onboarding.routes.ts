@@ -65,6 +65,16 @@ router.route('/offerings/:offeringId')
   .delete(requireWorkspaceEditor, controller.deleteOffering)
   .all(methodNotAllowed);
 
+router.route('/customer-segments')
+  .get(requireWorkspaceMember, controller.listCustomerSegments)
+  .post(requireWorkspaceEditor, controller.createCustomerSegment)
+  .all(methodNotAllowed);
+
+router.route('/customer-segments/:customerSegmentId')
+  .patch(requireWorkspaceEditor, controller.updateCustomerSegment)
+  .delete(requireWorkspaceEditor, controller.deleteCustomerSegment)
+  .all(methodNotAllowed);
+
 router.route('/platforms')
   .get(requireWorkspaceMember, controller.listPlatforms)
   .post(requireWorkspaceEditor, controller.createPlatform)
@@ -81,6 +91,16 @@ router.route('/existing-platforms/continue')
 
 router.route('/platforms/:provider/connect')
   .get(requireWorkspaceEditor, controller.startOAuth)
+  .all(methodNotAllowed);
+
+router.route('/competitors')
+  .get(requireWorkspaceMember, controller.listCompetitors)
+  .post(requireWorkspaceEditor, controller.createCompetitor)
+  .all(methodNotAllowed);
+
+router.route('/competitors/:competitorId')
+  .patch(requireWorkspaceEditor, controller.updateCompetitor)
+  .delete(requireWorkspaceEditor, controller.deleteCompetitor)
   .all(methodNotAllowed);
 
 router.route('/ai-preferences')

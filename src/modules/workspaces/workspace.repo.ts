@@ -16,6 +16,21 @@ export type Workspace = {
   targetMarket: string | null;
   shortBrandDescription: string | null;
   positioningTags: string[];
+  legalForm: string | null;
+  foundingYear: number | null;
+  employeeCount: number | null;
+  annualRevenueRange: string | null;
+  businessModelType: string | null;
+  companyStage: string | null;
+  salesModel: string | null;
+  salesCycleDays: number | null;
+  primaryIcp: string | null;
+  usp: string | null;
+  mission: string | null;
+  vision: string | null;
+  primaryChallenges: string[];
+  languages: string[];
+  regulatedIndustries: string[];
   onboardingStep: string;
   onboardingCompletedAt: string | null;
   onboardingFileReuploadRequired: boolean;
@@ -39,6 +54,21 @@ const workspaceSelect = `
   w.target_market AS "targetMarket",
   w.short_brand_description AS "shortBrandDescription",
   w.positioning_tags AS "positioningTags",
+  w.legal_form AS "legalForm",
+  w.founding_year AS "foundingYear",
+  w.employee_count AS "employeeCount",
+  w.annual_revenue_range AS "annualRevenueRange",
+  w.business_model_type AS "businessModelType",
+  w.company_stage AS "companyStage",
+  w.sales_model AS "salesModel",
+  w.sales_cycle_days AS "salesCycleDays",
+  w.primary_icp AS "primaryIcp",
+  w.usp,
+  w.mission,
+  w.vision,
+  w.primary_challenges AS "primaryChallenges",
+  w.languages,
+  w.regulated_industries AS "regulatedIndustries",
   w.onboarding_step AS "onboardingStep",
   w.onboarding_completed_at AS "onboardingCompletedAt",
   w.onboarding_file_reupload_required AS "onboardingFileReuploadRequired",
@@ -132,6 +162,13 @@ export async function findWorkspaceById(workspaceId: string) {
             w.country_region AS "countryRegion", w.business_description AS "businessDescription",
             w.value_proposition AS "valueProposition", w.target_market AS "targetMarket",
             w.short_brand_description AS "shortBrandDescription", w.positioning_tags AS "positioningTags",
+            w.legal_form AS "legalForm", w.founding_year AS "foundingYear",
+            w.employee_count AS "employeeCount", w.annual_revenue_range AS "annualRevenueRange",
+            w.business_model_type AS "businessModelType", w.company_stage AS "companyStage",
+            w.sales_model AS "salesModel", w.sales_cycle_days AS "salesCycleDays",
+            w.primary_icp AS "primaryIcp", w.usp, w.mission, w.vision,
+            w.primary_challenges AS "primaryChallenges", w.languages,
+            w.regulated_industries AS "regulatedIndustries",
             w.onboarding_step AS "onboardingStep", w.onboarding_completed_at AS "onboardingCompletedAt",
             w.onboarding_file_reupload_required AS "onboardingFileReuploadRequired",
             w.onboarding_files_purged_at AS "onboardingFilesPurgedAt",
@@ -157,6 +194,21 @@ const updateColumnMap: Record<keyof UpdateWorkspaceInput, string> = {
   targetMarket: 'target_market',
   shortBrandDescription: 'short_brand_description',
   positioningTags: 'positioning_tags',
+  legalForm: 'legal_form',
+  foundingYear: 'founding_year',
+  employeeCount: 'employee_count',
+  annualRevenueRange: 'annual_revenue_range',
+  businessModelType: 'business_model_type',
+  companyStage: 'company_stage',
+  salesModel: 'sales_model',
+  salesCycleDays: 'sales_cycle_days',
+  primaryIcp: 'primary_icp',
+  usp: 'usp',
+  mission: 'mission',
+  vision: 'vision',
+  primaryChallenges: 'primary_challenges',
+  languages: 'languages',
+  regulatedIndustries: 'regulated_industries',
 };
 
 export async function updateWorkspace(

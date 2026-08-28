@@ -4,8 +4,12 @@ import type {
   AiPreferencesInput,
   BusinessDescriptionInput,
   CompanyInformationInput,
+  CreateCompetitorInput,
+  CreateCustomerSegmentInput,
   CreateOfferingInput,
   CreatePlatformInput,
+  UpdateCompetitorInput,
+  UpdateCustomerSegmentInput,
   UpdateOfferingInput,
   UpdatePlatformInput,
 } from './onboarding.validator.js';
@@ -28,6 +32,25 @@ export type Offering = {
   url: string | null;
   imageUrl: string | null;
   sortOrder: number;
+  sku: string | null;
+  portfolioGroup: string | null;
+  lifecycleStage: string | null;
+  launchDate: string | null;
+  deliveryModel: string | null;
+  serviceScope: string | null;
+  setupFee: string | null;
+  recurringFee: string | null;
+  usageFee: string | null;
+  billingInterval: string | null;
+  minimumContractMonths: number | null;
+  cancellationPeriodDays: number | null;
+  onboardingEffort: string | null;
+  fulfilmentEffort: string | null;
+  differentiators: string[];
+  proofPoints: string[];
+  useCases: string[];
+  objections: string[];
+  addOns: string[];
   createdAt: string;
   updatedAt: string;
 };
@@ -50,6 +73,113 @@ const offeringSelect = `
   url,
   image_url AS "imageUrl",
   sort_order AS "sortOrder",
+  sku,
+  portfolio_group AS "portfolioGroup",
+  lifecycle_stage AS "lifecycleStage",
+  launch_date AS "launchDate",
+  delivery_model AS "deliveryModel",
+  service_scope AS "serviceScope",
+  setup_fee AS "setupFee",
+  recurring_fee AS "recurringFee",
+  usage_fee AS "usageFee",
+  billing_interval AS "billingInterval",
+  minimum_contract_months AS "minimumContractMonths",
+  cancellation_period_days AS "cancellationPeriodDays",
+  onboarding_effort AS "onboardingEffort",
+  fulfilment_effort AS "fulfilmentEffort",
+  differentiators,
+  proof_points AS "proofPoints",
+  use_cases AS "useCases",
+  objections,
+  add_ons AS "addOns",
+  created_at AS "createdAt",
+  updated_at AS "updatedAt"
+`;
+
+export type CustomerSegment = {
+  id: string;
+  workspaceId: string;
+  name: string;
+  industry: string | null;
+  companySize: string | null;
+  region: string | null;
+  maturityLevel: string | null;
+  painPoints: string[];
+  jobsToBeDone: string[];
+  decisionCriteria: string[];
+  useCases: string[];
+  buyingRoles: string[];
+  priceSensitivity: string | null;
+  primarySegment: boolean;
+  sortOrder: number;
+  notes: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const customerSegmentSelect = `
+  id,
+  workspace_id AS "workspaceId",
+  name,
+  industry,
+  company_size AS "companySize",
+  region,
+  maturity_level AS "maturityLevel",
+  pain_points AS "painPoints",
+  jobs_to_be_done AS "jobsToBeDone",
+  decision_criteria AS "decisionCriteria",
+  use_cases AS "useCases",
+  buying_roles AS "buyingRoles",
+  price_sensitivity AS "priceSensitivity",
+  primary_segment AS "primarySegment",
+  sort_order AS "sortOrder",
+  notes,
+  created_at AS "createdAt",
+  updated_at AS "updatedAt"
+`;
+
+export type Competitor = {
+  id: string;
+  workspaceId: string;
+  name: string;
+  websiteUrl: string | null;
+  competitorType: 'direct' | 'indirect' | 'substitute' | 'emerging';
+  market: string | null;
+  positioning: string | null;
+  pricingSummary: string | null;
+  strengths: string[];
+  weaknesses: string[];
+  differentiators: string[];
+  featureOverlap: string[];
+  threatLevel: string | null;
+  strategicPriority: string | null;
+  sourceQuality: string | null;
+  monitoringFrequency: string | null;
+  notes: string | null;
+  lastReviewedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+const competitorSelect = `
+  id,
+  workspace_id AS "workspaceId",
+  name,
+  website_url AS "websiteUrl",
+  competitor_type AS "competitorType",
+  market,
+  positioning,
+  pricing_summary AS "pricingSummary",
+  strengths,
+  weaknesses,
+  differentiators,
+  feature_overlap AS "featureOverlap",
+  threat_level AS "threatLevel",
+  strategic_priority AS "strategicPriority",
+  source_quality AS "sourceQuality",
+  monitoring_frequency AS "monitoringFrequency",
+  notes,
+  last_reviewed_at AS "lastReviewedAt",
   created_at AS "createdAt",
   updated_at AS "updatedAt"
 `;
@@ -129,6 +259,43 @@ export async function saveBusinessDescription(workspaceId: string, input: Busine
       input.positioningTags,
     ]
   );
+  await query(
+    `UPDATE workspaces
+     SET legal_form = $2,
+         founding_year = $3,
+         employee_count = $4,
+         annual_revenue_range = $5,
+         business_model_type = $6,
+         company_stage = $7,
+         sales_model = $8,
+         sales_cycle_days = $9,
+         primary_icp = $10,
+         usp = $11,
+         mission = $12,
+         vision = $13,
+         primary_challenges = $14,
+         languages = $15,
+         regulated_industries = $16
+     WHERE id = $1 AND deleted_at IS NULL`,
+    [
+      workspaceId,
+      input.legalForm ?? null,
+      input.foundingYear ?? null,
+      input.employeeCount ?? null,
+      input.annualRevenueRange ?? null,
+      input.businessModelType ?? null,
+      input.companyStage ?? null,
+      input.salesModel ?? null,
+      input.salesCycleDays ?? null,
+      input.primaryIcp ?? null,
+      input.usp ?? null,
+      input.mission ?? null,
+      input.vision ?? null,
+      input.primaryChallenges ?? [],
+      input.languages ?? [],
+      input.regulatedIndustries ?? [],
+    ]
+  );
   return rowCount > 0;
 }
 
@@ -148,9 +315,15 @@ export async function createOffering(workspaceId: string, input: CreateOfferingI
     `INSERT INTO workspace_offerings (
        workspace_id, name, offering_type, category, description, target_customer,
        pricing_model, price_amount, price_currency, price_label, status,
-       customer_problem, value_proposition, url, image_url, sort_order
+       customer_problem, value_proposition, url, image_url, sort_order,
+       sku, portfolio_group, lifecycle_stage, launch_date, delivery_model,
+       service_scope, setup_fee, recurring_fee, usage_fee, billing_interval,
+       minimum_contract_months, cancellation_period_days, onboarding_effort,
+       fulfilment_effort, differentiators, proof_points, use_cases, objections, add_ons
      ) VALUES (
-       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+       $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+       $31, $32, $33, $34, $35
      )
      RETURNING ${offeringSelect}`,
     [
@@ -170,6 +343,25 @@ export async function createOffering(workspaceId: string, input: CreateOfferingI
       input.url ?? null,
       input.imageUrl ?? null,
       input.sortOrder ?? 0,
+      input.sku ?? null,
+      input.portfolioGroup ?? null,
+      input.lifecycleStage ?? null,
+      input.launchDate ?? null,
+      input.deliveryModel ?? null,
+      input.serviceScope ?? null,
+      input.setupFee ?? null,
+      input.recurringFee ?? null,
+      input.usageFee ?? null,
+      input.billingInterval ?? null,
+      input.minimumContractMonths ?? null,
+      input.cancellationPeriodDays ?? null,
+      input.onboardingEffort ?? null,
+      input.fulfilmentEffort ?? null,
+      input.differentiators ?? [],
+      input.proofPoints ?? [],
+      input.useCases ?? [],
+      input.objections ?? [],
+      input.addOns ?? [],
     ]
   );
   return rows[0];
@@ -191,6 +383,25 @@ const offeringUpdateColumns: Partial<Record<keyof UpdateOfferingInput, string>> 
   url: 'url',
   imageUrl: 'image_url',
   sortOrder: 'sort_order',
+  sku: 'sku',
+  portfolioGroup: 'portfolio_group',
+  lifecycleStage: 'lifecycle_stage',
+  launchDate: 'launch_date',
+  deliveryModel: 'delivery_model',
+  serviceScope: 'service_scope',
+  setupFee: 'setup_fee',
+  recurringFee: 'recurring_fee',
+  usageFee: 'usage_fee',
+  billingInterval: 'billing_interval',
+  minimumContractMonths: 'minimum_contract_months',
+  cancellationPeriodDays: 'cancellation_period_days',
+  onboardingEffort: 'onboarding_effort',
+  fulfilmentEffort: 'fulfilment_effort',
+  differentiators: 'differentiators',
+  proofPoints: 'proof_points',
+  useCases: 'use_cases',
+  objections: 'objections',
+  addOns: 'add_ons',
 };
 
 export async function updateOffering(
@@ -215,6 +426,186 @@ export async function archiveOffering(workspaceId: string, offeringId: string) {
      SET deleted_at = NOW(), status = 'archived'
      WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
     [workspaceId, offeringId]
+  );
+  return rowCount > 0;
+}
+
+export async function listCustomerSegments(workspaceId: string) {
+  const { rows } = await query<CustomerSegment>(
+    `SELECT ${customerSegmentSelect}
+     FROM workspace_customer_segments
+     WHERE workspace_id = $1 AND deleted_at IS NULL
+     ORDER BY primary_segment DESC, sort_order, created_at`,
+    [workspaceId]
+  );
+  return rows;
+}
+
+export async function createCustomerSegment(workspaceId: string, input: CreateCustomerSegmentInput) {
+  const { rows } = await query<CustomerSegment>(
+    `INSERT INTO workspace_customer_segments (
+       workspace_id, name, industry, company_size, region, maturity_level,
+       pain_points, jobs_to_be_done, decision_criteria, use_cases, buying_roles,
+       price_sensitivity, primary_segment, sort_order, notes
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6,
+       $7, $8, $9, $10, $11,
+       $12, $13, $14, $15
+     )
+     RETURNING ${customerSegmentSelect}`,
+    [
+      workspaceId,
+      input.name,
+      input.industry ?? null,
+      input.companySize ?? null,
+      input.region ?? null,
+      input.maturityLevel ?? null,
+      input.painPoints ?? [],
+      input.jobsToBeDone ?? [],
+      input.decisionCriteria ?? [],
+      input.useCases ?? [],
+      input.buyingRoles ?? [],
+      input.priceSensitivity ?? null,
+      input.primarySegment ?? false,
+      input.sortOrder ?? 0,
+      input.notes ?? null,
+    ]
+  );
+  return rows[0];
+}
+
+const customerSegmentUpdateColumns: Partial<Record<keyof UpdateCustomerSegmentInput, string>> = {
+  name: 'name',
+  industry: 'industry',
+  companySize: 'company_size',
+  region: 'region',
+  maturityLevel: 'maturity_level',
+  painPoints: 'pain_points',
+  jobsToBeDone: 'jobs_to_be_done',
+  decisionCriteria: 'decision_criteria',
+  useCases: 'use_cases',
+  buyingRoles: 'buying_roles',
+  priceSensitivity: 'price_sensitivity',
+  primarySegment: 'primary_segment',
+  sortOrder: 'sort_order',
+  notes: 'notes',
+};
+
+export async function updateCustomerSegment(
+  workspaceId: string,
+  customerSegmentId: string,
+  input: UpdateCustomerSegmentInput
+) {
+  const update = buildUpdateSet(input, customerSegmentUpdateColumns, 2);
+  const { rows } = await query<CustomerSegment>(
+    `UPDATE workspace_customer_segments
+     SET ${update.assignments.join(', ')}
+     WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL
+     RETURNING ${customerSegmentSelect}`,
+    [workspaceId, customerSegmentId, ...update.values]
+  );
+  return rows[0];
+}
+
+export async function archiveCustomerSegment(workspaceId: string, customerSegmentId: string) {
+  const { rowCount } = await query(
+    `UPDATE workspace_customer_segments
+     SET deleted_at = NOW()
+     WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
+    [workspaceId, customerSegmentId]
+  );
+  return rowCount > 0;
+}
+
+export async function listCompetitors(workspaceId: string) {
+  const { rows } = await query<Competitor>(
+    `SELECT ${competitorSelect}
+     FROM workspace_competitors
+     WHERE workspace_id = $1 AND deleted_at IS NULL
+     ORDER BY created_at DESC`,
+    [workspaceId]
+  );
+  return rows;
+}
+
+export async function createCompetitor(workspaceId: string, input: CreateCompetitorInput) {
+  const { rows } = await query<Competitor>(
+    `INSERT INTO workspace_competitors (
+       workspace_id, name, website_url, competitor_type, market, positioning,
+       pricing_summary, strengths, weaknesses, differentiators, feature_overlap,
+       threat_level, strategic_priority, source_quality, monitoring_frequency,
+       notes, last_reviewed_at
+     ) VALUES (
+       $1, $2, $3, $4, $5, $6,
+       $7, $8, $9, $10, $11,
+       $12, $13, $14, $15,
+       $16, $17
+     )
+     RETURNING ${competitorSelect}`,
+    [
+      workspaceId,
+      input.name,
+      input.websiteUrl ?? null,
+      input.competitorType ?? 'direct',
+      input.market ?? null,
+      input.positioning ?? null,
+      input.pricingSummary ?? null,
+      input.strengths ?? [],
+      input.weaknesses ?? [],
+      input.differentiators ?? [],
+      input.featureOverlap ?? [],
+      input.threatLevel ?? null,
+      input.strategicPriority ?? null,
+      input.sourceQuality ?? null,
+      input.monitoringFrequency ?? null,
+      input.notes ?? null,
+      input.lastReviewedAt ?? null,
+    ]
+  );
+  return rows[0];
+}
+
+const competitorUpdateColumns: Partial<Record<keyof UpdateCompetitorInput, string>> = {
+  name: 'name',
+  websiteUrl: 'website_url',
+  competitorType: 'competitor_type',
+  market: 'market',
+  positioning: 'positioning',
+  pricingSummary: 'pricing_summary',
+  strengths: 'strengths',
+  weaknesses: 'weaknesses',
+  differentiators: 'differentiators',
+  featureOverlap: 'feature_overlap',
+  threatLevel: 'threat_level',
+  strategicPriority: 'strategic_priority',
+  sourceQuality: 'source_quality',
+  monitoringFrequency: 'monitoring_frequency',
+  notes: 'notes',
+  lastReviewedAt: 'last_reviewed_at',
+};
+
+export async function updateCompetitor(
+  workspaceId: string,
+  competitorId: string,
+  input: UpdateCompetitorInput
+) {
+  const update = buildUpdateSet(input, competitorUpdateColumns, 2);
+  const { rows } = await query<Competitor>(
+    `UPDATE workspace_competitors
+     SET ${update.assignments.join(', ')}
+     WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL
+     RETURNING ${competitorSelect}`,
+    [workspaceId, competitorId, ...update.values]
+  );
+  return rows[0];
+}
+
+export async function archiveCompetitor(workspaceId: string, competitorId: string) {
+  const { rowCount } = await query(
+    `UPDATE workspace_competitors
+     SET deleted_at = NOW()
+     WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
+    [workspaceId, competitorId]
   );
   return rowCount > 0;
 }

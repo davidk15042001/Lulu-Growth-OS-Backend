@@ -79,7 +79,7 @@ export async function getDashboardStats() {
       COUNT(*) FILTER (WHERE platform = 'shopify')::int AS "shopify",
       COUNT(*) FILTER (WHERE platform = 'webflow')::int AS "webflow",
       COUNT(*) FILTER (WHERE platform = 'woocommerce')::int AS "woocommerce"
-    FROM websites WHERE deleted_at IS NULL`),
+    FROM websites WHERE deleted_at IS NULL`).catch(() => ({ rows: [{ total: 0, published: 0, wordpress: 0, shopify: 0, webflow: 0, woocommerce: 0 }] })),
     query(`SELECT
       COUNT(*)::int AS "totalLast24h",
       COUNT(*) FILTER (WHERE level = 'error')::int AS "errorsLast24h",
@@ -219,6 +219,13 @@ export async function getWorkspaceDetail(workspaceId: string) {
       w.country_region AS "countryRegion", w.business_description AS "businessDescription",
       w.value_proposition AS "valueProposition", w.target_market AS "targetMarket",
       w.short_brand_description AS "shortBrandDescription", w.positioning_tags AS "positioningTags",
+      w.legal_form AS "legalForm", w.founding_year AS "foundingYear",
+      w.employee_count AS "employeeCount", w.annual_revenue_range AS "annualRevenueRange",
+      w.business_model_type AS "businessModelType", w.company_stage AS "companyStage",
+      w.sales_model AS "salesModel", w.sales_cycle_days AS "salesCycleDays",
+      w.primary_icp AS "primaryIcp", w.usp, w.mission, w.vision,
+      w.primary_challenges AS "primaryChallenges", w.languages,
+      w.regulated_industries AS "regulatedIndustries",
       w.onboarding_step AS "onboardingStep", w.onboarding_completed_at AS "onboardingCompletedAt",
       w.onboarding_file_reupload_required AS "fileReuploadRequired",
       w.onboarding_files_purged_at AS "filesPurgedAt",
@@ -257,7 +264,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
       WHERE workspace_id = $1 AND deleted_at IS NULL
       ORDER BY created_at DESC
       LIMIT 50
-    `, [workspaceId]),
+    `, [workspaceId]).catch(() => ({ rows: [] as any[], rowCount: 0 })),
     query(`
       SELECT metric_key AS "metricKey", SUM(quantity)::numeric AS "total",
              MIN(period_start) AS "periodStart", MAX(period_end) AS "periodEnd"
@@ -350,7 +357,7 @@ export async function listWebsites(limit = 100, offset = 0, search?: string) {
     WHERE ${where}
     ORDER BY ws.updated_at DESC
     LIMIT $1 OFFSET $2
-  `, values);
+  `, values).catch(() => ({ rows: [] as any[], rowCount: 0 }));
   return rows;
 }
 
@@ -367,7 +374,7 @@ export async function listAgents(limit = 100, offset = 0) {
     WHERE a.deleted_at IS NULL
     ORDER BY a.updated_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]);
+  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
   return rows;
 }
 
@@ -402,7 +409,7 @@ export async function listApprovals(limit = 100, offset = 0) {
     LEFT JOIN users u ON u.id = a.requester_id
     ORDER BY a.created_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]);
+  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
   return rows;
 }
 
@@ -428,7 +435,7 @@ export async function listErrorEvents(limit = 100, offset = 0) {
       FROM notification_events n
       ORDER BY n.created_at DESC
       LIMIT $1 OFFSET $2
-    `, [limit, offset]);
+    `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
     return fallback;
   });
   return rows;
@@ -458,7 +465,7 @@ export async function listAuditLogs(limit = 100, offset = 0) {
       FROM notification_events n
       ORDER BY n.created_at DESC
       LIMIT $1 OFFSET $2
-    `, [limit, offset]);
+    `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
     return fallback;
   });
   return rows;
@@ -530,7 +537,7 @@ export async function listJobs(limit = 100, offset = 0) {
       FROM onboarding_cleanup_jobs
       ORDER BY created_at DESC
       LIMIT $1 OFFSET $2
-    `, [limit, offset]);
+    `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
     return fallback;
   });
   return rows;
@@ -570,7 +577,7 @@ export async function globalAdminSearch(queryStr: string, _limit = 50) {
       FROM websites
       WHERE deleted_at IS NULL AND (title ILIKE $1 OR domain ILIKE $1)
       LIMIT 10
-    `, [search]),
+    `, [search]).catch(() => ({ rows: [] as any[], rowCount: 0 })),
   ]);
   return {
     users: users.rows,

@@ -10,10 +10,14 @@ import {
   aiPreferencesSchema,
   businessDescriptionSchema,
   companyInformationSchema,
+  createCompetitorSchema,
+  createCustomerSegmentSchema,
   createOfferingSchema,
   createPlatformSchema,
   onboardingDocumentParamsSchema,
   onboardingRecordParamsSchema,
+  updateCompetitorSchema,
+  updateCustomerSegmentSchema,
   updateOfferingSchema,
   updatePlatformSchema,
 } from './onboarding.validator.js';
@@ -113,6 +117,46 @@ export async function deleteOffering(req: WorkspaceRequest, res: Response, next:
   }
 }
 
+export async function listCustomerSegments(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const items = await service.listCustomerSegments(workspaceId(req));
+    return successResponse(res, 'Customer segments loaded', { items });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function createCustomerSegment(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const input = createCustomerSegmentSchema.parse(req.body);
+    const customerSegment = await service.createCustomerSegment(workspaceId(req), input);
+    return createdResponse(res, 'Customer segment created', customerSegment);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateCustomerSegment(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingRecordParamsSchema.parse(req.params);
+    const input = updateCustomerSegmentSchema.parse(req.body);
+    const customerSegment = await service.updateCustomerSegment(params.workspaceId, params.customerSegmentId!, input);
+    return successResponse(res, 'Customer segment updated', customerSegment);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function deleteCustomerSegment(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingRecordParamsSchema.parse(req.params);
+    await service.archiveCustomerSegment(params.workspaceId, params.customerSegmentId!);
+    return successResponse(res, 'Customer segment archived');
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function listPlatforms(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const items = await service.listPlatforms(workspaceId(req));
@@ -148,6 +192,46 @@ export async function deletePlatform(req: WorkspaceRequest, res: Response, next:
     const params = onboardingRecordParamsSchema.parse(req.params);
     await service.archivePlatform(params.workspaceId, params.platformId!);
     return successResponse(res, 'Platform archived');
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listCompetitors(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const items = await service.listCompetitors(workspaceId(req));
+    return successResponse(res, 'Competitors loaded', { items });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function createCompetitor(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const input = createCompetitorSchema.parse(req.body);
+    const competitor = await service.createCompetitor(workspaceId(req), input);
+    return createdResponse(res, 'Competitor created', competitor);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateCompetitor(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingRecordParamsSchema.parse(req.params);
+    const input = updateCompetitorSchema.parse(req.body);
+    const competitor = await service.updateCompetitor(params.workspaceId, params.competitorId!, input);
+    return successResponse(res, 'Competitor updated', competitor);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function deleteCompetitor(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = onboardingRecordParamsSchema.parse(req.params);
+    await service.archiveCompetitor(params.workspaceId, params.competitorId!);
+    return successResponse(res, 'Competitor archived');
   } catch (error) {
     next(error);
   }
