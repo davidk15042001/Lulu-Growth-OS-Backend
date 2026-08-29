@@ -111,13 +111,13 @@ export function getOpenAIResponsesClient(): ResponsesClient {
   };
   return {
     create: async (params, options) => {
-      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId);
+      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId, options.billing.userId);
       const response = await client.responses.create(params as never, providerOptions(options) as never) as ResponseResult;
       await recordBilledUsage(params, response, options);
       return response;
     },
     createChat: async (params, options) => {
-      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId);
+      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId, options.billing.userId);
       const response = await client.chat.completions.create(params as never, providerOptions(options) as never);
       await recordBilledUsage(params, response, options);
       return response;

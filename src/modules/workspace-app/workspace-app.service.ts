@@ -101,8 +101,8 @@ export function listAudit(workspaceId: string, filters: ListAuditQuery) {
   return repo.listAudit(workspaceId, filters);
 }
 
-export function getBilling(workspaceId: string, filters: ListUsageQuery) {
-  return repo.getBilling(workspaceId, filters);
+export function getBilling(workspaceId: string, userId: string, filters: ListUsageQuery) {
+  return repo.getBilling(workspaceId, userId, filters);
 }
 
 export async function queueIntegrationSync(workspaceId: string, platformId: string) {

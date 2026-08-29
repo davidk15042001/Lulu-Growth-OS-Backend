@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
+import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import type {
   CreateSavedViewInput,
   InviteMemberInput,
@@ -406,7 +407,7 @@ export async function listAudit(workspaceId: string, filters: ListAuditQuery) {
   return { items: items.rows, pagination: { page: filters.page, limit: filters.limit, total, pages: Math.ceil(total / filters.limit) } };
 }
 
-export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
+export async function getBilling(workspaceId: string, userId: string, filters: ListUsageQuery) {
   const values: unknown[] = [workspaceId];
   const usageConditions = ['workspace_id = $1'];
   if (filters.from) {
@@ -519,6 +520,7 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
     ),
   ]);
   const current = paygCurrent.rows[0];
+  const adminBillingBypass = await isBillingAdminUser(userId);
   return {
     subscription: subscription.rows[0] ?? null,
     usage: usage.rows,
@@ -530,10 +532,10 @@ export async function getBilling(workspaceId: string, filters: ListUsageQuery) {
       periodEnd: current.periodEnd,
       nextInvoiceAt: current.periodEnd,
       collectionMethod: current.collectionMethod,
-      aiAccessBlocked: current.aiAccessBlocked,
-      blockedAt: current.blockedAt,
-      blockReason: current.blockReason,
-      paymentLink: current.paymentLink,
+      aiAccessBlocked: adminBillingBypass ? false : current.aiAccessBlocked,
+      blockedAt: adminBillingBypass ? null : current.blockedAt,
+      blockReason: adminBillingBypass ? null : current.blockReason,
+      paymentLink: adminBillingBypass ? null : current.paymentLink,
       apiCost: Number(current.apiCostUsd),
       serverCost: Number(current.serverCostUsd),
       estimatedTotal: Number(current.apiCostUsd) + Number(current.serverCostUsd),

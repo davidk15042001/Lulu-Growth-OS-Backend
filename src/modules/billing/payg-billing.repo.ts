@@ -4,8 +4,21 @@ import { AppError } from '../../utils/app-error.js';
 
 const nextBerlinMondaySql = `(date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days') AT TIME ZONE 'Europe/Berlin'`;
 const currentBerlinMondaySql = `date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin'`;
+export const ADMIN_BILLING_EMAIL = 'lulu.ai.cn@gmail.com';
 
 export const AWS_USAGE_CUSTOMER_MULTIPLIER = 2;
+
+export async function isBillingAdminUser(userId?: string | null) {
+  if (!userId) return false;
+  const { rows } = await query<{ email: string; role: 'user' | 'admin' }>(
+    `SELECT email, role
+     FROM users
+     WHERE id=$1`,
+    [userId],
+  );
+  const user = rows[0];
+  return user?.role === 'admin' && String(user.email ?? '').trim().toLowerCase() === ADMIN_BILLING_EMAIL;
+}
 
 export type PaygPeriod = {
   id: string;
@@ -364,7 +377,8 @@ export async function applyPaygInvoiceWebhook(input: {
   });
 }
 
-export async function assertAiBillingAccess(workspaceId: string) {
+export async function assertAiBillingAccess(workspaceId: string, userId?: string | null) {
+  if (await isBillingAdminUser(userId)) return;
   const { rows } = await query<{
     blocked: boolean;
     reason: string | null;

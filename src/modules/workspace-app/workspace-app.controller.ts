@@ -133,7 +133,7 @@ export async function syncBillingCheckout(req: WorkspaceRequest, res: Response, 
 export async function billing(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { workspaceId } = params(req);
-    return successResponse(res, 'Billing state loaded', await service.getBilling(workspaceId, listUsageQuerySchema.parse(req.query)));
+    return successResponse(res, 'Billing state loaded', await service.getBilling(workspaceId, req.user!.id, listUsageQuerySchema.parse(req.query)));
   } catch (error) { next(error); }
 }
 
