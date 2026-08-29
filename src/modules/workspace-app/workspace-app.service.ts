@@ -3,6 +3,7 @@ import { conflictError, notFoundError } from '../../utils/app-error.js';
 import { sendWorkspaceInvitationEmail } from '../../utils/mailer.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as repo from './workspace-app.repo.js';
+import { getCompetitorIntelligence as getCompetitorIntelligenceEngine } from './competitor-intelligence.service.js';
 import type {
   CreateSavedViewInput,
   InviteMemberInput,
@@ -109,4 +110,8 @@ export async function queueIntegrationSync(workspaceId: string, platformId: stri
   const run = await repo.queueIntegrationSync(workspaceId, platformId);
   if (!run) throw notFoundError('Integration not found');
   return run;
+}
+
+export function getCompetitorIntelligence(workspaceId: string, userId: string) {
+  return getCompetitorIntelligenceEngine(workspaceId, userId);
 }

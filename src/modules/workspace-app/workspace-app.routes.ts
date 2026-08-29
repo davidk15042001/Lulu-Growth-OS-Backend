@@ -14,6 +14,10 @@ router.route('/bootstrap')
   .get(requireWorkspaceMember, requireOnboardingComplete, controller.bootstrap)
   .all(methodNotAllowed);
 
+router.route('/competitor-intelligence')
+  .get(requireWorkspaceMember, requireOnboardingComplete, controller.competitorIntelligence)
+  .all(methodNotAllowed);
+
 router.route('/members')
   .get(requireWorkspaceMember, controller.members)
   .post(requireWorkspaceAdmin, controller.invite)

@@ -29,6 +29,13 @@ export async function bootstrap(req: WorkspaceRequest, res: Response, next: Next
   } catch (error) { next(error); }
 }
 
+export async function competitorIntelligence(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Competitor intelligence loaded', await service.getCompetitorIntelligence(workspaceId, req.user!.id));
+  } catch (error) { next(error); }
+}
+
 export async function members(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { workspaceId } = params(req);
