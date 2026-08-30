@@ -4,12 +4,15 @@ import { sendWorkspaceInvitationEmail } from '../../utils/mailer.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as repo from './workspace-app.repo.js';
 import { getCompetitorIntelligence as getCompetitorIntelligenceEngine } from './competitor-intelligence.service.js';
+import { getGoogleReviewsManager as getGoogleReviewsManagerEngine, updateGoogleReviewReply as updateGoogleReviewReplyEngine } from './google-reviews.service.js';
 import type {
   CreateSavedViewInput,
   InviteMemberInput,
   ListAuditQuery,
+  ListGoogleReviewsQuery,
   ListSavedViewsQuery,
   ListUsageQuery,
+  UpdateGoogleReviewReplyInput,
   UpdateMemberInput,
   UpdateSavedViewInput,
 } from './workspace-app.validator.js';
@@ -114,4 +117,12 @@ export async function queueIntegrationSync(workspaceId: string, platformId: stri
 
 export function getCompetitorIntelligence(workspaceId: string, userId: string) {
   return getCompetitorIntelligenceEngine(workspaceId, userId);
+}
+
+export function getGoogleReviewsManager(workspaceId: string, userId: string, filters: ListGoogleReviewsQuery) {
+  return getGoogleReviewsManagerEngine(workspaceId, userId, filters);
+}
+
+export function updateGoogleReviewReply(workspaceId: string, reviewId: string, input: UpdateGoogleReviewReplyInput) {
+  return updateGoogleReviewReplyEngine(workspaceId, reviewId, input);
 }

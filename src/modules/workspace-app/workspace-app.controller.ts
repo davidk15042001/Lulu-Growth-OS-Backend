@@ -11,8 +11,10 @@ import {
   inviteMemberSchema,
   inviteTokenParamsSchema,
   listAuditQuerySchema,
+  listGoogleReviewsQuerySchema,
   listSavedViewsQuerySchema,
   listUsageQuerySchema,
+  updateGoogleReviewReplySchema,
   updateMemberSchema,
   updateSavedViewSchema,
   workspaceAppParamsSchema,
@@ -33,6 +35,20 @@ export async function competitorIntelligence(req: WorkspaceRequest, res: Respons
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'Competitor intelligence loaded', await service.getCompetitorIntelligence(workspaceId, req.user!.id));
+  } catch (error) { next(error); }
+}
+
+export async function googleReviews(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Google reviews manager loaded', await service.getGoogleReviewsManager(workspaceId, req.user!.id, listGoogleReviewsQuerySchema.parse(req.query)));
+  } catch (error) { next(error); }
+}
+
+export async function updateGoogleReviewReply(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId, reviewId } = params(req);
+    return successResponse(res, 'Google review reply updated', await service.updateGoogleReviewReply(workspaceId, reviewId!, updateGoogleReviewReplySchema.parse(req.body)));
   } catch (error) { next(error); }
 }
 

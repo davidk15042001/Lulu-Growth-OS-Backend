@@ -18,6 +18,14 @@ router.route('/competitor-intelligence')
   .get(requireWorkspaceMember, requireOnboardingComplete, controller.competitorIntelligence)
   .all(methodNotAllowed);
 
+router.route('/google-reviews')
+  .get(requireWorkspaceMember, requireOnboardingComplete, controller.googleReviews)
+  .all(methodNotAllowed);
+
+router.route('/google-reviews/:reviewId/reply')
+  .put(requireWorkspaceEditor, requireOnboardingComplete, controller.updateGoogleReviewReply)
+  .all(methodNotAllowed);
+
 router.route('/members')
   .get(requireWorkspaceMember, controller.members)
   .post(requireWorkspaceAdmin, controller.invite)

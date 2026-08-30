@@ -10,6 +10,7 @@ export const workspaceAppParamsSchema = z.object({
   memberId: z.string().uuid().optional(),
   viewId: z.string().uuid().optional(),
   platformId: z.string().uuid().optional(),
+  reviewId: z.string().trim().min(1).max(200).optional(),
 });
 
 export const inviteTokenParamsSchema = z.object({ token: z.string().min(32).max(500) });
@@ -59,6 +60,17 @@ export const listUsageQuerySchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+export const listGoogleReviewsQuerySchema = z.object({
+  locationId: z.string().trim().min(1).max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(250).default(120),
+});
+
+export const updateGoogleReviewReplySchema = z.object({
+  accountId: z.string().trim().min(1).max(200),
+  locationId: z.string().trim().min(1).max(200),
+  comment: z.string().trim().min(3).max(4_000),
+});
+
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema>;
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 export type ListSavedViewsQuery = z.infer<typeof listSavedViewsQuerySchema>;
@@ -66,3 +78,5 @@ export type CreateSavedViewInput = z.infer<typeof createSavedViewSchema>;
 export type UpdateSavedViewInput = z.infer<typeof updateSavedViewSchema>;
 export type ListAuditQuery = z.infer<typeof listAuditQuerySchema>;
 export type ListUsageQuery = z.infer<typeof listUsageQuerySchema>;
+export type ListGoogleReviewsQuery = z.infer<typeof listGoogleReviewsQuerySchema>;
+export type UpdateGoogleReviewReplyInput = z.infer<typeof updateGoogleReviewReplySchema>;
