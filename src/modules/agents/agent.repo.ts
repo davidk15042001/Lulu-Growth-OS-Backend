@@ -25,8 +25,26 @@ export async function hasRecentAutomaticRun(workspaceId: string, goal: string, m
   const { rows } = await query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM agent_runs WHERE workspace_id=$1 AND goal=$2 AND created_at > NOW() - ($3 * INTERVAL '1 minute') AND status IN ('queued','planning','running','waiting_approval','completed')) AS exists`, [workspaceId, goal, minutes]);
   return Boolean(rows[0]?.exists);
 }
-export async function listRuns(workspaceId: string, limit = 50) {
-  const { rows } = await query<AgentRun>(`SELECT ${runSelect} FROM agent_runs WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT $2`, [workspaceId, limit]);
+export async function getRecentPageRun(workspaceId: string, pageId: string, minutes = 45) {
+  const { rows } = await query<AgentRun>(`SELECT ${runSelect}
+    FROM agent_runs
+    WHERE workspace_id=$1
+      AND plan -> 'page' ->> 'pageId' = $2
+      AND updated_at > NOW() - ($3 * INTERVAL '1 minute')
+      AND status IN ('queued','planning','running','waiting_approval','completed')
+    ORDER BY updated_at DESC
+    LIMIT 1`, [workspaceId, pageId, minutes]);
+  return rows[0] ?? null;
+}
+export async function listRuns(workspaceId: string, limit = 50, pageId?: string) {
+  const values: unknown[] = [workspaceId];
+  let where = 'workspace_id=$1';
+  if (pageId) {
+    values.push(pageId);
+    where += ` AND plan -> 'page' ->> 'pageId' = $${values.length}`;
+  }
+  values.push(limit);
+  const { rows } = await query<AgentRun>(`SELECT ${runSelect} FROM agent_runs WHERE ${where} ORDER BY updated_at DESC LIMIT $${values.length}`, values);
   return rows;
 }
 export async function getRun(workspaceId: string, runId: string) {
@@ -101,6 +119,7 @@ export async function listEvents(workspaceId: string, runId: string) {
 export async function createKnowledgeSnapshot(input: {
   workspaceId: string;
   sourceRunId: string;
+  snapshotType?: string;
   status: 'completed' | 'failed';
   confidence?: string | null;
   executiveSummary?: string | null;
@@ -113,9 +132,9 @@ export async function createKnowledgeSnapshot(input: {
 }) {
   const { rows } = await query(`
     INSERT INTO workspace_knowledge_snapshots
-      (workspace_id, source_run_id, status, confidence, executive_summary, data_gaps,
+      (workspace_id, source_run_id, snapshot_type, status, confidence, executive_summary, data_gaps,
        verified_facts, priorities, knowledge_base, source_manifest, generated_at)
-    VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11)
+    VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10::jsonb,$11::jsonb,$12)
     ON CONFLICT (workspace_id, snapshot_type, source_run_id)
     DO UPDATE SET status=EXCLUDED.status, confidence=EXCLUDED.confidence,
       executive_summary=EXCLUDED.executive_summary, data_gaps=EXCLUDED.data_gaps,
@@ -126,7 +145,7 @@ export async function createKnowledgeSnapshot(input: {
       confidence, executive_summary AS "executiveSummary", data_gaps AS "dataGaps",
       verified_facts AS "verifiedFacts", priorities, knowledge_base AS "knowledgeBase",
       source_manifest AS "sourceManifest", generated_at AS "generatedAt", updated_at AS "updatedAt"`,
-    [input.workspaceId, input.sourceRunId, input.status, input.confidence ?? null, input.executiveSummary ?? null,
+    [input.workspaceId, input.sourceRunId, input.snapshotType ?? 'initial_business_analysis', input.status, input.confidence ?? null, input.executiveSummary ?? null,
       JSON.stringify(input.dataGaps ?? []), JSON.stringify(input.verifiedFacts ?? []), JSON.stringify(input.priorities ?? []),
       JSON.stringify(input.knowledgeBase ?? {}), JSON.stringify(input.sourceManifest ?? {}), input.generatedAt ?? null]);
   return rows[0];
@@ -170,15 +189,15 @@ export async function replaceIntelligenceMetrics(input: {
   }
 }
 
-export async function getLatestKnowledgeSnapshot(workspaceId: string) {
+export async function getLatestKnowledgeSnapshot(workspaceId: string, snapshotType = 'initial_business_analysis') {
   const { rows } = await query(`
     SELECT id, workspace_id AS "workspaceId", source_run_id AS "sourceRunId", snapshot_type AS "snapshotType",
       status, confidence, executive_summary AS "executiveSummary", data_gaps AS "dataGaps",
       verified_facts AS "verifiedFacts", priorities, knowledge_base AS "knowledgeBase",
       source_manifest AS "sourceManifest", generated_at AS "generatedAt", updated_at AS "updatedAt"
     FROM workspace_knowledge_snapshots
-    WHERE workspace_id=$1 AND snapshot_type='initial_business_analysis' AND status='completed'
-    ORDER BY generated_at DESC NULLS LAST, updated_at DESC LIMIT 1`, [workspaceId]);
+    WHERE workspace_id=$1 AND snapshot_type=$2 AND status='completed'
+    ORDER BY generated_at DESC NULLS LAST, updated_at DESC LIMIT 1`, [workspaceId, snapshotType]);
   return rows[0] ?? null;
 }
 
@@ -198,8 +217,8 @@ export async function listIntelligenceMetrics(workspaceId: string, snapshotId?: 
   return rows;
 }
 
-export async function getKnowledgeBundle(workspaceId: string) {
-  const snapshot = await getLatestKnowledgeSnapshot(workspaceId);
+export async function getKnowledgeBundle(workspaceId: string, snapshotType = 'initial_business_analysis') {
+  const snapshot = await getLatestKnowledgeSnapshot(workspaceId, snapshotType);
   if (!snapshot) return null;
   const [sections, metrics] = await Promise.all([
     listKnowledgeSections(workspaceId, snapshot.id),

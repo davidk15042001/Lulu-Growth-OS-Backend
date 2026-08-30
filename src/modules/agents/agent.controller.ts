@@ -2,26 +2,28 @@ import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './agent.service.js';
-import { agentRunParamsSchema, agentStepDecisionSchema, createAgentRunSchema } from './agent.validator.js';
+import { agentRunParamsSchema, agentRunQuerySchema, agentStepDecisionSchema, createAgentRunSchema } from './agent.validator.js';
 
 export async function create(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.parse(req.params);
     const input = createAgentRunSchema.parse(req.body);
-    return createdResponse(res, 'Agent run started', await service.startRun(params.workspaceId, req.user!.id, input.goal, input.module));
+    return createdResponse(res, 'Agent run started', await service.startRun(params.workspaceId, req.user!.id, input.goal, input.module, input.page, input.dedupeMinutes));
   } catch (error) { next(error); }
 }
 export async function knowledge(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.parse(req.params);
-    const bundle = await service.getKnowledgeBundle(params.workspaceId);
+    const query = agentRunQuerySchema.parse(req.query);
+    const bundle = await service.getKnowledgeBundle(params.workspaceId, query.pageId);
     return successResponse(res, 'Workspace intelligence loaded', bundle ?? { snapshot: null, sections: [], metrics: [] });
   } catch (error) { next(error); }
 }
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.parse(req.params);
-    return successResponse(res, 'Agent runs loaded', { items: await service.listRuns(params.workspaceId) });
+    const query = agentRunQuerySchema.parse(req.query);
+    return successResponse(res, 'Agent runs loaded', { items: await service.listRuns(params.workspaceId, query.pageId) });
   } catch (error) { next(error); }
 }
 export async function detail(req: WorkspaceRequest, res: Response, next: NextFunction) {
