@@ -5,13 +5,13 @@ import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import { refreshStoredOAuthCredential } from '../onboarding/oauth.service.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 
-type GoogleAccount = {
+export type GoogleAccount = {
   id: string;
   name: string;
   type: string | null;
 };
 
-type GoogleLocation = {
+export type GoogleLocation = {
   accountId: string;
   id: string;
   title: string;
@@ -351,6 +351,18 @@ async function listLocations(accountId: string, token: string) {
     .filter((location) => location.id);
 }
 
+export async function loadGoogleBusinessDirectory(workspaceId: string) {
+  const { platformId, token } = await getGoogleBusinessToken(workspaceId);
+  const accounts = await listAccounts(token);
+  const locationBatches = await Promise.all(accounts.map((account) => listLocations(account.id, token)));
+  return {
+    platformId,
+    token,
+    accounts,
+    locations: locationBatches.flat(),
+  };
+}
+
 async function listReviews(location: GoogleLocation, token: string) {
   const url = new URL(`https://mybusiness.googleapis.com/v4/accounts/${encodeURIComponent(location.accountId)}/locations/${encodeURIComponent(location.id)}/reviews`);
   url.searchParams.set('pageSize', '50');
@@ -408,11 +420,15 @@ function buildReview(companyName: string, location: GoogleLocation, review: Reco
 export async function getGoogleReviewsManager(workspaceId: string, userId: string, input: { locationId?: string | undefined; limit: number }): Promise<GoogleReviewManagerResponse> {
   const workspace = await workspaceService.getWorkspace(workspaceId, userId);
   let platformId: string | null = null;
+  let accounts: GoogleAccount[] = [];
+  let allLocations: GoogleLocation[] = [];
   let token: string;
   try {
-    const credential = await getGoogleBusinessToken(workspaceId);
-    platformId = credential.platformId;
-    token = credential.token;
+    const directory = await loadGoogleBusinessDirectory(workspaceId);
+    platformId = directory.platformId;
+    token = directory.token;
+    accounts = directory.accounts;
+    allLocations = directory.locations.filter((location) => !input.locationId || location.id === input.locationId);
   } catch (error) {
     if (error instanceof AppError && error.code === 'GOOGLE_BUSINESS_NOT_CONNECTED') {
       return emptyGoogleReviewsResponse(
@@ -425,7 +441,6 @@ export async function getGoogleReviewsManager(workspaceId: string, userId: strin
     }
     throw error;
   }
-  const accounts = await listAccounts(token);
   if (!accounts.length) {
     return emptyGoogleReviewsResponse(
       platformId,
@@ -436,8 +451,6 @@ export async function getGoogleReviewsManager(workspaceId: string, userId: strin
     );
   }
 
-  const locationBatches = await Promise.all(accounts.map((account) => listLocations(account.id, token)));
-  const allLocations = locationBatches.flat().filter((location) => !input.locationId || location.id === input.locationId);
   const reviewPayloads = await Promise.all(allLocations.map(async (location) => ({
     location,
     payload: await listReviews(location, token),

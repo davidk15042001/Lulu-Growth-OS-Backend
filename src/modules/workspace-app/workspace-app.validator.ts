@@ -71,6 +71,10 @@ export const updateGoogleReviewReplySchema = z.object({
   comment: z.string().trim().min(3).max(4_000),
 });
 
+export const googleBusinessConnectSchema = z.object({
+  returnTo: z.string().trim().min(1).max(500).optional(),
+});
+
 export type InviteMemberInput = z.infer<typeof inviteMemberSchema>;
 export type UpdateMemberInput = z.infer<typeof updateMemberSchema>;
 export type ListSavedViewsQuery = z.infer<typeof listSavedViewsQuerySchema>;
@@ -80,3 +84,4 @@ export type ListAuditQuery = z.infer<typeof listAuditQuerySchema>;
 export type ListUsageQuery = z.infer<typeof listUsageQuerySchema>;
 export type ListGoogleReviewsQuery = z.infer<typeof listGoogleReviewsQuerySchema>;
 export type UpdateGoogleReviewReplyInput = z.infer<typeof updateGoogleReviewReplySchema>;
+export type GoogleBusinessConnectInput = z.infer<typeof googleBusinessConnectSchema>;

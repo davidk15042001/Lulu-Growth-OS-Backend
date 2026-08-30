@@ -8,6 +8,7 @@ import * as contentGeneration from '../content-generation/content-generation.ser
 import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
 import {
   createSavedViewSchema,
+  googleBusinessConnectSchema,
   inviteMemberSchema,
   inviteTokenParamsSchema,
   listAuditQuerySchema,
@@ -42,6 +43,34 @@ export async function googleReviews(req: WorkspaceRequest, res: Response, next: 
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'Google reviews manager loaded', await service.getGoogleReviewsManager(workspaceId, req.user!.id, listGoogleReviewsQuerySchema.parse(req.query)));
+  } catch (error) { next(error); }
+}
+
+export async function googleBusiness(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Google Business workspace state loaded', await service.getGoogleBusinessOverview(workspaceId));
+  } catch (error) { next(error); }
+}
+
+export async function connectGoogleBusiness(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Google Business authorization URL created', await service.createGoogleBusinessAuthorization(workspaceId, req.user!.id, googleBusinessConnectSchema.parse(req.body)));
+  } catch (error) { next(error); }
+}
+
+export async function disconnectGoogleBusiness(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Google Business connection removed', await service.disconnectGoogleBusiness(workspaceId));
+  } catch (error) { next(error); }
+}
+
+export async function syncGoogleBusiness(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return createdResponse(res, 'Google Business sync queued', await service.syncGoogleBusiness(workspaceId));
   } catch (error) { next(error); }
 }
 

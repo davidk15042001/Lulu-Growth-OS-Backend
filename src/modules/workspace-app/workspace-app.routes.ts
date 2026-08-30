@@ -22,6 +22,22 @@ router.route('/google-reviews')
   .get(requireWorkspaceMember, requireOnboardingComplete, controller.googleReviews)
   .all(methodNotAllowed);
 
+router.route('/google-business')
+  .get(requireWorkspaceMember, requireOnboardingComplete, controller.googleBusiness)
+  .all(methodNotAllowed);
+
+router.route('/google-business/connect')
+  .post(requireWorkspaceEditor, requireOnboardingComplete, controller.connectGoogleBusiness)
+  .all(methodNotAllowed);
+
+router.route('/google-business/connection')
+  .delete(requireWorkspaceEditor, requireOnboardingComplete, controller.disconnectGoogleBusiness)
+  .all(methodNotAllowed);
+
+router.route('/google-business/sync')
+  .post(requireWorkspaceEditor, requireOnboardingComplete, controller.syncGoogleBusiness)
+  .all(methodNotAllowed);
+
 router.route('/google-reviews/:reviewId/reply')
   .put(requireWorkspaceEditor, requireOnboardingComplete, controller.updateGoogleReviewReply)
   .all(methodNotAllowed);

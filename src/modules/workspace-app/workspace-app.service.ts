@@ -4,9 +4,16 @@ import { sendWorkspaceInvitationEmail } from '../../utils/mailer.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as repo from './workspace-app.repo.js';
 import { getCompetitorIntelligence as getCompetitorIntelligenceEngine } from './competitor-intelligence.service.js';
+import {
+  createGoogleBusinessAuthorization as createGoogleBusinessAuthorizationEngine,
+  disconnectGoogleBusiness as disconnectGoogleBusinessEngine,
+  getGoogleBusinessOverview as getGoogleBusinessOverviewEngine,
+  syncGoogleBusiness as syncGoogleBusinessEngine,
+} from './google-business.service.js';
 import { getGoogleReviewsManager as getGoogleReviewsManagerEngine, updateGoogleReviewReply as updateGoogleReviewReplyEngine } from './google-reviews.service.js';
 import type {
   CreateSavedViewInput,
+  GoogleBusinessConnectInput,
   InviteMemberInput,
   ListAuditQuery,
   ListGoogleReviewsQuery,
@@ -113,6 +120,22 @@ export async function queueIntegrationSync(workspaceId: string, platformId: stri
   const run = await repo.queueIntegrationSync(workspaceId, platformId);
   if (!run) throw notFoundError('Integration not found');
   return run;
+}
+
+export function getGoogleBusinessOverview(workspaceId: string) {
+  return getGoogleBusinessOverviewEngine(workspaceId);
+}
+
+export function createGoogleBusinessAuthorization(workspaceId: string, userId: string, input: GoogleBusinessConnectInput) {
+  return createGoogleBusinessAuthorizationEngine(workspaceId, userId, input);
+}
+
+export function disconnectGoogleBusiness(workspaceId: string) {
+  return disconnectGoogleBusinessEngine(workspaceId);
+}
+
+export function syncGoogleBusiness(workspaceId: string) {
+  return syncGoogleBusinessEngine(workspaceId);
 }
 
 export function getCompetitorIntelligence(workspaceId: string, userId: string) {
