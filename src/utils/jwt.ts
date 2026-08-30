@@ -6,6 +6,8 @@ export type JwtPayload = {
   email: string;
   tv?: number;
   role?: 'user' | 'admin';
+  impersonatorUserId?: string;
+  impersonatorEmail?: string;
 };
 
 export function signToken(payload: JwtPayload, expiresIn: string | number = env.ACCESS_TOKEN_TTL) {

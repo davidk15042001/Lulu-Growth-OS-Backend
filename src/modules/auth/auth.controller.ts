@@ -16,13 +16,34 @@ import {
 
 const RT_COOKIE_NAME = 'rt';
 const refreshCookieSameSite = env.REFRESH_COOKIE_SAME_SITE ?? (isProd ? 'none' : 'lax');
-const RT_COOKIE_OPTS = { 
+export const RT_COOKIE_OPTS = {
   httpOnly: true, 
   sameSite: refreshCookieSameSite,
   secure: isProd, 
   maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   path: '/' 
 };
+
+export function setRefreshTokenCookie(res: Response, refreshToken: string) {
+  res.cookie(RT_COOKIE_NAME, refreshToken, RT_COOKIE_OPTS);
+}
+
+function sessionUserResponse(
+  user: { id: string; email: string; first_name?: string | null; last_name?: string | null; firstName?: string | null; lastName?: string | null; role: 'user' | 'admin' },
+  impersonator?: { email: string } | null,
+) {
+  return {
+    id: user.id,
+    email: user.email,
+    firstName: ('first_name' in user ? user.first_name : user.firstName) ?? null,
+    lastName: ('last_name' in user ? user.last_name : user.lastName) ?? null,
+    role: user.role,
+    impersonation: {
+      active: Boolean(impersonator),
+      adminEmail: impersonator?.email ?? null,
+    },
+  };
+}
 
 export async function register(req: Request, res: Response, next: NextFunction) {
   try {
@@ -63,7 +84,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     if ('invalid' in result) return jsonError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password');
     if ('unverified' in result) return jsonError(res, 403, 'ACCOUNT_UNVERIFIED', 'Verify your email to continue');
     
-    res.cookie(RT_COOKIE_NAME, result.refreshToken, RT_COOKIE_OPTS);
+    setRefreshTokenCookie(res, result.refreshToken);
     
     return res.json({ 
       success: true, 
@@ -90,7 +111,7 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
     if ('invalid' in result) return jsonError(res, 401, 'INVALID_REFRESH_TOKEN', 'Please sign in');
     if ('expired' in result) return jsonError(res, 401, 'REFRESH_TOKEN_EXPIRED', 'Please sign in');
     
-    res.cookie(RT_COOKIE_NAME, result.refreshToken, RT_COOKIE_OPTS);
+    setRefreshTokenCookie(res, result.refreshToken);
     
     return res.json({ 
       success: true, 
@@ -171,13 +192,7 @@ export async function me(req: AuthedRequest, res: Response, next: NextFunction) 
     if (!user) return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
     return res.json({
       success: true,
-      data: {
-        id: user.id,
-        email: user.email,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        role: user.role,
-      },
+      data: sessionUserResponse(user, req.impersonator),
     });
   } catch (error) {
     next(error);
@@ -191,13 +206,34 @@ export async function updateMe(req: AuthedRequest, res: Response, next: NextFunc
     return res.json({
       success: true,
       message: 'Profile updated',
-      data: user ? {
-        id: user.id,
-        email: user.email,
-        firstName: user.first_name,
-        lastName: user.last_name,
-        role: user.role,
-      } : null,
+      data: user ? sessionUserResponse(user, req.impersonator) : null,
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function stopImpersonation(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!req.impersonator) {
+      return jsonError(res, 409, 'IMPERSONATION_NOT_ACTIVE', 'No impersonated admin session is active');
+    }
+
+    const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+    const result = await service.stopImpersonation(
+      { userId: req.impersonator.id, email: req.impersonator.email },
+      { userAgent, ipAddress: req.ip ?? null },
+    );
+    if ('invalid' in result) return jsonError(res, 403, 'FORBIDDEN', 'The impersonated session can no longer be restored');
+
+    setRefreshTokenCookie(res, result.refreshToken);
+    return res.json({
+      success: true,
+      message: 'Impersonation ended',
+      data: {
+        token: result.token,
+        user: result.user,
+      },
     });
   } catch (error) {
     next(error);

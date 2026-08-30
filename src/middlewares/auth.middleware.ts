@@ -4,7 +4,10 @@ import { forbidden, jsonError, unauthorized } from '../utils/response.js';
 import { logger } from '../config/logger.js';
 import { extractBearerToken, verifyToken, type JwtPayload } from '../utils/jwt.js';
 
-export type AuthedRequest = Request & { user?: { id: string; email: string; role: 'user' | 'admin' } };
+export type AuthedRequest = Request & {
+  user?: { id: string; email: string; role: 'user' | 'admin' };
+  impersonator?: { id: string; email: string };
+};
 
 export async function requireAuth(req: AuthedRequest, res: Response, next: NextFunction) {
   const token = extractBearerToken(req.headers.authorization as string | undefined);
@@ -33,6 +36,12 @@ export async function requireAuth(req: AuthedRequest, res: Response, next: NextF
     }
 
     req.user = { id: payload.sub, email: payload.email, role };
+    if (payload.impersonatorUserId && payload.impersonatorEmail) {
+      req.impersonator = {
+        id: payload.impersonatorUserId,
+        email: payload.impersonatorEmail,
+      };
+    }
     next();
   } catch {
     logger.error('Invalid token');

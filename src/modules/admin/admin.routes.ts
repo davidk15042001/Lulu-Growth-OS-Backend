@@ -12,6 +12,7 @@ router.route('/billing-overview').get(requireAuth, controller.overview).all(meth
 
 router.route('/users').get(requireAuth, controller.getUsers).all(methodNotAllowed);
 router.route('/users/:userId').get(requireAuth, controller.getUser).patch(requireAuth, controller.patchUser).all(methodNotAllowed);
+router.route('/users/:userId/impersonate').post(requireAuth, controller.impersonateUser).all(methodNotAllowed);
 
 router.route('/workspaces').get(requireAuth, controller.getWorkspaces).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId').get(requireAuth, controller.getWorkspace).patch(requireAuth, controller.patchWorkspace).all(methodNotAllowed);

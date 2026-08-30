@@ -64,4 +64,8 @@ router.route('/me')
   .patch(requireAuth, controller.updateMe)
   .all(methodNotAllowed);
 
+router.route('/impersonation/stop')
+  .post(requireAuth, controller.stopImpersonation)
+  .all(methodNotAllowed);
+
 export default router;

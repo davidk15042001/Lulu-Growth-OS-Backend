@@ -11,6 +11,8 @@ export interface RefreshToken {
   selector: string;
   token_hash: string;
   user_id: string;
+  impersonated_by_user_id?: string | null;
+  impersonated_by_email?: string | null;
   user_agent?: string;
   ip_address?: string;
   created_at: Date;
@@ -30,6 +32,11 @@ export interface OtpCode {
   ip_address?: string;
   attempts: number;
 }
+
+export type ImpersonationActor = {
+  userId: string;
+  email: string;
+};
 
 function genSelector(len = 12): string {
   return crypto.randomBytes(len).toString('hex');
@@ -95,7 +102,7 @@ export async function incrementTokenVersion(id: string) {
 
 export async function createRefreshToken(
   userId: string,
-  options?: { userAgent?: string | null; ipAddress?: string | null },
+  options?: { userAgent?: string | null; ipAddress?: string | null; impersonator?: ImpersonationActor | null },
   client?: PoolClient
 ) {
   const selector = genSelector();
@@ -105,8 +112,20 @@ export async function createRefreshToken(
   const expiresAt = new Date(Date.now() + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
   
   await query(
-    'INSERT INTO refresh_tokens(selector, token_hash, user_id, expires_at, user_agent, ip_address, created_at, last_used_at) VALUES($1,$2,$3,$4,$5,$6,NOW(),NOW())',
-    [selector, hash, userId, expiresAt, options?.userAgent || null, options?.ipAddress || null],
+    `INSERT INTO refresh_tokens(
+       selector, token_hash, user_id, impersonated_by_user_id, impersonated_by_email,
+       expires_at, user_agent, ip_address, created_at, last_used_at
+     ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,NOW(),NOW())`,
+    [
+      selector,
+      hash,
+      userId,
+      options?.impersonator?.userId ?? null,
+      options?.impersonator?.email ?? null,
+      expiresAt,
+      options?.userAgent || null,
+      options?.ipAddress || null,
+    ],
     client
   );
   
@@ -115,7 +134,7 @@ export async function createRefreshToken(
 
 export async function createSingleDeviceSession(
   userId: string,
-  options?: { userAgent?: string | null; ipAddress?: string | null },
+  options?: { userAgent?: string | null; ipAddress?: string | null; impersonator?: ImpersonationActor | null },
 ) {
   return withTransaction(async (client) => {
     const { rows } = await query<{ token_version: number }>(
@@ -133,6 +152,26 @@ export async function createSingleDeviceSession(
       [userId],
       client,
     );
+    const refresh = await createRefreshToken(userId, options, client);
+    return { ...refresh, tokenVersion: rows[0].token_version };
+  });
+}
+
+export async function createAdditionalSession(
+  userId: string,
+  options?: { userAgent?: string | null; ipAddress?: string | null; impersonator?: ImpersonationActor | null },
+) {
+  return withTransaction(async (client) => {
+    const { rows } = await query<{ token_version: number }>(
+      `SELECT token_version
+       FROM users
+       WHERE id = $1 AND deleted_at IS NULL
+       LIMIT 1`,
+      [userId],
+      client,
+    );
+    if (!rows[0]) throw new Error('User not found while creating additional session');
+
     const refresh = await createRefreshToken(userId, options, client);
     return { ...refresh, tokenVersion: rows[0].token_version };
   });
@@ -226,8 +265,11 @@ export async function rotateRefreshToken(
       [current.id],
       client
     );
-    const next = await createRefreshToken(current.user_id, options, client);
-    return { status: 'rotated' as const, userId: current.user_id, refreshToken: next.token };
+    const impersonator = current.impersonated_by_user_id && current.impersonated_by_email
+      ? { userId: current.impersonated_by_user_id, email: current.impersonated_by_email }
+      : null;
+    const next = await createRefreshToken(current.user_id, { ...options, impersonator }, client);
+    return { status: 'rotated' as const, userId: current.user_id, refreshToken: next.token, impersonator };
   });
 }
 

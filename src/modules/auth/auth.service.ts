@@ -6,6 +6,48 @@ import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 
 export type RegisterResult = { ok: true; userId: string } | { conflict: true };
+type SessionUser = {
+  id: string;
+  email: string;
+  firstName: string | null;
+  lastName: string | null;
+  role: 'user' | 'admin';
+  impersonation: { active: boolean; adminEmail: string | null };
+};
+type SessionActor = repo.ImpersonationActor;
+
+function buildSessionUser(
+  user: { id: string; email: string; first_name: string | null; last_name: string | null; role: 'user' | 'admin' },
+  impersonator?: SessionActor | null,
+): SessionUser {
+  return {
+    id: user.id,
+    email: user.email,
+    firstName: user.first_name,
+    lastName: user.last_name,
+    role: user.role,
+    impersonation: {
+      active: Boolean(impersonator),
+      adminEmail: impersonator?.email ?? null,
+    },
+  };
+}
+
+function signSessionToken(
+  user: { id: string; email: string },
+  tokenVersion: number,
+  impersonator?: SessionActor | null,
+) {
+  return signToken({
+    sub: user.id,
+    email: user.email,
+    tv: tokenVersion,
+    ...(impersonator ? {
+      impersonatorUserId: impersonator.userId,
+      impersonatorEmail: impersonator.email,
+    } : {}),
+  });
+}
 
 export async function registerUser(email: string, password: string, firstName: string, lastName: string): Promise<RegisterResult> {
   const existingUser = await repo.getUserByEmail(email);
@@ -43,7 +85,7 @@ export async function verifyEmailOtp(email: string, code: string): Promise<Verif
   return { invalid: true };
 }
 
-export type LoginResult = { ok: true; token: string; refreshToken: string; user: { id: string; email: string; firstName: string | null; lastName: string | null; role: 'user' | 'admin' } } | { invalid: true } | { unverified: true };
+export type LoginResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { unverified: true };
 
 export async function loginUser(email: string, password: string, options?: { userAgent?: string | null; ipAddress?: string | null }): Promise<LoginResult> {
   const user = await repo.getUserByEmail(email);
@@ -63,24 +105,18 @@ export async function loginUser(email: string, password: string, options?: { use
     userAgent: options?.userAgent ?? null,
     ipAddress: options?.ipAddress ?? null,
   });
-  const token = signToken({ sub: user.id, email, tv: session.tokenVersion });
+  const token = signSessionToken({ id: user.id, email }, session.tokenVersion);
   const refreshToken = session.token;
 
   return {
     ok: true, 
     token, 
     refreshToken, 
-    user: { 
-      id: user.id, 
-      email, 
-      firstName: user.first_name, 
-      lastName: user.last_name, 
-      role: user.role 
-    } 
+    user: buildSessionUser({ ...user, email })
   };
 }
 
-export type RefreshResult = { ok: true; token: string; refreshToken: string; user: { id: string; email: string; firstName: string | null; lastName: string | null; role: 'user' | 'admin' } } | { invalid: true } | { expired: true };
+export type RefreshResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { expired: true };
 
 export async function refreshAccessToken(rawToken: string, options?: { userAgent?: string | null; ipAddress?: string | null }): Promise<RefreshResult> {
   const parts = String(rawToken).split('.');
@@ -97,19 +133,69 @@ export async function refreshAccessToken(rawToken: string, options?: { userAgent
 
   const user = await repo.getUserById(rotated.userId);
   if (!user) return { invalid: true };
-  const token = signToken({ sub: user.id, email: user.email, tv: user.token_version });
+  const token = signSessionToken({ id: user.id, email: user.email }, user.token_version, rotated.impersonator);
 
   return {
     ok: true, 
     token, 
     refreshToken: rotated.refreshToken,
-    user: { 
-      id: user.id, 
-      email: user.email, 
-      firstName: user.first_name, 
-      lastName: user.last_name, 
-      role: user.role 
-    } 
+    user: buildSessionUser(user, rotated.impersonator)
+  };
+}
+
+export type ImpersonationResult =
+  | { ok: true; token: string; refreshToken: string; user: SessionUser }
+  | { notFound: true }
+  | { invalidTarget: true };
+
+export async function impersonateUser(
+  actor: SessionActor,
+  targetUserId: string,
+  options?: { userAgent?: string | null; ipAddress?: string | null },
+): Promise<ImpersonationResult> {
+  if (!targetUserId || actor.userId === targetUserId) return { invalidTarget: true };
+
+  const user = await repo.getUserById(targetUserId);
+  if (!user) return { notFound: true };
+  if (user.role === 'admin') return { invalidTarget: true };
+
+  const session = await repo.createAdditionalSession(user.id, {
+    userAgent: options?.userAgent ?? null,
+    ipAddress: options?.ipAddress ?? null,
+    impersonator: actor,
+  });
+
+  return {
+    ok: true,
+    token: signSessionToken({ id: user.id, email: user.email }, session.tokenVersion, actor),
+    refreshToken: session.token,
+    user: buildSessionUser(user, actor),
+  };
+}
+
+export type StopImpersonationResult =
+  | { ok: true; token: string; refreshToken: string; user: SessionUser }
+  | { invalid: true };
+
+export async function stopImpersonation(
+  actor: SessionActor,
+  options?: { userAgent?: string | null; ipAddress?: string | null },
+): Promise<StopImpersonationResult> {
+  const admin = await repo.getUserById(actor.userId);
+  if (!admin || admin.role !== 'admin' || admin.email.trim().toLowerCase() !== actor.email.trim().toLowerCase()) {
+    return { invalid: true };
+  }
+
+  const session = await repo.createAdditionalSession(admin.id, {
+    userAgent: options?.userAgent ?? null,
+    ipAddress: options?.ipAddress ?? null,
+  });
+
+  return {
+    ok: true,
+    token: signSessionToken({ id: admin.id, email: admin.email }, session.tokenVersion),
+    refreshToken: session.token,
+    user: buildSessionUser(admin),
   };
 }
 

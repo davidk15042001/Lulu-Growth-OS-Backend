@@ -1,7 +1,9 @@
 import type { Response, NextFunction } from 'express';
 import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
-import { forbidden, successResponse } from '../../utils/response.js';
+import { forbidden, jsonError, successResponse } from '../../utils/response.js';
 import * as repo from './admin.repo.js';
+import * as authService from '../auth/auth.service.js';
+import { setRefreshTokenCookie } from '../auth/auth.controller.js';
 
 const ADMIN_BILLING_EMAIL = 'lulu.ai.cn@gmail.com';
 
@@ -100,6 +102,30 @@ export async function patchUser(req: AuthedRequest, res: Response, next: NextFun
     const result = await repo.updateUserStatus(userId, action);
     if (!result) return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } });
     return successResponse(res, `User ${action} complete`, result);
+  } catch (error) { next(error); }
+}
+
+export async function impersonateUser(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
+    if (!userId) return jsonError(res, 400, 'INVALID_USER_ID', 'User ID is required');
+
+    const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+    const result = await authService.impersonateUser(
+      { userId: req.user!.id, email: req.user!.email },
+      userId,
+      { userAgent, ipAddress: req.ip ?? null },
+    );
+
+    if ('notFound' in result) return jsonError(res, 404, 'USER_NOT_FOUND', 'User not found');
+    if ('invalidTarget' in result) return jsonError(res, 409, 'IMPERSONATION_INVALID_TARGET', 'This account cannot be impersonated');
+
+    setRefreshTokenCookie(res, result.refreshToken);
+    return successResponse(res, 'Impersonation started', {
+      token: result.token,
+      user: result.user,
+    });
   } catch (error) { next(error); }
 }
 
