@@ -58,6 +58,23 @@ function describePageContext(page: AgentPageContext | null) {
   });
 }
 
+function buildInitialPlan(
+  module: AgentModule,
+  capabilities: ReturnType<typeof getAgentCapabilities>,
+  executionMode: 'analysis_only' | 'autonomous',
+  page: AgentPageContext | null,
+) {
+  return {
+    version: 2,
+    module,
+    capabilities,
+    executionMode,
+    page,
+    agents: [] as string[],
+    steps: [] as Array<{ id: string; role: string; title: string }>,
+  };
+}
+
 async function persistPageSnapshot(
   runId: string,
   workspaceId: string,
@@ -220,17 +237,32 @@ export async function startRun(
   const subscription = await repo.getWorkspacePlan(workspaceId);
   if (subscription.status !== 'active' && subscription.status !== 'trialing') throw new AppError(403, 'AGENT_PLAN_INACTIVE', 'An active workspace subscription is required for agent analysis');
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
+  if (pageInput && !page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');
   const resolvedModule = resolveAgentModule(isAgentModule(module) ? module : 'general', page);
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
   if (!capabilities.analyze) throw new AppError(403, 'AGENT_EXPLORER_READ_ONLY', 'Explorer is read-only and does not run AI analysis. Choose Starter or AI.');
   const executionMode = capabilities.autonomous ? 'autonomous' : 'analysis_only';
+  const initialPlan = buildInitialPlan(resolvedModule, capabilities, executionMode, page);
+  let run;
+  let created = true;
   if (page && dedupeMinutes) {
-    const recentRun = await repo.getRecentPageRun(workspaceId, page.pageId, dedupeMinutes);
-    if (recentRun) return recentRun;
+    const result = await repo.createOrReusePageRun({
+      workspaceId,
+      userId,
+      goal,
+      pageId: page.pageId,
+      dedupeMinutes,
+      initialPlan,
+    });
+    run = result.run;
+    created = result.created;
+  } else {
+    run = await repo.createRun(workspaceId, userId, goal, page ? initialPlan : null);
   }
-  const run = await repo.createRun(workspaceId, userId, goal);
   if (!run) throw new AppError(500, 'AGENT_RUN_CREATION_FAILED', 'The agent run could not be created');
-  void executeRun(run.id, workspaceId, userId, goal, executionMode, resolvedModule, capabilities, page, true);
+  if (created) {
+    void executeRun(run.id, workspaceId, userId, goal, executionMode, resolvedModule, capabilities, page, true);
+  }
   return run;
 }
 export async function startAutomaticRun(
@@ -242,16 +274,32 @@ export async function startAutomaticRun(
 ) {
   const subscription = await repo.getWorkspacePlan(workspaceId);
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
+  if (pageInput && !page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');
   const resolvedModule = resolveAgentModule(module, page);
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
   if ((subscription.status !== 'active' && subscription.status !== 'trialing') || !capabilities.automatic || !capabilities.analyze) return null;
+  const executionMode = capabilities.autonomous ? 'autonomous' : 'analysis_only';
+  const initialPlan = buildInitialPlan(resolvedModule, capabilities, executionMode, page);
+  let run;
+  let created = true;
   if (page && dedupeMinutes) {
-    const recentRun = await repo.getRecentPageRun(workspaceId, page.pageId, dedupeMinutes);
-    if (recentRun) return recentRun;
+    const result = await repo.createOrReusePageRun({
+      workspaceId,
+      userId: null,
+      goal,
+      pageId: page.pageId,
+      dedupeMinutes,
+      initialPlan,
+    });
+    run = result.run;
+    created = result.created;
+  } else {
+    run = await repo.createRun(workspaceId, null, goal, page ? initialPlan : null);
   }
-  const run = await repo.createRun(workspaceId, null, goal);
   if (!run) throw new AppError(500, 'AGENT_AUTOMATIC_RUN_CREATION_FAILED', 'The automatic analysis run could not be created');
-  void executeRun(run.id, workspaceId, 'system', goal, capabilities.autonomous ? 'autonomous' : 'analysis_only', resolvedModule, capabilities, page, true);
+  if (created) {
+    void executeRun(run.id, workspaceId, 'system', goal, executionMode, resolvedModule, capabilities, page, true);
+  }
   return run;
 }
 export async function listRuns(workspaceId: string, pageId?: string) { return repo.listRuns(workspaceId, 50, pageId); }

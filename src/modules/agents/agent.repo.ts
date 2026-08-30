@@ -1,4 +1,5 @@
-import { query } from '../../db/pool.js';
+import type { PoolClient } from 'pg';
+import { query, withTransaction } from '../../db/pool.js';
 import type { AgentRun, AgentRunEvent, AgentStep } from './agent.types.js';
 
 const runSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", goal, status, plan,
@@ -12,9 +13,15 @@ const stepSelect = `id, run_id AS "runId", workspace_id AS "workspaceId", sequen
 const eventSelect = `id, run_id AS "runId", step_id AS "stepId", workspace_id AS "workspaceId",
  event_type AS "eventType", agent_role AS "agentRole", payload, created_at AS "createdAt"`;
 
-export async function createRun(workspaceId: string, userId: string | null, goal: string) {
-  const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (workspace_id, created_by, goal)
-    VALUES ($1, $2, $3) RETURNING ${runSelect}`, [workspaceId, userId, goal]);
+export async function createRun(
+  workspaceId: string,
+  userId: string | null,
+  goal: string,
+  plan: Record<string, unknown> | null = null,
+  client?: PoolClient,
+) {
+  const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (workspace_id, created_by, goal, plan)
+    VALUES ($1, $2, $3, $4) RETURNING ${runSelect}`, [workspaceId, userId, goal, plan], client);
   return rows[0];
 }
 export async function listAutomatedTargets() {
@@ -25,7 +32,7 @@ export async function hasRecentAutomaticRun(workspaceId: string, goal: string, m
   const { rows } = await query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM agent_runs WHERE workspace_id=$1 AND goal=$2 AND created_at > NOW() - ($3 * INTERVAL '1 minute') AND status IN ('queued','planning','running','waiting_approval','completed')) AS exists`, [workspaceId, goal, minutes]);
   return Boolean(rows[0]?.exists);
 }
-export async function getRecentPageRun(workspaceId: string, pageId: string, minutes = 45) {
+export async function getRecentPageRun(workspaceId: string, pageId: string, minutes = 45, client?: PoolClient) {
   const { rows } = await query<AgentRun>(`SELECT ${runSelect}
     FROM agent_runs
     WHERE workspace_id=$1
@@ -33,8 +40,27 @@ export async function getRecentPageRun(workspaceId: string, pageId: string, minu
       AND updated_at > NOW() - ($3 * INTERVAL '1 minute')
       AND status IN ('queued','planning','running','waiting_approval','completed')
     ORDER BY updated_at DESC
-    LIMIT 1`, [workspaceId, pageId, minutes]);
+    LIMIT 1`, [workspaceId, pageId, minutes], client);
   return rows[0] ?? null;
+}
+
+export async function createOrReusePageRun(input: {
+  workspaceId: string;
+  userId: string | null;
+  goal: string;
+  pageId: string;
+  dedupeMinutes: number;
+  initialPlan: Record<string, unknown>;
+}) {
+  return withTransaction(async (client) => {
+    await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`agent-page-run:${input.workspaceId}:${input.pageId}`], client);
+    const recentRun = await getRecentPageRun(input.workspaceId, input.pageId, input.dedupeMinutes, client);
+    if (recentRun) {
+      return { run: recentRun, created: false as const };
+    }
+    const run = await createRun(input.workspaceId, input.userId, input.goal, input.initialPlan, client);
+    return { run, created: true as const };
+  });
 }
 export async function listRuns(workspaceId: string, limit = 50, pageId?: string) {
   const values: unknown[] = [workspaceId];
