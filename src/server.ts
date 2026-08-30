@@ -10,6 +10,8 @@ import { startEmailSyncWorker, stopEmailSyncWorker } from './modules/email/email
 import { startOnboardingFileCleanupWorker, stopOnboardingFileCleanupWorker } from './modules/onboarding/onboarding-cleanup.worker.js';
 import { startPaygBillingWorker, stopPaygBillingWorker } from './modules/billing/payg-billing.worker.js';
 import { startWebsiteGenerationWorker, stopWebsiteGenerationWorker } from './modules/websites/website.worker.js';
+import { startCalendarSyncWorker, stopCalendarSyncWorker } from './modules/calendar/calendar.worker.js';
+import { startRateLimitCleanupWorker, stopRateLimitCleanupWorker } from './middlewares/rateLimit.middleware.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -26,6 +28,8 @@ async function bootstrap() {
     startAutomaticAnalysisWorker();
     if (hasDb) {
       startEmailSyncWorker();
+      startCalendarSyncWorker();
+      startRateLimitCleanupWorker();
       startWebsiteGenerationWorker();
       startOnboardingFileCleanupWorker();
       startPaygBillingWorker();
@@ -44,6 +48,8 @@ async function bootstrap() {
     if (workersEnabled) {
       stopAutomaticAnalysisWorker();
       stopEmailSyncWorker();
+      stopCalendarSyncWorker();
+      stopRateLimitCleanupWorker();
       stopWebsiteGenerationWorker();
       stopOnboardingFileCleanupWorker();
       stopPaygBillingWorker();

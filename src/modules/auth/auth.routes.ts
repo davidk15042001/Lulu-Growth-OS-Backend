@@ -1,13 +1,30 @@
 import { Router } from 'express';
+import type { Request } from 'express';
+import crypto from 'node:crypto';
 import * as controller from './auth.controller.js';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
-import { otpLimiter } from '../../middlewares/rateLimit.middleware.js';
+import { dbRateLimit, otpLimiter } from '../../middlewares/rateLimit.middleware.js';
 
 const router = Router();
 
+const authLimitMessage = 'Too many authentication attempts. Please wait and try again.';
+function emailIdentifier(req: Request) {
+  const value = (req.body as { email?: unknown } | undefined)?.email;
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const digest = crypto.createHash('sha256').update(value.trim().toLowerCase()).digest('hex');
+  return `email:${digest}`;
+}
+
+const registrationLimiter = dbRateLimit({ keyPrefix: 'auth-register', windowMs: 60 * 60 * 1000, limit: 10, message: authLimitMessage });
+const loginIpLimiter = dbRateLimit({ keyPrefix: 'auth-login-ip', windowMs: 15 * 60 * 1000, limit: 30, message: authLimitMessage });
+const loginAccountLimiter = dbRateLimit({ keyPrefix: 'auth-login-account', windowMs: 15 * 60 * 1000, limit: 20, message: authLimitMessage, identifier: emailIdentifier });
+const refreshLimiter = dbRateLimit({ keyPrefix: 'auth-refresh', windowMs: 60 * 60 * 1000, limit: 120, message: authLimitMessage });
+const passwordResetIpLimiter = dbRateLimit({ keyPrefix: 'auth-password-reset-ip', windowMs: 60 * 60 * 1000, limit: 10, message: authLimitMessage });
+const passwordResetAccountLimiter = dbRateLimit({ keyPrefix: 'auth-password-reset-account', windowMs: 60 * 60 * 1000, limit: 5, message: authLimitMessage, identifier: emailIdentifier });
+
 router.route('/register')
-  .post(controller.register)
+  .post(registrationLimiter, controller.register)
   .all(methodNotAllowed);
 
 router.route('/verify-otp')
@@ -15,11 +32,11 @@ router.route('/verify-otp')
   .all(methodNotAllowed);
 
 router.route('/login')
-  .post(controller.login)
+  .post(loginIpLimiter, loginAccountLimiter, controller.login)
   .all(methodNotAllowed);
 
 router.route('/refresh')
-  .post(controller.refresh)
+  .post(refreshLimiter, controller.refresh)
   .all(methodNotAllowed);
 
 router.route('/logout')
@@ -31,7 +48,7 @@ router.route('/logout-all')
   .all(methodNotAllowed);
 
 router.route('/forgot-password')
-  .post(controller.forgotPassword)
+  .post(passwordResetIpLimiter, passwordResetAccountLimiter, controller.forgotPassword)
   .all(methodNotAllowed);
 
 router.route('/resend-otp')

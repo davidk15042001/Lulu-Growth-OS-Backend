@@ -42,7 +42,13 @@ async function providerRequest(provider: WebsiteProvider, url: string, token: st
         retryAfterSeconds: response.headers.get('retry-after'),
       });
     }
-    throw new AppError(502, response.status === 401 || response.status === 403 ? 'WEBSITE_PROVIDER_WRITE_SCOPE_MISSING' : 'WEBSITE_PROVIDER_REQUEST_FAILED', `The ${provider} provider rejected the website request`, { providerHttpStatus: response.status, providerCode: data?.code, providerMessage });
+    const providerErrorCode =
+      response.status === 401 || response.status === 403
+        ? /disabled/i.test(providerMessage)
+          ? 'WEBSITE_PROVIDER_ENDPOINT_DISABLED'
+          : 'WEBSITE_PROVIDER_WRITE_SCOPE_MISSING'
+        : 'WEBSITE_PROVIDER_REQUEST_FAILED';
+    throw new AppError(providerErrorCode === 'WEBSITE_PROVIDER_REQUEST_FAILED' ? 502 : 403, providerErrorCode, `The ${provider} provider rejected the website request`, { providerHttpStatus: response.status, providerCode: data?.code, providerMessage });
   }
   throw new AppError(429, 'WEBSITE_PROVIDER_RATE_LIMITED', `The ${provider} provider is temporarily rate limiting website requests`);
 }

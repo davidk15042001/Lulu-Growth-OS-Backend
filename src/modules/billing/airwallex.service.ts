@@ -6,6 +6,12 @@ import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
 import { startContentRefresh } from '../content-generation/content-generation.service.js';
+import { analyzeChannel } from '../search-intelligence/search-intelligence.service.js';
+import { discoverCompetitors } from '../onboarding/onboarding.service.js';
+import * as onboardingRepo from '../onboarding/onboarding.repo.js';
+import { findWorkspaceById } from '../workspaces/workspace.repo.js';
+import { startAutomaticWebsiteGeneration, syncWordpressProviderSites } from '../websites/website.automation.service.js';
+import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
 import { applyPaygInvoiceWebhook, ensurePaygProfile } from './payg-billing.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
@@ -302,6 +308,139 @@ async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey
 
 const TEST_PLAN_PASSWORD = '#Plumbum50#';
 
+function detectSearchLanguageCode(languages: string[]) {
+  const primary = String(languages[0] ?? '').trim().toLowerCase();
+  if (!primary) return 'en';
+  if (primary.startsWith('de') || primary.includes('german') || primary.includes('deutsch')) return 'de';
+  if (primary.startsWith('fr') || primary.includes('french') || primary.includes('francais') || primary.includes('français')) return 'fr';
+  if (primary.startsWith('es') || primary.includes('spanish') || primary.includes('espanol') || primary.includes('español')) return 'es';
+  if (primary.startsWith('it') || primary.includes('italian') || primary.includes('italiano')) return 'it';
+  if (primary.startsWith('pt') || primary.includes('portuguese') || primary.includes('português') || primary.includes('portugues')) return 'pt';
+  if (primary.startsWith('nl') || primary.includes('dutch') || primary.includes('nederlands')) return 'nl';
+  return primary.slice(0, 2) || 'en';
+}
+
+async function claimPostPaymentAutomation(workspaceId: string, trigger: string) {
+  const claimedAt = new Date().toISOString();
+  const result = await query(
+    `UPDATE workspace_subscriptions
+     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+           'postPaymentAutomationStartedAt', $2,
+           'postPaymentAutomationTrigger', $3
+         ),
+         updated_at = NOW()
+     WHERE workspace_id = $1
+       AND (COALESCE(metadata, '{}'::jsonb)->>'postPaymentAutomationStartedAt') IS NULL
+     RETURNING workspace_id`,
+    [workspaceId, claimedAt, trigger],
+  );
+  return result.rowCount > 0;
+}
+
+async function startPostPaymentSearchAutomation(workspaceId: string, userId: string, languageCode: string) {
+  const input = {
+    locationCode: 2840,
+    languageCode,
+    depth: 20,
+    maxKeywords: 10,
+    device: 'desktop' as const,
+    autoApply: true,
+  };
+
+  for (const channel of ['seo', 'geo', 'aeo'] as const) {
+    try {
+      await analyzeChannel(workspaceId, userId, channel, input);
+    } catch (error) {
+      logger.error({ error, workspaceId, userId, channel }, 'Post-payment search automation failed');
+    }
+  }
+}
+
+async function startPostPaymentWebsiteAutomation(workspaceId: string, userId: string) {
+  let queuedWorker = false;
+
+  try {
+    const platforms = await onboardingRepo.listPlatforms(workspaceId);
+    const connectedPlatforms = new Set(
+      platforms
+        .filter((platform) => platform.connectionStatus === 'connected' && platform.integrationKey)
+        .map((platform) => platform.integrationKey as string),
+    );
+
+    if (connectedPlatforms.has('wordpress')) {
+      try {
+        const sites = await syncWordpressProviderSites(workspaceId);
+        const wordpressSites = sites.filter((site) => site.provider === 'wordpress' && site.externalSiteId && site.status !== 'error');
+        if (wordpressSites.length === 1) {
+          await startAutomaticWebsiteGeneration({
+            workspaceId,
+            userId,
+            provider: 'wordpress',
+            targetMode: 'existing',
+            siteId: wordpressSites[0]!.id,
+          });
+          queuedWorker = true;
+        } else if (wordpressSites.length > 1) {
+          logger.info({ workspaceId, siteCount: wordpressSites.length }, 'Post-payment WordPress website automation skipped because a site selection is required');
+        }
+      } catch (error) {
+        logger.error({ error, workspaceId, userId, provider: 'wordpress' }, 'Post-payment website automation failed');
+      }
+    }
+
+    if (connectedPlatforms.has('webflow')) {
+      try {
+        await startAutomaticWebsiteGeneration({
+          workspaceId,
+          userId,
+          provider: 'webflow',
+          targetMode: 'existing',
+        });
+        queuedWorker = true;
+      } catch (error) {
+        logger.error({ error, workspaceId, userId, provider: 'webflow' }, 'Post-payment website automation failed');
+      }
+    }
+
+    if (queuedWorker) requestWebsiteGenerationWorkerRun();
+  } catch (error) {
+    logger.error({ error, workspaceId, userId }, 'Post-payment website automation orchestration failed');
+  }
+}
+
+async function startPostPaymentAutomation(workspaceId: string, trigger: string) {
+  const claimed = await claimPostPaymentAutomation(workspaceId, trigger);
+  if (!claimed) return false;
+
+  const workspace = await findWorkspaceById(workspaceId);
+  if (!workspace) {
+    logger.warn({ workspaceId, trigger }, 'Post-payment automation skipped because the workspace could not be loaded');
+    return false;
+  }
+
+  const userId = workspace.createdBy;
+  const languageCode = detectSearchLanguageCode(workspace.languages);
+
+  void startContentRefresh(workspaceId, 'system').catch((error) => logger.error({ error, workspaceId, trigger }, 'Post-payment content refresh could not be queued'));
+  void (async () => {
+    try {
+      const competitors = await onboardingRepo.listCompetitors(workspaceId);
+      if (competitors.length === 0) await discoverCompetitors(workspaceId, userId);
+    } catch (error) {
+      logger.error({ error, workspaceId, userId, trigger }, 'Post-payment competitor discovery failed');
+    }
+    try {
+      await queueInitialBusinessAnalysis(workspaceId);
+    } catch (error) {
+      logger.error({ error, workspaceId, trigger }, 'Post-payment initial analysis could not be queued');
+    }
+  })();
+  void startPostPaymentSearchAutomation(workspaceId, userId, languageCode);
+  void startPostPaymentWebsiteAutomation(workspaceId, userId);
+
+  return true;
+}
+
 export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string; password?: string }) {
   const config = planConfig[input.planKey];
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
@@ -434,7 +573,7 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
     await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
   }
   await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
-  void queueInitialBusinessAnalysis(workspaceId).catch((error) => logger.error({ error, workspaceId }, 'Post-payment initial analysis could not be queued'));
+  void startPostPaymentAutomation(workspaceId, 'checkout_sync').catch((error) => logger.error({ error, workspaceId, checkoutId }, 'Post-payment automation could not be queued after checkout sync'));
   return { checkoutId, planKey: local.rows[0].plan_key, status: 'active' as const, providerStatus, subscriptionId, invoiceId };
 }
 
@@ -541,8 +680,7 @@ export async function handleWebhook(event: AirwallexObject) {
         await ensurePaygProfile(workspaceId, typeof webhookPaymentSourceId === 'string' ? webhookPaymentSourceId : null);
       }
       await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
-      void queueInitialBusinessAnalysis(workspaceId).catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment initial analysis could not be queued'));
-      void startContentRefresh(workspaceId, 'system').catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment content refresh could not be queued'));
+      void startPostPaymentAutomation(workspaceId, `webhook:${eventType}`).catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment automation could not be queued from webhook'));
     }
     const invoiceId = String(data.invoice_id ?? data.invoice?.id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? checkout.invoice_id ?? checkout.latest_invoice_id ?? '');
     const planKey = metadata.plan_key as BillingPlanKey | undefined;

@@ -2,13 +2,33 @@ import { Buffer } from 'node:buffer';
 import { env } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 
+function normalizeApiKey(value: string) {
+  const trimmed = value.trim();
+  return trimmed.toLowerCase().startsWith('basic ')
+    ? trimmed.slice(6).trim()
+    : trimmed;
+}
+
 function requireCredentials() {
+  if (env.DATAFORSEO_API_KEY) {
+    const normalizedKey = normalizeApiKey(env.DATAFORSEO_API_KEY);
+
+    if (normalizedKey.includes(':')) {
+      return Buffer.from(normalizedKey, 'utf8').toString('base64');
+    }
+
+    return normalizedKey;
+  }
+
   if (!env.DATAFORSEO_LOGIN || !env.DATAFORSEO_PASSWORD) {
     throw new AppError(
       503,
       'DATAFORSEO_NOT_CONFIGURED',
       'DataForSEO credentials are not configured on the server',
-      { requiredEnv: ['DATAFORSEO_LOGIN', 'DATAFORSEO_PASSWORD'] },
+      {
+        requiredEnv: ['DATAFORSEO_API_KEY'],
+        legacyEnv: ['DATAFORSEO_LOGIN', 'DATAFORSEO_PASSWORD'],
+      },
     );
   }
 

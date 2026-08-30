@@ -1,13 +1,21 @@
 import { spawn } from 'node:child_process';
+import path from 'node:path';
 
 const port = 4010;
+const childEnv = { ...process.env };
+delete childEnv.DATABASE_URL;
+
 const child = spawn(process.execPath, ['dist/server.js'], {
   env: {
-    ...process.env,
+    ...childEnv,
+    // A production bundle smoke test must not depend on a developer's local
+    // database or optional provider keys from `.env`.
+    DOTENV_CONFIG_PATH: path.resolve('.env.smoke-disabled'),
     PORT: String(port),
     NODE_ENV: 'test',
     JWT_SECRET: '0123456789abcdef0123456789abcdef',
     RUN_MIGRATIONS_ON_STARTUP: 'false',
+    BACKGROUND_WORKERS_ENABLED: 'false',
     LOG_LEVEL: 'fatal',
   },
   stdio: ['ignore', 'pipe', 'pipe'],

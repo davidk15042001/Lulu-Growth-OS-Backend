@@ -4,7 +4,7 @@ Multi-tenant TypeScript/Express API and PostgreSQL data layer for the Lulu Growt
 
 ## Included
 
-- Email/password authentication, OTP verification, refresh-token rotation and password reset
+- Email/password authentication, refresh-token rotation and password reset codes
 - Workspace isolation with `owner`, `admin`, `member` and `viewer` roles, invitations and member management
 - Complete onboarding persistence for company data, offerings, platforms and AI preferences
 - 98 typed resource categories covering CRM, Sales, Marketing, Advertising, Ecommerce, Finance, Intelligence and AI
@@ -135,18 +135,18 @@ Content-Type: application/json
 
 ## AI integration
 
-AI conversation storage works without a provider key. Alibaba DashScope is the default provider:
+AI conversation storage works without a provider key. DeepSeek is the default provider:
 
 ```dotenv
-AI_PROVIDER=alibaba
-DASHSCOPE_API_KEY=...
-DASHSCOPE_BASE_URL=https://dashscope-intl.aliyuncs.com/compatible-mode/v1
-DASHSCOPE_MODEL=qwen3.7-plus
+AI_PROVIDER=deepseek
+DEEPSEEK_API_KEY=...
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-pro
 AI_REQUEST_TIMEOUT_MS=180000
 AI_MAX_RETRIES=1
 ```
 
-Set `AI_PROVIDER=openai` with `OPENAI_API_KEY` and `OPENAI_MODEL=gpt-5-mini`, or `AI_PROVIDER=groq` with the corresponding Groq variables, to use another provider. Website generation is processed by a database-backed worker with resumable page checkpoints. No API key is committed to the repository.
+Set `AI_PROVIDER=alibaba`, `AI_PROVIDER=openai`, or `AI_PROVIDER=groq` with the corresponding provider variables to use another provider. Website generation is processed by a database-backed worker with resumable page checkpoints. No API key is committed to the repository.
 
 ## Pay-as-you-go billing
 
@@ -165,4 +165,4 @@ Set `PAYG_SERVER_COST_USD_PER_DAY` to the real daily AWS cost allocated to one a
 
 Set all production environment variables, especially `DATABASE_URL`, `DATABASE_SSL=true`, `JWT_SECRET`, `CORS_ORIGIN`, the configured mail provider variables, and optionally your selected AI provider key. Set `REFRESH_COOKIE_SAME_SITE=none` when the HTTPS frontend and API are hosted on different sites; use `lax` when they share a site. Migrations are serialized with a PostgreSQL advisory lock. Set `RUN_MIGRATIONS_ON_STARTUP=false` only when migrations run in a separate release step.
 
-Use `BACKGROUND_WORKERS_ENABLED=false` on stateless API replicas so they only serve HTTP traffic. Run a separate worker process or worker deployment with `BACKGROUND_WORKERS_ENABLED=true` to handle email sync, website generation, onboarding cleanup, pay-as-you-go billing, and other background jobs without duplicating work across autoscaled API instances.
+Use `BACKGROUND_WORKERS_ENABLED=false` on stateless API replicas so they only serve HTTP traffic. Run a separate worker process or worker deployment with `BACKGROUND_WORKERS_ENABLED=true` to handle email and calendar sync, website generation, onboarding cleanup, pay-as-you-go billing, and other background jobs without duplicating work across autoscaled API instances. Cal.com requests use `CALENDAR_CALCOM_ALLOWED_HOSTS`; add an exact self-hosted HTTPS hostname there before connecting it.

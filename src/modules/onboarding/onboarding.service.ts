@@ -365,7 +365,10 @@ export async function completeOnboarding(workspaceId: string) {
   }
 
   await repo.completeOnboarding(workspaceId);
-  return { completed: true, completedAt: new Date().toISOString() };
+  return {
+    completed: true,
+    completedAt: new Date().toISOString(),
+  };
 }
 
 

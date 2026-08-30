@@ -5,6 +5,13 @@ const booleanString = z
   .enum(['true', 'false'])
   .transform((value) => value === 'true');
 
+const optionalNonEmptyString = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+}, z.string().min(1).optional());
+
 const EnvSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -41,6 +48,7 @@ const EnvSchema = z
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
     AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(180_000),
     AI_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
+    TRANSLATION_GLOBAL_CHARACTER_LIMIT_PER_HOUR: z.coerce.number().int().min(10_000).max(100_000_000).default(2_000_000),
     WEBSITE_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
     WEBSITE_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(90),
     WEBSITE_JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
@@ -60,6 +68,14 @@ const EnvSchema = z
     AWS_ACCESS_KEY_ID: z.string().min(1).optional(),
     AWS_SECRET_ACCESS_KEY: z.string().min(1).optional(),
     OAUTH_CALLBACK_BASE_URL: z.string().url().optional(),
+    CALENDAR_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
+    CALENDAR_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+    CALENDAR_MICROSOFT_CLIENT_ID: z.string().min(1).optional(),
+    CALENDAR_MICROSOFT_CLIENT_SECRET: z.string().min(1).optional(),
+    CALENDAR_MICROSOFT_TENANT: z.string().regex(/^[a-zA-Z0-9.-]+$/).default('common'),
+    CALENDAR_CALCOM_ALLOWED_HOSTS: z.string().min(1).default('api.cal.com'),
+    CALENDAR_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
+    CALENDAR_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
     EMAIL_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     EMAIL_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     EMAIL_MICROSOFT_CLIENT_ID: z.string().min(1).optional(),
@@ -90,8 +106,9 @@ const EnvSchema = z
     SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
     SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
     SHOPIFY_SCOPES: z.string().default('read_products,read_content'),
-    DATAFORSEO_LOGIN: z.string().min(1).optional(),
-    DATAFORSEO_PASSWORD: z.string().min(1).optional(),
+    DATAFORSEO_API_KEY: optionalNonEmptyString,
+    DATAFORSEO_LOGIN: optionalNonEmptyString,
+    DATAFORSEO_PASSWORD: optionalNonEmptyString,
     DATAFORSEO_BASE_URL: z.string().url().default('https://api.dataforseo.com'),
     AIRWALLEX_CLIENT_ID: z.string().min(1).optional(),
     AIRWALLEX_API_KEY: z.string().min(1).optional(),
@@ -137,6 +154,13 @@ const EnvSchema = z
 export type Env = z.infer<typeof EnvSchema>;
 
 const raw = { ...process.env } as Record<string, string | undefined>;
+
+// `.env.example` intentionally documents optional settings with empty values.
+// Treat those values as absent so optional schemas and defaults behave the same
+// whether a variable is omitted or copied as `NAME=`.
+for (const [name, value] of Object.entries(raw)) {
+  if (typeof value === 'string' && value.trim() === '') delete raw[name];
+}
 
 if (!raw.JWT_SECRET && (raw.NODE_ENV ?? 'development') !== 'production') {
   raw.JWT_SECRET = crypto.randomBytes(32).toString('hex');

@@ -56,6 +56,24 @@ type ChannelSummary = {
   lastAnalyzedAt: string | null;
 };
 
+type AppliedSearchTarget = {
+  provider: 'wordpress' | 'webflow' | 'shopify';
+  targetId: string;
+  label: string;
+  url: string | null;
+  status: 'applied' | 'drafted';
+};
+
+type FailedSearchTarget = {
+  provider: 'wordpress' | 'webflow' | 'shopify';
+  targetId: string;
+  label: string;
+  url: string | null;
+  status: 'failed';
+  code: string;
+  message: string;
+};
+
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -68,6 +86,13 @@ function arrayValue<T = unknown>(value: unknown): T[] {
 
 function normalizeText(value: unknown) {
   return String(value ?? '').trim();
+}
+
+function isAutoApplyReadySite(site: WebsiteSite) {
+  return (
+    (site.provider === 'wordpress' || site.provider === 'webflow')
+    && ['connected', 'preview', 'publishing', 'published'].includes(site.status)
+  );
 }
 
 function normalizeDomain(value: string) {
@@ -231,7 +256,7 @@ function connectedTargetsFromSnapshot(
   sites: WebsiteSite[],
 ) {
   const websiteTargets = sites
-    .filter((site) => site.provider === 'wordpress' || site.provider === 'webflow')
+    .filter(isAutoApplyReadySite)
     .map((site) => ({
       provider: site.provider as 'wordpress' | 'webflow',
       id: site.id,
@@ -534,7 +559,7 @@ async function applyToWordpressSite(
   site: WebsiteSite,
   page: ReturnType<typeof buildInsightPage>,
   publish: boolean,
-) {
+): Promise<AppliedSearchTarget> {
   if (!site.externalSiteId) {
     throw new AppError(409, 'WEBSITE_PROVIDER_CONFIGURATION_MISSING', 'WordPress site ID is missing');
   }
@@ -581,7 +606,7 @@ async function applyToWebflowSite(
   site: WebsiteSite,
   page: ReturnType<typeof buildInsightPage>,
   publish: boolean,
-) {
+): Promise<AppliedSearchTarget> {
   const collectionId = normalizeText(objectValue(site.settings).collectionId);
   if (!collectionId || !site.externalSiteId) {
     throw new AppError(
@@ -680,7 +705,7 @@ async function applyToShopify(
   platform: Awaited<ReturnType<typeof onboardingService.getSnapshot>>['platforms'][number],
   page: ReturnType<typeof buildInsightPage>,
   publish: boolean,
-) {
+): Promise<AppliedSearchTarget> {
   const settings = objectValue(platform.settings);
   const shop = normalizeText(settings.shop);
   if (!shop) {
@@ -746,7 +771,7 @@ export async function applyChannel(
   const selectedSites = input.targetSiteIds?.length
     ? sites.filter((site) => input.targetSiteIds!.includes(site.id))
     : sites;
-  const connectedSites = selectedSites.filter((site) => site.provider === 'wordpress' || site.provider === 'webflow');
+  const connectedSites = selectedSites.filter(isAutoApplyReadySite);
   const shopifyPlatforms = snapshot.platforms.filter((platform) =>
     platform.integrationKey === 'shopify'
     && (!input.targetSiteIds?.length || input.targetSiteIds.includes(platform.id)),
@@ -760,21 +785,62 @@ export async function applyChannel(
     );
   }
 
-  const appliedTargets = [];
+  const appliedTargets: AppliedSearchTarget[] = [];
+  const failedTargets: FailedSearchTarget[] = [];
+  const recordApplyFailure = (
+    provider: FailedSearchTarget['provider'],
+    targetId: string,
+    label: string,
+    url: string | null,
+    error: unknown,
+  ) => {
+    if (error instanceof AppError) {
+      const details = objectValue(error.details);
+      failedTargets.push({
+        provider,
+        targetId,
+        label,
+        url,
+        status: 'failed',
+        code: error.code,
+        message: normalizeText(details.providerMessage) || error.message,
+      });
+      return;
+    }
+    failedTargets.push({
+      provider,
+      targetId,
+      label,
+      url,
+      status: 'failed',
+      code: 'WEBSITE_PROVIDER_REQUEST_FAILED',
+      message: error instanceof Error ? error.message : 'The provider request failed',
+    });
+  };
   for (const site of connectedSites) {
-    if (site.provider === 'wordpress') {
-      appliedTargets.push(await applyToWordpressSite(workspaceId, site, page, input.publish));
-    } else if (site.provider === 'webflow') {
-      appliedTargets.push(await applyToWebflowSite(workspaceId, site, page, input.publish));
+    const provider = site.provider === 'wordpress' ? 'wordpress' : 'webflow';
+    try {
+      if (site.provider === 'wordpress') {
+        appliedTargets.push(await applyToWordpressSite(workspaceId, site, page, input.publish));
+      } else if (site.provider === 'webflow') {
+        appliedTargets.push(await applyToWebflowSite(workspaceId, site, page, input.publish));
+      }
+    } catch (error) {
+      recordApplyFailure(provider, site.id, site.name, site.externalSiteUrl, error);
     }
   }
   for (const platform of shopifyPlatforms) {
-    appliedTargets.push(await applyToShopify(workspaceId, platform, page, input.publish));
+    try {
+      appliedTargets.push(await applyToShopify(workspaceId, platform, page, input.publish));
+    } catch (error) {
+      recordApplyFailure('shopify', platform.id, platform.name, normalizeText(objectValue(platform.settings).siteUrl) || null, error);
+    }
   }
 
   return {
     channel,
     appliedTargets,
+    failedTargets,
     publish: input.publish,
     page,
   };
@@ -829,6 +895,6 @@ export async function analyzeChannel(
     ...summary,
     analyzedKeywords: analysisKeywords,
     autoApply: input.autoApply,
-    ...(applied ? { appliedTargets: applied.appliedTargets, generatedPage: applied.page } : {}),
+      ...(applied ? { appliedTargets: applied.appliedTargets, failedTargets: applied.failedTargets, generatedPage: applied.page } : {}),
   };
 }
