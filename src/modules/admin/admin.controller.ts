@@ -126,8 +126,8 @@ export async function patchWorkspace(req: AuthedRequest, res: Response, next: Ne
   try {
     if (!requireAdmin(req, res)) return;
     const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
-    const action = req.body?.action as 'lock' | 'unlock' | 'reset-onboarding' | 'set-plan' | undefined;
-    if (!action || !['lock', 'unlock', 'reset-onboarding', 'set-plan'].includes(action)) {
+    const action = req.body?.action as 'lock' | 'unlock' | 'reset-onboarding' | 'skip-onboarding' | 'set-plan' | undefined;
+    if (!action || !['lock', 'unlock', 'reset-onboarding', 'skip-onboarding', 'set-plan'].includes(action)) {
       return res.status(422).json({ success: false, error: { code: 'INVALID_ACTION', message: 'Action invalid' } });
     }
     const planKey = typeof req.body?.planKey === 'string' ? req.body.planKey : undefined;

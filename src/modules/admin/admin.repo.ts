@@ -283,7 +283,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
   };
 }
 
-export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' | 'unlock' | 'reset-onboarding' | 'set-plan', planKey?: string) {
+export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' | 'unlock' | 'reset-onboarding' | 'skip-onboarding' | 'set-plan', planKey?: string) {
   switch (action) {
     case 'lock':
       await query(`UPDATE workspaces SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, [workspaceId]);
@@ -293,6 +293,17 @@ export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' 
       break;
     case 'reset-onboarding':
       await query(`UPDATE workspaces SET onboarding_step = 'company_information', onboarding_completed_at = NULL, updated_at = NOW() WHERE id = $1`, [workspaceId]);
+      break;
+    case 'skip-onboarding':
+      await query(
+        `UPDATE workspaces
+         SET onboarding_step = 'setup_complete',
+             onboarding_completed_at = COALESCE(onboarding_completed_at, NOW()),
+             onboarding_file_reupload_required = FALSE,
+             updated_at = NOW()
+         WHERE id = $1 AND deleted_at IS NULL`,
+        [workspaceId],
+      );
       break;
     case 'set-plan':
       if (planKey) {
