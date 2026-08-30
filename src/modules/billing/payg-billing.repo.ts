@@ -86,7 +86,7 @@ export async function allocateDailyServerUsage(providerCostUsd: number, customer
      WHERE p.enabled=TRUE
        AND s.provider='airwallex'
        AND s.status='active'
-       AND s.plan_key IN ('starter', 'ai', 'test')
+       AND s.plan_key IN ('starter', 'ai')
      ON CONFLICT (workspace_id, usage_date) DO NOTHING`,
     [providerCostUsd, customerCostUsd],
   );
@@ -147,7 +147,7 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
          AND p.current_period_end <= NOW()
          AND s.provider='airwallex'
          AND s.status='active'
-         AND s.plan_key IN ('starter', 'ai', 'test')
+         AND s.plan_key IN ('starter', 'ai')
          AND s.provider_customer_id IS NOT NULL
          AND NOT EXISTS (
            SELECT 1 FROM workspace_payg_periods active
@@ -323,6 +323,19 @@ async function clearWorkspaceAiBlock(client: PoolClient, workspaceId: string) {
   );
 }
 
+export async function disableWorkspacePaygBilling(workspaceId: string) {
+  await query(
+    `UPDATE workspace_payg_profiles
+     SET enabled=FALSE,
+         ai_access_blocked=FALSE,
+         blocked_at=NULL,
+         block_reason=NULL,
+         blocked_period_id=NULL
+     WHERE workspace_id=$1`,
+    [workspaceId],
+  );
+}
+
 export async function failPaygPeriod(periodId: string, code: string, message: string) {
   await query(
     `UPDATE workspace_payg_periods
@@ -380,20 +393,26 @@ export async function applyPaygInvoiceWebhook(input: {
 export async function assertAiBillingAccess(workspaceId: string, userId?: string | null) {
   if (await isBillingAdminUser(userId)) return;
   const { rows } = await query<{
+    planKey: string | null;
     blocked: boolean;
     reason: string | null;
     hostedInvoiceUrl: string | null;
     invoicePdfUrl: string | null;
   }>(
-    `SELECT p.ai_access_blocked AS blocked, p.block_reason AS reason,
+    `SELECT s.plan_key AS "planKey",
+            p.ai_access_blocked AS blocked, p.block_reason AS reason,
             pp.hosted_invoice_url AS "hostedInvoiceUrl",
             pp.invoice_pdf_url AS "invoicePdfUrl"
-     FROM workspace_payg_profiles p
+     FROM workspace_subscriptions s
+     LEFT JOIN workspace_payg_profiles p ON p.workspace_id=s.workspace_id
      LEFT JOIN workspace_payg_periods pp ON pp.id=p.blocked_period_id
-     WHERE p.workspace_id=$1`,
+     WHERE s.workspace_id=$1
+     ORDER BY s.updated_at DESC
+     LIMIT 1`,
     [workspaceId],
   );
   const state = rows[0];
+  if (state?.planKey === 'test') return;
   if (!state?.blocked) return;
   throw new AppError(402, 'AI_USAGE_PAYMENT_REQUIRED', 'AI functions are blocked until the outstanding usage invoice is paid.', {
     reason: state.reason,

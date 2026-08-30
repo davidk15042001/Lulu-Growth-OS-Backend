@@ -3,7 +3,6 @@ import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   addPaygInvoiceLineItems,
-  createPaygBillingCustomer,
   createPaygInvoiceDraft,
   fetchAirwallexInvoice,
   finalizePaygInvoice,
@@ -15,12 +14,10 @@ import {
   claimDuePaygPeriod,
   failPaygPeriod,
   finalizePaygPeriod,
-  listUnprovisionedTestBillingCustomers,
   markPaygLineItemsAdded,
   markPaygPeriodSkipped,
   repairCompletedProfilePointers,
   savePaygProviderInvoice,
-  saveTestBillingCustomer,
   type PaygPeriod,
 } from './payg-billing.repo.js';
 
@@ -105,30 +102,11 @@ async function issuePeriodInvoice(period: PaygPeriod) {
   logger.info({ periodId: period.id, workspaceId: period.workspaceId, invoiceId, apiCostUsd, serverCostUsd }, 'PAYG invoice finalized');
 }
 
-async function provisionTestBillingCustomers() {
-  for (const workspace of await listUnprovisionedTestBillingCustomers()) {
-    try {
-      const customer = await createPaygBillingCustomer({
-        workspaceId: workspace.workspaceId,
-        name: workspace.workspaceName,
-        email: workspace.customerEmail,
-      });
-      const customerId = String(customer.id ?? '');
-      if (!customerId) throw new AppError(502, 'AIRWALLEX_PAYG_CUSTOMER_ID_MISSING', 'Airwallex did not return a Billing Customer ID.');
-      await saveTestBillingCustomer(workspace.workspaceId, customerId);
-      logger.info({ workspaceId: workspace.workspaceId, customerId }, 'Test workspace enrolled in weekly PAYG billing');
-    } catch (error) {
-      logger.error({ error, workspaceId: workspace.workspaceId }, 'Test workspace PAYG customer provisioning failed');
-    }
-  }
-}
-
 export async function runPaygBillingCycle() {
   if (running) return;
   running = true;
   try {
     await repairCompletedProfilePointers();
-    await provisionTestBillingCustomers();
     const providerCost = env.PAYG_SERVER_COST_USD_PER_DAY;
     await allocateDailyServerUsage(providerCost, providerCost * AWS_USAGE_CUSTOMER_MULTIPLIER);
 

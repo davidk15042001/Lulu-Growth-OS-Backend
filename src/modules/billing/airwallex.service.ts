@@ -12,7 +12,7 @@ import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import { startAutomaticWebsiteGeneration, syncWordpressProviderSites } from '../websites/website.automation.service.js';
 import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
-import { applyPaygInvoiceWebhook, ensurePaygProfile } from './payg-billing.repo.js';
+import { applyPaygInvoiceWebhook, disableWorkspacePaygBilling, ensurePaygProfile } from './payg-billing.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -453,6 +453,12 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   if (input.planKey === 'test' && input.password !== TEST_PLAN_PASSWORD) {
     throw new AppError(422, 'TEST_PASSWORD_INVALID', 'The Test plan password is invalid.');
   }
+  if (input.planKey === 'test') {
+    await activateInternalPlan(input.workspaceId, 'test', { source: 'test-plan', activatedAt: new Date().toISOString(), billingExempt: true });
+    await disableWorkspacePaygBilling(input.workspaceId);
+    void startPostPaymentAutomation(input.workspaceId, 'test_plan_activation').catch((error) => logger.error({ error, workspaceId: input.workspaceId }, 'Test plan automation could not be queued'));
+    return { planKey: 'test' as const, free: true as const, status: 'active' as const };
+  }
 
   if (!env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID) {
     throw providerError(
@@ -559,9 +565,6 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
   );
 
   if (!completed) return { checkoutId, planKey: local.rows[0].plan_key, status: 'pending' as const, providerStatus };
-  if (local.rows[0].plan_key === 'test' && typeof paymentSourceId !== 'string') {
-    throw new AppError(409, 'TEST_PAYMENT_METHOD_REQUIRED', 'A saved card is required before the Test plan can be activated.');
-  }
 
   await query(
     `UPDATE workspace_subscriptions
@@ -569,7 +572,7 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
      WHERE workspace_id=$1`,
     [workspaceId, customerId, subscriptionId, local.rows[0].plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId, paymentSourceId })]
   );
-  if (local.rows[0].plan_key === 'starter' || local.rows[0].plan_key === 'ai' || local.rows[0].plan_key === 'test') {
+  if (local.rows[0].plan_key === 'starter' || local.rows[0].plan_key === 'ai') {
     await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
   }
   await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
@@ -668,15 +671,13 @@ export async function handleWebhook(event: AirwallexObject) {
     }
 
     const webhookPaymentSourceId = subscription.payment_source_id ?? checkout.payment_source_id ?? null;
-    const effectiveStatus = mappedStatus === 'active' && metadata.plan_key === 'test' && typeof webhookPaymentSourceId !== 'string'
-      ? 'trialing'
-      : mappedStatus;
+    const effectiveStatus = mappedStatus;
     await query(
       `UPDATE workspace_subscriptions SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=COALESCE($4, plan_key), status=$5, current_period_starts_at=COALESCE($6::timestamptz, current_period_starts_at), current_period_ends_at=COALESCE($7::timestamptz, current_period_ends_at), metadata=metadata || $8::jsonb, updated_at=NOW() WHERE workspace_id=$1`,
       [workspaceId, subscription.billing_customer_id ?? checkout.billing_customer_id ?? null, subscription.id ?? checkout.subscription_id ?? null, metadata.plan_key ?? null, effectiveStatus, subscription.current_period_starts_at ?? null, subscription.current_period_ends_at ?? null, JSON.stringify({ lastWebhookEventId: eventId, lastWebhookType: eventType, invoiceId: data.invoice_id ?? null, paymentSourceId: webhookPaymentSourceId })]
     );
     if (effectiveStatus === 'active') {
-      if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai' || metadata.plan_key === 'test') {
+      if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai') {
         await ensurePaygProfile(workspaceId, typeof webhookPaymentSourceId === 'string' ? webhookPaymentSourceId : null);
       }
       await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
@@ -686,7 +687,7 @@ export async function handleWebhook(event: AirwallexObject) {
     const planKey = metadata.plan_key as BillingPlanKey | undefined;
     if (invoiceId && (effectiveStatus === 'active' || eventType.includes('INVOICE') || eventType.includes('PAID'))) {
       try {
-        if (planKey === 'starter' || planKey === 'ai' || planKey === 'test') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
+        if (planKey === 'starter' || planKey === 'ai') await sendInvoiceEmailForWebhook(workspaceId, planKey, invoiceId, eventId);
       } catch (error) {
         logger.error({ code: 'BILLING_INVOICE_EMAIL_FAILED', error: error instanceof Error ? error.message : 'unknown_error', workspaceId, planKey, invoiceId, eventId }, 'Invoice email delivery failed');
       }

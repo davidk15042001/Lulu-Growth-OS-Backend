@@ -520,11 +520,12 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     ),
   ]);
   const current = paygCurrent.rows[0];
+  const subscriptionRow = subscription.rows[0] ?? null;
   const adminBillingBypass = await isBillingAdminUser(userId);
   return {
-    subscription: subscription.rows[0] ?? null,
+    subscription: subscriptionRow,
     usage: usage.rows,
-    payg: current ? {
+    payg: current && subscriptionRow?.planKey !== 'test' ? {
       enabled: current.enabled,
       currency: current.currency,
       intervalDays: current.intervalDays,
