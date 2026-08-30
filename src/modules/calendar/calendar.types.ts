@@ -58,6 +58,18 @@ export type CalendarEvent = {
   accountDisplayName: string | null;
 };
 
+export type CalendarEventSource = {
+  accountId: string;
+  provider: CalendarProvider;
+  sourceName: string | null;
+  accountEmail: string | null;
+  accountDisplayName: string | null;
+};
+
+export type UnifiedCalendarEvent = CalendarEvent & {
+  sources: CalendarEventSource[];
+};
+
 export type CalendarSyncJob = {
   id: string;
   workspaceId: string;

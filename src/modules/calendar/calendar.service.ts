@@ -3,6 +3,7 @@ import { encryptSecret } from '../../utils/secret-box.js';
 import * as repo from './calendar.repo.js';
 import { buildCalendarAuthorizationUrl } from './calendar.oauth.service.js';
 import { inspectTokenConnection, syncCalendarProvider } from './calendar.provider.service.js';
+import { mergeCalendarEvents } from './calendar.merge.js';
 import type { CalendarProvider } from './calendar.types.js';
 import type { ListEventsQuery } from './calendar.validator.js';
 
@@ -75,7 +76,8 @@ export async function executeSyncJob(workspaceId: string, accountId: string, job
 }
 
 export async function getOverview(workspaceId: string, filters: ListEventsQuery) {
-  const [accounts, events] = await Promise.all([repo.listAccounts(workspaceId), repo.listEvents(workspaceId, filters)]);
+  const [accounts, sourceEvents] = await Promise.all([repo.listAccounts(workspaceId), repo.listEvents(workspaceId, filters)]);
+  const events = mergeCalendarEvents(sourceEvents);
   const now = Date.now();
   const next7Days = now + 7 * 24 * 60 * 60 * 1000;
   return {

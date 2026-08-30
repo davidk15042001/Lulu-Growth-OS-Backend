@@ -6,9 +6,78 @@ import {
   syncCalendarProvider,
 } from '../src/modules/calendar/calendar.provider.service.js';
 import { tokenConnectSchema } from '../src/modules/calendar/calendar.validator.js';
-import type { CalendarAccountCredential } from '../src/modules/calendar/calendar.types.js';
+import { mergeCalendarEvents } from '../src/modules/calendar/calendar.merge.js';
+import type { CalendarAccountCredential, CalendarEvent } from '../src/modules/calendar/calendar.types.js';
+
+function calendarEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
+  const now = new Date().toISOString();
+  return {
+    id: 'event-1',
+    accountId: 'account-1',
+    provider: 'google',
+    providerEventId: 'provider-event-1',
+    sourceId: null,
+    sourceName: 'Primary',
+    title: 'Customer meeting',
+    description: null,
+    startAt: '2026-09-01T10:00:00.000Z',
+    endAt: '2026-09-01T11:00:00.000Z',
+    timezone: 'Europe/Berlin',
+    status: 'confirmed',
+    location: null,
+    meetingUrl: 'https://meet.google.com/abc-defg-hij?authuser=0',
+    organizerName: null,
+    organizerEmail: null,
+    attendeeCount: 0,
+    attendees: [],
+    rawData: {},
+    lastSyncedAt: now,
+    createdAt: now,
+    updatedAt: now,
+    accountEmail: 'owner@example.com',
+    accountDisplayName: 'Work',
+    ...overrides,
+  };
+}
 
 describe('calendar integration safety', () => {
+  it('merges the same appointment from multiple connected calendar sources', () => {
+    const events = mergeCalendarEvents([
+      calendarEvent({}),
+      calendarEvent({
+        id: 'event-2',
+        accountId: 'account-2',
+        provider: 'calendly',
+        providerEventId: 'provider-event-2',
+        sourceName: 'Calendly bookings',
+        accountEmail: 'sales@example.com',
+        accountDisplayName: 'Sales',
+        meetingUrl: 'https://meet.google.com/abc-defg-hij?utm_source=calendly',
+      }),
+    ]);
+
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0]?.sources.map((source) => source.provider), ['google', 'calendly']);
+  });
+
+  it('keeps different appointments in the same time slot separate', () => {
+    const events = mergeCalendarEvents([
+      calendarEvent({ title: 'Customer meeting' }),
+      calendarEvent({ id: 'event-2', accountId: 'account-2', providerEventId: 'provider-event-2', title: 'Internal review', meetingUrl: null }),
+    ]);
+
+    assert.equal(events.length, 2);
+  });
+
+  it('does not merge appointments with distinct meeting links', () => {
+    const events = mergeCalendarEvents([
+      calendarEvent({ title: 'Focus' }),
+      calendarEvent({ id: 'event-2', accountId: 'account-2', providerEventId: 'provider-event-2', title: 'Focus', meetingUrl: 'https://meet.google.com/different-room' }),
+    ]);
+
+    assert.equal(events.length, 2);
+  });
+
   it('normalizes the configured Cal.com API hostname', () => {
     assert.equal(normalizeCalcomBaseUrl(), 'https://api.cal.com');
     assert.equal(normalizeCalcomBaseUrl('https://API.CAL.COM/'), 'https://api.cal.com');
