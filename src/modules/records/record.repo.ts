@@ -155,6 +155,25 @@ export async function findRecord(
   return rows[0];
 }
 
+export async function listExecutionArtifactsBySourceRecordId(
+  workspaceId: string,
+  sourceRecordId: string,
+  client?: PoolClient
+) {
+  const { rows } = await query<WorkspaceRecord>(
+    `SELECT ${recordSelect}
+     FROM workspace_records
+     WHERE workspace_id = $1
+       AND deleted_at IS NULL
+       AND source = 'agent_executor'
+       AND COALESCE(data ->> 'sourceActionRecordId', '') = $2
+     ORDER BY created_at ASC, id ASC`,
+    [workspaceId, sourceRecordId],
+    client
+  );
+  return rows;
+}
+
 async function insertAudit(
   client: PoolClient,
   workspaceId: string,

@@ -79,6 +79,19 @@ function normalizeActionResourceType(value: unknown) {
   return typeof value === 'string' && isResourceType(value) ? value : 'ai_actions';
 }
 
+function resolveTargetSystem(module: string, resourceType: ResourceType) {
+  if (module === 'finance' || resourceType.startsWith('finance_')) return 'finance';
+  if (module === 'sales' || resourceType.startsWith('sales_')) return 'sales';
+  if (module === 'crm' || resourceType.startsWith('crm_')) return 'crm';
+  if (module === 'ads' || resourceType.startsWith('ad_')) return 'advertising';
+  if (module === 'marketing' || resourceType.startsWith('marketing_')) return 'marketing';
+  if (module === 'commerce' || resourceType.startsWith('ecommerce_')) return 'ecommerce';
+  if (module === 'website' || module === 'seo' || module === 'geo' || module === 'aeo') return 'website';
+  if (module === 'email' || module === 'calendar') return 'communication';
+  if (module === 'reputation') return 'reputation';
+  return 'ai';
+}
+
 function metricSummary(metrics: Awaited<ReturnType<typeof metricRepo.listMetrics>>) {
   return {
     total: metrics.length,
@@ -464,17 +477,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const approvedAt = compactText((input as Record<string, unknown>).approvedAt, 120) || null;
   const executionReady = policyDecision === 'allow';
   const approvalStatus = executionReady ? 'approved' : 'pending';
-  const targetSystem = resourceType.startsWith('finance_')
-    ? 'finance'
-    : resourceType.startsWith('sales_')
-      ? 'sales'
-      : resourceType.startsWith('crm_')
-        ? 'crm'
-        : resourceType.startsWith('marketing_') || resourceType.startsWith('ad_')
-          ? 'marketing'
-          : resourceType.startsWith('ecommerce_')
-            ? 'commerce'
-            : 'ai';
+  const targetSystem = resolveTargetSystem(module, resourceType);
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
     name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
@@ -494,7 +497,9 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       policyDecision,
       approvalStatus,
       executionReady,
+      executionStatus: executionReady ? 'queued' : 'waiting_approval',
       targetSystem,
+      targetModule: module,
       approvedBy,
       approvedAt,
       approvedAutomatically: approvedBy === 'system',
