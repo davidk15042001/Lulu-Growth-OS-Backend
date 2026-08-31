@@ -1,6 +1,6 @@
 import { query } from '../../db/pool.js';
 
-export const CONTENT_MODULES = ['website', 'seo', 'marketing', 'advertisement', 'email', 'analytics'] as const;
+export const CONTENT_MODULES = ['website', 'seo', 'marketing', 'advertisement', 'email', 'analytics', 'competitors', 'knowledge'] as const;
 export type ContentModule = typeof CONTENT_MODULES[number];
 
 const jobSelect = `id, workspace_id AS "workspaceId", snapshot_id AS "snapshotId", requested_by AS "requestedBy", status, current_phase AS "currentPhase", progress, modules, module_status AS "moduleStatus", error_message AS "errorMessage", attempt_count AS "attemptCount", worker_id AS "workerId", heartbeat_at AS "heartbeatAt", started_at AS "startedAt", completed_at AS "completedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;

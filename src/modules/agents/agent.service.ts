@@ -452,6 +452,7 @@ export async function startAutomaticRun(
   module: AgentModule,
   pageInput?: unknown,
   dedupeMinutes?: number,
+  actorUserId?: string,
 ) {
   const subscription = await repo.getWorkspacePlan(workspaceId);
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
@@ -459,8 +460,13 @@ export async function startAutomaticRun(
   const resolvedModule = resolveAgentModule(module, page);
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
   if ((subscription.status !== 'active' && subscription.status !== 'trialing') || !capabilities.automatic || !capabilities.analyze) return null;
-  const executionMode = capabilities.autonomous ? 'autonomous' : 'analysis_only';
-  const initialPlan = buildInitialPlan(resolvedModule, capabilities, executionMode, page);
+  const automaticCapabilities = {
+    ...capabilities,
+    act: false,
+    autonomous: false,
+  };
+  const executionMode = 'analysis_only';
+  const initialPlan = buildInitialPlan(resolvedModule, automaticCapabilities, executionMode, page);
   let run;
   let created = true;
   if (page && dedupeMinutes) {
@@ -479,7 +485,7 @@ export async function startAutomaticRun(
   }
   if (!run) throw new AppError(500, 'AGENT_AUTOMATIC_RUN_CREATION_FAILED', 'The automatic analysis run could not be created');
   if (created) {
-    void executeRun(run.id, workspaceId, 'system', goal, executionMode, resolvedModule, capabilities, page, true);
+    void executeRun(run.id, workspaceId, actorUserId ?? 'system', goal, executionMode, resolvedModule, automaticCapabilities, page, true);
   }
   return run;
 }

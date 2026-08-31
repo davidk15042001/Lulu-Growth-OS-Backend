@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>China Roadmap - 0 auf 10 Mio. RMB ARR</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg2: #0e1b33;
+      --panel: rgba(10, 22, 43, 0.9);
+      --line: rgba(155, 184, 239, 0.16);
+      --text: #f4f7ff;
+      --muted: #9cafcf;
+      --blue: #63a8ff;
+      --cyan: #6ae6ff;
+      --violet: #9e7bff;
+      --green: #58f0b0;
+      --amber: #f8c05f;
+      --red: #ff7a88;
+      --shadow: 0 24px 80px rgba(0,0,0,0.28);
+      --radius: 24px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(99,168,255,0.18), transparent 28%),
+        radial-gradient(circle at top right, rgba(158,123,255,0.16), transparent 26%),
+        linear-gradient(180deg, var(--bg) 0%, #040a14 100%);
+      line-height: 1.45;
+    }
+
+    .page {
+      width: 1120px;
+      margin: 0 auto;
+      padding: 38px 34px 46px;
+    }
+
+    .section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)),
+        var(--panel);
+      box-shadow: var(--shadow);
+      padding: 26px 28px;
+      margin-bottom: 20px;
+      overflow: hidden;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 12px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-size: 54px;
+      line-height: 0.95;
+      letter-spacing: -0.05em;
+      max-width: 12ch;
+    }
+    h2 {
+      font-size: 30px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+    }
+    h3 {
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 10px;
+    }
+    .lead {
+      margin-top: 16px;
+      max-width: 860px;
+      font-size: 20px;
+      color: var(--muted);
+    }
+    .gradient {
+      background: linear-gradient(135deg, #ffffff 0%, #aad4ff 42%, #b89aff 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .muted { color: var(--muted); }
+
+    .grid-2, .grid-3, .grid-4 {
+      display: grid;
+      gap: 16px;
+    }
+    .grid-2 { grid-template-columns: 1.2fr 0.8fr; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      padding: 18px;
+    }
+
+    .big {
+      font-size: 48px;
+      line-height: 0.95;
+      letter-spacing: -0.05em;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    li + li { margin-top: 6px; }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.04);
+      padding: 9px 12px;
+      font-size: 13px;
+      color: #dce7ff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+      overflow: hidden;
+      border-radius: 18px;
+    }
+    th, td {
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding: 12px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--cyan);
+      font-size: 12px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    .kpi {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin-top: 16px;
+    }
+
+    .kpi .card { min-height: 130px; }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 0.9fr 2.1fr;
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 14px;
+    }
+
+    .phase:last-child { margin-bottom: 0; }
+
+    .phase-left {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .phase-right {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .risk {
+      border-left: 3px solid var(--red);
+      padding-left: 14px;
+      color: #f6d7dc;
+    }
+
+    .ok { color: var(--green); }
+    .warn { color: var(--amber); }
+    .accent-blue { color: var(--blue); }
+    .accent-violet { color: var(--violet); }
+    .accent-cyan { color: var(--cyan); }
+
+    .footer {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media print {
+      body { background: #fff; }
+      .page { width: auto; padding: 14mm 12mm; }
+      .section {
+        box-shadow: none;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="section">
+      <div class="grid-2">
+        <div>
+          <div class="eyebrow">China Only Growth Plan</div>
+          <h1><span class="gradient">Roadmap von 0 RMB auf 10 Mio. RMB ARR</span></h1>
+          <p class="lead">Zielbild fuer Lulu Growth OS im China-Markt: ein fokussierter 12-Monats-Plan auf Basis von <strong>30.000 RMB Jahrespreis</strong> pro Factory / Kunde, mit klarer GTM-Reihenfolge, KPI-Milestones und Stop-Go-Gates.</p>
+          <div class="tag-row">
+            <div class="tag">Nur China</div>
+            <div class="tag">Preis: 30.000 RMB / Jahr</div>
+            <div class="tag">Ziel: 10.000.000 RMB ARR</div>
+            <div class="tag">Zeitraum: 12 Monate</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Kernaussage</h3>
+          <p>Bei <strong>30.000 RMB ARR pro Kunde</strong> brauchst du fuer <strong>10 Mio. RMB ARR</strong> rund <strong>334 aktive zahlende Kunden</strong>. Der schnellste Weg ist nicht breite Markenwerbung, sondern ein harter Fokus auf <strong>Vertical Sales, Factory Groups, regionale Industriecluster und Annual Prepay</strong>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Zielbild und Mathematik</h2>
+      <div class="kpi">
+        <div class="card">
+          <h3>Preis</h3>
+          <div class="big accent-cyan">30.000</div>
+          <p>RMB pro Jahr je Kunde / Factory</p>
+        </div>
+        <div class="card">
+          <h3>Ziel-ARR</h3>
+          <div class="big accent-blue">10 Mio.</div>
+          <p>RMB wiederkehrender Jahresumsatz</p>
+        </div>
+        <div class="card">
+          <h3>Benötigt</h3>
+          <div class="big accent-violet">334</div>
+          <p>aktive zahlende Kunden</p>
+        </div>
+        <div class="card">
+          <h3>Monatsziel</h3>
+          <div class="big ok">28</div>
+          <p>neue Kunden im Jahresschnitt</p>
+        </div>
+      </div>
+      <div class="tag-row">
+        <div class="tag">10.000.000 / 30.000 = 333,33</div>
+        <div class="tag">Aufgerundet: 334 Kunden</div>
+        <div class="tag">Nur Annual Prepay empfohlen</div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Strategischer Fokus fuer China</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>ICP</h3>
+          <ul>
+            <li>exportorientierte Hersteller</li>
+            <li>mittelgrosse bis grosse Factory Groups</li>
+            <li>Industriecluster mit hohem Digitalisierungsdruck</li>
+            <li>Unternehmen mit internationalem Vertriebsziel</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Use Case</h3>
+          <ul>
+            <li>AI Growth OS fuer Factory Lead Generation</li>
+            <li>SEO / GEO / AEO fuer internationale Sichtbarkeit</li>
+            <li>Website- und Publishing-Automation</li>
+            <li>Management-Dashboard fuer Revenue Execution</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Vertriebslogik</h3>
+          <ul>
+            <li>nicht horizontal verkaufen</li>
+            <li>1-2 starke Verticals zuerst</li>
+            <li>Partner + Direktvertrieb kombinieren</li>
+            <li>stark auf Referenzen und Case Proof setzen</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>12-Monats-Umsatzpfad</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Phase</th>
+            <th>Monate</th>
+            <th>Neue Kunden</th>
+            <th>Kumulierte Kunden</th>
+            <th>Kumuliertes ARR</th>
+            <th>Fokus</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Phase 1</strong></td>
+            <td>Monat 1-3</td>
+            <td>12</td>
+            <td>12</td>
+            <td>360.000 RMB</td>
+            <td>ICP, Messaging, erste Piloten, erstes Proof-of-Value</td>
+          </tr>
+          <tr>
+            <td><strong>Phase 2</strong></td>
+            <td>Monat 4-6</td>
+            <td>48</td>
+            <td>60</td>
+            <td>1.800.000 RMB</td>
+            <td>Outbound Engine, erste Partner, erste Cluster-Rollouts</td>
+          </tr>
+          <tr>
+            <td><strong>Phase 3</strong></td>
+            <td>Monat 7-9</td>
+            <td>110</td>
+            <td>170</td>
+            <td>5.100.000 RMB</td>
+            <td>Scale-Up, Case Studies, Multi-site Deals, Referral Loops</td>
+          </tr>
+          <tr>
+            <td><strong>Phase 4</strong></td>
+            <td>Monat 10-12</td>
+            <td>164</td>
+            <td>334</td>
+            <td>10.020.000 RMB</td>
+            <td>Expansion in Gruppen, Renewal-Sicherheit, land-and-expand</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Roadmap nach Phasen</h2>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 1</h3>
+          <div class="big accent-cyan">0 -> 360k</div>
+          <p>Monat 1-3</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Ein Vertical priorisieren:</strong> z. B. Export-Fabriken mit englischer Website und internationalem Vertrieb.</li>
+            <li><strong>Produkt als China-Export-Growth-System verpacken:</strong> nicht “all-in-one Software”, sondern klares Business Outcome.</li>
+            <li><strong>12 Pilotkunden closen:</strong> ideal mit Founder-led Sales.</li>
+            <li><strong>3 belastbare Case Studies bauen:</strong> Sichtbarkeit, Leads, Website-Conversion, AI-Automation.</li>
+            <li><strong>Jahresvertraege only:</strong> keine monatlichen Tarife.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 2</h3>
+          <div class="big accent-blue">360k -> 1,8 Mio.</div>
+          <p>Monat 4-6</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Sales Engine standardisieren:</strong> ICP-Liste, Demo-Struktur, Follow-up, Conversion-Metriken.</li>
+            <li><strong>2-3 Channel-Typen aufbauen:</strong> Agenturen, Industrieberater, Software-/Website-Dienstleister.</li>
+            <li><strong>Regionale Cluster bearbeiten:</strong> lieber Shenzhen / Suzhou / Ningbo / Guangzhou fokussiert als landesweit diffus.</li>
+            <li><strong>60 kumulierte Kunden erreichen.</strong></li>
+            <li><strong>Onboarding-Zeit halbieren:</strong> damit Sales nicht an Delivery erstickt.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 3</h3>
+          <div class="big accent-violet">1,8 -> 5,1 Mio.</div>
+          <p>Monat 7-9</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Case Study Distribution:</strong> WeChat, Industry Communities, Direct Introductions, Founder Network.</li>
+            <li><strong>Multi-site / Multi-brand Deals pushen:</strong> ein Deal = mehrere Factories.</li>
+            <li><strong>Referral Loop aktivieren:</strong> bestehende Kunden zu Cluster-Intros bewegen.</li>
+            <li><strong>170 kumulierte Kunden erreichen.</strong></li>
+            <li><strong>Customer Success auf Expansion trimmen:</strong> nicht nur Support, sondern Upsell und Rollout.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 4</h3>
+          <div class="big ok">5,1 -> 10,02 Mio.</div>
+          <p>Monat 10-12</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Factory Groups systematisch ausrollen:</strong> mehrere Standorte unter einem Framework.</li>
+            <li><strong>Renewals und Zahlungsdisziplin absichern:</strong> ARR-Qualitaet wird jetzt wichtiger als nur Neuabschluesse.</li>
+            <li><strong>334 kumulierte Kunden erreichen.</strong></li>
+            <li><strong>Board-Ready Story aufbauen:</strong> ARR, Conversion, Retention, Expansion, CAC-Payback.</li>
+            <li><strong>Ab Monat 10 mehr auf Expansion als auf chaotische Neukundenjagd setzen.</strong></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Go-to-Market in China</h2>
+      <div class="grid-4">
+        <div class="card">
+          <h3>Founder-Led Sales</h3>
+          <p>Die ersten 30-50 Kunden muessen fast sicher founder-nah verkauft werden.</p>
+        </div>
+        <div class="card">
+          <h3>Partner</h3>
+          <p>Web-Agenturen, Exportberater, B2B-Digital-Dienstleister als Multiplikatoren.</p>
+        </div>
+        <div class="card">
+          <h3>Cluster Strategy</h3>
+          <p>Geografisch fokussieren statt ganz China gleichzeitig zu bearbeiten.</p>
+        </div>
+        <div class="card">
+          <h3>Proof</h3>
+          <p>Case Studies und sichtbare Ergebnisse sind in China der schnellste Vertrauenshebel.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Kritische KPI-Gates</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Zeitpunkt</th>
+            <th>Minimalziel</th>
+            <th>Besseres Ziel</th>
+            <th>Was es bedeutet</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Ende Monat 3</td>
+            <td>12 Kunden</td>
+            <td>15-18 Kunden</td>
+            <td>Proof vorhanden, Messaging funktioniert, Founder-Sales traegt</td>
+          </tr>
+          <tr>
+            <td>Ende Monat 6</td>
+            <td>60 Kunden</td>
+            <td>70-80 Kunden</td>
+            <td>Sales-Engine und Delivery laufen, Partner zeigen Wirkung</td>
+          </tr>
+          <tr>
+            <td>Ende Monat 9</td>
+            <td>170 Kunden</td>
+            <td>190-210 Kunden</td>
+            <td>Scale-Up real, Referral- und Multi-site-Effekte sichtbar</td>
+          </tr>
+          <tr>
+            <td>Ende Monat 12</td>
+            <td>334 Kunden</td>
+            <td>350+ Kunden</td>
+            <td>10 Mio. RMB ARR erreicht oder knapp uebertroffen</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Top 5 Risiken</h2>
+      <div class="grid-2">
+        <div class="card">
+          <ol style="margin:0; padding-left:18px;">
+            <li>zu breiter ICP statt fokussiertem Vertical</li>
+            <li>monatliche statt jaehrliche Zahlungslogik</li>
+            <li>zu viel Custom Delivery pro Kunde</li>
+            <li>kein harter Case-Study-Motor</li>
+            <li>zu spaete Partner- und Cluster-Strategie</li>
+          </ol>
+        </div>
+        <div class="card risk">
+          <p><strong>Wichtig:</strong> Der Plan funktioniert nur, wenn das Produkt als klares Revenue- oder Demand-Outcome verkauft wird. Wenn Lulu nur als “interessante AI-Software” wahrgenommen wird, wird 334 Kunden in 12 Monaten extrem schwer.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Empfohlene operative Reihenfolge</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>1. Packaging</h3>
+          <p>Ein klarer China-Export-Use-Case, eine Demo, ein Conversion-Narrativ.</p>
+        </div>
+        <div class="card">
+          <h3>2. Proof</h3>
+          <p>12 Pilotkunden, 3 harte Case Studies, messbare Vorher-Nachher-Ergebnisse.</p>
+        </div>
+        <div class="card">
+          <h3>3. Scale</h3>
+          <p>Partner, Cluster, Referral und Multi-site Deals systematisch aufziehen.</p>
+        </div>
+      </div>
+      <div class="footer">Dokumenttyp: interne Strategie-Roadmap. Basisannahme: 30.000 RMB Jahrespreis pro Kunde im China-Markt.</div>
+    </section>
+  </main>
+</body>
+</html>

@@ -21,7 +21,7 @@ export async function createRun(
   client?: PoolClient,
 ) {
   const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (workspace_id, created_by, goal, plan)
-    VALUES ($1, $2, $3, $4) RETURNING ${runSelect}`, [workspaceId, userId, goal, plan], client);
+    VALUES ($1, $2, $3, $4) RETURNING ${runSelect}`, [workspaceId, userId, goal, JSON.stringify(plan ?? {})], client);
   return rows[0];
 }
 export async function listAutomatedTargets() {

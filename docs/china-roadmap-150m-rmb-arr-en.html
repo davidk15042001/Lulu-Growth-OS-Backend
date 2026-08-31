@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>China Roadmap - RMB 150M ARR</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --bg2: #0d1a31;
+      --panel: rgba(10, 21, 42, 0.9);
+      --line: rgba(157, 182, 233, 0.16);
+      --text: #f4f7ff;
+      --muted: #9baed1;
+      --blue: #64abff;
+      --cyan: #6be7ff;
+      --violet: #a384ff;
+      --green: #59f1b1;
+      --amber: #f6c05f;
+      --red: #ff7c8a;
+      --shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+      --radius: 24px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: Inter, "Segoe UI", Arial, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(100,171,255,0.18), transparent 30%),
+        radial-gradient(circle at top right, rgba(163,132,255,0.16), transparent 26%),
+        linear-gradient(180deg, var(--bg) 0%, #040a14 100%);
+      line-height: 1.46;
+    }
+
+    .page {
+      width: 1120px;
+      margin: 0 auto;
+      padding: 36px 34px 44px;
+    }
+
+    .section {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015)),
+        var(--panel);
+      box-shadow: var(--shadow);
+      padding: 26px 28px;
+      margin-bottom: 20px;
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+
+    .eyebrow {
+      font-size: 12px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 12px;
+    }
+
+    h1, h2, h3, p { margin: 0; }
+    h1 {
+      font-size: 52px;
+      line-height: 0.95;
+      letter-spacing: -0.05em;
+      max-width: 12ch;
+    }
+    h2 {
+      font-size: 30px;
+      line-height: 1;
+      letter-spacing: -0.03em;
+      margin-bottom: 16px;
+    }
+    h3 {
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 10px;
+    }
+    .lead {
+      margin-top: 16px;
+      max-width: 900px;
+      font-size: 20px;
+      color: var(--muted);
+    }
+    .gradient {
+      background: linear-gradient(135deg, #ffffff 0%, #abd4ff 42%, #b99cff 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .muted { color: var(--muted); }
+    .accent-blue { color: var(--blue); }
+    .accent-cyan { color: var(--cyan); }
+    .accent-violet { color: var(--violet); }
+    .ok { color: var(--green); }
+    .warn { color: var(--amber); }
+    .risk { color: #ffd8dd; }
+
+    .grid-2, .grid-3, .grid-4, .grid-5 {
+      display: grid;
+      gap: 16px;
+    }
+    .grid-2 { grid-template-columns: 1.15fr 0.85fr; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    .grid-5 { grid-template-columns: repeat(5, 1fr); }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+      padding: 18px;
+    }
+
+    .big {
+      font-size: 44px;
+      line-height: 0.94;
+      letter-spacing: -0.05em;
+      font-weight: 800;
+      margin-bottom: 8px;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    li + li { margin-top: 6px; }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(255,255,255,0.04);
+      padding: 9px 12px;
+      font-size: 13px;
+      color: #dce7ff;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    th, td {
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding: 12px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      color: var(--cyan);
+      font-size: 12px;
+      letter-spacing: 0.15em;
+      text-transform: uppercase;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 0.9fr 2.1fr;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .phase:last-child { margin-bottom: 0; }
+    .phase-left, .phase-right {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      background: rgba(255,255,255,0.03);
+    }
+
+    .quote {
+      border-left: 3px solid rgba(107, 231, 255, 0.55);
+      padding-left: 14px;
+      margin-top: 14px;
+      color: #e6efff;
+      font-size: 18px;
+    }
+
+    .footer {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    @media print {
+      body { background: #fff; }
+      .page { width: auto; padding: 14mm 12mm; }
+      .section { box-shadow: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="section">
+      <div class="grid-2">
+        <div>
+          <div class="eyebrow">China Growth Roadmap</div>
+          <h1><span class="gradient">From RMB 0 to RMB 150M ARR</span></h1>
+          <p class="lead">A detailed, China-only scaling plan for Lulu Growth OS based on an annual price of <strong>RMB 30,000 per customer / factory</strong>. This version is intentionally more detailed and uses a <strong>36-month horizon</strong>, because RMB 150M ARR requires very different execution logic than the earlier RMB 10M roadmap.</p>
+          <div class="tag-row">
+            <div class="tag">Market: China only</div>
+            <div class="tag">Price: RMB 30,000 / year</div>
+            <div class="tag">Target: RMB 150,000,000 ARR</div>
+            <div class="tag">Horizon: 36 months</div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Executive Summary</h3>
+          <p>At <strong>RMB 30,000 ARR per customer</strong>, Lulu needs <strong>5,000 active paying customers</strong> to reach <strong>RMB 150M ARR</strong>. This is not a broad self-serve SaaS story. It is a focused industrial GTM strategy built around <strong>vertical packaging, factory groups, regional clusters, annual prepay, partner channels, and land-and-expand execution</strong>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Core Math</h2>
+      <div class="grid-5">
+        <div class="card">
+          <h3>Annual Price</h3>
+          <div class="big accent-cyan">30,000</div>
+          <p>RMB per customer / factory</p>
+        </div>
+        <div class="card">
+          <h3>Target ARR</h3>
+          <div class="big accent-blue">150M</div>
+          <p>RMB recurring revenue</p>
+        </div>
+        <div class="card">
+          <h3>Customers Needed</h3>
+          <div class="big accent-violet">5,000</div>
+          <p>active paying customers</p>
+        </div>
+        <div class="card">
+          <h3>Annual Net Adds</h3>
+          <div class="big ok">1,667</div>
+          <p>per year on average</p>
+        </div>
+        <div class="card">
+          <h3>Monthly Net Adds</h3>
+          <div class="big warn">139</div>
+          <p>per month on average</p>
+        </div>
+      </div>
+      <div class="quote">RMB 150M ARR is possible only if Lulu scales through repeatable industrial demand generation, not through one-by-one custom consulting sales.</div>
+    </section>
+
+    <section class="section">
+      <h2>Strategic Assumptions</h2>
+      <div class="grid-4">
+        <div class="card">
+          <h3>Pricing</h3>
+          <ul>
+            <li>Annual contract only</li>
+            <li>RMB 30,000 base package</li>
+            <li>No monthly-first model</li>
+            <li>Optional onboarding fee recommended</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>ICP</h3>
+          <ul>
+            <li>export-driven manufacturers</li>
+            <li>mid-size and large factory groups</li>
+            <li>companies with multiple sites or brands</li>
+            <li>digitally ambitious owners / GMs</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Primary Wedge</h3>
+          <ul>
+            <li>international lead generation</li>
+            <li>SEO / GEO / AEO visibility</li>
+            <li>website + publishing automation</li>
+            <li>AI-enabled growth operations</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Route to Scale</h3>
+          <ul>
+            <li>regional cluster strategy</li>
+            <li>channel partners and integrators</li>
+            <li>group deals and multi-site rollouts</li>
+            <li>case-study-driven expansion</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Milestone Model by Stage</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Stage</th>
+            <th>Timing</th>
+            <th>New Customers</th>
+            <th>Total Customers</th>
+            <th>Total ARR</th>
+            <th>Main Objective</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Stage 1</strong></td>
+            <td>Months 1-6</td>
+            <td>50</td>
+            <td>50</td>
+            <td>RMB 1.5M</td>
+            <td>Validate packaging, close pilots, build first proof</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 2</strong></td>
+            <td>Months 7-12</td>
+            <td>200</td>
+            <td>250</td>
+            <td>RMB 7.5M</td>
+            <td>Build repeatable outbound and first channel engine</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 3</strong></td>
+            <td>Months 13-18</td>
+            <td>500</td>
+            <td>750</td>
+            <td>RMB 22.5M</td>
+            <td>Scale within verticals and regional clusters</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 4</strong></td>
+            <td>Months 19-24</td>
+            <td>1,250</td>
+            <td>2,000</td>
+            <td>RMB 60M</td>
+            <td>Shift from sales motion to scaled rollout motion</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 5</strong></td>
+            <td>Months 25-30</td>
+            <td>1,500</td>
+            <td>3,500</td>
+            <td>RMB 105M</td>
+            <td>Compound via referrals, partners, and multi-site expansion</td>
+          </tr>
+          <tr>
+            <td><strong>Stage 6</strong></td>
+            <td>Months 31-36</td>
+            <td>1,500</td>
+            <td>5,000</td>
+            <td>RMB 150M</td>
+            <td>Hit scale target with stronger retention and expansion quality</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Detailed Roadmap by Phase</h2>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 1</h3>
+          <div class="big accent-cyan">0 -> 1.5M</div>
+          <p>Months 1-6</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Choose one beachhead vertical:</strong> for example export-focused manufacturers with English websites and overseas demand goals.</li>
+            <li><strong>Turn Lulu into a clear offer:</strong> not “AI software”, but “AI growth system for export manufacturers”.</li>
+            <li><strong>Founder-led sales:</strong> close the first 50 customers directly or very close to the founder.</li>
+            <li><strong>Create 5 proof assets:</strong> before/after case studies, live dashboards, visible search wins, faster content publishing, measurable lead improvements.</li>
+            <li><strong>Build a low-friction onboarding motion:</strong> if setup is too manual, later scale will break.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 2</h3>
+          <div class="big accent-blue">1.5M -> 7.5M</div>
+          <p>Months 7-12</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Standardize the sales engine:</strong> ICP list building, outreach scripts, demo narrative, proposal template, annual prepay enforcement.</li>
+            <li><strong>Open 2-3 channel motions:</strong> website agencies, export consultants, B2B digital operators, industrial SaaS resellers.</li>
+            <li><strong>Focus by cluster, not by country-wide spray:</strong> Shenzhen, Dongguan, Foshan, Ningbo, Suzhou, Wuxi, Qingdao, and Guangzhou are more practical than “all of China”.</li>
+            <li><strong>Reach 250 total customers:</strong> this is the first proof that demand is not purely founder-dependent.</li>
+            <li><strong>Track the right metrics:</strong> demo-to-close, onboarding time, activation rate, 90-day retention, partner-originated pipeline share.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 3</h3>
+          <div class="big accent-violet">7.5M -> 22.5M</div>
+          <p>Months 13-18</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Double down on what closes fastest:</strong> one vertical can become 60-70% of revenue early, and that is fine.</li>
+            <li><strong>Expand from single-site wins to group wins:</strong> one signed manufacturing group should turn into multiple factories and brands.</li>
+            <li><strong>Turn case studies into a growth system:</strong> WeChat content, founder talks, cluster events, private industry circles, direct introductions.</li>
+            <li><strong>Reach 750 total customers:</strong> this is where operational efficiency becomes as important as raw selling.</li>
+            <li><strong>Start a structured customer success layer:</strong> renewals, expansion, deeper adoption, and proof collection.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 4</h3>
+          <div class="big ok">22.5M -> 60M</div>
+          <p>Months 19-24</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Switch from “sell product” to “roll out program”:</strong> a cluster-level and partner-led implementation model becomes necessary.</li>
+            <li><strong>Build a stronger mid-market team:</strong> regional sales leads, partner managers, onboarding managers, customer success managers.</li>
+            <li><strong>Reach 2,000 total customers:</strong> now Lulu begins to look like an industrial platform rather than an early-stage product.</li>
+            <li><strong>Protect quality:</strong> poor onboarding or weak activation here will create later churn cliffs.</li>
+            <li><strong>Measure expansion revenue explicitly:</strong> group-level upsells, additional sites, and broader automation packages.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 5</h3>
+          <div class="big accent-cyan">60M -> 105M</div>
+          <p>Months 25-30</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Compound growth through channels:</strong> at this stage, partners and referrals should generate a meaningful share of new business.</li>
+            <li><strong>Vertical playbooks should now be productized:</strong> each new factory should not feel like a custom project.</li>
+            <li><strong>Reach 3,500 total customers:</strong> which means selling scale and operational trust, not just features.</li>
+            <li><strong>Strengthen retention reporting:</strong> logo retention, gross revenue retention, expansion ARR, payback period.</li>
+            <li><strong>Build board-grade data discipline:</strong> because once numbers get large, credibility matters more than narrative.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="phase-left">
+          <h3>Phase 6</h3>
+          <div class="big accent-blue">105M -> 150M</div>
+          <p>Months 31-36</p>
+        </div>
+        <div class="phase-right">
+          <ul>
+            <li><strong>Reach 5,000 active customers:</strong> this is the direct numeric path to RMB 150M ARR at the current base price.</li>
+            <li><strong>Retention now matters more than velocity alone:</strong> if churn rises, the last stretch gets much harder.</li>
+            <li><strong>Balance acquisition and account expansion:</strong> new logos alone should not carry the whole final step.</li>
+            <li><strong>Institutionalize partner governance:</strong> enablement, revenue share, quality control, and renewal ownership.</li>
+            <li><strong>Prepare next-step monetization:</strong> higher-tier packages, add-ons, implementation fees, group contracts, and executive analytics.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Recommended China GTM Architecture</h2>
+      <div class="grid-4">
+        <div class="card">
+          <h3>Direct Sales</h3>
+          <p>Best for the first 100-250 customers and the most strategic anchor accounts.</p>
+        </div>
+        <div class="card">
+          <h3>Channel Partners</h3>
+          <p>Needed to scale beyond founder bandwidth, especially in industrial clusters.</p>
+        </div>
+        <div class="card">
+          <h3>Cluster Strategy</h3>
+          <p>Go deep in a few manufacturing regions before broad geographic expansion.</p>
+        </div>
+        <div class="card">
+          <h3>Group Expansion</h3>
+          <p>One manufacturing group should become multiple factories, brands, or business units.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Suggested Geographic Priority Inside China</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Wave</th>
+            <th>Regions</th>
+            <th>Why They Matter</th>
+            <th>Typical Entry Motion</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Wave 1</strong></td>
+            <td>Shenzhen, Dongguan, Foshan, Guangzhou</td>
+            <td>dense export manufacturing, digital agencies, founder networks</td>
+            <td>founder-led sales + agencies + export consultants</td>
+          </tr>
+          <tr>
+            <td><strong>Wave 2</strong></td>
+            <td>Suzhou, Wuxi, Ningbo, Hangzhou</td>
+            <td>strong manufacturing base and better quality enterprise buyers</td>
+            <td>cluster events + B2B partner channels</td>
+          </tr>
+          <tr>
+            <td><strong>Wave 3</strong></td>
+            <td>Qingdao, Tianjin, Xiamen, Chengdu, Chongqing</td>
+            <td>regional expansion once playbooks are proven</td>
+            <td>replicable partner-led rollout</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Funnel Math Needed to Support 5,000 Customers</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Top Funnel</h3>
+          <ul>
+            <li>qualified pipeline must be far larger than raw lead volume</li>
+            <li>case-study marketing should create trust before the first demo</li>
+            <li>partner-sourced pipeline should rise materially after year 1</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Mid Funnel</h3>
+          <ul>
+            <li>demo narrative must stay vertical-specific</li>
+            <li>annual contract logic should be non-negotiable by default</li>
+            <li>onboarding promise must be simple and believable</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Bottom Funnel</h3>
+          <ul>
+            <li>activation within 30-45 days should be treated as a board KPI</li>
+            <li>renewal proof must start in month 2, not month 11</li>
+            <li>group expansion should be planned at contract signature</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Team Build by Stage</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Stage</th>
+            <th>Sales</th>
+            <th>Partners</th>
+            <th>Onboarding / CS</th>
+            <th>Product / Ops</th>
+            <th>Main Goal</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>0-50 customers</td>
+            <td>founder + 1-2 sellers</td>
+            <td>1 informal partner track</td>
+            <td>founder-led / manual</td>
+            <td>small product core</td>
+            <td>prove demand and packaging</td>
+          </tr>
+          <tr>
+            <td>50-250 customers</td>
+            <td>3-5 AEs / SDRs</td>
+            <td>1 partner manager</td>
+            <td>2-3 onboarding / CS</td>
+            <td>stronger ops tooling</td>
+            <td>build repeatability</td>
+          </tr>
+          <tr>
+            <td>250-750 customers</td>
+            <td>regional sales pods</td>
+            <td>formal channel motion</td>
+            <td>CS + renewal discipline</td>
+            <td>automation and reporting</td>
+            <td>scale without chaos</td>
+          </tr>
+          <tr>
+            <td>750-2,000 customers</td>
+            <td>mid-market structure</td>
+            <td>partner enablement team</td>
+            <td>implementation managers</td>
+            <td>process rigor</td>
+            <td>turn sales into rollout system</td>
+          </tr>
+          <tr>
+            <td>2,000-5,000 customers</td>
+            <td>national cluster coverage</td>
+            <td>multi-tier partner governance</td>
+            <td>renewal + expansion engine</td>
+            <td>board-grade finance/ops</td>
+            <td>protect ARR quality at scale</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Critical KPI Gates</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Checkpoint</th>
+            <th>Minimum</th>
+            <th>Healthy</th>
+            <th>Interpretation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Month 6</td>
+            <td>50 customers</td>
+            <td>60-75 customers</td>
+            <td>packaging works and founder-led motion is credible</td>
+          </tr>
+          <tr>
+            <td>Month 12</td>
+            <td>250 customers</td>
+            <td>300+ customers</td>
+            <td>repeatable demand engine exists</td>
+          </tr>
+          <tr>
+            <td>Month 18</td>
+            <td>750 customers</td>
+            <td>850-950 customers</td>
+            <td>cluster and group expansion are working</td>
+          </tr>
+          <tr>
+            <td>Month 24</td>
+            <td>2,000 customers</td>
+            <td>2,200+ customers</td>
+            <td>scale phase is real, not just narrative</td>
+          </tr>
+          <tr>
+            <td>Month 30</td>
+            <td>3,500 customers</td>
+            <td>3,700+ customers</td>
+            <td>channel compounding and retention quality are visible</td>
+          </tr>
+          <tr>
+            <td>Month 36</td>
+            <td>5,000 customers</td>
+            <td>5,200+ customers</td>
+            <td>RMB 150M ARR reached or exceeded</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Top Risks</h2>
+      <div class="grid-2">
+        <div class="card">
+          <ol style="margin:0; padding-left:18px;">
+            <li>Trying to sell to all manufacturers instead of one strong vertical first</li>
+            <li>Allowing a low-quality monthly pricing model to dilute cash discipline</li>
+            <li>Turning every customer into a custom service project</li>
+            <li>Weak onboarding causing low activation and future churn</li>
+            <li>Building partner channels too early without clear enablement and economics</li>
+          </ol>
+        </div>
+        <div class="card">
+          <p class="risk"><strong>Reality check:</strong> RMB 150M ARR at the current base price is not a “marketing campaign” outcome. It requires a true industrial growth machine with disciplined packaging, strong product operations, repeatable cluster GTM, and expansion-led account strategy.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2>Recommended Operating Sequence</h2>
+      <div class="grid-4">
+        <div class="card">
+          <h3>1. Nail one wedge</h3>
+          <p>One use case, one vertical, one strong result narrative.</p>
+        </div>
+        <div class="card">
+          <h3>2. Prove ROI</h3>
+          <p>Turn the first 50 wins into visible case studies and repeatable trust assets.</p>
+        </div>
+        <div class="card">
+          <h3>3. Build channels</h3>
+          <p>Use agencies, consultants, and cluster partners after the message already converts.</p>
+        </div>
+        <div class="card">
+          <h3>4. Expand groups</h3>
+          <p>Scale through multi-site and multi-brand rollouts, not just new single logos.</p>
+        </div>
+      </div>
+      <div class="footer">Document type: internal strategic roadmap. Base assumption: RMB 30,000 annual price per customer / factory in the China market. Suggested planning horizon: 36 months.</div>
+    </section>
+  </main>
+</body>
+</html>
