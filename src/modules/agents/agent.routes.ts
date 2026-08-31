@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireWorkspaceAdmin, requireWorkspaceEditor, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
+import { requireWorkspaceEditor, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './agent.controller.js';
 
@@ -21,6 +21,6 @@ router.route('/:runId/cancel')
   .post(requireWorkspaceEditor, controller.cancel)
   .all(methodNotAllowed);
 router.route('/:runId/steps/:stepId/approve')
-  .post(requireWorkspaceAdmin, controller.approve)
+  .post(requireWorkspaceEditor, controller.approve)
   .all(methodNotAllowed);
 export default router;

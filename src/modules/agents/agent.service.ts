@@ -28,6 +28,7 @@ registerAgentTools(tools);
 
 function buildPipeline(
   goal: string,
+  executionMode: 'analysis_only' | 'autonomous',
   module: AgentModule,
   capabilities: ReturnType<typeof getAgentCapabilities>,
   page: AgentPageContext | null,
@@ -79,6 +80,7 @@ function buildPipeline(
             approvalGates: page?.approvalGates ?? [],
             resourceTypes: profile.resourceTypes,
             actionResourceType: profile.actionResourceType,
+            executionMode,
           },
         }]
       : []),
@@ -283,7 +285,7 @@ async function planRun(
 ) {
   await repo.updateRun(runId, { status: 'planning', started_at: new Date() });
   await event({ runId, workspaceId, eventType: 'run.planning_started', agentRole: 'planner', payload: { goal, pageId: page?.pageId ?? null } });
-  const { profile, steps: selectedPipeline } = buildPipeline(goal, module, capabilities, page);
+  const { profile, steps: selectedPipeline } = buildPipeline(goal, executionMode, module, capabilities, page);
   const steps = await repo.createSteps(selectedPipeline.map((step, index) => ({
     runId,
     workspaceId,
@@ -345,6 +347,11 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
   const toolInput = step.toolInput ?? {};
   const approvalDecision = typeof toolInput.approvalDecision === 'string' ? toolInput.approvalDecision : null;
   const policyDecision = decideAgentToolPolicy(tool, autonomous, approvalDecision);
+  const effectiveToolInput = {
+    ...toolInput,
+    policyDecision,
+    executionMode: autonomous ? 'autonomous' : 'analysis_only',
+  };
   if (tool && policyDecision === 'require_approval') {
     const approval = await createApproval(workspaceId, userId, {
       actionType: `agent_tool:${tool.name}`,
@@ -357,7 +364,7 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
         runId,
         stepId: step.id,
         toolName: tool.name,
-        toolInput: step.toolInput ?? {},
+        toolInput: effectiveToolInput,
       },
     });
     if (!approval) throw new AppError(500, 'AGENT_APPROVAL_CREATION_FAILED', 'The approval request could not be created');
@@ -366,7 +373,7 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
     await event({ runId, stepId: step.id, workspaceId, eventType: 'step.waiting_approval', agentRole: 'executor', payload: { approvalId: approval.id, toolName: tool.name } });
     return { waiting: true, output: undefined };
   }
-  const toolOutput = tool ? await withTimeout(tool.execute(toolInput, { workspaceId, userId }), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
+  const toolOutput = tool ? await withTimeout(tool.execute(effectiveToolInput, { workspaceId, userId }), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
   await repo.updateStep(step.id, { status: 'completed', tool_output: toolOutput, result: toolOutput, finished_at: new Date() });
   await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: toolOutput });
   return { waiting: false, output: toolOutput };
@@ -386,7 +393,7 @@ async function executeRun(
   activeRuns.add(runId);
   const deadline = Date.now() + MAX_RUN_DURATION_MS;
   try {
-    const { profile, steps: pipelineSteps } = buildPipeline(goal, module, capabilities, page);
+    const { profile, steps: pipelineSteps } = buildPipeline(goal, executionMode, module, capabilities, page);
     let steps = await repo.listSteps(workspaceId, runId);
     if (initial && steps.length === 0) steps = await planRun(runId, workspaceId, goal, executionMode, module, capabilities, page);
     const outputs: Record<string, unknown>[] = [];

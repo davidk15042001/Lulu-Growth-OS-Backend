@@ -19,6 +19,10 @@ type AgentSnapshotInput = {
   goal?: string;
   jobs?: unknown;
   approvalGates?: unknown;
+  executionMode?: unknown;
+  policyDecision?: unknown;
+  approvedBy?: unknown;
+  approvedAt?: unknown;
 };
 
 const DEFAULT_RECORD_QUERY = {
@@ -454,11 +458,28 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const pageLabel = compactText(input.pageLabel, 120) || 'Page agent';
   const module = compactText(input.module, 40) || 'general';
   const goal = compactText(input.goal, 400);
+  const executionMode = compactText(input.executionMode, 40) || 'analysis_only';
+  const policyDecision = compactText((input as Record<string, unknown>).policyDecision, 40) || 'require_approval';
+  const approvedBy = compactText((input as Record<string, unknown>).approvedBy, 120) || userId;
+  const approvedAt = compactText((input as Record<string, unknown>).approvedAt, 120) || null;
+  const executionReady = policyDecision === 'allow';
+  const approvalStatus = executionReady ? 'approved' : 'pending';
+  const targetSystem = resourceType.startsWith('finance_')
+    ? 'finance'
+    : resourceType.startsWith('sales_')
+      ? 'sales'
+      : resourceType.startsWith('crm_')
+        ? 'crm'
+        : resourceType.startsWith('marketing_') || resourceType.startsWith('ad_')
+          ? 'marketing'
+          : resourceType.startsWith('ecommerce_')
+            ? 'commerce'
+            : 'ai';
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
-    name: `${pageLabel} approved action packet`,
-    description: compactText(goal || `Approved backend action packet for ${pageLabel}.`, 500),
+    name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
+    description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
     status: 'approved',
-    stage: 'queued',
+    stage: executionReady ? 'queued_for_execution' : 'waiting_approval',
     source: 'page_agent',
     tags: [module, resourceType, ...(input.pageId ? [String(input.pageId)] : [])].slice(0, 12),
     data: {
@@ -469,7 +490,14 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       resourceTypes: uniqueResourceTypes(input.resourceTypes),
       jobs,
       approvalGates,
-      approvedBy: userId,
+      executionMode,
+      policyDecision,
+      approvalStatus,
+      executionReady,
+      targetSystem,
+      approvedBy,
+      approvedAt,
+      approvedAutomatically: approvedBy === 'system',
       createdByAgent: true,
       createdAt: new Date().toISOString(),
     },
@@ -483,6 +511,11 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     actionRecord: compactRecord(record),
     jobs,
     approvalGates,
+    executionMode,
+    policyDecision,
+    approvalStatus,
+    executionReady,
+    targetSystem,
   };
 }
 
