@@ -9,6 +9,11 @@ import * as websiteRepo from '../websites/website.repo.js';
 import * as searchRepo from '../search-intelligence/search-intelligence.repo.js';
 import type { AgentTool } from './agent.types.js';
 import type { ListRecordsQuery } from '../records/record.validator.js';
+import {
+  listAgentExecutionCommandTypes,
+  normalizeAgentExecutionCommands,
+  summarizeExecutionReviewReason,
+} from './agent.execution-command.js';
 
 type AgentSnapshotInput = {
   module?: string;
@@ -23,6 +28,23 @@ type AgentSnapshotInput = {
   policyDecision?: unknown;
   approvedBy?: unknown;
   approvedAt?: unknown;
+  commands?: unknown;
+  accountId?: unknown;
+  threadId?: unknown;
+  tone?: unknown;
+  language?: unknown;
+  instruction?: unknown;
+  to?: unknown;
+  cc?: unknown;
+  subject?: unknown;
+  bodyText?: unknown;
+  replyToProviderMessageId?: unknown;
+  reviewId?: unknown;
+  locationId?: unknown;
+  comment?: unknown;
+  siteId?: unknown;
+  jobId?: unknown;
+  provider?: unknown;
 };
 
 const DEFAULT_RECORD_QUERY = {
@@ -478,6 +500,35 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const executionReady = policyDecision === 'allow';
   const approvalStatus = executionReady ? 'approved' : 'pending';
   const targetSystem = resolveTargetSystem(module, resourceType);
+  const commands = normalizeAgentExecutionCommands(input.commands, {
+    module,
+    targetSystem,
+    actionResourceType: resourceType,
+    pageId: compactText(input.pageId, 120) || null,
+    pageLabel,
+    goal,
+    jobs,
+    policyDecision: policyDecision === 'allow' ? 'allow' : 'require_approval',
+    executionMode: executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
+    accountId: compactText(input.accountId, 120) || null,
+    threadId: compactText(input.threadId, 120) || null,
+    tone: compactText(input.tone, 40) || null,
+    language: compactText(input.language, 16) || null,
+    instruction: compactText(input.instruction, 2000) || null,
+    to: input.to,
+    cc: input.cc,
+    subject: compactText(input.subject, 998) || null,
+    bodyText: compactText(input.bodyText, 100_000) || null,
+    replyToProviderMessageId: compactText(input.replyToProviderMessageId, 1000) || null,
+    reviewId: compactText(input.reviewId, 200) || null,
+    locationId: compactText(input.locationId, 200) || null,
+    comment: compactText(input.comment, 4000) || null,
+    siteId: compactText(input.siteId, 120) || null,
+    jobId: compactText(input.jobId, 120) || null,
+    provider: compactText(input.provider, 80) || null,
+  });
+  const commandTypes = listAgentExecutionCommandTypes(commands);
+  const requiresHumanReviewReason = summarizeExecutionReviewReason(commands, policyDecision === 'allow' ? 'allow' : 'require_approval');
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
     name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
@@ -500,6 +551,10 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       executionStatus: executionReady ? 'queued' : 'waiting_approval',
       targetSystem,
       targetModule: module,
+      commands,
+      commandTypes,
+      primaryCommandType: commandTypes[0] ?? null,
+      requiresHumanReviewReason,
       approvedBy,
       approvedAt,
       approvedAutomatically: approvedBy === 'system',
@@ -521,6 +576,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     approvalStatus,
     executionReady,
     targetSystem,
+    commandTypes,
+    requiresHumanReviewReason,
   };
 }
 

@@ -1,14 +1,21 @@
 import { logger } from '../../config/logger.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as recordRepo from '../records/record.repo.js';
+import { createAiDraft, createDraft } from '../email/email.service.js';
+import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
+import { publishWebsiteJob } from '../websites/website.publish.service.js';
+import {
+  normalizeAgentExecutionCommands,
+  type AgentExecutionCommand,
+} from './agent.execution-command.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
 let timer: NodeJS.Timeout | undefined;
 let running = false;
 
-function textValue(value: unknown) {
-  return typeof value === 'string' ? value.trim() : '';
+function textValue(value: unknown, maxLength = 400) {
+  return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
 function stringList(value: unknown) {
@@ -28,6 +35,21 @@ function executionSummary(record: recordRepo.WorkspaceRecord) {
     gates.length > 0 ? `Approval gates respected: ${gates.join(', ')}.` : 'Approval gates: none attached.',
   ];
   return fragments.join(' ');
+}
+
+function objectValue(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function emailAddresses(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const next = objectValue(item);
+    const address = textValue(next.address).toLowerCase();
+    if (!address) return [];
+    const name = textValue(next.name) || null;
+    return [{ address, ...(name ? { name } : {}) }];
+  });
 }
 
 function resolveDomainArtifactType(targetSystem: string): ResourceType | null {
@@ -64,6 +86,7 @@ async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord) {
     targetModule,
     executionMode: textValue(data.executionMode) || 'analysis_only',
     policyDecision: textValue(data.policyDecision) || 'allow',
+    commandTypes: stringList(data.commandTypes),
     jobs: stringList(data.jobs),
     approvalGates: stringList(data.approvalGates),
     executionSummary: summary,
@@ -97,16 +120,136 @@ async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord) {
   return { activity, artifact };
 }
 
+async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: AgentExecutionCommand) {
+  const payload = objectValue(command.payload);
+  const actorUserId = record.createdBy ?? 'system';
+
+  if (command.type === 'google_reviews.reply') {
+    const reviewId = textValue(payload.reviewId || command.targetEntityId);
+    const accountId = textValue(payload.accountId);
+    const locationId = textValue(payload.locationId);
+    const comment = textValue(payload.comment, 4000);
+    if (!reviewId || !accountId || !locationId || !comment) {
+      throw new Error('google_reviews.reply requires reviewId, accountId, locationId, and comment');
+    }
+    return {
+      type: command.type,
+      targetEntityId: reviewId,
+      provider: command.provider,
+      result: await updateGoogleReviewReply(record.workspaceId, reviewId, { accountId, locationId, comment }),
+    };
+  }
+
+  if (command.type === 'email.create_draft') {
+    const accountId = textValue(payload.accountId);
+    if (!accountId) throw new Error('email.create_draft requires accountId');
+    const draft = await createDraft(record.workspaceId, actorUserId, {
+      accountId,
+      threadId: textValue(payload.threadId) || null,
+      to: emailAddresses(payload.to),
+      cc: emailAddresses(payload.cc),
+      subject: textValue(payload.subject, 998),
+      bodyText: textValue(payload.bodyText, 100_000),
+      replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
+    });
+    return {
+      type: command.type,
+      targetEntityId: draft.id,
+      provider: command.provider,
+      result: { draftId: draft.id, threadId: draft.threadId, status: draft.status, source: draft.source },
+    };
+  }
+
+  if (command.type === 'email.create_ai_draft') {
+    const accountId = textValue(payload.accountId);
+    const threadId = textValue(payload.threadId || command.targetEntityId);
+    if (!accountId || !threadId) throw new Error('email.create_ai_draft requires accountId and threadId');
+    const draft = await createAiDraft(
+      record.workspaceId,
+      actorUserId,
+      threadId,
+      {
+        accountId,
+        instruction: textValue(payload.instruction, 2000) || undefined,
+        tone: textValue(payload.tone, 40) || 'professional',
+        language: textValue(payload.language, 16) || 'en',
+      },
+      'automation',
+      { sourceActionRecordId: record.id, generatedBy: 'agent_executor' },
+    );
+    return {
+      type: command.type,
+      targetEntityId: draft.id,
+      provider: command.provider,
+      result: { draftId: draft.id, threadId: draft.threadId, status: draft.status, source: draft.source },
+    };
+  }
+
+  if (command.type === 'website.publish_job') {
+    const siteId = textValue(payload.siteId);
+    const jobId = textValue(payload.jobId || command.targetEntityId);
+    if (!siteId || !jobId) throw new Error('website.publish_job requires siteId and jobId');
+    const result = await publishWebsiteJob(record.workspaceId, siteId, jobId);
+    return {
+      type: command.type,
+      targetEntityId: jobId,
+      provider: command.provider,
+      result,
+    };
+  }
+
+  return {
+    type: command.type,
+    targetEntityId: command.targetEntityId,
+    provider: command.provider,
+    result: { status: 'record_only', summary: command.summary },
+  };
+}
+
 async function executeRecord(record: recordRepo.WorkspaceRecord) {
   const data = record.data ?? {};
+  const commands = normalizeAgentExecutionCommands(data.commands, {
+    module: textValue(data.targetModule) || textValue(data.module) || 'general',
+    targetSystem: textValue(data.targetSystem) || 'ai',
+    actionResourceType: record.resourceType,
+    pageId: textValue(data.pageId) || null,
+    pageLabel: textValue(data.pageLabel) || record.name,
+    goal: textValue(data.goal, 400) || record.name,
+    jobs: stringList(data.jobs),
+    policyDecision: textValue(data.policyDecision) === 'allow' ? 'allow' : 'require_approval',
+    executionMode: textValue(data.executionMode) === 'autonomous' ? 'autonomous' : 'analysis_only',
+    accountId: textValue(data.accountId) || null,
+    threadId: textValue(data.threadId) || null,
+    tone: textValue(data.tone) || null,
+    language: textValue(data.language) || null,
+    instruction: textValue(data.instruction, 2000) || null,
+    to: data.to,
+    cc: data.cc,
+    subject: textValue(data.subject, 998) || null,
+    bodyText: textValue(data.bodyText, 100_000) || null,
+    replyToProviderMessageId: textValue(data.replyToProviderMessageId, 1000) || null,
+    reviewId: textValue(data.reviewId) || null,
+    locationId: textValue(data.locationId) || null,
+    comment: textValue(data.comment, 4000) || null,
+    siteId: textValue(data.siteId) || null,
+    jobId: textValue(data.jobId) || null,
+    provider: textValue(data.provider) || null,
+  });
+  const commandResults = [];
+  for (const command of commands) {
+    commandResults.push(await executeAgentCommand(record, command));
+  }
   const artifacts = await createExecutionArtifacts(record);
   const nextData = {
     ...data,
+    commands,
+    commandTypes: [...new Set(commands.map((command) => command.type))],
     executionStatus: 'executed',
-    sideEffectsApplied: true,
+    sideEffectsApplied: commandResults.some((item) => item.type !== 'record.create_artifact'),
     executionCompletedAt: new Date().toISOString(),
     executorVersion: '1.0.0',
     executionSummary: executionSummary(record),
+    executionResults: commandResults,
     resultRecordIds: [artifacts.activity.id, artifacts.artifact?.id].filter(Boolean),
     resultResourceTypes: [artifacts.activity.resourceType, artifacts.artifact?.resourceType].filter(Boolean),
   };
