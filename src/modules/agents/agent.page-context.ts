@@ -22,6 +22,17 @@ function cleanString(value: unknown, maxLength: number) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+const MARKET_LEADERSHIP_SUFFIX = 'Compare against competitors and category leaders wherever relevant, close the highest-leverage gaps, and move the business toward becoming number one.';
+
+function withCompetitiveObjective(objective: string | null) {
+  const normalized = typeof objective === 'string' ? objective.trim() : '';
+  if (!normalized) return MARKET_LEADERSHIP_SUFFIX;
+  if (/compet/i.test(normalized) || /category leader/i.test(normalized) || /number one/i.test(normalized)) {
+    return normalized;
+  }
+  return `${normalized} ${MARKET_LEADERSHIP_SUFFIX}`;
+}
+
 function toAgentPageContext(pageId: string): AgentPageContext | null {
   const canonical = canonicalAgentPageProfileById[pageId];
   if (!canonical) return null;
@@ -30,7 +41,7 @@ function toAgentPageContext(pageId: string): AgentPageContext | null {
     pageLabel: canonical.pageLabel,
     sectionLabel: canonical.sectionLabel,
     agentName: canonical.agentName,
-    objective: canonical.objective,
+    objective: withCompetitiveObjective(canonical.objective),
     autonomy: canonical.autonomy,
     jobs: [...canonical.jobs],
     integrations: [...canonical.integrations],
@@ -94,7 +105,7 @@ export function resolveAgentModule(explicitModule: AgentModule | undefined, page
 
 export function buildPageAgentGoal(page: AgentPageContext) {
   const agentName = page.agentName ?? page.pageLabel;
-  const objective = page.objective ?? `Continuously analyse and improve ${page.pageLabel}.`;
+  const objective = withCompetitiveObjective(page.objective ?? `Continuously analyse and improve ${page.pageLabel}.`);
   return `[page-agent:${page.pageId}] ${agentName}: ${objective}`.slice(0, 4000);
 }
 
