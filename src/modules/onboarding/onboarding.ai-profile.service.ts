@@ -25,12 +25,32 @@ function resolveAiModel() {
 }
 
 function extractJson<T>(text: string) {
-  const cleaned = text.trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-  try {
-    return JSON.parse(cleaned) as T;
-  } catch {
-    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return valid JSON');
+  const normalized = text
+    .trim()
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const candidates = [normalized];
+  const firstBrace = normalized.indexOf('{');
+  const lastBrace = normalized.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(normalized.slice(firstBrace, lastBrace + 1));
+
+  const firstBracket = normalized.indexOf('[');
+  const lastBracket = normalized.lastIndexOf(']');
+  if (firstBracket >= 0 && lastBracket > firstBracket) candidates.push(normalized.slice(firstBracket, lastBracket + 1));
+
+  for (const candidate of [...new Set(candidates.filter(Boolean))]) {
+    try {
+      return JSON.parse(candidate) as T;
+    } catch {
+      // Try the next normalized candidate.
+    }
   }
+
+  throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return valid JSON');
 }
 
 function normaliseOptionalText(value: unknown, maximum = 2000) {

@@ -121,17 +121,41 @@ export async function createCompetitor(workspaceId: string, input: CreateCompeti
 
 type GeneratedCompetitorDraft = repo.GeneratedCompetitorInput;
 
+function competitorJsonCandidates(text: string) {
+  const normalized = text
+    .trim()
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const candidates = [normalized];
+  const firstBrace = normalized.indexOf('{');
+  const lastBrace = normalized.lastIndexOf('}');
+  if (firstBrace >= 0 && lastBrace > firstBrace) candidates.push(normalized.slice(firstBrace, lastBrace + 1));
+
+  const firstBracket = normalized.indexOf('[');
+  const lastBracket = normalized.lastIndexOf(']');
+  if (firstBracket >= 0 && lastBracket > firstBracket) candidates.push(normalized.slice(firstBracket, lastBracket + 1));
+
+  return [...new Set(candidates.filter(Boolean))];
+}
+
 function extractCompetitorJson(text: string) {
-  const cleaned = text.trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-  try {
-    const value = JSON.parse(cleaned) as { competitors?: unknown };
-    if (!Array.isArray(value.competitors)) {
-      throw new Error('Missing competitors array');
+  for (const candidate of competitorJsonCandidates(text)) {
+    try {
+      const value = JSON.parse(candidate) as { competitors?: unknown } | unknown[];
+      if (Array.isArray(value)) return value;
+      if (value && typeof value === 'object' && Array.isArray((value as { competitors?: unknown }).competitors)) {
+        return (value as { competitors?: unknown }).competitors;
+      }
+    } catch {
+      // Try the next normalized candidate.
     }
-    return value.competitors;
-  } catch {
-    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return a valid competitor list');
   }
+
+  throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return a valid competitor list');
 }
 
 function normaliseStringArray(value: unknown, limit: number) {
