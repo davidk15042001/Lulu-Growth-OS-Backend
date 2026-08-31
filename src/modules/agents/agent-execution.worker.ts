@@ -363,11 +363,24 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     jobId: textValue(data.jobId) || null,
     provider: textValue(data.provider) || null,
   });
-  const commandResults = [];
+  const commandResults: Array<{ type: string; resultRecordId: string }> = [];
   for (const command of commands) {
     commandResults.push(await executeAgentCommand(record, command));
   }
   const artifacts = await createExecutionArtifacts(record);
+  const commandResultEntries: Array<{ id: string; resourceType: ResourceType }> = commands.flatMap((command, index) => {
+    const resultId = commandResults[index]?.resultRecordId;
+    return typeof resultId === 'string'
+      ? [{ id: resultId, resourceType: resolveCommandResultResourceType(command) }]
+      : [];
+  });
+
+  const resultRecords: Array<{ id: string; resourceType: ResourceType }> = [
+    { id: artifacts.activity.id, resourceType: artifacts.activity.resourceType },
+    ...(artifacts.artifact ? [{ id: artifacts.artifact.id, resourceType: artifacts.artifact.resourceType }] : []),
+    ...commandResultEntries,
+  ];
+
   const nextData = {
     ...data,
     commands,
@@ -378,12 +391,9 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     executorVersion: '1.0.0',
     executionSummary: executionSummary(record),
     executionResults: commandResults,
-    resultRecordIds: [
-      artifacts.activity.id,
-      artifacts.artifact?.id,
-      ...commandResults.flatMap((item) => typeof item.resultRecordId === 'string' ? [item.resultRecordId] : []),
-    ].filter(Boolean),
-    resultResourceTypes: [artifacts.activity.resourceType, artifacts.artifact?.resourceType].filter(Boolean),
+    resultRecords,
+    resultRecordIds: resultRecords.map((entry) => entry.id),
+    resultResourceTypes: resultRecords.map((entry) => entry.resourceType),
     executionNextAttemptAt: null,
     executionError: null,
   };
