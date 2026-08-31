@@ -78,10 +78,17 @@ async function waitForRun(workspaceId: string, runId: string, jobId: string, mod
     const run = await agentRepo.getRun(workspaceId, runId);
     if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) return run;
     if (run.status === 'waiting_approval') {
+      moduleStatus[module] = {
+        ...(moduleStatus[module] as Record<string, unknown>),
+        status: 'blocked_by_approval',
+        runId,
+        error: 'Automatic workspace refresh reached an approval-gated action and is waiting for a user decision.',
+      };
+      await repo.updateJob(workspaceId, jobId, { module_status: JSON.stringify(moduleStatus), heartbeat_at: new Date() });
       return {
         ...run,
-        status: 'failed',
-        errorMessage: 'Automatic workspace refresh reached an approval-gated action and was stopped.',
+        status: 'waiting_approval',
+        errorMessage: 'Automatic workspace refresh reached an approval-gated action and is waiting for a user decision.',
       };
     }
     moduleStatus[module] = { ...(moduleStatus[module] as Record<string, unknown>), status: run.status };
@@ -168,7 +175,11 @@ async function executeContentRefresh(workspaceId: string, userId: string, jobId:
             reportDebug('D', 'src/modules/content-generation/content-generation.service.ts:executeContentRefresh:agent:completed', '[DEBUG] Backend completed agent content refresh module', { workspaceId, jobId, module, runId: run.id });
             // #endregion
           } else {
-            moduleStatus[module] = { ...moduleStatus[module] as Record<string, unknown>, status: completedRun?.status ?? 'failed', error: completedRun?.errorMessage ?? null };
+            moduleStatus[module] = {
+              ...moduleStatus[module] as Record<string, unknown>,
+              status: completedRun?.status === 'waiting_approval' ? 'blocked_by_approval' : completedRun?.status ?? 'failed',
+              error: completedRun?.errorMessage ?? null,
+            };
             // #region debug-point D:backend-agent-module-error
             reportDebug('D', 'src/modules/content-generation/content-generation.service.ts:executeContentRefresh:agent:error', '[DEBUG] Backend agent content refresh module failed', { workspaceId, jobId, module, runId: run.id, status: completedRun?.status ?? 'failed', errorMessage: completedRun?.errorMessage ?? null });
             // #endregion

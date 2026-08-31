@@ -491,6 +491,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'workspace_intelligence_snapshot',
     version: '2.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads workspace-wide metrics, onboarding context, and recent agent activity.',
     execute: async (input, context) => workspaceIntelligenceSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -499,6 +500,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'record_resource_snapshot',
     version: '2.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads the page-relevant record collections and summarizes live operational state.',
     execute: async (input, context) => recordResourceSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -507,6 +509,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'email_operations_snapshot',
     version: '1.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads email accounts, inbox state, drafts, and automation rules.',
     execute: async (input, context) => emailOperationsSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -515,6 +518,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'calendar_operations_snapshot',
     version: '1.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads calendar accounts, upcoming events, and sync health.',
     execute: async (input, context) => calendarOperationsSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -523,6 +527,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'website_operations_snapshot',
     version: '1.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads website, SEO, GEO, AEO, and related publishing state.',
     execute: async (input, context) => websiteOperationsSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -531,6 +536,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'ai_workspace_snapshot',
     version: '1.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads AI runs, knowledge snapshots, and AI-related workspace records.',
     execute: async (input, context) => aiWorkspaceSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -539,6 +545,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'reputation_snapshot',
     version: '1.0.0',
     risk: 'read',
+    autonomy: 'always_safe',
     description: 'Reads review-related records, Google connection state, and reputation knowledge.',
     execute: async (input, context) => reputationSnapshot(input as AgentSnapshotInput, context.workspaceId),
   });
@@ -547,6 +554,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     name: 'page_action_writeback',
     version: '1.0.0',
     risk: 'write',
+    autonomy: 'autonomous_only',
     description: 'Creates an approval-gated action packet record for the page-specific backend specialist.',
     execute: async (input, context) => pageActionWriteback(input as AgentSnapshotInput, context.workspaceId, context.userId),
   });

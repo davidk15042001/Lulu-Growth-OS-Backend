@@ -17,6 +17,7 @@ import {
   type AgentPageContext,
 } from './agent.page-context.js';
 import { registerAgentTools } from './agent.tools.js';
+import { decideAgentToolPolicy } from './agent.autonomy-policy.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -329,7 +330,7 @@ async function planRun(
   });
   return steps;
 }
-async function executeStep(runId: string, workspaceId: string, userId: string, step: Awaited<ReturnType<typeof repo.listSteps>>[number], _autonomous: boolean) {
+async function executeStep(runId: string, workspaceId: string, userId: string, step: Awaited<ReturnType<typeof repo.listSteps>>[number], autonomous: boolean) {
   await repo.updateStep(step.id, { status: 'running', started_at: new Date() });
   await event({
     runId,
@@ -343,7 +344,8 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
   if (step.toolName && !tool) throw new AppError(500, 'AGENT_TOOL_NOT_REGISTERED', `Tool ${step.toolName} is not registered`);
   const toolInput = step.toolInput ?? {};
   const approvalDecision = typeof toolInput.approvalDecision === 'string' ? toolInput.approvalDecision : null;
-  if (tool && tool.risk !== 'read' && approvalDecision !== 'approved') {
+  const policyDecision = decideAgentToolPolicy(tool, autonomous, approvalDecision);
+  if (tool && policyDecision === 'require_approval') {
     const approval = await createApproval(workspaceId, userId, {
       actionType: `agent_tool:${tool.name}`,
       entityType: 'agent_run_step',
@@ -480,12 +482,8 @@ export async function startAutomaticRun(
   const resolvedModule = resolveAgentModule(module, page);
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
   if ((subscription.status !== 'active' && subscription.status !== 'trialing') || !capabilities.automatic || !capabilities.analyze) return null;
-  const automaticCapabilities = {
-    ...capabilities,
-    act: false,
-    autonomous: false,
-  };
-  const executionMode = 'analysis_only';
+  const automaticCapabilities = { ...capabilities };
+  const executionMode = automaticCapabilities.autonomous ? 'autonomous' : 'analysis_only';
   const initialPlan = buildInitialPlan(resolvedModule, automaticCapabilities, executionMode, page);
   let run;
   let created = true;
