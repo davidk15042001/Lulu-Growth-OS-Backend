@@ -160,6 +160,19 @@ const messageSelect = `
   m.created_at AS "createdAt"
 `;
 
+const messageReturning = `
+  id,
+  conversation_id AS "conversationId",
+  role,
+  content,
+  tool_name AS "toolName",
+  tool_call_id AS "toolCallId",
+  metadata,
+  input_tokens AS "inputTokens",
+  output_tokens AS "outputTokens",
+  created_at AS "createdAt"
+`;
+
 export async function listMessages(
   workspaceId: string,
   userId: string,
@@ -218,7 +231,7 @@ export async function createUserMessage(
     const { rows } = await query<Message>(
       `INSERT INTO ai_messages (conversation_id, role, content, metadata)
        VALUES ($1, 'user', $2, $3)
-       RETURNING ${messageSelect}`,
+       RETURNING ${messageReturning}`,
       [conversationId, input.content, input.metadata ?? {}],
       client
     );
@@ -246,7 +259,7 @@ export async function appendAssistantMessage(
     `INSERT INTO ai_messages (
        conversation_id, role, content, metadata, input_tokens, output_tokens
      ) VALUES ($1, 'assistant', $2, $3, $4, $5)
-     RETURNING ${messageSelect}`,
+     RETURNING ${messageReturning}`,
     [conversationId, content, metadata, usage?.inputTokens ?? null, usage?.outputTokens ?? null]
   );
   return rows[0];
