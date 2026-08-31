@@ -541,6 +541,57 @@ export async function archiveCustomerSegment(workspaceId: string, customerSegmen
   return rowCount > 0;
 }
 
+export async function replaceGeneratedCustomerSegments(
+  workspaceId: string,
+  segments: AiGeneratedCustomerSegment[],
+) {
+  return withTransaction(async (client) => {
+    await query(
+      `UPDATE workspace_customer_segments
+       SET deleted_at = NOW()
+       WHERE workspace_id = $1 AND deleted_at IS NULL`,
+      [workspaceId],
+      client,
+    );
+
+    const created: CustomerSegment[] = [];
+    for (const [index, segment] of segments.entries()) {
+      const { rows } = await query<CustomerSegment>(
+        `INSERT INTO workspace_customer_segments (
+           workspace_id, name, industry, company_size, region, maturity_level,
+           pain_points, jobs_to_be_done, decision_criteria, use_cases, buying_roles,
+           price_sensitivity, primary_segment, sort_order, notes
+         ) VALUES (
+           $1, $2, $3, $4, $5, $6,
+           $7, $8, $9, $10, $11,
+           $12, $13, $14, $15
+         )
+         RETURNING ${customerSegmentSelect}`,
+        [
+          workspaceId,
+          segment.name,
+          segment.industry ?? null,
+          segment.companySize ?? null,
+          segment.region ?? null,
+          segment.maturityLevel ?? null,
+          segment.painPoints,
+          segment.jobsToBeDone,
+          segment.decisionCriteria,
+          segment.useCases,
+          segment.buyingRoles,
+          segment.priceSensitivity ?? null,
+          segment.primarySegment,
+          index,
+          segment.notes ?? null,
+        ],
+        client,
+      );
+      if (rows[0]) created.push(rows[0]);
+    }
+    return created;
+  });
+}
+
 export async function listCompetitors(workspaceId: string) {
   const { rows } = await query<Competitor>(
     `SELECT ${competitorSelect}
@@ -845,6 +896,24 @@ export type AiBusinessProfileCompetitorComparison = {
   whyYouCanWin: string;
 };
 
+export type AiGeneratedCustomerSegment = {
+  name: string;
+  industry: string | null;
+  companySize: string | null;
+  region: string | null;
+  maturityLevel: string | null;
+  painPoints: string[];
+  jobsToBeDone: string[];
+  decisionCriteria: string[];
+  useCases: string[];
+  buyingRoles: string[];
+  priceSensitivity: string | null;
+  primarySegment: boolean;
+  notes: string | null;
+  score: number;
+  whyItFits: string;
+};
+
 export type AiBusinessProfilePayload = {
   summary: string;
   recommendedProfile: {
@@ -865,6 +934,7 @@ export type AiBusinessProfilePayload = {
     primaryChallenges: AiBusinessProfileSuggestion[];
     languages: AiBusinessProfileSuggestion[];
   };
+  customerSegments: AiGeneratedCustomerSegment[];
   competitorComparison: AiBusinessProfileCompetitorComparison[];
 };
 

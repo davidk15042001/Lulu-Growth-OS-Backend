@@ -283,6 +283,15 @@ export async function generateAiBusinessProfile(req: WorkspaceRequest, res: Resp
   }
 }
 
+export async function applyAiCustomerSegments(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const items = await aiProfileService.applyStoredAiCustomerSegments(workspaceId(req));
+    return successResponse(res, 'AI customer segments applied', { items });
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function saveAiPreferences(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const input = aiPreferencesSchema.parse(req.body);

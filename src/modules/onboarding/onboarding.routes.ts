@@ -117,6 +117,10 @@ router.route('/ai-business-profile')
   .post(requireWorkspaceEditor, controller.generateAiBusinessProfile)
   .all(methodNotAllowed);
 
+router.route('/ai-business-profile/customer-segments/apply')
+  .post(requireWorkspaceEditor, controller.applyAiCustomerSegments)
+  .all(methodNotAllowed);
+
 router.route('/complete')
   .post(requireWorkspaceEditor, controller.complete)
   .all(methodNotAllowed);

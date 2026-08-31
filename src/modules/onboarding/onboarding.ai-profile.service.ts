@@ -11,6 +11,11 @@ type CompetitorContext = Pick<
   'name' | 'websiteUrl' | 'competitorType' | 'market' | 'positioning' | 'strengths' | 'weaknesses' | 'differentiators'
 > | GeneratedCompetitorDraft;
 
+type CustomerSegmentContext = Pick<
+  repo.CustomerSegment,
+  'name' | 'industry' | 'companySize' | 'region' | 'maturityLevel' | 'painPoints' | 'jobsToBeDone' | 'decisionCriteria' | 'useCases' | 'buyingRoles' | 'priceSensitivity' | 'primarySegment' | 'notes'
+>;
+
 function resolveAiModel() {
   return env.AI_PROVIDER === 'alibaba'
     ? env.DASHSCOPE_MODEL
@@ -183,14 +188,17 @@ function buildAiBusinessProfileInstructions() {
     'Generate an AI business profile draft for the workspace.',
     'Use the provided workspace context, offerings, segments, connected platforms, existing intelligence, and exactly the provided competitor set.',
     'Return 5 to 10 high-quality options for each of these categories: value propositions, target markets, primary ICPs, USPs, short brand descriptions, primary challenges, and languages.',
+    'Also return exactly 20 customer segments ranked from strongest to weakest opportunity for this business.',
     'Every option must be materially distinct, strategically useful, specific, and stronger than a generic marketing phrase.',
     'The suggestions must explicitly use competitor gaps, weaknesses, blind spots, or whitespace opportunities from the competitor set.',
     'Do not invent company facts, certifications, metrics, customers, or product capabilities that are not supported by the context.',
     'Treat the output as strategic recommendations, not verified facts.',
     'Also return a recommended best profile consisting of the single best value proposition, target market, primary ICP, USP, short brand description, plus the best list of primary challenges and languages.',
+    'For each customer segment include: name, industry, companySize, region, maturityLevel, painPoints, jobsToBeDone, decisionCriteria, useCases, buyingRoles, priceSensitivity, primarySegment, notes, score, and whyItFits.',
+    'The 20 customer segments must be the best 20, not filler. They should be ordered by expected strategic fit and revenue opportunity.',
     'Also compare all 10 competitors and explain for each where whitespace exists and why the workspace can win.',
     'Use only valid JSON without markdown fences.',
-    'Output shape: {"summary":string,"recommendedProfile":{"valueProposition":string,"targetMarket":string,"primaryIcp":string,"usp":string,"shortBrandDescription":string,"primaryChallenges":string[],"languages":string[]},"suggestions":{"valuePropositions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"targetMarkets":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryIcps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"usps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"shortBrandDescriptions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryChallenges":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"languages":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}]},"competitorComparison":[{"name":string,"websiteUrl":string|null,"competitorType":string|null,"market":string|null,"positioning":string|null,"strengths":string[],"weaknesses":string[],"whitespace":string[],"whyYouCanWin":string}]}',
+    'Output shape: {"summary":string,"recommendedProfile":{"valueProposition":string,"targetMarket":string,"primaryIcp":string,"usp":string,"shortBrandDescription":string,"primaryChallenges":string[],"languages":string[]},"suggestions":{"valuePropositions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"targetMarkets":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryIcps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"usps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"shortBrandDescriptions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryChallenges":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"languages":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}]},"customerSegments":[{"name":string,"industry":string|null,"companySize":string|null,"region":string|null,"maturityLevel":string|null,"painPoints":string[],"jobsToBeDone":string[],"decisionCriteria":string[],"useCases":string[],"buyingRoles":string[],"priceSensitivity":string|null,"primarySegment":boolean,"notes":string|null,"score":number,"whyItFits":string}],"competitorComparison":[{"name":string,"websiteUrl":string|null,"competitorType":string|null,"market":string|null,"positioning":string|null,"strengths":string[],"weaknesses":string[],"whitespace":string[],"whyYouCanWin":string}]}',
   ].join(' ');
 }
 
@@ -220,6 +228,91 @@ function normaliseSuggestionList(value: unknown, minimum = 3) {
     .slice(0, 10);
   if (items.length < minimum) return [];
   return items;
+}
+
+function normaliseGeneratedCustomerSegment(entry: unknown) {
+  const item = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+  const name = normaliseOptionalText(item.name, 200);
+  if (!name) return null;
+  return {
+    name,
+    industry: normaliseOptionalText(item.industry, 200),
+    companySize: normaliseOptionalText(item.companySize, 100),
+    region: normaliseOptionalText(item.region, 200),
+    maturityLevel: normaliseOptionalText(item.maturityLevel, 120),
+    painPoints: normaliseStringList(item.painPoints, 20, 160),
+    jobsToBeDone: normaliseStringList(item.jobsToBeDone, 20, 160),
+    decisionCriteria: normaliseStringList(item.decisionCriteria, 20, 160),
+    useCases: normaliseStringList(item.useCases, 20, 160),
+    buyingRoles: normaliseStringList(item.buyingRoles, 20, 120),
+    priceSensitivity: normaliseOptionalText(item.priceSensitivity, 120),
+    primarySegment: typeof item.primarySegment === 'boolean' ? item.primarySegment : false,
+    notes: normaliseOptionalText(item.notes, 4000),
+    score: clampScore(item.score),
+    whyItFits: normaliseOptionalText(item.whyItFits, 2000) ?? 'Fits the available workspace context and opportunity landscape.',
+  } satisfies repo.AiGeneratedCustomerSegment;
+}
+
+function normaliseGeneratedCustomerSegments(
+  raw: unknown,
+  fallbackSegments: CustomerSegmentContext[],
+) {
+  if (!Array.isArray(raw)) {
+    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return customer segments');
+  }
+
+  const seen = new Set<string>();
+  const normalized = raw
+    .map((entry) => normaliseGeneratedCustomerSegment(entry))
+    .filter((entry): entry is repo.AiGeneratedCustomerSegment => Boolean(entry))
+    .filter((entry) => {
+      const key = entry.name.trim().toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 20)
+    .map((entry, index) => ({
+      ...entry,
+      primarySegment: typeof raw[index] === 'object' && raw[index] !== null && typeof (raw[index] as Record<string, unknown>).primarySegment === 'boolean'
+        ? entry.primarySegment
+        : index < 3,
+    }));
+
+  if (normalized.length < 20 && fallbackSegments.length > 0) {
+    for (const fallback of fallbackSegments) {
+      if (normalized.length >= 20) break;
+      const key = fallback.name.trim().toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      normalized.push({
+        name: fallback.name,
+        industry: fallback.industry ?? null,
+        companySize: fallback.companySize ?? null,
+        region: fallback.region ?? null,
+        maturityLevel: fallback.maturityLevel ?? null,
+        painPoints: (fallback.painPoints ?? []).slice(0, 20),
+        jobsToBeDone: (fallback.jobsToBeDone ?? []).slice(0, 20),
+        decisionCriteria: (fallback.decisionCriteria ?? []).slice(0, 20),
+        useCases: (fallback.useCases ?? []).slice(0, 20),
+        buyingRoles: (fallback.buyingRoles ?? []).slice(0, 20),
+        priceSensitivity: fallback.priceSensitivity ?? null,
+        primarySegment: normalized.length < 3 ? true : fallback.primarySegment,
+        notes: fallback.notes ?? null,
+        score: Math.max(50, 80 - normalized.length),
+        whyItFits: 'Kept from the existing workspace segment library to preserve high-signal customer coverage.',
+      });
+    }
+  }
+
+  if (normalized.length < 20) {
+    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return the required 20 usable customer segments');
+  }
+
+  return normalized.slice(0, 20).map((entry, index) => ({
+    ...entry,
+    primarySegment: index < 3 ? entry.primarySegment : false,
+  }));
 }
 
 function normaliseCompetitorComparisonEntry(entry: unknown, fallback?: CompetitorContext) {
@@ -256,6 +349,7 @@ function fallbackCompetitorComparisons(competitors: CompetitorContext[]) {
 function normaliseAiBusinessProfilePayload(
   raw: unknown,
   competitors: CompetitorContext[],
+  fallbackSegments: CustomerSegmentContext[],
 ) {
   const item = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {};
   const suggestionsValue = item.suggestions && typeof item.suggestions === 'object'
@@ -314,6 +408,7 @@ function normaliseAiBusinessProfilePayload(
     summary: normaliseOptionalText(item.summary, 4000) ?? 'AI-generated business profile draft based on the current workspace context and competitor comparison.',
     recommendedProfile,
     suggestions,
+    customerSegments: normaliseGeneratedCustomerSegments(item.customerSegments, fallbackSegments),
     competitorComparison: finalComparison,
   } satisfies repo.AiBusinessProfilePayload;
 }
@@ -396,11 +491,23 @@ export async function generateAiBusinessProfile(workspaceId: string, userId: str
     store: false,
   }, { billing: { workspaceId, userId } });
 
-  const payload = normaliseAiBusinessProfilePayload(extractJson(response.output_text), competitors);
+  const payload = normaliseAiBusinessProfilePayload(extractJson(response.output_text), competitors, customerSegments);
   return repo.saveAiBusinessProfile({
     workspaceId,
     payload,
     model,
     generatedAt: new Date().toISOString(),
   });
+}
+
+export function applyGeneratedCustomerSegments(workspaceId: string, segments: repo.AiGeneratedCustomerSegment[]) {
+  return repo.replaceGeneratedCustomerSegments(workspaceId, segments);
+}
+
+export async function applyStoredAiCustomerSegments(workspaceId: string) {
+  const profile = await repo.getAiBusinessProfile(workspaceId);
+  if (!profile?.payload.customerSegments?.length) {
+    throw new AppError(404, 'AI_BUSINESS_PROFILE_NOT_FOUND', 'No generated AI customer segments are available for this workspace');
+  }
+  return repo.replaceGeneratedCustomerSegments(workspaceId, profile.payload.customerSegments);
 }
