@@ -316,3 +316,45 @@ export async function restoreRecord(
     return record;
   });
 }
+
+export async function claimExecutionReadyRecords(limit = 20) {
+  return withTransaction(async (client) => {
+    const { rows: candidates } = await query<WorkspaceRecord>(
+      `SELECT ${recordSelect}
+       FROM workspace_records
+       WHERE deleted_at IS NULL
+         AND source = 'page_agent'
+         AND stage = 'queued_for_execution'
+         AND COALESCE(data ->> 'executionReady', 'false') = 'true'
+       ORDER BY updated_at ASC, id ASC
+       LIMIT $1
+       FOR UPDATE SKIP LOCKED`,
+      [limit],
+      client,
+    );
+    const claimed: WorkspaceRecord[] = [];
+    for (const candidate of candidates) {
+      const nextData = {
+        ...(candidate.data ?? {}),
+        executionStatus: 'executing',
+        executionStartedAt: new Date().toISOString(),
+      };
+      const { rows } = await query<WorkspaceRecord>(
+        `UPDATE workspace_records
+         SET stage = 'executing',
+             data = $2,
+             updated_by = $3,
+             version = version + 1
+         WHERE id = $1
+         RETURNING ${recordSelect}`,
+        [candidate.id, nextData, candidate.createdBy],
+        client,
+      );
+      const record = rows[0];
+      if (!record) continue;
+      await insertAudit(client, candidate.workspaceId, candidate.createdBy, 'record.execution_claimed', candidate.resourceType, candidate.id, candidate, record);
+      claimed.push(record);
+    }
+    return claimed;
+  });
+}

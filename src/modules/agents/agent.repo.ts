@@ -25,7 +25,15 @@ export async function createRun(
   return rows[0];
 }
 export async function listAutomatedTargets() {
-  const { rows } = await query<{ workspace_id: string; plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test'; status: string }>(`SELECT workspace_id, plan_key, status FROM workspace_subscriptions WHERE status IN ('active', 'trialing') AND plan_key IN ('starter', 'ai', 'test')`);
+  const { rows } = await query<{
+    workspace_id: string;
+    actor_user_id: string | null;
+    plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
+    status: string;
+  }>(`SELECT ws.workspace_id, w.created_by AS actor_user_id, ws.plan_key, ws.status
+      FROM workspace_subscriptions ws
+      JOIN workspaces w ON w.id = ws.workspace_id
+      WHERE ws.status IN ('active', 'trialing') AND ws.plan_key IN ('starter', 'ai', 'test')`);
   return rows;
 }
 export async function hasRecentAutomaticRun(workspaceId: string, goal: string, minutes = 30) {

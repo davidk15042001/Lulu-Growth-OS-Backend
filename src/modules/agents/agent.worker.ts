@@ -16,7 +16,7 @@ export async function runAutomaticAnalysisCycle() {
       for (const page of automaticPageProfiles) {
         const goal = buildPageAgentGoal(page);
         if (await repo.getRecentPageRun(target.workspace_id, page.pageId, dedupeMinutes)) continue;
-        await startAutomaticRun(target.workspace_id, goal, 'general', page, dedupeMinutes);
+        await startAutomaticRun(target.workspace_id, goal, 'general', page, dedupeMinutes, target.actor_user_id ?? undefined);
       }
     }
   } catch (error) {

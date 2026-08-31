@@ -6,6 +6,7 @@ import { ensureMigrations } from './database/migrate.js';
 import { pool } from './db/pool.js';
 import { syncResourceCatalog } from './modules/resources/resource-catalog.repo.js';
 import { startAutomaticAnalysisWorker, stopAutomaticAnalysisWorker } from './modules/agents/agent.worker.js';
+import { startAgentExecutionWorker, stopAgentExecutionWorker } from './modules/agents/agent-execution.worker.js';
 import { startEmailSyncWorker, stopEmailSyncWorker } from './modules/email/email.service.js';
 import { startOnboardingFileCleanupWorker, stopOnboardingFileCleanupWorker } from './modules/onboarding/onboarding-cleanup.worker.js';
 import { startPaygBillingWorker, stopPaygBillingWorker } from './modules/billing/payg-billing.worker.js';
@@ -26,6 +27,7 @@ async function bootstrap() {
 
   if (workersEnabled) {
     startAutomaticAnalysisWorker();
+    startAgentExecutionWorker();
     if (hasDb) {
       startEmailSyncWorker();
       startCalendarSyncWorker();
@@ -47,6 +49,7 @@ async function bootstrap() {
     logger.info({ signal }, 'Shutting down API');
     if (workersEnabled) {
       stopAutomaticAnalysisWorker();
+      stopAgentExecutionWorker();
       stopEmailSyncWorker();
       stopCalendarSyncWorker();
       stopRateLimitCleanupWorker();
