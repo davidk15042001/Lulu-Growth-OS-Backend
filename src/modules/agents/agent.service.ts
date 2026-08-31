@@ -188,6 +188,13 @@ function buildInitialPlan(
   };
 }
 
+function requireRegisteredPageId(pageId?: string) {
+  if (!pageId) return null;
+  const page = sanitizeAgentPageContext({ pageId });
+  if (!page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');
+  return page;
+}
+
 async function persistPageSnapshot(
   runId: string,
   workspaceId: string,
@@ -337,7 +344,20 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
   const toolInput = step.toolInput ?? {};
   const approvalDecision = typeof toolInput.approvalDecision === 'string' ? toolInput.approvalDecision : null;
   if (tool && tool.risk !== 'read' && approvalDecision !== 'approved') {
-    const approval = await createApproval(workspaceId, userId, { actionType: `agent_tool:${tool.name}`, title: `Approve ${tool.name}`, description: step.instruction, payload: { runId, stepId: step.id, toolName: tool.name, toolInput: step.toolInput ?? {} } });
+    const approval = await createApproval(workspaceId, userId, {
+      actionType: `agent_tool:${tool.name}`,
+      entityType: 'agent_run_step',
+      entityId: step.id,
+      title: `Approve ${tool.name}`,
+      description: step.instruction,
+      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+      payload: {
+        runId,
+        stepId: step.id,
+        toolName: tool.name,
+        toolInput: step.toolInput ?? {},
+      },
+    });
     if (!approval) throw new AppError(500, 'AGENT_APPROVAL_CREATION_FAILED', 'The approval request could not be created');
     await repo.updateStep(step.id, { status: 'waiting_approval', approval_id: approval.id });
     await repo.updateRun(runId, { status: 'waiting_approval' });
@@ -489,9 +509,13 @@ export async function startAutomaticRun(
   }
   return run;
 }
-export async function listRuns(workspaceId: string, pageId?: string) { return repo.listRuns(workspaceId, 50, pageId); }
+export async function listRuns(workspaceId: string, pageId?: string) {
+  const page = requireRegisteredPageId(pageId);
+  return repo.listRuns(workspaceId, 50, page?.pageId);
+}
 export async function getKnowledgeBundle(workspaceId: string, pageId?: string) {
-  return repo.getKnowledgeBundle(workspaceId, pageId ? pageSnapshotType(pageId) : 'initial_business_analysis');
+  const page = requireRegisteredPageId(pageId);
+  return repo.getKnowledgeBundle(workspaceId, page ? pageSnapshotType(page.pageId) : 'initial_business_analysis');
 }
 function runPageId(run: Awaited<ReturnType<typeof repo.listRuns>>[number]) {
   return typeof run.plan?.page === 'object'
@@ -521,11 +545,12 @@ function matchingPlatforms(page: AgentPageContext, platforms: Awaited<ReturnType
 }
 
 export async function getAgentHealth(workspaceId: string, pageId?: string) {
+  const page = requireRegisteredPageId(pageId);
   const [runs, platforms] = await Promise.all([
-    repo.listRuns(workspaceId, pageId ? 50 : 400, pageId),
+    repo.listRuns(workspaceId, page ? 50 : 400, page?.pageId),
     onboardingRepo.listPlatforms(workspaceId),
   ]);
-  const pages = (pageId ? automaticPageProfiles.filter((page) => page.pageId === pageId) : automaticPageProfiles);
+  const pages = page ? [page] : automaticPageProfiles;
   const items = pages.map((page) => {
     const module = resolveAgentModule('general', page);
     const profile = buildAgentExecutionProfile(page, module);

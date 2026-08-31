@@ -1124,30 +1124,6 @@ export const canonicalAgentPageProfiles: readonly CanonicalAgentPageProfile[] = 
   },
   {
     "sectionLabel": "Finance",
-    "pageId": "boldly-field-4971",
-    "pageLabel": "Finance Settings",
-    "agentName": "Finance Config Agent",
-    "autonomy": "A2",
-    "objective": "Hold finance rules and defaults.",
-    "integrations": [
-      "Configurations",
-      "mappings",
-      "roles"
-    ],
-    "jobs": [
-      "validate config",
-      "suggest corrections"
-    ],
-    "successMetrics": [
-      "config correctness",
-      "rule consistency"
-    ],
-    "approvalGates": [
-      "settings changes"
-    ]
-  },
-  {
-    "sectionLabel": "Finance",
     "pageId": "fine-park-8079",
     "pageLabel": "Sales Overview",
     "agentName": "CSO Agent",
