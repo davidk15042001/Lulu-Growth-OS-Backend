@@ -210,7 +210,7 @@ export async function deleteUserAndOwnedData(userId: string) {
       id: string;
       companyName: string;
     }>(
-      `SELECT DISTINCT w.id, w.name AS "companyName"
+      `SELECT DISTINCT w.id, w.name AS "companyName", w.created_at AS "createdAt"
        FROM workspaces w
        LEFT JOIN workspace_members wm
          ON wm.workspace_id = w.id
