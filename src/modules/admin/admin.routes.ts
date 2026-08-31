@@ -11,7 +11,7 @@ router.route('/search').get(requireAuth, controller.searchAll).all(methodNotAllo
 router.route('/billing-overview').get(requireAuth, controller.overview).all(methodNotAllowed);
 
 router.route('/users').get(requireAuth, controller.getUsers).all(methodNotAllowed);
-router.route('/users/:userId').get(requireAuth, controller.getUser).patch(requireAuth, controller.patchUser).all(methodNotAllowed);
+router.route('/users/:userId').get(requireAuth, controller.getUser).patch(requireAuth, controller.patchUser).delete(requireAuth, controller.deleteUser).all(methodNotAllowed);
 router.route('/users/:userId/impersonate').post(requireAuth, controller.impersonateUser).all(methodNotAllowed);
 
 router.route('/workspaces').get(requireAuth, controller.getWorkspaces).all(methodNotAllowed);

@@ -1,4 +1,4 @@
-import { query } from '../../db/pool.js';
+import { query, withTransaction } from '../../db/pool.js';
 
 export async function listCustomerBillingOverview(periodStart: string, periodEnd: string) {
   const { rows } = await query(`
@@ -183,6 +183,119 @@ export async function updateUserStatus(userId: string, action: 'lock' | 'unlock'
       break;
   }
   return getUserDetail(userId);
+}
+
+export async function deleteUserAndOwnedData(userId: string) {
+  return withTransaction(async (client) => {
+    const userResult = await query<{
+      id: string;
+      email: string;
+      role: 'user' | 'admin';
+      deletedAt: string | null;
+    }>(
+      `SELECT id, email, role, deleted_at AS "deletedAt"
+       FROM users
+       WHERE id = $1
+       LIMIT 1`,
+      [userId],
+      client,
+    );
+    const user = userResult.rows[0];
+    if (!user || user.deletedAt) return null;
+    if (user.role === 'admin') {
+      throw new Error('ADMIN_DELETE_FORBIDDEN');
+    }
+
+    const ownedWorkspaces = await query<{
+      id: string;
+      companyName: string;
+    }>(
+      `SELECT DISTINCT w.id, w.name AS "companyName"
+       FROM workspaces w
+       LEFT JOIN workspace_members wm
+         ON wm.workspace_id = w.id
+        AND wm.user_id = $1
+        AND wm.role = 'owner'
+       WHERE w.deleted_at IS NULL
+         AND (w.created_by = $1 OR wm.user_id IS NOT NULL)
+       ORDER BY w.created_at DESC`,
+      [userId],
+      client,
+    );
+    const workspaceIds = ownedWorkspaces.rows.map((workspace) => workspace.id);
+
+    let deletedWorkspaceCount = 0;
+    let deletedIntegrationCount = 0;
+    let deletedMembershipCount = 0;
+
+    if (workspaceIds.length) {
+      const integrationCountResult = await query<{ count: string }>(
+        `SELECT COUNT(*)::bigint AS count
+         FROM workspace_platforms
+         WHERE workspace_id = ANY($1::uuid[])`,
+        [workspaceIds],
+        client,
+      );
+      deletedIntegrationCount = Number(integrationCountResult.rows[0]?.count ?? 0);
+
+      const membershipCountResult = await query<{ count: string }>(
+        `SELECT COUNT(*)::bigint AS count
+         FROM workspace_members
+         WHERE workspace_id = ANY($1::uuid[])`,
+        [workspaceIds],
+        client,
+      );
+      deletedMembershipCount += Number(membershipCountResult.rows[0]?.count ?? 0);
+
+      const deletedWorkspacesResult = await query<{ id: string }>(
+        `DELETE FROM workspaces
+         WHERE id = ANY($1::uuid[])`,
+        [workspaceIds],
+        client,
+      );
+      deletedWorkspaceCount = deletedWorkspacesResult.rowCount;
+    }
+
+    const remainingMembershipCount = await query<{ count: string }>(
+      `SELECT COUNT(*)::bigint AS count
+       FROM workspace_members
+       WHERE user_id = $1`,
+      [userId],
+      client,
+    );
+    deletedMembershipCount += Number(remainingMembershipCount.rows[0]?.count ?? 0);
+
+    await query(`DELETE FROM workspace_members WHERE user_id = $1`, [userId], client);
+    await query(`DELETE FROM device_push_tokens WHERE user_id = $1`, [userId], client);
+    await query(`DELETE FROM otp_codes WHERE user_id = $1`, [userId], client);
+    await query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId], client);
+
+    const redactedEmail = `deleted+${user.id}@lulu.local`;
+    await query(
+      `UPDATE users
+       SET email = $2,
+           password_hash = gen_random_uuid()::text,
+           first_name = NULL,
+           last_name = NULL,
+           verified_at = NULL,
+           token_version = token_version + 1,
+           deleted_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $1`,
+      [userId, redactedEmail],
+      client,
+    );
+
+    return {
+      userId: user.id,
+      previousEmail: user.email,
+      redactedEmail,
+      deletedWorkspaceCount,
+      deletedIntegrationCount,
+      deletedMembershipCount,
+      deletedWorkspaceNames: ownedWorkspaces.rows.map((workspace) => workspace.companyName),
+    };
+  });
 }
 
 export async function listWorkspaces(limit = 100, offset = 0, search?: string) {
