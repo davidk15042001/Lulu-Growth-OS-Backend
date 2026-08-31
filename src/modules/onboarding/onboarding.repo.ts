@@ -826,6 +826,57 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
 
 export type AiPreferences = AiPreferencesInput & { workspaceId: string; createdAt: string; updatedAt: string };
 
+export type AiBusinessProfileSuggestion = {
+  value: string;
+  whyItFits: string;
+  competitorGap: string;
+  score: number;
+};
+
+export type AiBusinessProfileCompetitorComparison = {
+  name: string;
+  websiteUrl: string | null;
+  competitorType: string | null;
+  market: string | null;
+  positioning: string | null;
+  strengths: string[];
+  weaknesses: string[];
+  whitespace: string[];
+  whyYouCanWin: string;
+};
+
+export type AiBusinessProfilePayload = {
+  summary: string;
+  recommendedProfile: {
+    valueProposition: string;
+    targetMarket: string;
+    primaryIcp: string;
+    usp: string;
+    shortBrandDescription: string;
+    primaryChallenges: string[];
+    languages: string[];
+  };
+  suggestions: {
+    valuePropositions: AiBusinessProfileSuggestion[];
+    targetMarkets: AiBusinessProfileSuggestion[];
+    primaryIcps: AiBusinessProfileSuggestion[];
+    usps: AiBusinessProfileSuggestion[];
+    shortBrandDescriptions: AiBusinessProfileSuggestion[];
+    primaryChallenges: AiBusinessProfileSuggestion[];
+    languages: AiBusinessProfileSuggestion[];
+  };
+  competitorComparison: AiBusinessProfileCompetitorComparison[];
+};
+
+export type AiBusinessProfile = {
+  workspaceId: string;
+  payload: AiBusinessProfilePayload;
+  model: string | null;
+  generatedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const aiPreferencesSelect = `
   workspace_id AS "workspaceId",
   business_priorities AS "businessPriorities",
@@ -913,6 +964,51 @@ export async function saveAiPreferences(workspaceId: string, input: AiPreference
       input.responseLanguage,
       input.transparencySettings,
     ]
+  );
+  return rows[0];
+}
+
+const aiBusinessProfileSelect = `
+  workspace_id AS "workspaceId",
+  payload,
+  model,
+  generated_at AS "generatedAt",
+  created_at AS "createdAt",
+  updated_at AS "updatedAt"
+`;
+
+export async function getAiBusinessProfile(workspaceId: string) {
+  const { rows } = await query<AiBusinessProfile>(
+    `SELECT ${aiBusinessProfileSelect}
+     FROM workspace_ai_business_profiles
+     WHERE workspace_id = $1`,
+    [workspaceId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function saveAiBusinessProfile(input: {
+  workspaceId: string;
+  payload: AiBusinessProfilePayload;
+  model?: string | null;
+  generatedAt?: string | null;
+}) {
+  const { rows } = await query<AiBusinessProfile>(
+    `INSERT INTO workspace_ai_business_profiles (
+       workspace_id, payload, model, generated_at
+     ) VALUES ($1, $2::jsonb, $3, $4)
+     ON CONFLICT (workspace_id) DO UPDATE SET
+       payload = EXCLUDED.payload,
+       model = EXCLUDED.model,
+       generated_at = EXCLUDED.generated_at,
+       updated_at = NOW()
+     RETURNING ${aiBusinessProfileSelect}`,
+    [
+      input.workspaceId,
+      JSON.stringify(input.payload),
+      input.model ?? null,
+      input.generatedAt ?? null,
+    ],
   );
   return rows[0];
 }

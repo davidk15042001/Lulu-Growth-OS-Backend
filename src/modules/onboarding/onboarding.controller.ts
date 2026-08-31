@@ -6,6 +6,7 @@ import * as oauthService from './oauth.service.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import { resetWebsiteProviderState } from '../websites/website.automation.service.js';
 import * as service from './onboarding.service.js';
+import * as aiProfileService from './onboarding.ai-profile.service.js';
 import {
   aiPreferencesSchema,
   businessDescriptionSchema,
@@ -259,6 +260,24 @@ export async function getAiPreferences(req: WorkspaceRequest, res: Response, nex
   try {
     const preferences = await service.getAiPreferences(workspaceId(req));
     return successResponse(res, 'AI preferences loaded', preferences);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getAiBusinessProfile(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const profile = await aiProfileService.getAiBusinessProfile(workspaceId(req));
+    return successResponse(res, 'AI business profile loaded', profile);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function generateAiBusinessProfile(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const profile = await aiProfileService.generateAiBusinessProfile(workspaceId(req), req.user!.id);
+    return successResponse(res, 'AI business profile generated', profile);
   } catch (error) {
     next(error);
   }

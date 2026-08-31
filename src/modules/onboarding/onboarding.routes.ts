@@ -112,6 +112,11 @@ router.route('/ai-preferences')
   .put(requireWorkspaceEditor, controller.saveAiPreferences)
   .all(methodNotAllowed);
 
+router.route('/ai-business-profile')
+  .get(requireWorkspaceMember, controller.getAiBusinessProfile)
+  .post(requireWorkspaceEditor, controller.generateAiBusinessProfile)
+  .all(methodNotAllowed);
+
 router.route('/complete')
   .post(requireWorkspaceEditor, controller.complete)
   .all(methodNotAllowed);

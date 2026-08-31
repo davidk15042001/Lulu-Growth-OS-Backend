@@ -22,7 +22,7 @@ import type {
 } from './onboarding.validator.js';
 
 export async function getSnapshot(workspaceId: string, userId: string) {
-  const [workspace, offerings, customerSegments, competitors, platforms, aiPreferences, completion] = await Promise.all([
+  const [workspace, offerings, customerSegments, competitors, platforms, aiPreferences, completion, aiBusinessProfile] = await Promise.all([
     workspaceService.getWorkspace(workspaceId, userId),
     repo.listOfferings(workspaceId),
     repo.listCustomerSegments(workspaceId),
@@ -30,9 +30,10 @@ export async function getSnapshot(workspaceId: string, userId: string) {
     repo.listPlatforms(workspaceId),
     repo.getAiPreferences(workspaceId),
     repo.getCompletionState(workspaceId),
+    repo.getAiBusinessProfile(workspaceId),
   ]);
 
-  return { workspace, offerings, customerSegments, competitors, platforms, aiPreferences: aiPreferences ?? null, completion };
+  return { workspace, offerings, customerSegments, competitors, platforms, aiPreferences: aiPreferences ?? null, completion, aiBusinessProfile };
 }
 
 export async function saveCompanyInformation(
