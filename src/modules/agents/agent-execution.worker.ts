@@ -11,6 +11,7 @@ import {
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
+const maxExecutionAttempts = 3;
 let timer: NodeJS.Timeout | undefined;
 let running = false;
 
@@ -52,6 +53,19 @@ function emailAddresses(value: unknown) {
   });
 }
 
+function numberValue(value: unknown, fallback = 0) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+}
+
+function isoAfterMinutes(minutes: number) {
+  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
 function resolveDomainArtifactType(targetSystem: string): ResourceType | null {
   if (targetSystem === 'crm') return 'crm_tasks';
   if (targetSystem === 'sales') return 'sales_tasks';
@@ -63,6 +77,15 @@ function resolveDomainArtifactType(targetSystem: string): ResourceType | null {
   if (targetSystem === 'communication') return 'ai_tasks';
   if (targetSystem === 'reputation') return 'ai_tasks';
   return 'ai_tasks';
+}
+
+function resolveCommandResultResourceType(command: AgentExecutionCommand): ResourceType {
+  if (command.type === 'crm.create_followup_task') return 'crm_tasks';
+  if (command.type === 'sales.create_followup_task') return 'sales_tasks';
+  if (command.type === 'advertising.create_optimization') return 'ad_optimizations';
+  if (command.type === 'finance.create_automation') return 'finance_automations';
+  if (command.type === 'website.publish_job') return 'marketing_publications';
+  return 'activities';
 }
 
 async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord) {
@@ -120,7 +143,48 @@ async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord) {
   return { activity, artifact };
 }
 
+async function persistCommandExecutionResult(
+  record: recordRepo.WorkspaceRecord,
+  command: AgentExecutionCommand,
+  result: Record<string, unknown>,
+) {
+  const existing = await recordRepo.findExecutionResultByCommandIdempotencyKey(record.workspaceId, command.idempotencyKey);
+  if (existing) return existing;
+  const resourceType = resolveCommandResultResourceType(command);
+  return recordRepo.createRecord(record.workspaceId, resourceType, record.createdBy, {
+    parentId: record.id,
+    name: `${command.type} result`,
+    description: command.summary,
+    status: 'completed',
+    stage: 'executed',
+    source: 'agent_executor_command',
+    tags: ['agent-executor-command', command.targetSystem, command.type].slice(0, 12),
+    externalId: command.idempotencyKey,
+    data: {
+      sourceActionRecordId: record.id,
+      commandIdempotencyKey: command.idempotencyKey,
+      commandType: command.type,
+      commandTargetSystem: command.targetSystem,
+      commandProvider: command.provider,
+      commandPayload: command.payload,
+      commandResult: result,
+      executedAt: new Date().toISOString(),
+    },
+  });
+}
+
 async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: AgentExecutionCommand) {
+  const existing = await recordRepo.findExecutionResultByCommandIdempotencyKey(record.workspaceId, command.idempotencyKey);
+  if (existing) {
+    return {
+      type: command.type,
+      targetEntityId: command.targetEntityId,
+      provider: command.provider,
+      reused: true,
+      resultRecordId: existing.id,
+      result: existing.data?.commandResult ?? { status: 'reused' },
+    };
+  }
   const payload = objectValue(command.payload);
   const actorUserId = record.createdBy ?? 'system';
 
@@ -132,11 +196,53 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     if (!reviewId || !accountId || !locationId || !comment) {
       throw new Error('google_reviews.reply requires reviewId, accountId, locationId, and comment');
     }
+    const reviewResult = await updateGoogleReviewReply(record.workspaceId, reviewId, { accountId, locationId, comment });
+    const commandResult = {
+      reviewId,
+      locationId,
+      status: 'updated',
+    };
+    const stored = await persistCommandExecutionResult(record, command, commandResult);
     return {
       type: command.type,
       targetEntityId: reviewId,
       provider: command.provider,
-      result: await updateGoogleReviewReply(record.workspaceId, reviewId, { accountId, locationId, comment }),
+      resultRecordId: stored.id,
+      result: reviewResult,
+    };
+  }
+
+  if (command.type === 'crm.create_followup_task' || command.type === 'sales.create_followup_task') {
+    const resourceType = command.type === 'crm.create_followup_task' ? 'crm_tasks' : 'sales_tasks';
+    const item = await persistCommandExecutionResult(record, command, {
+      taskTitle: textValue(payload.title || command.summary, 240),
+      taskDescription: textValue(payload.description || command.summary, 4000),
+      jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
+      status: 'created',
+    });
+    return {
+      type: command.type,
+      targetEntityId: item.id,
+      provider: command.provider,
+      resultRecordId: item.id,
+      result: { status: 'created', resourceType },
+    };
+  }
+
+  if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation') {
+    const resourceType = command.type === 'advertising.create_optimization' ? 'ad_optimizations' : 'finance_automations';
+    const item = await persistCommandExecutionResult(record, command, {
+      title: textValue(payload.title || command.summary, 240),
+      description: textValue(payload.description || command.summary, 4000),
+      jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
+      status: 'created',
+    });
+    return {
+      type: command.type,
+      targetEntityId: item.id,
+      provider: command.provider,
+      resultRecordId: item.id,
+      result: { status: 'created', resourceType },
     };
   }
 
@@ -152,10 +258,17 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       bodyText: textValue(payload.bodyText, 100_000),
       replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
     });
+    const stored = await persistCommandExecutionResult(record, command, {
+      draftId: draft.id,
+      threadId: draft.threadId,
+      status: draft.status,
+      source: draft.source,
+    });
     return {
       type: command.type,
       targetEntityId: draft.id,
       provider: command.provider,
+      resultRecordId: stored.id,
       result: { draftId: draft.id, threadId: draft.threadId, status: draft.status, source: draft.source },
     };
   }
@@ -177,10 +290,17 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       'automation',
       { sourceActionRecordId: record.id, generatedBy: 'agent_executor' },
     );
+    const stored = await persistCommandExecutionResult(record, command, {
+      draftId: draft.id,
+      threadId: draft.threadId,
+      status: draft.status,
+      source: draft.source,
+    });
     return {
       type: command.type,
       targetEntityId: draft.id,
       provider: command.provider,
+      resultRecordId: stored.id,
       result: { draftId: draft.id, threadId: draft.threadId, status: draft.status, source: draft.source },
     };
   }
@@ -190,18 +310,26 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     const jobId = textValue(payload.jobId || command.targetEntityId);
     if (!siteId || !jobId) throw new Error('website.publish_job requires siteId and jobId');
     const result = await publishWebsiteJob(record.workspaceId, siteId, jobId);
+    const stored = await persistCommandExecutionResult(record, command, {
+      siteId,
+      jobId,
+      status: 'published',
+    });
     return {
       type: command.type,
       targetEntityId: jobId,
       provider: command.provider,
+      resultRecordId: stored.id,
       result,
     };
   }
 
+  const stored = await persistCommandExecutionResult(record, command, { status: 'record_only', summary: command.summary });
   return {
     type: command.type,
     targetEntityId: command.targetEntityId,
     provider: command.provider,
+    resultRecordId: stored.id,
     result: { status: 'record_only', summary: command.summary },
   };
 }
@@ -250,8 +378,14 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     executorVersion: '1.0.0',
     executionSummary: executionSummary(record),
     executionResults: commandResults,
-    resultRecordIds: [artifacts.activity.id, artifacts.artifact?.id].filter(Boolean),
+    resultRecordIds: [
+      artifacts.activity.id,
+      artifacts.artifact?.id,
+      ...commandResults.flatMap((item) => typeof item.resultRecordId === 'string' ? [item.resultRecordId] : []),
+    ].filter(Boolean),
     resultResourceTypes: [artifacts.activity.resourceType, artifacts.artifact?.resourceType].filter(Boolean),
+    executionNextAttemptAt: null,
+    executionError: null,
   };
   const update = await recordRepo.updateRecord(record.workspaceId, record.resourceType, record.id, record.createdBy, {
     status: 'completed',
@@ -265,16 +399,37 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
   }
 }
 
-async function failRecord(record: recordRepo.WorkspaceRecord, error: unknown) {
+function classifyExecutionError(error: unknown) {
   const message = error instanceof Error ? error.message : 'Unknown execution failure';
+  const normalized = message.toLowerCase();
+  if (
+    normalized.includes('requires') ||
+    normalized.includes('not found') ||
+    normalized.includes('approval') ||
+    normalized.includes('forbidden') ||
+    normalized.includes('invalid')
+  ) {
+    return { retryable: false, errorClass: 'validation', message };
+  }
+  return { retryable: true, errorClass: 'transient', message };
+}
+
+async function failRecord(record: recordRepo.WorkspaceRecord, error: unknown) {
+  const failure = classifyExecutionError(error);
+  const attempts = Math.max(1, numberValue(record.data?.executionAttempts, 1));
+  const canRetry = failure.retryable && attempts < maxExecutionAttempts;
+  const nextRetryAt = canRetry ? isoAfterMinutes(Math.max(1, attempts * 2)) : null;
   const update = await recordRepo.updateRecord(record.workspaceId, record.resourceType, record.id, record.createdBy, {
-    status: 'failed',
-    stage: 'execution_failed',
+    status: canRetry ? 'approved' : 'failed',
+    stage: canRetry ? 'queued_for_execution' : 'execution_failed',
     data: {
       ...(record.data ?? {}),
-      executionStatus: 'failed',
+      executionStatus: canRetry ? 'queued_retry' : 'failed',
       executionFailedAt: new Date().toISOString(),
-      executionError: message,
+      executionError: failure.message,
+      executionErrorClass: failure.errorClass,
+      executionRetryable: canRetry,
+      executionNextAttemptAt: nextRetryAt,
     },
     expectedVersion: record.version,
   });

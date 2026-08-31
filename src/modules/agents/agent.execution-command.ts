@@ -4,6 +4,10 @@ import type { ResourceType } from '../../domain/resource-catalog.js';
 
 export const agentExecutionCommandTypeSchema = z.enum([
   'record.create_artifact',
+  'crm.create_followup_task',
+  'sales.create_followup_task',
+  'advertising.create_optimization',
+  'finance.create_automation',
   'google_reviews.reply',
   'email.create_draft',
   'email.create_ai_draft',
@@ -23,6 +27,12 @@ export type AgentExecutionCommand = {
   targetEntityId: string | null;
   payload: Record<string, unknown>;
   idempotencyKey: string;
+};
+
+export type AgentExecutionCommandPolicyDecision = 'allow' | 'require_approval' | 'forbidden';
+export type AgentExecutionCommandPolicy = {
+  decision: AgentExecutionCommandPolicyDecision;
+  reason: string;
 };
 
 type InferCommandContext = {
@@ -131,6 +141,86 @@ function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCom
 
 function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   const summary = defaultSummary(context);
+  if (context.targetSystem === 'crm') {
+    return {
+      type: 'crm.create_followup_task',
+      summary,
+      targetSystem: 'crm',
+      provider: null,
+      riskLevel: 'low',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : context.policyDecision,
+      targetEntityType: 'crm_task',
+      targetEntityId: context.pageId,
+      payload: {
+        title: summary,
+        description: context.goal,
+        jobs: context.jobs,
+        module: context.module,
+      },
+      idempotencyKey: buildIdempotencyKey(['crm.create_followup_task', context.pageId, context.goal, context.jobs.join('|')]),
+    };
+  }
+
+  if (context.targetSystem === 'sales') {
+    return {
+      type: 'sales.create_followup_task',
+      summary,
+      targetSystem: 'sales',
+      provider: null,
+      riskLevel: 'low',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : context.policyDecision,
+      targetEntityType: 'sales_task',
+      targetEntityId: context.pageId,
+      payload: {
+        title: summary,
+        description: context.goal,
+        jobs: context.jobs,
+        module: context.module,
+      },
+      idempotencyKey: buildIdempotencyKey(['sales.create_followup_task', context.pageId, context.goal, context.jobs.join('|')]),
+    };
+  }
+
+  if (context.targetSystem === 'advertising') {
+    return {
+      type: 'advertising.create_optimization',
+      summary,
+      targetSystem: 'advertising',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.policyDecision,
+      targetEntityType: 'ad_optimization',
+      targetEntityId: context.pageId,
+      payload: {
+        title: summary,
+        description: context.goal,
+        jobs: context.jobs,
+        module: context.module,
+      },
+      idempotencyKey: buildIdempotencyKey(['advertising.create_optimization', context.pageId, context.goal, context.jobs.join('|')]),
+    };
+  }
+
+  if (context.targetSystem === 'finance') {
+    return {
+      type: 'finance.create_automation',
+      summary,
+      targetSystem: 'finance',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.policyDecision,
+      targetEntityType: 'finance_automation',
+      targetEntityId: context.pageId,
+      payload: {
+        title: summary,
+        description: context.goal,
+        jobs: context.jobs,
+        module: context.module,
+      },
+      idempotencyKey: buildIdempotencyKey(['finance.create_automation', context.pageId, context.goal, context.jobs.join('|')]),
+    };
+  }
+
   if (context.reviewId && context.accountId && context.locationId && context.comment) {
     return {
       type: 'google_reviews.reply',
@@ -261,7 +351,68 @@ export function listAgentExecutionCommandTypes(commands: readonly AgentExecution
   return [...new Set(commands.map((command) => command.type))];
 }
 
-export function summarizeExecutionReviewReason(commands: readonly AgentExecutionCommand[], policyDecision: 'allow' | 'require_approval') {
+export function decideExecutionCommandPolicy(
+  command: AgentExecutionCommand,
+  executionMode: 'analysis_only' | 'autonomous',
+): AgentExecutionCommandPolicy {
+  if (command.type === 'record.create_artifact') {
+    return { decision: 'allow', reason: 'Internal artifact creation is safe for autonomous execution.' };
+  }
+  if (command.type === 'crm.create_followup_task' || command.type === 'sales.create_followup_task') {
+    if (executionMode === 'autonomous') {
+      return { decision: 'allow', reason: 'Internal follow-up task creation is safe in autonomous mode.' };
+    }
+    return { decision: 'require_approval', reason: 'Task creation requires autonomous mode or a human approval.' };
+  }
+  if (command.type === 'email.create_ai_draft') {
+    if (executionMode === 'autonomous') {
+      return { decision: 'allow', reason: 'Draft preparation is safe in autonomous mode because it does not send an external message.' };
+    }
+    return { decision: 'require_approval', reason: 'Draft preparation outside autonomous mode should be reviewed first.' };
+  }
+  if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation' || command.type === 'email.create_draft') {
+    return { decision: 'require_approval', reason: `Command ${command.type} affects an operational workflow and must be reviewed.` };
+  }
+  if (command.type === 'google_reviews.reply' || command.type === 'website.publish_job') {
+    return { decision: 'require_approval', reason: `Command ${command.type} has direct external impact and always requires approval.` };
+  }
+  if (command.riskLevel === 'high') {
+    return { decision: 'require_approval', reason: `High-risk command ${command.type} requires explicit approval.` };
+  }
+  return { decision: 'allow', reason: `Command ${command.type} is allowed by the default safe policy.` };
+}
+
+export function applyExecutionCommandPolicies(
+  commands: readonly AgentExecutionCommand[],
+  executionMode: 'analysis_only' | 'autonomous',
+) {
+  const decisions = commands.map((command) => {
+    const policy = decideExecutionCommandPolicy(command, executionMode);
+    return {
+      ...command,
+      approvalPolicy: policy.decision === 'allow' ? 'allow' : 'require_approval',
+      riskLevel: policy.decision === 'allow' ? command.riskLevel : (command.riskLevel === 'low' ? 'medium' : command.riskLevel),
+      policyDecision: policy.decision,
+      policyReason: policy.reason,
+    };
+  });
+  const overallDecision = decisions.some((entry) => entry.policyDecision !== 'allow') ? 'require_approval' : 'allow';
+  const reasons = decisions
+    .filter((entry) => entry.policyDecision !== 'allow')
+    .map((entry) => `${entry.type}: ${entry.policyReason}`);
+  return {
+    commands: decisions,
+    overallDecision,
+    reasons,
+  };
+}
+
+export function summarizeExecutionReviewReason(
+  commands: readonly AgentExecutionCommand[],
+  policyDecision: 'allow' | 'require_approval',
+  policyReasons: readonly string[] = [],
+) {
+  if (policyReasons.length > 0) return policyReasons.join(' ');
   if (policyDecision === 'require_approval') return 'The execution includes approval-gated actions and must be reviewed before side effects are applied.';
   const highRisk = commands.find((command) => command.riskLevel === 'high');
   if (highRisk) return `High-risk command ${highRisk.type} was prepared and should be monitored closely even though it is currently allowed.`;

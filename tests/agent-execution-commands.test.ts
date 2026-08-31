@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { normalizeAgentExecutionCommands } from '../src/modules/agents/agent.execution-command.js';
+import {
+  applyExecutionCommandPolicies,
+  normalizeAgentExecutionCommands,
+} from '../src/modules/agents/agent.execution-command.js';
 
 describe('agent execution commands', () => {
-  it('infers a fallback record command when no explicit command exists', () => {
+  it('infers a CRM follow-up task when no explicit CRM command exists', () => {
     const [command] = normalizeAgentExecutionCommands(undefined, {
       module: 'crm',
       targetSystem: 'crm',
@@ -17,10 +20,10 @@ describe('agent execution commands', () => {
     });
 
     assert.ok(command);
-    assert.equal(command.type, 'record.create_artifact');
+    assert.equal(command.type, 'crm.create_followup_task');
     assert.equal(command.targetSystem, 'crm');
     assert.equal(command.approvalPolicy, 'allow');
-    assert.equal(command.targetEntityType, 'crm_tasks');
+    assert.equal(command.targetEntityType, 'crm_task');
   });
 
   it('infers a Google review reply command from review metadata', () => {
@@ -81,5 +84,43 @@ describe('agent execution commands', () => {
     assert.equal(command.type, 'email.create_ai_draft');
     assert.equal(command.targetEntityId, 'thread-1');
     assert.equal(command.idempotencyKey, 'explicit-command-1');
+  });
+
+  it('requires approval for operational commands with direct workflow impact', () => {
+    const [command] = normalizeAgentExecutionCommands(undefined, {
+      module: 'finance',
+      targetSystem: 'finance',
+      actionResourceType: 'finance_automations',
+      pageId: 'finance-page',
+      pageLabel: 'Finance',
+      goal: 'Prepare overdue reconciliation automation',
+      jobs: ['Create reconciliation automation'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    const decision = applyExecutionCommandPolicies([command], 'autonomous');
+    assert.equal(decision.overallDecision, 'require_approval');
+    assert.match(decision.reasons.join(' '), /must be reviewed/i);
+  });
+
+  it('allows internal sales follow-up task creation in autonomous mode', () => {
+    const [command] = normalizeAgentExecutionCommands(undefined, {
+      module: 'sales',
+      targetSystem: 'sales',
+      actionResourceType: 'sales_tasks',
+      pageId: 'sales-page',
+      pageLabel: 'Sales',
+      goal: 'Create the next sales follow-up',
+      jobs: ['Assign priority follow-up'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    const decision = applyExecutionCommandPolicies([command], 'autonomous');
+    assert.equal(command.type, 'sales.create_followup_task');
+    assert.equal(decision.overallDecision, 'allow');
   });
 });

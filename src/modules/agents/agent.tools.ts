@@ -10,9 +10,11 @@ import * as searchRepo from '../search-intelligence/search-intelligence.repo.js'
 import type { AgentTool } from './agent.types.js';
 import type { ListRecordsQuery } from '../records/record.validator.js';
 import {
+  applyExecutionCommandPolicies,
   listAgentExecutionCommandTypes,
   normalizeAgentExecutionCommands,
   summarizeExecutionReviewReason,
+  type AgentExecutionCommand,
 } from './agent.execution-command.js';
 
 type AgentSnapshotInput = {
@@ -497,10 +499,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const policyDecision = compactText((input as Record<string, unknown>).policyDecision, 40) || 'require_approval';
   const approvedBy = compactText((input as Record<string, unknown>).approvedBy, 120) || userId;
   const approvedAt = compactText((input as Record<string, unknown>).approvedAt, 120) || null;
-  const executionReady = policyDecision === 'allow';
-  const approvalStatus = executionReady ? 'approved' : 'pending';
   const targetSystem = resolveTargetSystem(module, resourceType);
-  const commands = normalizeAgentExecutionCommands(input.commands, {
+  const normalizedCommands = normalizeAgentExecutionCommands(input.commands, {
     module,
     targetSystem,
     actionResourceType: resourceType,
@@ -527,8 +527,21 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     jobId: compactText(input.jobId, 120) || null,
     provider: compactText(input.provider, 80) || null,
   });
+  const commandPolicy = applyExecutionCommandPolicies(
+    normalizedCommands,
+    executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
+  );
+  const commands: AgentExecutionCommand[] = commandPolicy.commands.map(({ policyDecision: _policyDecision, policyReason: _policyReason, ...command }) => ({
+    ...command,
+    approvalPolicy: command.approvalPolicy as 'allow' | 'require_approval',
+  }));
+  const effectivePolicyDecision = policyDecision === 'allow' && commandPolicy.overallDecision === 'allow'
+    ? 'allow'
+    : 'require_approval';
+  const executionReady = effectivePolicyDecision === 'allow';
+  const approvalStatus = executionReady ? 'approved' : 'pending';
   const commandTypes = listAgentExecutionCommandTypes(commands);
-  const requiresHumanReviewReason = summarizeExecutionReviewReason(commands, policyDecision === 'allow' ? 'allow' : 'require_approval');
+  const requiresHumanReviewReason = summarizeExecutionReviewReason(commands, effectivePolicyDecision, commandPolicy.reasons);
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
     name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
@@ -545,7 +558,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       jobs,
       approvalGates,
       executionMode,
-      policyDecision,
+      policyDecision: effectivePolicyDecision,
       approvalStatus,
       executionReady,
       executionStatus: executionReady ? 'queued' : 'waiting_approval',
@@ -572,7 +585,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     jobs,
     approvalGates,
     executionMode,
-    policyDecision,
+    policyDecision: effectivePolicyDecision,
     approvalStatus,
     executionReady,
     targetSystem,

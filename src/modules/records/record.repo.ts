@@ -174,6 +174,26 @@ export async function listExecutionArtifactsBySourceRecordId(
   return rows;
 }
 
+export async function findExecutionResultByCommandIdempotencyKey(
+  workspaceId: string,
+  idempotencyKey: string,
+  client?: PoolClient,
+) {
+  const { rows } = await query<WorkspaceRecord>(
+    `SELECT ${recordSelect}
+     FROM workspace_records
+     WHERE workspace_id = $1
+       AND deleted_at IS NULL
+       AND source = 'agent_executor_command'
+       AND COALESCE(data ->> 'commandIdempotencyKey', '') = $2
+     ORDER BY created_at DESC, id DESC
+     LIMIT 1`,
+    [workspaceId, idempotencyKey],
+    client,
+  );
+  return rows[0] ?? null;
+}
+
 async function insertAudit(
   client: PoolClient,
   workspaceId: string,
@@ -345,6 +365,10 @@ export async function claimExecutionReadyRecords(limit = 20) {
          AND source = 'page_agent'
          AND stage = 'queued_for_execution'
          AND COALESCE(data ->> 'executionReady', 'false') = 'true'
+         AND (
+           COALESCE(data ->> 'executionNextAttemptAt', '') = ''
+           OR (data ->> 'executionNextAttemptAt')::timestamptz <= NOW()
+         )
        ORDER BY updated_at ASC, id ASC
        LIMIT $1
        FOR UPDATE SKIP LOCKED`,
@@ -357,6 +381,7 @@ export async function claimExecutionReadyRecords(limit = 20) {
         ...(candidate.data ?? {}),
         executionStatus: 'executing',
         executionStartedAt: new Date().toISOString(),
+        executionAttempts: Number(candidate.data?.executionAttempts ?? 0) + 1,
       };
       const { rows } = await query<WorkspaceRecord>(
         `UPDATE workspace_records
