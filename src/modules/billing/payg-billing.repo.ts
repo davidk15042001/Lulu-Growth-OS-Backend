@@ -20,6 +20,20 @@ export async function isBillingAdminUser(userId?: string | null) {
   return user?.role === 'admin' && String(user.email ?? '').trim().toLowerCase() === ADMIN_BILLING_EMAIL;
 }
 
+async function isAdminOwnedWorkspace(workspaceId: string) {
+  const { rows } = await query<{ email: string; role: 'user' | 'admin' }>(
+    `SELECT u.email, u.role
+     FROM workspace_members wm
+     JOIN users u ON u.id = wm.user_id
+     WHERE wm.workspace_id = $1 AND wm.role = 'owner'
+     ORDER BY wm.joined_at
+     LIMIT 1`,
+    [workspaceId],
+  );
+  const owner = rows[0];
+  return owner?.role === 'admin' && String(owner.email ?? '').trim().toLowerCase() === ADMIN_BILLING_EMAIL;
+}
+
 export type PaygPeriod = {
   id: string;
   workspaceId: string;
@@ -392,6 +406,7 @@ export async function applyPaygInvoiceWebhook(input: {
 
 export async function assertAiBillingAccess(workspaceId: string, userId?: string | null) {
   if (await isBillingAdminUser(userId)) return;
+  if (await isAdminOwnedWorkspace(workspaceId)) return;
   const { rows } = await query<{
     planKey: string | null;
     blocked: boolean;
