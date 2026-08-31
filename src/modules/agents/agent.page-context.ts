@@ -18,11 +18,6 @@ type AgentPageContextInput = Partial<AgentPageContext> & {
   pageId?: unknown;
 };
 
-const WEBSITE_SECTION_LABEL = 'Website & Commerce';
-const GOOGLE_BUSINESS_SECTION_LABEL = 'Google Business';
-const EMAIL_SECTION_LABEL = 'Email';
-const CALENDAR_SECTION_LABEL = 'Calendar';
-
 function cleanString(value: unknown, maxLength: number) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
@@ -56,7 +51,6 @@ export function pageSnapshotType(pageId: string) {
 }
 
 export function resolveAgentModule(explicitModule: AgentModule | undefined, page: AgentPageContext | null) {
-  if (explicitModule && explicitModule !== 'general') return explicitModule;
   if (!page) return explicitModule ?? 'general';
   const normalizedSection = page.sectionLabel.trim().toLowerCase();
   const normalizedPageId = page.pageId.trim().toLowerCase();
@@ -64,19 +58,38 @@ export function resolveAgentModule(explicitModule: AgentModule | undefined, page
   if (normalizedPageId === 'sparklingly-moon-5114' || normalizedPageLabel === 'seo') return 'seo';
   if (normalizedPageId === 'zealously-path-4224' || normalizedPageLabel === 'geo') return 'geo';
   if (normalizedPageId === 'sunny-house-9595' || normalizedPageLabel === 'aeo') return 'aeo';
-  if (
-    normalizedSection === WEBSITE_SECTION_LABEL.toLowerCase()
-    || normalizedSection === GOOGLE_BUSINESS_SECTION_LABEL.toLowerCase()
-    || normalizedSection === EMAIL_SECTION_LABEL.toLowerCase()
-    || normalizedSection === CALENDAR_SECTION_LABEL.toLowerCase()
-    || normalizedPageId.startsWith('website-')
-    || normalizedPageId.startsWith('email-')
-    || normalizedPageId.startsWith('calendar-')
-    || normalizedPageId === 'lulu-website-portal-9012'
-  ) {
-    return 'website';
+
+  let derived: AgentModule | null = null;
+
+  if (normalizedSection === 'dashboard') derived = 'dashboard';
+  else if (normalizedSection === 'finance') derived = 'finance';
+  else if (normalizedSection === 'crm') derived = 'crm';
+  else if (normalizedSection === 'sales') derived = 'sales';
+  else if (normalizedSection === 'ai') derived = 'ai';
+  else if (normalizedSection === 'email' || normalizedPageId.startsWith('email-')) derived = 'email';
+  else if (normalizedSection === 'calendar' || normalizedPageId.startsWith('calendar-')) derived = 'calendar';
+  else if (normalizedSection === 'marketing') derived = 'marketing';
+  else if (normalizedSection === 'advertising') derived = 'ads';
+  else if (normalizedSection === 'google business') derived = 'reputation';
+  else if (normalizedSection === 'settings') derived = 'settings';
+  else if (normalizedSection === 'website & commerce' || normalizedPageId.startsWith('website-') || normalizedPageId === 'lulu-website-portal-9012') {
+    const websiteSignals = [
+      'website',
+      'wordpress',
+      'webflow',
+      'cms',
+      'publishing',
+      'asset',
+      'domain',
+    ];
+    derived = websiteSignals.some((signal) => normalizedPageLabel.includes(signal)) ? 'website' : 'commerce';
+  } else if (normalizedPageLabel.includes('intelligence') || normalizedPageLabel.includes('insight')) {
+    derived = 'intelligence';
   }
-  return explicitModule ?? 'general';
+
+  if (!derived) return explicitModule ?? 'general';
+  if (!explicitModule || explicitModule === 'general' || explicitModule === 'website') return derived;
+  return explicitModule;
 }
 
 export function buildPageAgentGoal(page: AgentPageContext) {

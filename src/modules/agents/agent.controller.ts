@@ -19,6 +19,13 @@ export async function knowledge(req: WorkspaceRequest, res: Response, next: Next
     return successResponse(res, 'Workspace intelligence loaded', bundle ?? { snapshot: null, sections: [], metrics: [] });
   } catch (error) { next(error); }
 }
+export async function health(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = agentRunParamsSchema.parse(req.params);
+    const query = agentRunQuerySchema.parse(req.query);
+    return successResponse(res, 'Agent health loaded', await service.getAgentHealth(params.workspaceId, query.pageId));
+  } catch (error) { next(error); }
+}
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.parse(req.params);

@@ -12,7 +12,26 @@ export const agentRunQuerySchema = z.object({
 });
 export const createAgentRunSchema = z.object({
   goal: z.string().trim().min(3).max(4000),
-  module: z.enum(['general', 'seo', 'geo', 'aeo', 'website']).default('general'),
+  module: z.enum([
+    'general',
+    'dashboard',
+    'intelligence',
+    'finance',
+    'sales',
+    'crm',
+    'ai',
+    'email',
+    'calendar',
+    'marketing',
+    'ads',
+    'website',
+    'commerce',
+    'reputation',
+    'settings',
+    'seo',
+    'geo',
+    'aeo',
+  ]).default('general'),
   page: z.object({
     pageId: z.string().trim().regex(/^[a-z0-9-]+$/).max(120),
     pageLabel: z.string().trim().min(1).max(200),

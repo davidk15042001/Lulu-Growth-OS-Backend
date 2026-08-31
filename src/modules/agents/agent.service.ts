@@ -2,10 +2,12 @@ import { AppError, conflictError, notFoundError } from '../../utils/app-error.js
 import { createApproval, decideApproval } from '../approvals/approval.repo.js';
 import { env } from '../../config/env.js';
 import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
+import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import * as repo from './agent.repo.js';
 import type { AgentRole, AgentTool } from './agent.types.js';
 import type { DecideApprovalInput } from '../approvals/approval.validator.js';
 import { getAgentCapabilities, type AgentModule, isAgentModule } from './agent.capabilities.js';
+import { buildAgentExecutionProfile } from './agent.domain.js';
 import {
   automaticPageProfiles,
   buildPageAgentGoal,
@@ -14,24 +16,79 @@ import {
   sanitizeAgentPageContext,
   type AgentPageContext,
 } from './agent.page-context.js';
+import { registerAgentTools } from './agent.tools.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
 const MAX_RUN_DURATION_MS = 10 * 60 * 1000;
 const TOOL_TIMEOUT_MS = 60 * 1000;
 
-tools.set('workspace_snapshot', {
-  name: 'workspace_snapshot', version: '1.0.0', risk: 'read',
-  description: 'Reads the current workspace context for analysis.',
-  execute: async ({ workspaceId }) => ({ workspaceId, source: 'workspace_context', capturedAt: new Date().toISOString() }),
-});
+registerAgentTools(tools);
 
-const pipeline: Array<{ role: AgentRole; title: string; instruction: string; toolName?: string }> = [
-  { role: 'planner', title: 'Understand the objective', instruction: 'Clarify the goal, constraints, expected outcome and required approvals.' },
-  { role: 'analyst', title: 'Collect workspace signals', instruction: 'Inspect available live workspace records and identify relevant evidence.', toolName: 'workspace_snapshot' },
-  { role: 'strategist', title: 'Propose coordinated actions', instruction: 'Convert evidence into prioritized recommendations with risks and dependencies.' },
-  { role: 'reviewer', title: 'Review the proposed outcome', instruction: 'Check evidence, uncertainty, permissions, safety and whether an action needs approval.' },
-];
+function buildPipeline(
+  goal: string,
+  module: AgentModule,
+  capabilities: ReturnType<typeof getAgentCapabilities>,
+  page: AgentPageContext | null,
+) {
+  const profile = buildAgentExecutionProfile(page, module);
+  const steps: Array<{
+    role: AgentRole;
+    title: string;
+    instruction: string;
+    toolName?: string;
+    toolInput?: Record<string, unknown>;
+  }> = [
+    {
+      role: 'planner',
+      title: page ? `${page.pageLabel}: Frame the page objective` : 'Frame the objective',
+      instruction: `${profile.plannerInstruction} Goal: ${goal}`,
+    },
+    {
+      role: 'analyst',
+      title: page ? `${page.pageLabel}: Collect live evidence` : 'Collect live evidence',
+      instruction: `Inspect the strongest live signals for module "${module}" and summarize the facts that matter most for the current goal.`,
+      toolName: profile.analystToolName,
+      toolInput: {
+        module,
+        pageId: page?.pageId ?? null,
+        pageLabel: page?.pageLabel ?? null,
+        resourceTypes: profile.resourceTypes,
+      },
+    },
+    ...(capabilities.recommend
+      ? [{
+          role: 'strategist' as const,
+          title: page ? `${page.pageLabel}: Design the next moves` : 'Design the next moves',
+          instruction: profile.strategistInstruction,
+        }]
+      : []),
+    ...(capabilities.act && profile.executorToolName && profile.executorInstruction && profile.actionResourceType
+      ? [{
+          role: 'executor' as const,
+          title: page ? `${page.pageLabel}: Queue approved backend action` : 'Queue approved backend action',
+          instruction: profile.executorInstruction,
+          toolName: profile.executorToolName,
+          toolInput: {
+            module,
+            pageId: page?.pageId ?? null,
+            pageLabel: page?.pageLabel ?? null,
+            goal,
+            jobs: page?.jobs ?? [],
+            approvalGates: page?.approvalGates ?? [],
+            resourceTypes: profile.resourceTypes,
+            actionResourceType: profile.actionResourceType,
+          },
+        }]
+      : []),
+    {
+      role: 'reviewer',
+      title: page ? `${page.pageLabel}: Review evidence and approvals` : 'Review evidence and approvals',
+      instruction: profile.reviewerInstruction,
+    },
+  ];
+  return { profile, steps };
+}
 
 async function event(input: Parameters<typeof repo.addEvent>[0]) { return repo.addEvent(input); }
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, code: string) {
@@ -58,18 +115,74 @@ function describePageContext(page: AgentPageContext | null) {
   });
 }
 
+function compactEntityName(value: unknown) {
+  return typeof value === 'string' ? value.trim().slice(0, 200) : '';
+}
+
+function entityItems(source: unknown, kind: string) {
+  if (!Array.isArray(source)) return [];
+  return source
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const entity = item as Record<string, unknown>;
+      const name = compactEntityName(entity.name ?? entity.title ?? entity.subject ?? entity.emailAddress ?? entity.goal);
+      if (!name) return null;
+      return {
+        kind,
+        id: typeof entity.id === 'string' ? entity.id : null,
+        name,
+        status: typeof entity.status === 'string' ? entity.status : null,
+        updatedAt: typeof entity.updatedAt === 'string'
+          ? entity.updatedAt
+          : typeof entity.latestAt === 'string'
+            ? entity.latestAt
+            : typeof entity.startAt === 'string'
+              ? entity.startAt
+              : null,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+}
+
+function extractEntitiesFromOutputs(outputs: unknown[]) {
+  const entities: Array<{ kind: string; id: string | null; name: string; status: string | null; updatedAt: string | null }> = [];
+  for (const entry of outputs) {
+    const output = entry && typeof entry === 'object' ? (entry as Record<string, unknown>).output : null;
+    if (!output || typeof output !== 'object') continue;
+    const payload = output as Record<string, unknown>;
+    entities.push(...entityItems((payload.records as Record<string, unknown> | undefined)?.recent, 'record'));
+    entities.push(...entityItems((payload.accounts as Record<string, unknown> | undefined)?.top, 'account'));
+    entities.push(...entityItems((payload.threads as Record<string, unknown> | undefined)?.recent, 'thread'));
+    entities.push(...entityItems((payload.drafts as Record<string, unknown> | undefined)?.recent, 'draft'));
+    entities.push(...entityItems((payload.automations as Record<string, unknown> | undefined)?.recent, 'automation'));
+    entities.push(...entityItems((payload.events as Record<string, unknown> | undefined)?.recent, 'event'));
+    entities.push(...entityItems((payload.sites as Record<string, unknown> | undefined)?.top, 'site'));
+    entities.push(...entityItems((payload.runs as Record<string, unknown> | undefined)?.recent, 'run'));
+    entities.push(...entityItems((payload.actionRecord ? [payload.actionRecord] : []), 'action'));
+  }
+  return entities.slice(0, 24);
+}
+
 function buildInitialPlan(
   module: AgentModule,
   capabilities: ReturnType<typeof getAgentCapabilities>,
   executionMode: 'analysis_only' | 'autonomous',
   page: AgentPageContext | null,
 ) {
+  const profile = buildAgentExecutionProfile(page, module);
   return {
-    version: 2,
+    version: 3,
     module,
     capabilities,
     executionMode,
     page,
+    executionProfile: {
+      analystToolName: profile.analystToolName,
+      executorToolName: profile.executorToolName,
+      actionResourceType: profile.actionResourceType,
+      resourceTypes: profile.resourceTypes,
+      telemetryTags: profile.telemetryTags,
+    },
     agents: [] as string[],
     steps: [] as Array<{ id: string; role: string; title: string }>,
   };
@@ -111,6 +224,7 @@ async function persistPageSnapshot(
     generatedAt: new Date(),
   });
   if (!snapshot?.id) return;
+  const entities = extractEntitiesFromOutputs(Array.isArray(finalResult.outputs) ? finalResult.outputs : []);
   await repo.replaceKnowledgeSections(snapshot.id, workspaceId, {
     overview: {
       title: page.pageLabel,
@@ -124,6 +238,28 @@ async function persistPageSnapshot(
       goal,
       outputs: Array.isArray(finalResult.outputs) ? finalResult.outputs : [],
       completedAt: new Date().toISOString(),
+    },
+    entities: {
+      total: entities.length,
+      items: entities,
+    },
+    telemetry: {
+      module: finalResult.module ?? null,
+      toolName: typeof finalResult.telemetry === 'object' && finalResult.telemetry
+        ? (finalResult.telemetry as Record<string, unknown>).analystToolName ?? null
+        : null,
+      executorToolName: typeof finalResult.telemetry === 'object' && finalResult.telemetry
+        ? (finalResult.telemetry as Record<string, unknown>).executorToolName ?? null
+        : null,
+      actionResourceType: typeof finalResult.telemetry === 'object' && finalResult.telemetry
+        ? (finalResult.telemetry as Record<string, unknown>).actionResourceType ?? null
+        : null,
+      resourceTypes: typeof finalResult.telemetry === 'object' && finalResult.telemetry
+        ? (finalResult.telemetry as Record<string, unknown>).resourceTypes ?? []
+        : [],
+      telemetryTags: typeof finalResult.telemetry === 'object' && finalResult.telemetry
+        ? (finalResult.telemetry as Record<string, unknown>).telemetryTags ?? []
+        : [],
     },
   });
 }
@@ -139,37 +275,68 @@ async function planRun(
 ) {
   await repo.updateRun(runId, { status: 'planning', started_at: new Date() });
   await event({ runId, workspaceId, eventType: 'run.planning_started', agentRole: 'planner', payload: { goal, pageId: page?.pageId ?? null } });
-  const selectedPipeline = pipeline.filter((step) => step.role !== 'strategist' || capabilities.recommend);
+  const { profile, steps: selectedPipeline } = buildPipeline(goal, module, capabilities, page);
   const steps = await repo.createSteps(selectedPipeline.map((step, index) => ({
     runId,
     workspaceId,
     sequenceNo: index + 1,
     agentRole: step.role,
-    title: page ? `${page.pageLabel}: ${step.title}` : step.title,
+    title: step.title,
     instruction: `${step.instruction} Module: ${module}. Capabilities: ${JSON.stringify(capabilities)} User goal: ${goal} Page context: ${describePageContext(page)}`,
     toolName: step.toolName ?? null,
+    toolInput: step.toolInput ?? null,
   })));
   await repo.updateRun(runId, {
     status: 'running',
     plan: {
-      version: 2,
+      version: 3,
       module,
       capabilities,
       executionMode,
       page,
+      executionProfile: {
+        analystToolName: profile.analystToolName,
+        executorToolName: profile.executorToolName,
+        actionResourceType: profile.actionResourceType,
+        resourceTypes: profile.resourceTypes,
+        telemetryTags: profile.telemetryTags,
+      },
       agents: selectedPipeline.map((item) => item.role),
       steps: steps.map((item) => ({ id: item.id, role: item.agentRole, title: item.title })),
     },
   });
-  await event({ runId, workspaceId, eventType: 'run.planned', agentRole: 'planner', payload: { stepCount: steps.length, pageId: page?.pageId ?? null } });
+  await event({
+    runId,
+    workspaceId,
+    eventType: 'run.planned',
+    agentRole: 'planner',
+    payload: {
+      stepCount: steps.length,
+      pageId: page?.pageId ?? null,
+      module,
+      analystToolName: profile.analystToolName,
+      executorToolName: profile.executorToolName,
+      actionResourceType: profile.actionResourceType,
+      resourceTypes: profile.resourceTypes,
+    },
+  });
   return steps;
 }
-async function executeStep(runId: string, workspaceId: string, userId: string, step: Awaited<ReturnType<typeof repo.listSteps>>[number], autonomous: boolean) {
+async function executeStep(runId: string, workspaceId: string, userId: string, step: Awaited<ReturnType<typeof repo.listSteps>>[number], _autonomous: boolean) {
   await repo.updateStep(step.id, { status: 'running', started_at: new Date() });
-  await event({ runId, stepId: step.id, workspaceId, eventType: 'step.started', agentRole: step.agentRole, payload: { title: step.title } });
+  await event({
+    runId,
+    stepId: step.id,
+    workspaceId,
+    eventType: 'step.started',
+    agentRole: step.agentRole,
+    payload: { title: step.title, toolName: step.toolName ?? null },
+  });
   const tool = step.toolName ? tools.get(step.toolName) : undefined;
   if (step.toolName && !tool) throw new AppError(500, 'AGENT_TOOL_NOT_REGISTERED', `Tool ${step.toolName} is not registered`);
-  if (tool && tool.risk !== 'read' && !autonomous) {
+  const toolInput = step.toolInput ?? {};
+  const approvalDecision = typeof toolInput.approvalDecision === 'string' ? toolInput.approvalDecision : null;
+  if (tool && tool.risk !== 'read' && approvalDecision !== 'approved') {
     const approval = await createApproval(workspaceId, userId, { actionType: `agent_tool:${tool.name}`, title: `Approve ${tool.name}`, description: step.instruction, payload: { runId, stepId: step.id, toolName: tool.name, toolInput: step.toolInput ?? {} } });
     if (!approval) throw new AppError(500, 'AGENT_APPROVAL_CREATION_FAILED', 'The approval request could not be created');
     await repo.updateStep(step.id, { status: 'waiting_approval', approval_id: approval.id });
@@ -177,7 +344,7 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
     await event({ runId, stepId: step.id, workspaceId, eventType: 'step.waiting_approval', agentRole: 'executor', payload: { approvalId: approval.id, toolName: tool.name } });
     return { waiting: true, output: undefined };
   }
-  const toolOutput = tool ? await withTimeout(tool.execute(step.toolInput ?? {}, { workspaceId, userId }), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
+  const toolOutput = tool ? await withTimeout(tool.execute(toolInput, { workspaceId, userId }), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
   await repo.updateStep(step.id, { status: 'completed', tool_output: toolOutput, result: toolOutput, finished_at: new Date() });
   await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: toolOutput });
   return { waiting: false, output: toolOutput };
@@ -197,6 +364,7 @@ async function executeRun(
   activeRuns.add(runId);
   const deadline = Date.now() + MAX_RUN_DURATION_MS;
   try {
+    const { profile, steps: pipelineSteps } = buildPipeline(goal, module, capabilities, page);
     let steps = await repo.listSteps(workspaceId, runId);
     if (initial && steps.length === 0) steps = await planRun(runId, workspaceId, goal, executionMode, module, capabilities, page);
     const outputs: Record<string, unknown>[] = [];
@@ -212,7 +380,20 @@ async function executeRun(
       if (result.waiting) return;
       outputs.push({ stepId: step.id, output: result.output });
     }
-    let finalResult: Record<string, unknown> = { goal, outputs, completedBy: pipeline.map((item) => item.role), page };
+    let finalResult: Record<string, unknown> = {
+      goal,
+      outputs,
+      completedBy: pipelineSteps.map((item) => item.role),
+      page,
+      module,
+      telemetry: {
+        analystToolName: profile.analystToolName,
+        executorToolName: profile.executorToolName,
+        actionResourceType: profile.actionResourceType,
+        resourceTypes: profile.resourceTypes,
+        telemetryTags: profile.telemetryTags,
+      },
+    };
     if (isAiGenerationConfigured()) {
       const response = await withTimeout(getOpenAIResponsesClient().create({ model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL, instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: { workspaceId, userId: userId === 'system' ? null : userId } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
       finalResult = { ...finalResult, summary: response.output_text?.trim() ?? null };
@@ -306,6 +487,90 @@ export async function listRuns(workspaceId: string, pageId?: string) { return re
 export async function getKnowledgeBundle(workspaceId: string, pageId?: string) {
   return repo.getKnowledgeBundle(workspaceId, pageId ? pageSnapshotType(pageId) : 'initial_business_analysis');
 }
+function runPageId(run: Awaited<ReturnType<typeof repo.listRuns>>[number]) {
+  return typeof run.plan?.page === 'object'
+    && run.plan?.page
+    && typeof (run.plan.page as Record<string, unknown>).pageId === 'string'
+    ? (run.plan.page as Record<string, unknown>).pageId
+    : null;
+}
+
+function matchingPlatforms(page: AgentPageContext, platforms: Awaited<ReturnType<typeof onboardingRepo.listPlatforms>>) {
+  const terms = new Set(
+    [
+      page.sectionLabel,
+      page.pageLabel,
+      ...page.integrations,
+      ...(page.sectionLabel.toLowerCase() === 'email' ? ['email', 'mail', 'gmail', 'outlook'] : []),
+      ...(page.sectionLabel.toLowerCase() === 'calendar' ? ['calendar', 'google calendar', 'calendly', 'cal.com'] : []),
+      ...(page.sectionLabel.toLowerCase() === 'google business' ? ['google', 'google business'] : []),
+    ]
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return platforms.filter((platform) => {
+    const haystack = `${platform.integrationKey ?? ''} ${platform.name} ${platform.category}`.toLowerCase();
+    return [...terms].some((term) => haystack.includes(term));
+  });
+}
+
+export async function getAgentHealth(workspaceId: string, pageId?: string) {
+  const [runs, platforms] = await Promise.all([
+    repo.listRuns(workspaceId, pageId ? 50 : 400, pageId),
+    onboardingRepo.listPlatforms(workspaceId),
+  ]);
+  const pages = (pageId ? automaticPageProfiles.filter((page) => page.pageId === pageId) : automaticPageProfiles);
+  const items = pages.map((page) => {
+    const module = resolveAgentModule('general', page);
+    const profile = buildAgentExecutionProfile(page, module);
+    const pageRuns = runs.filter((run) => runPageId(run) === page.pageId);
+    const latestRun = pageRuns[0] ?? null;
+    const completedRuns = pageRuns.filter((run) => run.status === 'completed').length;
+    const failedRuns = pageRuns.filter((run) => run.status === 'failed').length;
+    const pagePlatforms = matchingPlatforms(page, platforms);
+    const errorClasses = [...new Set(pageRuns.map((run) => run.errorCode).filter((value): value is string => typeof value === 'string' && value.length > 0))].slice(0, 5);
+    return {
+      pageId: page.pageId,
+      pageLabel: page.pageLabel,
+      sectionLabel: page.sectionLabel,
+      module,
+      successRate: pageRuns.length ? Math.round((completedRuns / pageRuns.length) * 100) : null,
+      recentRunCount: pageRuns.length,
+      failedRunCount: failedRuns,
+      lastRunStatus: latestRun?.status ?? 'never_run',
+      lastRunAt: latestRun?.updatedAt ?? null,
+      lastErrorCode: latestRun?.errorCode ?? null,
+      latestActionSummary: typeof latestRun?.result?.summary === 'string' ? latestRun.result.summary.slice(0, 240) : null,
+      connectedIntegrations: pagePlatforms.map((platform) => ({
+        name: platform.name,
+        category: platform.category,
+        status: platform.connectionStatus,
+      })).slice(0, 6),
+      latestSyncSources: pagePlatforms.map((platform) => `${platform.name}:${platform.connectionStatus}`).slice(0, 6),
+      errorClasses,
+      approvalGates: page.approvalGates,
+      executionProfile: {
+        analystToolName: profile.analystToolName,
+        executorToolName: profile.executorToolName,
+        actionResourceType: profile.actionResourceType,
+        resourceTypes: profile.resourceTypes,
+        telemetryTags: profile.telemetryTags,
+      },
+    };
+  });
+  const activeItems = items.filter((item) => item.lastRunStatus !== 'never_run');
+  const completedCount = activeItems.filter((item) => item.lastRunStatus === 'completed').length;
+  return {
+    summary: {
+      totalPages: items.length,
+      activePages: activeItems.length,
+      healthyPages: completedCount,
+      pagesNeedingAttention: activeItems.filter((item) => item.lastRunStatus !== 'completed').length,
+      connectedPlatformCount: platforms.filter((platform) => ['connected', 'active', 'syncing', 'pending'].includes(platform.connectionStatus)).length,
+    },
+    items,
+  };
+}
 export async function getRunDetails(workspaceId: string, runId: string) {
   const run = await repo.getRun(workspaceId, runId);
   if (!run) throw notFoundError('Agent run not found');
@@ -334,7 +599,16 @@ export async function approveStep(workspaceId: string, runId: string, stepId: st
     await event({ runId, stepId, workspaceId, eventType: 'step.rejected', agentRole: 'executor', payload: { decision: decision.decision, note: decision.note ?? null } });
     return getRunDetails(workspaceId, runId);
   }
-  await repo.updateStep(stepId, { status: 'pending', approval_id: null });
+  await repo.updateStep(stepId, {
+    status: 'pending',
+    approval_id: null,
+    tool_input: {
+      ...(step.toolInput ?? {}),
+      approvalDecision: 'approved',
+      approvedAt: new Date().toISOString(),
+      approvedBy: userId,
+    },
+  });
   await repo.updateRun(runId, { status: 'running', error_code: null, error_message: null });
   await event({ runId, stepId, workspaceId, eventType: 'step.approved', agentRole: 'executor', payload: {} });
   const run = await repo.getRun(workspaceId, runId);

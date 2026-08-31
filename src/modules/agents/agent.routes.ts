@@ -7,6 +7,9 @@ const router = Router({ mergeParams: true });
 router.route('/knowledge')
   .get(requireWorkspaceMember, controller.knowledge)
   .all(methodNotAllowed);
+router.route('/health')
+  .get(requireWorkspaceMember, controller.health)
+  .all(methodNotAllowed);
 router.route('/')
   .get(requireWorkspaceMember, controller.list)
   .post(requireWorkspaceEditor, controller.create)
