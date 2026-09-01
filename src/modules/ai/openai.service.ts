@@ -187,3 +187,126 @@ export async function generateAssistantResponse(
 export function isAiGenerationConfigured() {
   return hasAiProvider;
 }
+
+export type AssistantLoopTool = {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  handler: (args: Record<string, unknown>, ctx: { workspaceId: string; userId: string }) => Promise<unknown>;
+  action?: boolean;
+};
+
+export type AssistantPendingAction = {
+  id: string;
+  type: string;
+  summary: string;
+  payload: Record<string, unknown>;
+};
+
+export type AssistantToolCall = {
+  name: string;
+  args: Record<string, unknown>;
+  result: unknown;
+};
+
+export type AssistantLoopResult = {
+  responseId: string;
+  model: string;
+  content: string;
+  usage: { inputTokens: number | null; outputTokens: number | null };
+  toolCalls: AssistantToolCall[];
+  pendingActions: AssistantPendingAction[];
+};
+
+export async function generateAssistantResponseWithTools(
+  input: {
+    userId: string;
+    workspaceId: string;
+    context: AssistantContext;
+    turns: ConversationTurn[];
+    model?: string | null;
+    tools: AssistantLoopTool[];
+  },
+  client: ResponsesClient = getOpenAIResponsesClient()
+): Promise<AssistantLoopResult> {
+  const model = configuredModel(input.model);
+  const instructions = buildAssistantInstructions(input.context);
+  const toolSchemas = input.tools.map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+    },
+  }));
+
+  const messages: Array<Record<string, unknown>> = [
+    { role: 'system', content: instructions },
+    ...input.turns.map((turn) => ({ role: turn.role, content: turn.content })),
+  ];
+
+  const toolCalls: AssistantToolCall[] = [];
+  const pendingActions: AssistantPendingAction[] = [];
+  let finalContent = '';
+  const usage = { inputTokens: null as number | null, outputTokens: null as number | null };
+
+  for (let step = 0; step < 4; step += 1) {
+    const response = (await client.createChat(
+      {
+        model,
+        messages,
+        tools: toolSchemas,
+        tool_choice: 'auto',
+        max_tokens: env.OPENAI_MAX_OUTPUT_TOKENS,
+      },
+      { billing: { workspaceId: input.workspaceId, userId: input.userId } },
+    )) as {
+      choices?: Array<{
+        message?: {
+          content?: string | null;
+          tool_calls?: Array<{ id?: string; function?: { name?: string; arguments?: string } }>;
+        };
+      }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+
+    const message = response.choices?.[0]?.message;
+    const content = (message?.content ?? '').trim();
+    if (content) finalContent = content;
+    usage.inputTokens = response.usage?.prompt_tokens ?? null;
+    usage.outputTokens = response.usage?.completion_tokens ?? null;
+
+    const calls = message?.tool_calls ?? [];
+    if (calls.length === 0) break;
+
+    messages.push({ role: 'assistant', content: content || null, tool_calls: calls });
+
+    for (const call of calls) {
+      const name = String(call.function?.name ?? '');
+      let args: Record<string, unknown> = {};
+      try { args = JSON.parse(String(call.function?.arguments ?? '{}')); } catch { args = {}; }
+
+      const tool = input.tools.find((candidate) => candidate.name === name);
+      if (!tool) {
+        messages.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify({ error: `Unknown tool: ${name}` }) });
+        continue;
+      }
+
+      const result = await tool.handler(args, { workspaceId: input.workspaceId, userId: input.userId });
+      toolCalls.push({ name, args, result });
+
+      if (tool.action) {
+        pendingActions.push(result as AssistantPendingAction);
+        messages.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify({ status: 'pending_approval', actionId: (result as AssistantPendingAction).id }) });
+      } else {
+        messages.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify(result) });
+      }
+    }
+  }
+
+  if (!finalContent) {
+    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider returned an empty response');
+  }
+
+  return { responseId: '', model, content: finalContent, usage, toolCalls, pendingActions };
+}
