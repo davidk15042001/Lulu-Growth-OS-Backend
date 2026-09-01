@@ -3,6 +3,7 @@ import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as repo from './record.repo.js';
 import type {
   CreateRecordInput,
+  IngestRecordInput,
   ListRecordsQuery,
   UpdateRecordInput,
 } from './record.validator.js';
@@ -28,6 +29,58 @@ export function createRecord(
   input: CreateRecordInput
 ) {
   return repo.createRecord(workspaceId, resourceType, userId, input);
+}
+
+const TEXT_FILE_EXTENSIONS = new Set(['txt', 'md', 'csv', 'json', 'html', 'htm', 'xml', 'yaml', 'yml', 'log', 'css', 'js', 'ts', 'tsx', 'jsx', 'rst', 'sql', 'ini', 'env']);
+
+function decodeDataUrl(dataUrl: string): { mime: string; buffer: Buffer } | null {
+  const comma = dataUrl.indexOf(',');
+  if (comma === -1) return null;
+  const header = dataUrl.slice(0, comma);
+  const mime = /^data:([^;]+)/.exec(header)?.[1] ?? '';
+  try {
+    return { mime, buffer: Buffer.from(dataUrl.slice(comma + 1), 'base64') };
+  } catch {
+    return null;
+  }
+}
+
+function extractTextFromFile(file: { name: string; type: string; dataUrl: string }): string {
+  if (!file.dataUrl) return '';
+  const decoded = decodeDataUrl(file.dataUrl);
+  if (!decoded) return '';
+  const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const isText = decoded.mime.startsWith('text/')
+    || decoded.mime === 'application/json'
+    || decoded.mime === 'application/xml'
+    || TEXT_FILE_EXTENSIONS.has(extension);
+  if (!isText) return '';
+  return decoded.buffer.toString('utf8');
+}
+
+export function ingestRecord(
+  workspaceId: string,
+  resourceType: ResourceType,
+  userId: string,
+  input: IngestRecordInput
+) {
+  const files = input.files.map((file) => ({
+    name: file.name,
+    type: file.type,
+    extractedText: extractTextFromFile(file),
+  }));
+  const extractedText = files.map((file) => file.extractedText).filter(Boolean).join('\n\n').trim();
+  const description = [input.text.trim(), extractedText].filter(Boolean).join('\n\n').slice(0, 20_000) || null;
+  return repo.createRecord(workspaceId, resourceType, userId, {
+    name: input.name,
+    description,
+    status: 'Active',
+    source: 'upload',
+    data: {
+      source: 'upload',
+      files: files.map((file) => ({ name: file.name, type: file.type, extractedText: file.extractedText })),
+    },
+  });
 }
 
 export async function updateRecord(

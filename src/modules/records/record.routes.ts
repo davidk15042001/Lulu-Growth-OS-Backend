@@ -14,6 +14,10 @@ router.route('/:resourceType')
   .post(requireWorkspaceEditor, controller.create)
   .all(methodNotAllowed);
 
+router.route('/:resourceType/ingest')
+  .post(requireWorkspaceEditor, controller.ingest)
+  .all(methodNotAllowed);
+
 router.route('/:resourceType/:recordId')
   .get(requireWorkspaceMember, controller.get)
   .patch(requireWorkspaceEditor, controller.update)

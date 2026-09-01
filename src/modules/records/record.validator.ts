@@ -45,6 +45,16 @@ const recordFields = {
 
 export const createRecordSchema = z.object(recordFields);
 
+export const ingestRecordSchema = z.object({
+  name: z.string().trim().min(1).max(300),
+  text: z.string().max(20_000).optional().default(''),
+  files: z.array(z.object({
+    name: z.string().trim().min(1).max(300),
+    type: z.string().max(100).optional().default(''),
+    dataUrl: z.string().max(15_000_000).optional().default(''),
+  })).max(50).optional().default([]),
+});
+
 export const updateRecordSchema = z
   .object({
     ...recordFields,
@@ -55,4 +65,5 @@ export const updateRecordSchema = z
 
 export type ListRecordsQuery = z.infer<typeof listRecordsQuerySchema>;
 export type CreateRecordInput = z.infer<typeof createRecordSchema>;
+export type IngestRecordInput = z.infer<typeof ingestRecordSchema>;
 export type UpdateRecordInput = z.infer<typeof updateRecordSchema>;

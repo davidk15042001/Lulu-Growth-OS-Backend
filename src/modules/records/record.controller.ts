@@ -4,6 +4,7 @@ import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './record.service.js';
 import {
   createRecordSchema,
+  ingestRecordSchema,
   listRecordsQuerySchema,
   recordParamsSchema,
   updateRecordSchema,
@@ -36,6 +37,17 @@ export async function create(req: WorkspaceRequest, res: Response, next: NextFun
     const input = createRecordSchema.parse(req.body);
     const record = await service.createRecord(params.workspaceId, params.resourceType, req.user!.id, input);
     return createdResponse(res, 'Record created', record);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function ingest(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = recordParamsSchema.parse(req.params);
+    const input = ingestRecordSchema.parse(req.body);
+    const record = await service.ingestRecord(params.workspaceId, params.resourceType, req.user!.id, input);
+    return createdResponse(res, 'Knowledge ingested', record);
   } catch (error) {
     next(error);
   }
