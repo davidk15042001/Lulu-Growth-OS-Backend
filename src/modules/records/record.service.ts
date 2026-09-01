@@ -1,6 +1,8 @@
 import { conflictError, notFoundError } from '../../utils/app-error.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as repo from './record.repo.js';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { describeImage } from '../ai/openai.service.js';
 import type {
   CreateRecordInput,
   IngestRecordInput,
@@ -45,30 +47,57 @@ function decodeDataUrl(dataUrl: string): { mime: string; buffer: Buffer } | null
   }
 }
 
-function extractTextFromFile(file: { name: string; type: string; dataUrl: string }): string {
-  if (!file.dataUrl) return '';
+async function extractPdfText(buffer: Buffer): Promise<string> {
+  try {
+    const document = await getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
+    let text = '';
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const items = content.items as Array<{ str?: string }>;
+      text += items.map((item) => item.str ?? '').join(' ') + '\n';
+    }
+    return text.trim();
+  } catch {
+    return '';
+  }
+}
+
+function extractTextFromFile(file: { name: string; type: string; dataUrl: string }, workspaceId: string, userId: string): Promise<string> {
+  if (!file.dataUrl) return Promise.resolve('');
   const decoded = decodeDataUrl(file.dataUrl);
-  if (!decoded) return '';
+  if (!decoded) return Promise.resolve('');
   const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
+  const isPdf = decoded.mime === 'application/pdf' || extension === 'pdf';
+  const isImage = decoded.mime.startsWith('image/');
   const isText = decoded.mime.startsWith('text/')
     || decoded.mime === 'application/json'
     || decoded.mime === 'application/xml'
     || TEXT_FILE_EXTENSIONS.has(extension);
-  if (!isText) return '';
-  return decoded.buffer.toString('utf8');
+  if (isText) return Promise.resolve(decoded.buffer.toString('utf8'));
+  if (isPdf) {
+    return extractPdfText(decoded.buffer);
+  }
+  if (isImage) {
+    return describeImage({ dataUrl: file.dataUrl, workspaceId, userId });
+  }
+  return Promise.resolve('');
 }
 
-export function ingestRecord(
+export async function ingestRecord(
   workspaceId: string,
   resourceType: ResourceType,
   userId: string,
   input: IngestRecordInput
 ) {
-  const files = input.files.map((file) => ({
-    name: file.name,
-    type: file.type,
-    extractedText: extractTextFromFile(file),
-  }));
+  const files: Array<{ name: string; type: string; extractedText: string }> = [];
+  for (const file of input.files) {
+    files.push({
+      name: file.name,
+      type: file.type,
+      extractedText: await extractTextFromFile(file, workspaceId, userId),
+    });
+  }
   const extractedText = files.map((file) => file.extractedText).filter(Boolean).join('\n\n').trim();
   const description = [input.text.trim(), extractedText].filter(Boolean).join('\n\n').slice(0, 20_000) || null;
   return repo.createRecord(workspaceId, resourceType, userId, {

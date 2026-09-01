@@ -74,7 +74,7 @@ function getConfiguredClient() {
   throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
 }
 
-function configuredModel(requestedModel?: string | null) {
+export function configuredModel(requestedModel?: string | null) {
   if (requestedModel) return requestedModel;
   if (hasAlibaba) return env.DASHSCOPE_MODEL;
   if (hasDeepSeek) return env.DEEPSEEK_MODEL;
@@ -186,6 +186,34 @@ export async function generateAssistantResponse(
 
 export function isAiGenerationConfigured() {
   return hasAiProvider;
+}
+
+export async function describeImage(input: {
+  dataUrl: string;
+  workspaceId?: string;
+  userId?: string;
+}): Promise<string> {
+  if (!hasAiProvider) return '';
+  try {
+    const client = getOpenAIResponsesClient();
+    const response = await client.createChat(
+      {
+        model: configuredModel(),
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Extract all readable text from this image and provide a concise description suitable for a business knowledge base.' },
+            { type: 'image_url', image_url: { url: input.dataUrl } },
+          ],
+        }],
+        max_tokens: 1000,
+      },
+      input.workspaceId ? { billing: { workspaceId: input.workspaceId, userId: input.userId ?? null } } : undefined,
+    ) as { choices?: Array<{ message?: { content?: string | null } }> };
+    return response.choices?.[0]?.message?.content?.trim() ?? '';
+  } catch {
+    return '';
+  }
 }
 
 export type AssistantLoopTool = {
