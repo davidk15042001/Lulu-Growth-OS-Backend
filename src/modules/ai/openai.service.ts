@@ -230,7 +230,12 @@ export async function generateAssistantResponseWithTools(
   client: ResponsesClient = getOpenAIResponsesClient()
 ): Promise<AssistantLoopResult> {
   const model = configuredModel(input.model);
-  const instructions = buildAssistantInstructions(input.context);
+  const instructions = [
+    buildAssistantInstructions(input.context),
+    'Act autonomously: execute write actions directly when the user asks for them, then report back what you did and what the result was.',
+    'After analysis or actions, always give a clear structured report. Use these German sections where relevant: "Was ist passiert", "Gut / Schlecht", "Erledigt", "In Umsetzung", "Nächstes Ziel".',
+    'Use markdown tables for tabular data. When numeric data benefits from a chart, add a fenced code block with the language "chart" containing JSON of the form {"type":"bar","title":"...","labels":["..."],"values":[numbers]}.',
+  ].join('\n');
   const toolSchemas = input.tools.map((tool) => ({
     type: 'function',
     function: {

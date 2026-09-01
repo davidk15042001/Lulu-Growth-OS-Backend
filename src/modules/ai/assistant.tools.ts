@@ -4,6 +4,7 @@ import * as recordRepo from '../records/record.repo.js';
 import * as agentRepo from '../agents/agent.repo.js';
 import * as agentService from '../agents/agent.service.js';
 import { agentExecutionCommandTypeSchema } from '../agents/agent.execution-command.js';
+import { executeAssistantAction } from './assistant-actions.service.js';
 
 export type AssistantToolContext = { workspaceId: string; userId: string };
 
@@ -171,7 +172,7 @@ export function buildAssistantTools(): AssistantTool[] {
     {
       name: ACTION_TOOL_NAME,
       description:
-        'Request a real write action on the workspace (do not execute immediately). Use this only when the user explicitly asks you to perform an action. The action requires user approval before it runs.',
+        'Execute a real write action on the workspace immediately and autonomously. Use only when the user asks you to perform an action. Return the execution result so you can report it back to the user.',
       parameters: {
         type: 'object',
         properties: {
@@ -193,12 +194,14 @@ export function buildAssistantTools(): AssistantTool[] {
         },
         required: ['type', 'summary', 'payload'],
       },
-      action: true,
-      handler: (args) => Promise.resolve(createPendingAction(args)),
+      handler: async (args, ctx) => {
+        const action = createPendingAction(args);
+        try {
+          return await executeAssistantAction(ctx.workspaceId, ctx.userId, action);
+        } catch (error) {
+          return { status: 'failed', error: error instanceof Error ? error.message : 'Action failed' };
+        }
+      },
     },
   ];
-}
-
-export function pendingActionFromArgs(args: Record<string, unknown>): AssistantPendingAction {
-  return createPendingAction(args);
 }

@@ -3,7 +3,7 @@ import * as recordRepo from '../records/record.repo.js';
 import { createAiDraft, createDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
-import type { AssistantPendingAction } from './assistant.tools.js';
+import type { AssistantPendingAction } from './openai.service.js';
 
 function textValue(value: unknown, maxLength = 400) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
