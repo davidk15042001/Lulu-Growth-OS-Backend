@@ -54,12 +54,12 @@ export function createApp() {
   });
 
   app.use(express.json({
-    limit: '2mb',
+    limit: '10mb',
     verify(req, _res, buffer) {
       (req as Request & { rawBody?: string }).rawBody = buffer.toString('utf8');
     },
   }));
-  app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
   app.use(cookieParser());
 
