@@ -395,6 +395,9 @@ export function decideExecutionCommandPolicy(
     return { decision: 'require_approval', reason: 'Draft preparation outside autonomous mode should be reviewed first.' };
   }
   if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation' || command.type === 'email.create_draft') {
+    if (executionMode === 'autonomous') {
+      return { decision: 'allow', reason: 'Internal operational action is safe in autonomous mode.' };
+    }
     return { decision: 'require_approval', reason: `Command ${command.type} affects an operational workflow and must be reviewed.` };
   }
   if (command.type === 'google_reviews.reply' || command.type === 'website.publish_job') {
