@@ -57,6 +57,10 @@ export function onboardingDocumentKey(workspaceId: string, documentId: string) {
   return `workspaces/${workspaceId}/onboarding/documents/${documentId}`;
 }
 
+export function productImageKey(workspaceId: string, imageId: string) {
+  return `workspaces/${workspaceId}/product-images/${imageId}.png`;
+}
+
 export async function putObject(input: {
   key: string;
   content: Buffer;

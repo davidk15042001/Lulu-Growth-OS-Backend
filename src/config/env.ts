@@ -46,6 +46,8 @@ const EnvSchema = z
     GROQ_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
     OPENAI_REASONING_EFFORT: z.enum(['minimal', 'low', 'medium', 'high']).default('low'),
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
+    IMAGE_MODEL: z.string().min(1).default('gpt-image-1'),
+    IMAGE_SIZE: z.string().min(1).default('1024x1024'),
     AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(180_000),
     AI_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
     TRANSLATION_GLOBAL_CHARACTER_LIMIT_PER_HOUR: z.coerce.number().int().min(10_000).max(100_000_000).default(2_000_000),

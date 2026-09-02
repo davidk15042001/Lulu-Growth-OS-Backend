@@ -12,6 +12,7 @@ export const agentExecutionCommandTypeSchema = z.enum([
   'email.create_draft',
   'email.create_ai_draft',
   'website.publish_job',
+  'ecommerce.generate_product_images',
 ]);
 
 export type AgentExecutionCommandType = z.infer<typeof agentExecutionCommandTypeSchema>;
@@ -61,6 +62,7 @@ type InferCommandContext = {
   siteId?: string | null;
   jobId?: string | null;
   provider?: string | null;
+  sourceText?: string | null;
 };
 
 const agentExecutionCommandSchema = z.object({
@@ -326,6 +328,28 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
     };
   }
 
+  if (context.sourceText) {
+    return {
+      type: 'ecommerce.generate_product_images',
+      summary,
+      targetSystem: 'ecommerce',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : context.policyDecision,
+      targetEntityType: 'ecommerce_products',
+      targetEntityId: context.pageId,
+      payload: {
+        sourceText: context.sourceText,
+        module: context.module,
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'ecommerce.generate_product_images',
+        context.pageId,
+        context.sourceText.slice(0, 400),
+      ]),
+    };
+  }
+
   return defaultArtifactCommand(context);
 }
 
@@ -375,6 +399,12 @@ export function decideExecutionCommandPolicy(
   }
   if (command.type === 'google_reviews.reply' || command.type === 'website.publish_job') {
     return { decision: 'require_approval', reason: `Command ${command.type} has direct external impact and always requires approval.` };
+  }
+  if (command.type === 'ecommerce.generate_product_images') {
+    if (executionMode === 'autonomous') {
+      return { decision: 'allow', reason: 'Product image generation is an internal AI generation step and is safe in autonomous mode.' };
+    }
+    return { decision: 'require_approval', reason: 'Product image generation outside autonomous mode should be reviewed first.' };
   }
   if (command.riskLevel === 'high') {
     return { decision: 'require_approval', reason: `High-risk command ${command.type} requires explicit approval.` };

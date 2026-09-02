@@ -53,7 +53,7 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
   }
 }
 
-function extractTextFromFile(file: IngestFile, workspaceId: string, userId: string): Promise<string> {
+export function extractTextFromFile(file: IngestFile, workspaceId: string, userId: string): Promise<string> {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
   const isPdf = file.type === 'application/pdf' || extension === 'pdf';
   const isImage = file.type.startsWith('image/');

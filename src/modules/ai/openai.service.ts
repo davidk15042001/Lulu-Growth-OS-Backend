@@ -188,6 +188,29 @@ export function isAiGenerationConfigured() {
   return hasAiProvider;
 }
 
+export async function generateImage(input: {
+  prompt: string;
+  workspaceId?: string;
+  userId?: string;
+  size?: string;
+}): Promise<{ model: string; b64Json: string | null; url: string | null }> {
+  if (!env.OPENAI_API_KEY) {
+    throw new AppError(503, 'IMAGE_GENERATION_NOT_CONFIGURED', 'Image generation requires an OpenAI API key (OPENAI_API_KEY)');
+  }
+  const imageClient = new OpenAI({ apiKey: env.OPENAI_API_KEY, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
+  const response = (await imageClient.images.generate({
+    model: env.IMAGE_MODEL,
+    prompt: input.prompt,
+    n: 1,
+    size: input.size ?? env.IMAGE_SIZE,
+  } as never)) as { data?: Array<{ b64_json?: string; url?: string }>; model?: string };
+  const image = response.data?.[0];
+  if (!image || (!image.b64_json && !image.url)) {
+    throw new AppError(502, 'IMAGE_GENERATION_EMPTY', 'The image provider returned no image');
+  }
+  return { model: response.model ?? env.IMAGE_MODEL, b64Json: image.b64_json ?? null, url: image.url ?? null };
+}
+
 export async function describeImage(input: {
   dataUrl: string;
   workspaceId?: string;

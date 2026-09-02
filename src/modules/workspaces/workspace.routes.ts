@@ -19,6 +19,7 @@ import usageRoutes from '../usage/usage.routes.js';
 import emailRoutes from '../email/email.routes.js';
 import calendarRoutes from '../calendar/calendar.routes.js';
 import searchIntelligenceRoutes from '../search-intelligence/search-intelligence.routes.js';
+import productImageRoutes from '../product-images/product-image.routes.js';
 import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 
 const router = Router();
@@ -49,6 +50,7 @@ router.use('/:workspaceId/approvals', approvalRoutes);
 router.use('/:workspaceId/agent-runs', agentRoutes);
 router.use('/:workspaceId/websites', websiteRoutes);
 router.use('/:workspaceId/search-intelligence', searchIntelligenceRoutes);
+router.use('/:workspaceId/product-images', productImageRoutes);
 router.use('/:workspaceId/usage', usageRoutes);
 router.use('/:workspaceId/email', emailRoutes);
 router.use('/:workspaceId/calendar', calendarRoutes);

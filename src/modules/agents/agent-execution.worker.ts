@@ -4,6 +4,7 @@ import * as recordRepo from '../records/record.repo.js';
 import { createAiDraft, createDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
+import { generateProductImagesFromText } from '../product-images/product-image.service.js';
 import {
   normalizeAgentExecutionCommands,
   type AgentExecutionCommand,
@@ -85,6 +86,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   if (command.type === 'advertising.create_optimization') return 'ad_optimizations';
   if (command.type === 'finance.create_automation') return 'finance_automations';
   if (command.type === 'website.publish_job') return 'marketing_publications';
+  if (command.type === 'ecommerce.generate_product_images') return 'ecommerce_products';
   return 'activities';
 }
 
@@ -324,6 +326,24 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     };
   }
 
+  if (command.type === 'ecommerce.generate_product_images') {
+    const sourceText = textValue(payload.sourceText, 20_000);
+    if (!sourceText) throw new Error('ecommerce.generate_product_images requires sourceText');
+    const result = await generateProductImagesFromText(sourceText, record.workspaceId, actorUserId);
+    const stored = await persistCommandExecutionResult(record, command, {
+      count: result.count,
+      sync: result.sync,
+      productRecordIds: result.records.map((item) => item.id),
+    });
+    return {
+      type: command.type,
+      targetEntityId: null,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: { count: result.count, sync: result.sync },
+    };
+  }
+
   const stored = await persistCommandExecutionResult(record, command, { status: 'record_only', summary: command.summary });
   return {
     type: command.type,
@@ -362,6 +382,7 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     siteId: textValue(data.siteId) || null,
     jobId: textValue(data.jobId) || null,
     provider: textValue(data.provider) || null,
+    sourceText: textValue(data.sourceText, 20_000) || null,
   });
   const commandResults: Array<{ type: string; resultRecordId: string }> = [];
   for (const command of commands) {
