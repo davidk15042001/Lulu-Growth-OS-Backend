@@ -3,6 +3,7 @@ import * as recordRepo from '../records/record.repo.js';
 import { createAiDraft, createDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
+import { startContentRefresh } from '../content-generation/content-generation.service.js';
 import type { AssistantPendingAction } from './openai.service.js';
 
 function textValue(value: unknown, maxLength = 400) {
@@ -106,6 +107,18 @@ export async function executeAssistantAction(workspaceId: string, userId: string
     if (!siteId || !jobId) throw new Error('website.publish_job requires siteId and jobId');
     await publishWebsiteJob(workspaceId, siteId, jobId);
     return { status: 'published', resourceType: 'marketing_publications' as ResourceType, recordId: null, message: 'Website publishing started.' };
+  }
+
+  if (action.type === 'workspace.refresh') {
+    const result = await startContentRefresh(workspaceId, userId);
+    return {
+      status: result.reused ? 'reused' : 'started',
+      resourceType: null,
+      recordId: result.job.id,
+      message: result.reused
+        ? 'A workspace refresh is already running.'
+        : 'Workspace refresh started. All pages and AI drafts will be updated.',
+    };
   }
 
   const resourceType = resultResourceType(action.type);

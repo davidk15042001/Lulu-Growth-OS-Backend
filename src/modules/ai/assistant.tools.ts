@@ -187,6 +187,7 @@ export function buildAssistantTools(): AssistantTool[] {
               'email.create_draft',
               'email.create_ai_draft',
               'website.publish_job',
+              'workspace.refresh',
             ],
           },
           summary: { type: 'string', description: 'Short human-readable description of the action.' },
