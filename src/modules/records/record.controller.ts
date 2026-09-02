@@ -4,7 +4,6 @@ import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './record.service.js';
 import {
   createRecordSchema,
-  ingestRecordSchema,
   listRecordsQuerySchema,
   recordParamsSchema,
   updateRecordSchema,
@@ -42,11 +41,18 @@ export async function create(req: WorkspaceRequest, res: Response, next: NextFun
   }
 }
 
-export async function ingest(req: WorkspaceRequest, res: Response, next: NextFunction) {
+export async function upload(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = recordParamsSchema.parse(req.params);
-    const input = ingestRecordSchema.parse(req.body);
-    const record = await service.ingestRecord(params.workspaceId, params.resourceType, req.user!.id, input);
+    const body = req.body as { name?: unknown; text?: unknown } | undefined;
+    const name = String(body?.name ?? '').trim() || 'Untitled knowledge';
+    const text = String(body?.text ?? '');
+    const rawFiles = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const record = await service.ingestRecord(params.workspaceId, params.resourceType, req.user!.id, {
+      name,
+      text,
+      files: rawFiles.map((file) => ({ name: file.originalname, type: file.mimetype, buffer: file.buffer })),
+    });
     return createdResponse(res, 'Knowledge ingested', record);
   } catch (error) {
     next(error);

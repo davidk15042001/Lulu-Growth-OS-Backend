@@ -5,10 +5,12 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describeImage } from '../ai/openai.service.js';
 import type {
   CreateRecordInput,
-  IngestRecordInput,
   ListRecordsQuery,
   UpdateRecordInput,
 } from './record.validator.js';
+
+export type IngestFile = { name: string; type: string; buffer: Buffer };
+export type IngestRecordInput = { name: string; text: string; files: IngestFile[] };
 
 export function listRecords(
   workspaceId: string,
@@ -35,18 +37,6 @@ export function createRecord(
 
 const TEXT_FILE_EXTENSIONS = new Set(['txt', 'md', 'csv', 'json', 'html', 'htm', 'xml', 'yaml', 'yml', 'log', 'css', 'js', 'ts', 'tsx', 'jsx', 'rst', 'sql', 'ini', 'env']);
 
-function decodeDataUrl(dataUrl: string): { mime: string; buffer: Buffer } | null {
-  const comma = dataUrl.indexOf(',');
-  if (comma === -1) return null;
-  const header = dataUrl.slice(0, comma);
-  const mime = /^data:([^;]+)/.exec(header)?.[1] ?? '';
-  try {
-    return { mime, buffer: Buffer.from(dataUrl.slice(comma + 1), 'base64') };
-  } catch {
-    return null;
-  }
-}
-
 async function extractPdfText(buffer: Buffer): Promise<string> {
   try {
     const document = await getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
@@ -63,23 +53,19 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
   }
 }
 
-function extractTextFromFile(file: { name: string; type: string; dataUrl: string }, workspaceId: string, userId: string): Promise<string> {
-  if (!file.dataUrl) return Promise.resolve('');
-  const decoded = decodeDataUrl(file.dataUrl);
-  if (!decoded) return Promise.resolve('');
+function extractTextFromFile(file: IngestFile, workspaceId: string, userId: string): Promise<string> {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
-  const isPdf = decoded.mime === 'application/pdf' || extension === 'pdf';
-  const isImage = decoded.mime.startsWith('image/');
-  const isText = decoded.mime.startsWith('text/')
-    || decoded.mime === 'application/json'
-    || decoded.mime === 'application/xml'
+  const isPdf = file.type === 'application/pdf' || extension === 'pdf';
+  const isImage = file.type.startsWith('image/');
+  const isText = file.type.startsWith('text/')
+    || file.type === 'application/json'
+    || file.type === 'application/xml'
     || TEXT_FILE_EXTENSIONS.has(extension);
-  if (isText) return Promise.resolve(decoded.buffer.toString('utf8'));
-  if (isPdf) {
-    return extractPdfText(decoded.buffer);
-  }
+  if (isText) return Promise.resolve(file.buffer.toString('utf8'));
+  if (isPdf) return extractPdfText(file.buffer);
   if (isImage) {
-    return describeImage({ dataUrl: file.dataUrl, workspaceId, userId });
+    const dataUrl = `data:${file.type};base64,${file.buffer.toString('base64')}`;
+    return describeImage({ dataUrl, workspaceId, userId });
   }
   return Promise.resolve('');
 }

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import multer from 'multer';
 import {
   requireWorkspaceAdmin,
   requireWorkspaceEditor,
@@ -9,13 +10,15 @@ import * as controller from './record.controller.js';
 
 const router = Router({ mergeParams: true });
 
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 50 } });
+
 router.route('/:resourceType')
   .get(requireWorkspaceMember, controller.list)
   .post(requireWorkspaceEditor, controller.create)
   .all(methodNotAllowed);
 
-router.route('/:resourceType/ingest')
-  .post(requireWorkspaceEditor, controller.ingest)
+router.route('/:resourceType/upload')
+  .post(requireWorkspaceEditor, upload.array('files', 50), controller.upload)
   .all(methodNotAllowed);
 
 router.route('/:resourceType/:recordId')
