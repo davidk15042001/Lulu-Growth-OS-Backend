@@ -14,6 +14,9 @@ router.route('/')
   .get(requireWorkspaceMember, controller.list)
   .post(requireWorkspaceEditor, controller.create)
   .all(methodNotAllowed);
+router.route('/stream')
+  .get(requireWorkspaceMember, controller.stream)
+  .all(methodNotAllowed);
 router.route('/:runId')
   .get(requireWorkspaceMember, controller.detail)
   .all(methodNotAllowed);

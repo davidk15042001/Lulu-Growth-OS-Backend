@@ -2,6 +2,7 @@ import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './agent.service.js';
+import { subscribeAgentEvents } from './agent.events.js';
 import { agentRunParamsSchema, agentRunQuerySchema, agentStepDecisionSchema, createAgentRunSchema } from './agent.validator.js';
 
 export async function create(req: WorkspaceRequest, res: Response, next: NextFunction) {
@@ -50,5 +51,28 @@ export async function approve(req: WorkspaceRequest, res: Response, next: NextFu
     const params = agentRunParamsSchema.extend({ stepId: agentRunParamsSchema.shape.runId }).parse(req.params);
     const decision = agentStepDecisionSchema.parse(req.body);
     return successResponse(res, 'Agent step decision recorded', await service.approveStep(params.workspaceId, params.runId!, params.stepId!, req.user!.id, decision));
+  } catch (error) { next(error); }
+}
+
+export function stream(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const workspaceId = String(req.params.workspaceId ?? '');
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    if (typeof res.flushHeaders === 'function') res.flushHeaders();
+
+    const send = (payload: unknown) => res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    send({ type: 'connected', workspaceId, occurredAt: new Date().toISOString() });
+
+    const unsubscribe = subscribeAgentEvents((event) => {
+      if (event.workspaceId !== workspaceId) return;
+      send(event);
+    });
+    const heartbeat = setInterval(() => { res.write(': heartbeat\n\n'); }, 25_000);
+    const cleanup = () => { clearInterval(heartbeat); unsubscribe(); };
+    req.on('close', cleanup);
+    res.on('close', cleanup);
   } catch (error) { next(error); }
 }

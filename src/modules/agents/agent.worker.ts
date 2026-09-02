@@ -1,6 +1,7 @@
 import { logger } from '../../config/logger.js';
 import * as repo from './agent.repo.js';
 import { automaticPageProfiles, buildPageAgentGoal, startAutomaticRun } from './agent.service.js';
+import { startReactiveDispatcher } from './agent.reactive.js';
 
 const intervalMs = 15 * 60 * 1000;
 const dedupeMinutes = 6 * 60;
@@ -28,6 +29,7 @@ export async function runAutomaticAnalysisCycle() {
 
 export function startAutomaticAnalysisWorker() {
   if (timer) return;
+  startReactiveDispatcher();
   timer = setInterval(() => void runAutomaticAnalysisCycle(), intervalMs);
   timer.unref();
   void runAutomaticAnalysisCycle();

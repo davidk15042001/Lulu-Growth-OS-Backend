@@ -18,6 +18,7 @@ import {
 } from './agent.page-context.js';
 import { registerAgentTools } from './agent.tools.js';
 import { decideAgentToolPolicy } from './agent.autonomy-policy.js';
+import { publishAgentEvent } from './agent.events.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -430,10 +431,12 @@ async function executeRun(
     await repo.updateRun(runId, { status: 'completed', result: finalResult, finished_at: new Date() });
     await persistPageSnapshot(runId, workspaceId, goal, page, finalResult);
     await event({ runId, workspaceId, eventType: 'run.completed', agentRole: 'reviewer', payload: finalResult });
+    publishAgentEvent({ workspaceId, type: 'run.completed', runId, pageId: page?.pageId ?? null });
   } catch (error) {
     const appError = error instanceof AppError ? error : new AppError(500, 'AGENT_RUN_FAILED', error instanceof Error ? error.message : 'Agent run failed');
     await repo.updateRun(runId, { status: appError.code === 'AGENT_RUN_CANCELLED' ? 'cancelled' : 'failed', error_code: appError.code, error_message: appError.message, finished_at: new Date() });
     await event({ runId, workspaceId, eventType: 'run.failed', payload: { code: appError.code, message: appError.message } });
+    publishAgentEvent({ workspaceId, type: 'run.failed', runId, pageId: page?.pageId ?? null });
   } finally { activeRuns.delete(runId); }
 }
 export async function startRun(

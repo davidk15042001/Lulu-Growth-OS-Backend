@@ -7,6 +7,7 @@ import type {
   ListRecordsQuery,
   UpdateRecordInput,
 } from './record.validator.js';
+import { publishAgentEvent } from '../agents/agent.events.js';
 
 export type WorkspaceRecord = {
   id: string;
@@ -219,7 +220,7 @@ export async function createRecord(
   userId: string,
   input: CreateRecordInput
 ) {
-  return withTransaction(async (client) => {
+  const record = await withTransaction(async (client) => {
     const { rows } = await query<WorkspaceRecord>(
       `INSERT INTO workspace_records (
          workspace_id, resource_type, parent_id, name, description, status, stage,
@@ -256,6 +257,8 @@ export async function createRecord(
     await insertAudit(client, workspaceId, userId, 'record.created', resourceType, record.id, null, record);
     return record;
   });
+  publishAgentEvent({ workspaceId, type: 'record.created', resourceType, recordId: record.id });
+  return record;
 }
 
 type MutableRecordInput = Omit<UpdateRecordInput, 'expectedVersion'>;

@@ -162,6 +162,14 @@ const RESOURCE_TYPES_BY_MODULE: Readonly<Record<AgentModule, readonly ResourceTy
   aeo: ['marketing_aeo_items', 'marketing_content', 'marketing_publications'],
 };
 
+export function modulesForResourceType(resourceType: ResourceType): AgentModule[] {
+  const matches: AgentModule[] = [];
+  (Object.keys(RESOURCE_TYPES_BY_MODULE) as AgentModule[]).forEach((module) => {
+    if (RESOURCE_TYPES_BY_MODULE[module].includes(resourceType)) matches.push(module);
+  });
+  return matches;
+}
+
 const ANALYST_TOOL_BY_MODULE: Readonly<Record<AgentModule, string>> = {
   general: 'workspace_intelligence_snapshot',
   dashboard: 'workspace_intelligence_snapshot',
