@@ -535,13 +535,19 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     ...command,
     approvalPolicy: command.approvalPolicy as 'allow' | 'require_approval',
   }));
-  const effectivePolicyDecision = policyDecision === 'allow' && commandPolicy.overallDecision === 'allow'
+  const budgetProtected =
+    approvalGates.some((gate) => /\bbudget\b/i.test(gate))
+    || uniqueResourceTypes(input.resourceTypes).some((type) => type.includes('budget'))
+    || normalizeActionResourceType(input.actionResourceType).includes('budget');
+  const effectivePolicyDecision = !budgetProtected && policyDecision === 'allow' && commandPolicy.overallDecision === 'allow'
     ? 'allow'
     : 'require_approval';
   const executionReady = effectivePolicyDecision === 'allow';
   const approvalStatus = executionReady ? 'approved' : 'pending';
   const commandTypes = listAgentExecutionCommandTypes(commands);
-  const requiresHumanReviewReason = summarizeExecutionReviewReason(commands, effectivePolicyDecision, commandPolicy.reasons);
+  const requiresHumanReviewReason = budgetProtected
+    ? 'Budget changes are never executed automatically; this record is a suggestion only.'
+    : summarizeExecutionReviewReason(commands, effectivePolicyDecision, commandPolicy.reasons);
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
     name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
@@ -568,6 +574,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       commandTypes,
       primaryCommandType: commandTypes[0] ?? null,
       requiresHumanReviewReason,
+      budgetProtected,
       approvedBy,
       approvedAt,
       approvedAutomatically: approvedBy === 'system',

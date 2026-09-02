@@ -375,10 +375,23 @@ export function listAgentExecutionCommandTypes(commands: readonly AgentExecution
   return [...new Set(commands.map((command) => command.type))];
 }
 
+function isBudgetCommand(command: AgentExecutionCommand): boolean {
+  const haystack = [
+    command.type,
+    command.targetEntityType ?? '',
+    command.targetSystem ?? '',
+    command.summary,
+  ].join(' ').toLowerCase();
+  return haystack.includes('budget');
+}
+
 export function decideExecutionCommandPolicy(
   command: AgentExecutionCommand,
   executionMode: 'analysis_only' | 'autonomous',
 ): AgentExecutionCommandPolicy {
+  if (isBudgetCommand(command)) {
+    return { decision: 'require_approval', reason: 'Budget changes are never executed automatically; they are suggestions only.' };
+  }
   if (executionMode === 'autonomous') {
     return { decision: 'allow', reason: 'Fully autonomous mode executes all commands without human approval.' };
   }
