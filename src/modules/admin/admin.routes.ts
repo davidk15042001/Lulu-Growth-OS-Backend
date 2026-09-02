@@ -17,6 +17,7 @@ router.route('/users/:userId/impersonate').post(requireAuth, controller.imperson
 router.route('/workspaces').get(requireAuth, controller.getWorkspaces).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId').get(requireAuth, controller.getWorkspace).patch(requireAuth, controller.patchWorkspace).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId/plan').patch(requireAuth, controller.changePlan).all(methodNotAllowed);
+router.route('/workspaces/:workspaceId/credits').get(requireAuth, controller.getWorkspaceCredits).post(requireAuth, controller.addWorkspaceCredits).all(methodNotAllowed);
 
 router.route('/crm').get(requireAuth, controller.getCrm).all(methodNotAllowed);
 router.route('/websites').get(requireAuth, controller.getWebsites).all(methodNotAllowed);

@@ -43,6 +43,53 @@ export async function updatePlan(workspaceId: string, planKey: 'explorer' | 'sta
   return rows[0];
 }
 
+export async function getWorkspaceCreditBalance(workspaceId: string) {
+  const { rows } = await query<{ balance: string }>(
+    `SELECT balance FROM workspace_credit_balances WHERE workspace_id = $1`,
+    [workspaceId],
+  );
+  return Number(rows[0]?.balance ?? 0);
+}
+
+export async function listWorkspaceCreditGrants(workspaceId: string) {
+  const { rows } = await query(
+    `SELECT g.id, g.amount, g.balance_after AS "balanceAfter", g.note,
+            g.granted_by AS "grantedBy", u.email AS "grantedByEmail",
+            g.created_at AS "createdAt"
+     FROM workspace_credit_grants g
+     LEFT JOIN users u ON u.id = g.granted_by
+     WHERE g.workspace_id = $1
+     ORDER BY g.created_at DESC
+     LIMIT 100`,
+    [workspaceId],
+  );
+  return rows;
+}
+
+export async function addWorkspaceCredits(workspaceId: string, amount: number, grantedBy: string, note?: string) {
+  return withTransaction(async (client) => {
+    const updated = await query<{ balance: string }>(
+      `INSERT INTO workspace_credit_balances (workspace_id, balance, updated_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (workspace_id) DO UPDATE SET
+         balance = workspace_credit_balances.balance + EXCLUDED.balance,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = NOW()
+       RETURNING balance`,
+      [workspaceId, amount, grantedBy],
+      client,
+    );
+    const balance = Number(updated.rows[0]?.balance ?? amount);
+    await query(
+      `INSERT INTO workspace_credit_grants (workspace_id, amount, balance_after, granted_by, note)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [workspaceId, amount, balance, grantedBy, note ?? null],
+      client,
+    );
+    return balance;
+  });
+}
+
 export async function getDashboardStats() {
   const [users, workspaces, subscriptions, records, websites, errorsResult] = await Promise.all([
     query(`SELECT
@@ -130,7 +177,7 @@ export async function getUserDetail(userId: string) {
   `, [userId]);
   if (!userResult.rows[0]) return null;
 
-  const [workspaces, sessions, usage] = await Promise.all([
+  const [workspaces, sessions, usage, credits] = await Promise.all([
     query(`
       SELECT w.id, w.name AS "companyName", wm.role, w.onboarding_step AS "onboardingStep",
              w.onboarding_completed_at AS "onboardingCompletedAt", w.created_at AS "joinedAt"
@@ -156,6 +203,12 @@ export async function getUserDetail(userId: string) {
       WHERE wm.user_id = $1
       GROUP BY uc.metric_key
     `, [userId]),
+    query(`
+      SELECT COALESCE(SUM(cb.balance), 0)::numeric AS "balance"
+      FROM workspace_credit_balances cb
+      JOIN workspace_members wm ON wm.workspace_id = cb.workspace_id
+      WHERE wm.user_id = $1 AND wm.role = 'owner'
+    `, [userId]),
   ]);
 
   return {
@@ -163,6 +216,7 @@ export async function getUserDetail(userId: string) {
     workspaces: workspaces.rows,
     sessions: sessions.rows,
     usage: usage.rows,
+    creditBalance: Number(credits.rows[0]?.balance ?? 0),
   };
 }
 
@@ -356,7 +410,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
   `, [workspaceId]);
   if (!wsResult.rows[0]) return null;
 
-  const [members, records, websites, usage] = await Promise.all([
+  const [members, records, websites, usage, credits] = await Promise.all([
     query(`
       SELECT u.id, u.email, u.first_name AS "firstName", u.last_name AS "lastName",
              wm.role, wm.joined_at AS "joinedAt"
@@ -385,6 +439,9 @@ export async function getWorkspaceDetail(workspaceId: string) {
       WHERE workspace_id = $1
       GROUP BY metric_key
     `, [workspaceId]),
+    query(`
+      SELECT balance FROM workspace_credit_balances WHERE workspace_id = $1
+    `, [workspaceId]),
   ]);
 
   return {
@@ -393,6 +450,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
     crmByType: records.rows,
     websites: websites.rows,
     usage: usage.rows,
+    creditBalance: Number(credits.rows[0]?.balance ?? 0),
   };
 }
 

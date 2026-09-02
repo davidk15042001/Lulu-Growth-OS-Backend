@@ -182,6 +182,34 @@ export async function patchWorkspace(req: AuthedRequest, res: Response, next: Ne
   } catch (error) { next(error); }
 }
 
+export async function getWorkspaceCredits(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const [balance, grants] = await Promise.all([
+      repo.getWorkspaceCreditBalance(workspaceId),
+      repo.listWorkspaceCreditGrants(workspaceId),
+    ]);
+    return successResponse(res, 'Workspace credits loaded', { workspaceId, balance, grants });
+  } catch (error) { next(error); }
+}
+
+export async function addWorkspaceCredits(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_CREDIT_AMOUNT', message: 'Credits amount must be a positive number' } });
+    }
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 500) : undefined;
+    const balance = await repo.addWorkspaceCredits(workspaceId, amount, req.user!.id, note);
+    return successResponse(res, 'Credits added', { workspaceId, balance, added: amount });
+  } catch (error) { next(error); }
+}
+
 export async function getCrm(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     if (!requireAdmin(req, res)) return;
