@@ -193,7 +193,6 @@ async function generateCompetitorDrafts(workspaceId: string, userId: string) {
         JSON.stringify(customerSegments.slice(0, 20)),
       ].join('\n\n'),
     }],
-    reasoning: { effort: 'medium' },
     max_output_tokens: 6000,
     store: false,
   }, { billing: { workspaceId, userId } });

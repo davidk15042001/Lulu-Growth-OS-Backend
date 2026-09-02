@@ -23,7 +23,7 @@ import { publishAgentEvent } from './agent.events.js';
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
 const MAX_RUN_DURATION_MS = 10 * 60 * 1000;
-const TOOL_TIMEOUT_MS = 60 * 1000;
+const TOOL_TIMEOUT_MS = env.AI_REQUEST_TIMEOUT_MS;
 
 registerAgentTools(tools);
 
@@ -96,7 +96,13 @@ function buildPipeline(
 
 async function event(input: Parameters<typeof repo.addEvent>[0]) { return repo.addEvent(input); }
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, code: string) {
-  return Promise.race([promise, new Promise<T>((_, reject) => setTimeout(() => reject(new AppError(504, code, 'The agent operation exceeded its time limit')), timeoutMs))]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new AppError(504, code, 'The agent operation exceeded its time limit')), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 async function assertNotCancelled(workspaceId: string, runId: string) {
   const run = await repo.getRun(workspaceId, runId).catch(() => undefined);
