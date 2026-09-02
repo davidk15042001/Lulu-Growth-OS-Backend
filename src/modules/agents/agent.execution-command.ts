@@ -379,34 +379,25 @@ export function decideExecutionCommandPolicy(
   command: AgentExecutionCommand,
   executionMode: 'analysis_only' | 'autonomous',
 ): AgentExecutionCommandPolicy {
+  if (executionMode === 'autonomous') {
+    return { decision: 'allow', reason: 'Fully autonomous mode executes all commands without human approval.' };
+  }
   if (command.type === 'record.create_artifact') {
-    return { decision: 'allow', reason: 'Internal artifact creation is safe for autonomous execution.' };
+    return { decision: 'allow', reason: 'Internal artifact creation is safe.' };
   }
   if (command.type === 'crm.create_followup_task' || command.type === 'sales.create_followup_task') {
-    if (executionMode === 'autonomous') {
-      return { decision: 'allow', reason: 'Internal follow-up task creation is safe in autonomous mode.' };
-    }
     return { decision: 'require_approval', reason: 'Task creation requires autonomous mode or a human approval.' };
   }
   if (command.type === 'email.create_ai_draft') {
-    if (executionMode === 'autonomous') {
-      return { decision: 'allow', reason: 'Draft preparation is safe in autonomous mode because it does not send an external message.' };
-    }
     return { decision: 'require_approval', reason: 'Draft preparation outside autonomous mode should be reviewed first.' };
   }
   if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation' || command.type === 'email.create_draft') {
-    if (executionMode === 'autonomous') {
-      return { decision: 'allow', reason: 'Internal operational action is safe in autonomous mode.' };
-    }
     return { decision: 'require_approval', reason: `Command ${command.type} affects an operational workflow and must be reviewed.` };
   }
   if (command.type === 'google_reviews.reply' || command.type === 'website.publish_job') {
     return { decision: 'require_approval', reason: `Command ${command.type} has direct external impact and always requires approval.` };
   }
   if (command.type === 'ecommerce.generate_product_images') {
-    if (executionMode === 'autonomous') {
-      return { decision: 'allow', reason: 'Product image generation is an internal AI generation step and is safe in autonomous mode.' };
-    }
     return { decision: 'require_approval', reason: 'Product image generation outside autonomous mode should be reviewed first.' };
   }
   if (command.riskLevel === 'high') {
