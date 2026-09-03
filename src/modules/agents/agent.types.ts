@@ -8,7 +8,8 @@ export type AgentStepStatus = typeof stepStatuses[number];
 export type AgentRun = {
   id: string; workspaceId: string; createdBy: string | null; goal: string; status: AgentRunStatus;
   plan: Record<string, unknown>; result: Record<string, unknown> | null; errorCode: string | null;
-  errorMessage: string | null; startedAt: string | null; finishedAt: string | null; createdAt: string; updatedAt: string;
+  errorMessage: string | null; workerId: string | null; lockedAt: string | null; heartbeatAt: string | null;
+  attemptCount: number; startedAt: string | null; finishedAt: string | null; createdAt: string; updatedAt: string;
 };
 export type AgentStep = {
   id: string; runId: string; workspaceId: string; sequenceNo: number; agentRole: AgentRole; title: string;

@@ -3,6 +3,8 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { processWebsiteGenerationWorkItem } from './website.automation.service.js';
 import * as repo from './website.repo.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 const workerId = `website-${process.pid}-${randomUUID()}`;
 let interval: NodeJS.Timeout | undefined;
@@ -34,6 +36,14 @@ export function requestWebsiteGenerationWorkerRun() {
 
 export function startWebsiteGenerationWorker() {
   if (interval) return;
+  registerDomainEventHandler({
+    name: 'websites.generation-job-wakeup.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.WEBSITE_GENERATION_REQUESTED],
+    handle() {
+      requestWebsiteGenerationWorkerRun();
+      return { woken: true };
+    },
+  });
   stopping = false;
   interval = setInterval(requestWebsiteGenerationWorkerRun, env.WEBSITE_WORKER_INTERVAL_MS);
   interval.unref();

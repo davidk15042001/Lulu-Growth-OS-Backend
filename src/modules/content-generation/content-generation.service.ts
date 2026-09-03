@@ -58,7 +58,6 @@ export async function startContentRefresh(workspaceId: string, userId: string, r
   if (active && !staleActiveJob) return { job: active, reused: true };
   const job = await repo.createJob(workspaceId, userId, requestedModules);
   if (!job) throw conflictError('The workspace content refresh could not be created');
-  void executeContentRefresh(workspaceId, userId, job.id, requestedModules);
   return { job, reused: false };
 }
 
@@ -130,7 +129,7 @@ async function executeManualModule(workspaceId: string, userId: string, module: 
   };
 }
 
-async function executeContentRefresh(workspaceId: string, userId: string, jobId: string, modules: repo.ContentModule[]) {
+export async function executeContentRefresh(workspaceId: string, userId: string, jobId: string, modules: repo.ContentModule[]) {
   try {
     await repo.updateJob(workspaceId, jobId, { status: 'running', current_phase: 'modules', started_at: new Date(), heartbeat_at: new Date() });
     const moduleStatus: Record<string, unknown> = {};

@@ -1,5 +1,8 @@
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   addPaygInvoiceLineItems,
@@ -131,8 +134,25 @@ export async function runPaygBillingCycle() {
 
 export function startPaygBillingWorker() {
   if (interval) return;
-  void runPaygBillingCycle();
-  interval = setInterval(() => void runPaygBillingCycle(), env.PAYG_BILLING_WORKER_INTERVAL_MINUTES * 60_000);
+  const intervalMs = env.PAYG_BILLING_WORKER_INTERVAL_MINUTES * 60_000;
+  const requestCycle = () => appendDomainEvent({
+    type: DOMAIN_EVENT_TYPES.BILLING_CYCLE_REQUESTED,
+    aggregateType: 'billing_scheduler',
+    aggregateId: 'payg',
+    payload: { scheduledAt: new Date().toISOString() },
+    metadata: { source: 'billing.scheduler' },
+    idempotencyKey: `schedule:payg-billing:${Math.floor(Date.now() / intervalMs)}`,
+  }).catch((error: unknown) => logger.error({ error }, 'PAYG billing schedule event could not be published'));
+  registerDomainEventHandler({
+    name: 'billing.payg-cycle.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.BILLING_CYCLE_REQUESTED],
+    async handle() {
+      await runPaygBillingCycle();
+      return { completed: true };
+    },
+  });
+  void requestCycle();
+  interval = setInterval(() => void requestCycle(), intervalMs);
   interval.unref();
   logger.info({ intervalMinutes: env.PAYG_BILLING_WORKER_INTERVAL_MINUTES, awsProviderCostUsdPerDay: env.PAYG_SERVER_COST_USD_PER_DAY, awsCustomerMultiplier: AWS_USAGE_CUSTOMER_MULTIPLIER }, 'Weekly Monday PAYG billing worker started');
 }

@@ -1,5 +1,6 @@
 import { logger } from '../../config/logger.js';
-import { subscribeAgentEvents } from './agent.events.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import {
   automaticPageProfiles,
   buildPageAgentGoal,
@@ -53,12 +54,43 @@ async function reactToRecordCreated(workspaceId: string, resourceType: string) {
   }
 }
 
+async function reactToIntegrationConnected(workspaceId: string, category: string, provider: string) {
+  const terms = [category, provider].map((value) => value.trim().toLowerCase()).filter(Boolean);
+  const pages = automaticPageProfiles.filter((page) => {
+    const haystack = `${page.sectionLabel} ${page.pageLabel} ${page.integrations.join(' ')}`.toLowerCase();
+    return terms.some((term) => haystack.includes(term));
+  });
+  for (const page of pages) {
+    const module = resolveAgentModule('general', page);
+    try {
+      await startAutomaticRun(workspaceId, buildPageAgentGoal(page), module, page, REACTIVE_DEDUPE_MINUTES);
+    } catch (error) {
+      logger.warn({ error, workspaceId, pageId: page.pageId, category, provider }, 'Integration-connected agent trigger failed');
+    }
+  }
+}
+
 export function startReactiveDispatcher() {
   if (started) return;
   started = true;
-  subscribeAgentEvents((event) => {
-    if (event.type !== 'record.created' || !event.workspaceId || !event.resourceType) return;
-    void reactToRecordCreated(event.workspaceId, event.resourceType);
+  registerDomainEventHandler({
+    name: 'agents.reactive-record-created.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED],
+    async handle(event) {
+      if (!event.workspaceId) return { ignored: true };
+      if (event.type === DOMAIN_EVENT_TYPES.RECORD_CREATED) {
+        const resourceType = typeof event.payload.resourceType === 'string' ? event.payload.resourceType : null;
+        if (!resourceType) return { ignored: true };
+        await reactToRecordCreated(event.workspaceId, resourceType);
+        return { triggered: true, resourceType };
+      }
+      const category = typeof event.payload.category === 'string' ? event.payload.category : '';
+      const provider = typeof event.payload.provider === 'string'
+        ? event.payload.provider
+        : typeof event.payload.integrationKey === 'string' ? event.payload.integrationKey : '';
+      await reactToIntegrationConnected(event.workspaceId, category, provider);
+      return { triggered: true, category, provider };
+    },
   });
-  logger.info('Reactive cross-agent dispatcher started');
+  logger.info('Reactive cross-agent event consumer registered');
 }

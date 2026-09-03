@@ -1,10 +1,13 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type { AgentRun, AgentRunEvent, AgentStep } from './agent.types.js';
 
 const runSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", goal, status, plan,
  result, error_code AS "errorCode", error_message AS "errorMessage", started_at AS "startedAt",
- finished_at AS "finishedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;
+ finished_at AS "finishedAt", worker_id AS "workerId", locked_at AS "lockedAt",
+ heartbeat_at AS "heartbeatAt", attempt_count AS "attemptCount", created_at AS "createdAt", updated_at AS "updatedAt"`;
 const stepSelect = `id, run_id AS "runId", workspace_id AS "workspaceId", sequence_no AS "sequenceNo",
  agent_role AS "agentRole", title, instruction, status, depends_on AS "dependsOn", tool_name AS "toolName",
  tool_input AS "toolInput", tool_output AS "toolOutput", approval_id AS "approvalId", result,
@@ -19,10 +22,29 @@ export async function createRun(
   goal: string,
   plan: Record<string, unknown> | null = null,
   client?: PoolClient,
-) {
+): Promise<AgentRun> {
+  if (!client) {
+    return withTransaction((transactionClient) => createRun(workspaceId, userId, goal, plan, transactionClient));
+  }
   const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (workspace_id, created_by, goal, plan)
     VALUES ($1, $2, $3, $4) RETURNING ${runSelect}`, [workspaceId, userId, goal, JSON.stringify(plan ?? {})], client);
-  return rows[0];
+  const run = rows[0];
+  if (!run) throw new Error('Agent run insert did not return a row');
+  const actor = userId ? { actorId: userId } : (await query<{ actorId: string }>(
+    `SELECT created_by AS "actorId" FROM workspaces WHERE id=$1`,
+    [workspaceId],
+    client,
+  )).rows[0];
+  await appendDomainEvent({
+    workspaceId,
+    type: DOMAIN_EVENT_TYPES.AGENT_RUN_REQUESTED,
+    aggregateType: 'agent_run',
+    aggregateId: run.id,
+    payload: { runId: run.id, goal },
+    metadata: { actorId: actor?.actorId ?? null, source: 'agents' },
+    idempotencyKey: `agent-run:${run.id}:requested:v1`,
+  }, client);
+  return run;
 }
 export async function listAutomatedTargets() {
   const { rows } = await query<{
@@ -86,6 +108,81 @@ export async function getRun(workspaceId: string, runId: string) {
   return rows[0];
 }
 
+export async function claimNextRunnableRun(workerId: string, leaseSeconds: number, maxAttempts: number) {
+  return withTransaction(async (client) => {
+    const exhausted = await query<{ id: string; workspaceId: string; attemptCount: number }>(
+      `UPDATE agent_runs
+       SET status='failed', error_code='AGENT_RUN_RETRY_EXHAUSTED',
+           error_message='The agent run exceeded its crash-recovery retry limit.',
+           finished_at=NOW(), worker_id=NULL, locked_at=NULL, heartbeat_at=NULL
+       WHERE status IN ('queued','planning','running')
+         AND attempt_count >= $2
+         AND (worker_id IS NULL OR COALESCE(heartbeat_at, locked_at, updated_at) < NOW() - ($1::integer * INTERVAL '1 second'))
+       RETURNING id, workspace_id AS "workspaceId", attempt_count AS "attemptCount"`,
+      [leaseSeconds, maxAttempts],
+      client,
+    );
+    for (const run of exhausted.rows) {
+      await appendDomainEvent({
+        workspaceId: run.workspaceId,
+        type: DOMAIN_EVENT_TYPES.AGENT_RUN_FAILED,
+        aggregateType: 'agent_run',
+        aggregateId: run.id,
+        payload: { runId: run.id, code: 'AGENT_RUN_RETRY_EXHAUSTED', attemptCount: run.attemptCount },
+        metadata: { source: 'agents.worker' },
+        idempotencyKey: `agent-run:${run.id}:failed:retry-exhausted:v1`,
+      }, client);
+    }
+    const { rows } = await query<AgentRun>(
+      `WITH candidate AS (
+         SELECT id AS candidate_id
+         FROM agent_runs
+         WHERE status IN ('queued','planning','running')
+           AND attempt_count < $3
+           AND (
+             worker_id IS NULL
+             OR COALESCE(heartbeat_at, locked_at, updated_at) < NOW() - ($2::integer * INTERVAL '1 second')
+           )
+         ORDER BY created_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE agent_runs AS run
+       SET worker_id=$1, locked_at=NOW(), heartbeat_at=NOW(), attempt_count=run.attempt_count + 1
+       FROM candidate
+       WHERE run.id=candidate.candidate_id
+       RETURNING ${runSelect}`,
+      [workerId, leaseSeconds, maxAttempts],
+      client,
+    );
+    return rows[0] ?? null;
+  });
+}
+
+export async function heartbeatRun(runId: string, workerId: string) {
+  await query(
+    `UPDATE agent_runs SET heartbeat_at=NOW()
+     WHERE id=$1 AND worker_id=$2 AND status IN ('queued','planning','running')`,
+    [runId, workerId],
+  );
+}
+
+export async function releaseRunLease(runId: string, workerId: string) {
+  await query(
+    `UPDATE agent_runs SET worker_id=NULL, locked_at=NULL, heartbeat_at=NULL
+     WHERE id=$1 AND worker_id=$2`,
+    [runId, workerId],
+  );
+}
+
+export async function getWorkspaceActorId(workspaceId: string) {
+  const { rows } = await query<{ actorId: string }>(
+    `SELECT created_by AS "actorId" FROM workspaces WHERE id=$1`,
+    [workspaceId],
+  );
+  return rows[0]?.actorId ?? null;
+}
+
 export async function getLatestCompletedInitialAnalysis(workspaceId: string) {
   const { rows } = await query<AgentRun>(
     `SELECT ${runSelect}
@@ -99,12 +196,52 @@ export async function getLatestCompletedInitialAnalysis(workspaceId: string) {
   );
   return rows[0];
 }
-export async function updateRun(runId: string, patch: Record<string, unknown>) {
+export async function updateRun(runId: string, patch: Record<string, unknown>, client?: PoolClient) {
   const keys = Object.keys(patch);
   const values = keys.map((key) => patch[key]);
   const assignments = keys.map((key, index) => `${key}=$${index + 2}`).join(', ');
-  const { rows } = await query<AgentRun>(`UPDATE agent_runs SET ${assignments}, updated_at=NOW() WHERE id=$1 RETURNING ${runSelect}`, [runId, ...values]);
+  const { rows } = await query<AgentRun>(`UPDATE agent_runs SET ${assignments}, updated_at=NOW() WHERE id=$1 RETURNING ${runSelect}`, [runId, ...values], client);
   return rows[0];
+}
+
+export async function finalizeRun(input: {
+  runId: string;
+  workspaceId: string;
+  status: 'completed' | 'failed' | 'cancelled';
+  patch: Record<string, unknown>;
+  eventPayload: Record<string, unknown>;
+  pageId?: string | null;
+  actorId?: string | null;
+  agentRole?: string | null;
+}) {
+  return withTransaction(async (client) => {
+    const run = await updateRun(input.runId, { ...input.patch, status: input.status }, client);
+    if (!run) throw new Error('Agent run finalization did not return a row');
+    const eventType = input.status === 'completed'
+      ? DOMAIN_EVENT_TYPES.AGENT_RUN_COMPLETED
+      : input.status === 'cancelled' ? DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED : DOMAIN_EVENT_TYPES.AGENT_RUN_FAILED;
+    await addEvent({
+      runId: input.runId,
+      workspaceId: input.workspaceId,
+      eventType,
+      agentRole: input.agentRole ?? null,
+      payload: input.eventPayload,
+    }, client);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: eventType,
+      aggregateType: 'agent_run',
+      aggregateId: input.runId,
+      payload: {
+        runId: input.runId,
+        pageId: input.pageId ?? null,
+        ...(typeof input.eventPayload.code === 'string' ? { code: input.eventPayload.code } : {}),
+      },
+      metadata: { actorId: input.actorId ?? null, source: 'agents' },
+      idempotencyKey: `agent-run:${input.runId}:${eventType}:v1`,
+    }, client);
+    return run;
+  });
 }
 export async function createSteps(steps: Array<{ runId: string; workspaceId: string; sequenceNo: number; agentRole: string; title: string; instruction: string; toolName?: string | null; toolInput?: Record<string, unknown> | null }>) {
   const created: AgentStep[] = [];
@@ -130,9 +267,9 @@ export async function updateStep(stepId: string, patch: Record<string, unknown>)
   const { rows } = await query<AgentStep>(`UPDATE agent_run_steps SET ${assignments}, updated_at=NOW() WHERE id=$1 RETURNING ${stepSelect}`, [stepId, ...values]);
   return rows[0];
 }
-export async function addEvent(input: { runId: string; stepId?: string | null; workspaceId: string; eventType: string; agentRole?: string | null; payload?: Record<string, unknown> }) {
+export async function addEvent(input: { runId: string; stepId?: string | null; workspaceId: string; eventType: string; agentRole?: string | null; payload?: Record<string, unknown> }, client?: PoolClient) {
   const { rows } = await query<AgentRunEvent>(`INSERT INTO agent_run_events (run_id, step_id, workspace_id, event_type, agent_role, payload)
-    VALUES ($1,$2,$3,$4,$5,$6) RETURNING ${eventSelect}`, [input.runId, input.stepId ?? null, input.workspaceId, input.eventType, input.agentRole ?? null, input.payload ?? {}]);
+    VALUES ($1,$2,$3,$4,$5,$6) RETURNING ${eventSelect}`, [input.runId, input.stepId ?? null, input.workspaceId, input.eventType, input.agentRole ?? null, input.payload ?? {}], client);
   return rows[0];
 }
 export async function getWorkspacePlan(workspaceId: string) {

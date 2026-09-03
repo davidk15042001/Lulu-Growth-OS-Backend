@@ -1,4 +1,6 @@
 import { env } from '../../config/env.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { logger } from '../../config/logger.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import { encryptSecret } from '../../utils/secret-box.js';
@@ -62,7 +64,6 @@ export async function startSync(workspaceId: string, accountId: string, userId: 
   if (!account) throw notFoundError('Email account not found');
   const job = await repo.createSyncJob(workspaceId, accountId, userId);
   if (!job) throw notFoundError('Email account not found');
-  if (job.status === 'queued') void executeSyncJob(workspaceId, accountId, job.id);
   return job;
 }
 
@@ -73,7 +74,7 @@ export const getSyncJob = async (workspaceId: string, accountId: string, jobId: 
 };
 
 export async function executeSyncJob(workspaceId: string, accountId: string, jobId: string) {
-  if (!(await repo.startSyncJob(jobId))) return;
+  if (!(await repo.startSyncJob(jobId, env.EVENT_WORKER_LEASE_SECONDS))) return;
   await repo.setAccountStatus(accountId, 'syncing');
   try {
     const account = await repo.findAccount(workspaceId, accountId);
@@ -204,13 +205,23 @@ let syncTimer: NodeJS.Timeout | null = null;
 let syncTickRunning = false;
 export function startEmailSyncWorker() {
   if (syncTimer) return;
+  registerDomainEventHandler({
+    name: 'email.sync-job-wakeup.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.EMAIL_SYNC_REQUESTED],
+    async handle(event) {
+      const jobId = typeof event.payload.jobId === 'string' ? event.payload.jobId : null;
+      const accountId = typeof event.payload.accountId === 'string' ? event.payload.accountId : null;
+      if (!event.workspaceId || !jobId || !accountId) return { ignored: true };
+      await executeSyncJob(event.workspaceId, accountId, jobId);
+      return { completed: true, jobId };
+    },
+  });
   const tick = async () => {
     if (syncTickRunning) return;
     syncTickRunning = true;
     try {
       for (const account of await repo.dueAccountIds(env.EMAIL_SYNC_INTERVAL_MINUTES)) {
-        const job = await repo.createSyncJob(account.workspaceId, account.id, null);
-        if (job?.status === 'queued') void executeSyncJob(account.workspaceId, account.id, job.id);
+        await repo.createSyncJob(account.workspaceId, account.id, null);
       }
     } catch (error) {
       logger.error({ error }, 'Automatic email synchronization cycle failed');

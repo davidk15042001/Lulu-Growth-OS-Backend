@@ -1,4 +1,6 @@
-import { query } from '../../db/pool.js';
+import { query, withTransaction } from '../../db/pool.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type {
   CreateNotificationInput,
   ListNotificationsQuery,
@@ -33,25 +35,44 @@ const notificationSelect = `
 `;
 
 export async function createNotification(input: CreateNotificationInput) {
-  const { rows } = await query<Notification>(
-    `INSERT INTO notifications (
-       workspace_id, user_id, notification_type, severity, title, body,
-       entity_type, entity_id, data
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-     RETURNING ${notificationSelect}`,
-    [
-      input.workspaceId,
-      input.userId,
-      input.notificationType,
-      input.severity ?? 'info',
-      input.title,
-      input.body ?? null,
-      input.entityType ?? null,
-      input.entityId ?? null,
-      input.data ?? {},
-    ]
-  );
-  return rows[0];
+  return withTransaction(async (client) => {
+    const { rows } = await query<Notification>(
+      `INSERT INTO notifications (
+         workspace_id, user_id, notification_type, severity, title, body,
+         entity_type, entity_id, data
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING ${notificationSelect}`,
+      [
+        input.workspaceId,
+        input.userId,
+        input.notificationType,
+        input.severity ?? 'info',
+        input.title,
+        input.body ?? null,
+        input.entityType ?? null,
+        input.entityId ?? null,
+        input.data ?? {},
+      ],
+      client,
+    );
+    const notification = rows[0];
+    if (!notification) throw new Error('Notification insert did not return a row');
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.NOTIFICATION_CREATED,
+      aggregateType: 'notification',
+      aggregateId: notification.id,
+      payload: {
+        notificationId: notification.id,
+        userId: input.userId,
+        notificationType: notification.notificationType,
+        severity: notification.severity,
+      },
+      metadata: { source: 'notifications' },
+      idempotencyKey: `notification:${notification.id}:created:v1`,
+    }, client);
+    return notification;
+  });
 }
 
 export async function listNotifications(

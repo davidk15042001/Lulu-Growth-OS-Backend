@@ -2,6 +2,8 @@ import { query, withTransaction } from '../../db/pool.js';
 import type { PoolClient } from 'pg';
 import type { EmailAccount, EmailAccountCredential, EmailProvider, ProviderFolder, ProviderMessage } from './email.types.js';
 import type { CreateDraftInput, CreateRuleInput, ListThreadsQuery, UpdateDraftInput, UpdateRuleInput } from './email.validator.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 const accountSelect = `
   id, workspace_id AS "workspaceId", provider, email_address AS "emailAddress",
@@ -13,6 +15,18 @@ const credentialSelect = `${accountSelect}, connected_by AS "connectedBy", encry
   encrypted_refresh_token AS "encryptedRefreshToken", token_expires_at AS "tokenExpiresAt",
   encrypted_password AS "encryptedPassword", imap_host AS "imapHost", imap_port AS "imapPort",
   imap_secure AS "imapSecure", smtp_host AS "smtpHost", smtp_port AS "smtpPort", smtp_secure AS "smtpSecure"`;
+
+async function appendEmailConnectedEvent(client: PoolClient, input: { workspaceId: string; userId: string; provider: string }, account: EmailAccount) {
+  await appendDomainEvent({
+    workspaceId: input.workspaceId,
+    type: DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED,
+    aggregateType: 'email_account',
+    aggregateId: account.id,
+    payload: { accountId: account.id, provider: input.provider, category: 'email' },
+    metadata: { actorId: input.userId, source: 'email.connection' },
+  }, client);
+  return account;
+}
 
 export async function listAccounts(workspaceId: string) {
   const { rows } = await query<EmailAccount>(`SELECT ${accountSelect} FROM email_accounts WHERE workspace_id = $1 AND status <> 'disconnected' ORDER BY created_at`, [workspaceId]);
@@ -28,36 +42,42 @@ export async function upsertOAuthAccount(input: {
   workspaceId: string; userId: string; provider: EmailProvider; emailAddress: string; displayName?: string | null;
   encryptedAccessToken: string; encryptedRefreshToken?: string | null; tokenExpiresAt?: string | null;
 }) {
-  const { rows } = await query<EmailAccount>(
-    `INSERT INTO email_accounts (workspace_id, connected_by, provider, email_address, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, status)
-     VALUES ($1,$2,$3,lower($4),$5,$6,$7,$8,'connected')
-     ON CONFLICT (workspace_id, provider, email_address) DO UPDATE SET
-       connected_by = EXCLUDED.connected_by, display_name = EXCLUDED.display_name,
-       encrypted_access_token = EXCLUDED.encrypted_access_token,
-       encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token, email_accounts.encrypted_refresh_token),
-       token_expires_at = EXCLUDED.token_expires_at, status = 'connected', last_error_code = NULL, last_error_message = NULL
-     RETURNING ${accountSelect}`,
-    [input.workspaceId, input.userId, input.provider, input.emailAddress, input.displayName ?? null, input.encryptedAccessToken, input.encryptedRefreshToken ?? null, input.tokenExpiresAt ?? null],
-  );
-  return rows[0]!;
+  return withTransaction(async (client) => {
+    const { rows } = await query<EmailAccount>(
+      `INSERT INTO email_accounts (workspace_id, connected_by, provider, email_address, display_name, encrypted_access_token, encrypted_refresh_token, token_expires_at, status)
+       VALUES ($1,$2,$3,lower($4),$5,$6,$7,$8,'connected')
+       ON CONFLICT (workspace_id, provider, email_address) DO UPDATE SET
+         connected_by = EXCLUDED.connected_by, display_name = EXCLUDED.display_name,
+         encrypted_access_token = EXCLUDED.encrypted_access_token,
+         encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token, email_accounts.encrypted_refresh_token),
+         token_expires_at = EXCLUDED.token_expires_at, status = 'connected', last_error_code = NULL, last_error_message = NULL
+       RETURNING ${accountSelect}`,
+      [input.workspaceId, input.userId, input.provider, input.emailAddress, input.displayName ?? null, input.encryptedAccessToken, input.encryptedRefreshToken ?? null, input.tokenExpiresAt ?? null],
+      client,
+    );
+    return appendEmailConnectedEvent(client, input, rows[0]!);
+  });
 }
 
 export async function upsertImapAccount(input: {
   workspaceId: string; userId: string; emailAddress: string; displayName?: string | null; encryptedPassword: string;
   imapHost: string; imapPort: number; imapSecure: boolean; smtpHost: string; smtpPort: number; smtpSecure: boolean;
 }) {
-  const { rows } = await query<EmailAccount>(
-    `INSERT INTO email_accounts (workspace_id, connected_by, provider, email_address, display_name, encrypted_password, imap_host, imap_port, imap_secure, smtp_host, smtp_port, smtp_secure, status)
-     VALUES ($1,$2,'imap',lower($3),$4,$5,$6,$7,$8,$9,$10,$11,'connected')
-     ON CONFLICT (workspace_id, provider, email_address) DO UPDATE SET
-       connected_by = EXCLUDED.connected_by, display_name = EXCLUDED.display_name, encrypted_password = EXCLUDED.encrypted_password,
-       imap_host = EXCLUDED.imap_host, imap_port = EXCLUDED.imap_port, imap_secure = EXCLUDED.imap_secure,
-       smtp_host = EXCLUDED.smtp_host, smtp_port = EXCLUDED.smtp_port, smtp_secure = EXCLUDED.smtp_secure,
-       status = 'connected', last_error_code = NULL, last_error_message = NULL
-     RETURNING ${accountSelect}`,
-    [input.workspaceId, input.userId, input.emailAddress, input.displayName ?? null, input.encryptedPassword, input.imapHost, input.imapPort, input.imapSecure, input.smtpHost, input.smtpPort, input.smtpSecure],
-  );
-  return rows[0]!;
+  return withTransaction(async (client) => {
+    const { rows } = await query<EmailAccount>(
+      `INSERT INTO email_accounts (workspace_id, connected_by, provider, email_address, display_name, encrypted_password, imap_host, imap_port, imap_secure, smtp_host, smtp_port, smtp_secure, status)
+       VALUES ($1,$2,'imap',lower($3),$4,$5,$6,$7,$8,$9,$10,$11,'connected')
+       ON CONFLICT (workspace_id, provider, email_address) DO UPDATE SET
+         connected_by = EXCLUDED.connected_by, display_name = EXCLUDED.display_name, encrypted_password = EXCLUDED.encrypted_password,
+         imap_host = EXCLUDED.imap_host, imap_port = EXCLUDED.imap_port, imap_secure = EXCLUDED.imap_secure,
+         smtp_host = EXCLUDED.smtp_host, smtp_port = EXCLUDED.smtp_port, smtp_secure = EXCLUDED.smtp_secure,
+         status = 'connected', last_error_code = NULL, last_error_message = NULL
+       RETURNING ${accountSelect}`,
+      [input.workspaceId, input.userId, input.emailAddress, input.displayName ?? null, input.encryptedPassword, input.imapHost, input.imapPort, input.imapSecure, input.smtpHost, input.smtpPort, input.smtpSecure],
+      client,
+    );
+    return appendEmailConnectedEvent(client, { ...input, provider: 'imap' }, rows[0]!);
+  });
 }
 
 export async function updateOAuthTokens(accountId: string, encryptedAccessToken: string, encryptedRefreshToken: string | null, tokenExpiresAt: string | null) {
@@ -331,17 +351,33 @@ export async function deleteRule(workspaceId: string, ruleId: string) {
 }
 
 export async function createSyncJob(workspaceId: string, accountId: string, userId: string | null) {
-  const { rows } = await query(
-    `WITH stale_jobs AS (
-       UPDATE email_sync_jobs SET status='failed', error_code='EMAIL_SYNC_INTERRUPTED', error_message='Synchronization was interrupted and can be retried.', finished_at=NOW()
-       WHERE account_id=$2 AND status IN ('queued','running') AND COALESCE(started_at,created_at) < NOW() - INTERVAL '15 minutes'
-     )
-     INSERT INTO email_sync_jobs (workspace_id,account_id,requested_by)
-     SELECT $1,$2,$3 WHERE EXISTS (SELECT 1 FROM email_accounts WHERE workspace_id=$1 AND id=$2 AND status <> 'disconnected')
-     ON CONFLICT (account_id) WHERE status IN ('queued','running') DO UPDATE SET requested_by=EXCLUDED.requested_by
-     RETURNING id, workspace_id AS "workspaceId", account_id AS "accountId", status, folders_synced AS "foldersSynced", messages_synced AS "messagesSynced", created_at AS "createdAt", updated_at AS "updatedAt"`, [workspaceId, accountId, userId],
-  );
-  return rows[0] ?? null;
+  return withTransaction(async (client) => {
+    const { rows } = await query<{ id: string; workspaceId: string; accountId: string; status: string }>(
+      `WITH stale_jobs AS (
+         UPDATE email_sync_jobs SET status='failed', error_code='EMAIL_SYNC_INTERRUPTED', error_message='Synchronization was interrupted and can be retried.', finished_at=NOW()
+         WHERE account_id=$2 AND status IN ('queued','running') AND COALESCE(started_at,created_at) < NOW() - INTERVAL '15 minutes'
+       )
+       INSERT INTO email_sync_jobs (workspace_id,account_id,requested_by)
+       SELECT $1,$2,$3 WHERE EXISTS (SELECT 1 FROM email_accounts WHERE workspace_id=$1 AND id=$2 AND status <> 'disconnected')
+       ON CONFLICT (account_id) WHERE status IN ('queued','running') DO UPDATE SET requested_by=EXCLUDED.requested_by
+       RETURNING id, workspace_id AS "workspaceId", account_id AS "accountId", status, folders_synced AS "foldersSynced", messages_synced AS "messagesSynced", created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [workspaceId, accountId, userId],
+      client,
+    );
+    const job = rows[0] ?? null;
+    if (job) {
+      await appendDomainEvent({
+        workspaceId,
+        type: DOMAIN_EVENT_TYPES.EMAIL_SYNC_REQUESTED,
+        aggregateType: 'email_sync_job',
+        aggregateId: job.id,
+        payload: { jobId: job.id, accountId },
+        metadata: { actorId: userId, source: 'email' },
+        idempotencyKey: `email-sync:${job.id}:requested:v1`,
+      }, client);
+    }
+    return job;
+  });
 }
 
 export async function getSyncJob(workspaceId: string, accountId: string, jobId: string) {
@@ -349,9 +385,60 @@ export async function getSyncJob(workspaceId: string, accountId: string, jobId: 
   return rows[0] ?? null;
 }
 
-export async function startSyncJob(jobId: string) { const result = await query(`UPDATE email_sync_jobs SET status='running', started_at=NOW(), error_code=NULL, error_message=NULL WHERE id=$1 AND status='queued'`, [jobId]); return result.rowCount > 0; }
-export async function finishSyncJob(jobId: string, folders: number, messages: number) { await query(`UPDATE email_sync_jobs SET status='succeeded', folders_synced=$2, messages_synced=$3, finished_at=NOW() WHERE id=$1`, [jobId, folders, messages]); }
-export async function failSyncJob(jobId: string, code: string, message: string) { await query(`UPDATE email_sync_jobs SET status='failed', error_code=$2, error_message=$3, finished_at=NOW() WHERE id=$1`, [jobId, code, message.slice(0,2000)]); }
+export async function startSyncJob(jobId: string, staleSeconds = 60) {
+  const result = await query(
+    `UPDATE email_sync_jobs
+     SET status='running', started_at=NOW(), error_code=NULL, error_message=NULL
+     WHERE id=$1
+       AND (status='queued' OR (status='running' AND started_at < NOW() - ($2::integer * INTERVAL '1 second')))`,
+    [jobId, staleSeconds],
+  );
+  return result.rowCount > 0;
+}
+export async function finishSyncJob(jobId: string, folders: number, messages: number) {
+  await withTransaction(async (client) => {
+    const { rows } = await query<{ workspaceId: string; accountId: string }>(
+      `UPDATE email_sync_jobs
+       SET status='succeeded', folders_synced=$2, messages_synced=$3, finished_at=NOW()
+       WHERE id=$1
+       RETURNING workspace_id AS "workspaceId", account_id AS "accountId"`,
+      [jobId, folders, messages],
+      client,
+    );
+    const job = rows[0];
+    if (job) await appendDomainEvent({
+      workspaceId: job.workspaceId,
+      type: DOMAIN_EVENT_TYPES.EMAIL_SYNC_COMPLETED,
+      aggregateType: 'email_sync_job',
+      aggregateId: jobId,
+      payload: { jobId, accountId: job.accountId, folders, messages },
+      metadata: { source: 'email' },
+      idempotencyKey: `email-sync:${jobId}:completed:v1`,
+    }, client);
+  });
+}
+export async function failSyncJob(jobId: string, code: string, message: string) {
+  await withTransaction(async (client) => {
+    const { rows } = await query<{ workspaceId: string; accountId: string }>(
+      `UPDATE email_sync_jobs
+       SET status='failed', error_code=$2, error_message=$3, finished_at=NOW()
+       WHERE id=$1
+       RETURNING workspace_id AS "workspaceId", account_id AS "accountId"`,
+      [jobId, code, message.slice(0, 2000)],
+      client,
+    );
+    const job = rows[0];
+    if (job) await appendDomainEvent({
+      workspaceId: job.workspaceId,
+      type: DOMAIN_EVENT_TYPES.EMAIL_SYNC_FAILED,
+      aggregateType: 'email_sync_job',
+      aggregateId: jobId,
+      payload: { jobId, accountId: job.accountId, code, message: message.slice(0, 2000) },
+      metadata: { source: 'email' },
+      idempotencyKey: `email-sync:${jobId}:failed:v1`,
+    }, client);
+  });
+}
 
 export async function dueAccountIds(intervalMinutes: number) {
   const { rows } = await query<{ id: string; workspaceId: string }>(`SELECT id, workspace_id AS "workspaceId" FROM email_accounts WHERE (status IN ('connected','error') OR (status='syncing' AND updated_at < NOW() - INTERVAL '15 minutes')) AND (last_sync_at IS NULL OR last_sync_at < NOW() - ($1::integer * INTERVAL '1 minute')) ORDER BY COALESCE(last_sync_at, to_timestamp(0)) LIMIT 20`, [intervalMinutes]);

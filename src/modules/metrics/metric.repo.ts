@@ -6,6 +6,8 @@ import type {
   MetricPointInput,
   UpdateMetricInput,
 } from './metric.validator.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 export type MetricDefinition = {
   id: string;
@@ -73,23 +75,27 @@ export async function findMetric(workspaceId: string, metricId: string) {
 }
 
 export async function createMetric(workspaceId: string, input: CreateMetricInput) {
-  const { rows } = await query<{ id: string }>(
-    `INSERT INTO metric_definitions (
-       workspace_id, key, name, domain, unit, format, source, configuration
-     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-     RETURNING id`,
-    [
+  return withTransaction(async (client) => {
+    const { rows } = await query<{ id: string }>(
+      `INSERT INTO metric_definitions (
+         workspace_id, key, name, domain, unit, format, source, configuration
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING id`,
+      [workspaceId, input.key, input.name, input.domain, input.unit ?? 'number', input.format ?? null, input.source ?? null, input.configuration ?? {}],
+      client,
+    );
+    const metricId = rows[0]?.id;
+    if (metricId) await appendDomainEvent({
       workspaceId,
-      input.key,
-      input.name,
-      input.domain,
-      input.unit ?? 'number',
-      input.format ?? null,
-      input.source ?? null,
-      input.configuration ?? {},
-    ]
-  );
-  return rows[0]?.id;
+      type: DOMAIN_EVENT_TYPES.METRIC_CREATED,
+      aggregateType: 'metric',
+      aggregateId: metricId,
+      payload: { metricId, key: input.key, domain: input.domain },
+      metadata: { source: 'metrics' },
+      idempotencyKey: `metric:${metricId}:created:v1`,
+    }, client);
+    return metricId;
+  });
 }
 
 const updateColumns: Partial<Record<keyof UpdateMetricInput, string>> = {
@@ -104,23 +110,46 @@ const updateColumns: Partial<Record<keyof UpdateMetricInput, string>> = {
 
 export async function updateMetric(workspaceId: string, metricId: string, input: UpdateMetricInput) {
   const update = buildUpdateSet(input, updateColumns, 2);
-  const { rowCount } = await query(
-    `UPDATE metric_definitions
-     SET ${update.assignments.join(', ')}
-     WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
-    [workspaceId, metricId, ...update.values]
-  );
-  return rowCount > 0;
+  return withTransaction(async (client) => {
+    const { rowCount } = await query(
+      `UPDATE metric_definitions
+       SET ${update.assignments.join(', ')}
+       WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
+      [workspaceId, metricId, ...update.values],
+      client,
+    );
+    if (rowCount > 0) await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.METRIC_UPDATED,
+      aggregateType: 'metric',
+      aggregateId: metricId,
+      payload: { metricId, changedFields: Object.keys(input) },
+      metadata: { source: 'metrics' },
+    }, client);
+    return rowCount > 0;
+  });
 }
 
 export async function archiveMetric(workspaceId: string, metricId: string) {
-  const { rowCount } = await query(
-    `UPDATE metric_definitions
-     SET deleted_at = NOW()
-     WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
-    [workspaceId, metricId]
-  );
-  return rowCount > 0;
+  return withTransaction(async (client) => {
+    const { rowCount } = await query(
+      `UPDATE metric_definitions
+       SET deleted_at = NOW()
+       WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
+      [workspaceId, metricId],
+      client,
+    );
+    if (rowCount > 0) await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.METRIC_ARCHIVED,
+      aggregateType: 'metric',
+      aggregateId: metricId,
+      payload: { metricId },
+      metadata: { source: 'metrics' },
+      idempotencyKey: `metric:${metricId}:archived:v1`,
+    }, client);
+    return rowCount > 0;
+  });
 }
 
 export async function insertPoints(
@@ -151,6 +180,19 @@ export async function insertPoints(
       values,
       client
     );
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.METRIC_POINTS_RECORDED,
+      aggregateType: 'metric',
+      aggregateId: metricId,
+      payload: {
+        metricId,
+        pointsRecorded: result.rowCount,
+        firstRecordedAt: points[0]?.recordedAt ?? null,
+        lastRecordedAt: points.at(-1)?.recordedAt ?? null,
+      },
+      metadata: { source: 'metrics' },
+    }, client);
     return result.rowCount;
   });
 }

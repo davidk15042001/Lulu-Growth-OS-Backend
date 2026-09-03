@@ -4,7 +4,7 @@ import { env } from '../../config/env.js';
 import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import * as repo from './agent.repo.js';
-import type { AgentRole, AgentTool } from './agent.types.js';
+import type { AgentRole, AgentRun, AgentTool } from './agent.types.js';
 import type { DecideApprovalInput } from '../approvals/approval.validator.js';
 import { getAgentCapabilities, type AgentModule, isAgentModule } from './agent.capabilities.js';
 import { buildAgentExecutionProfile } from './agent.domain.js';
@@ -18,7 +18,8 @@ import {
 } from './agent.page-context.js';
 import { registerAgentTools } from './agent.tools.js';
 import { decideAgentToolPolicy } from './agent.autonomy-policy.js';
-import { publishAgentEvent } from './agent.events.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -434,16 +435,50 @@ async function executeRun(
       const response = await withTimeout(getOpenAIResponsesClient().create({ model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL, instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: { workspaceId, userId: userId === 'system' ? null : userId } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
       finalResult = { ...finalResult, summary: response.output_text?.trim() ?? null };
     }
-    await repo.updateRun(runId, { status: 'completed', result: finalResult, finished_at: new Date() });
     await persistPageSnapshot(runId, workspaceId, goal, page, finalResult);
-    await event({ runId, workspaceId, eventType: 'run.completed', agentRole: 'reviewer', payload: finalResult });
-    publishAgentEvent({ workspaceId, type: 'run.completed', runId, pageId: page?.pageId ?? null });
+    await repo.finalizeRun({
+      runId,
+      workspaceId,
+      status: 'completed',
+      patch: { result: finalResult, finished_at: new Date() },
+      eventPayload: finalResult,
+      pageId: page?.pageId ?? null,
+      actorId: userId === 'system' ? null : userId,
+      agentRole: 'reviewer',
+    });
   } catch (error) {
     const appError = error instanceof AppError ? error : new AppError(500, 'AGENT_RUN_FAILED', error instanceof Error ? error.message : 'Agent run failed');
-    await repo.updateRun(runId, { status: appError.code === 'AGENT_RUN_CANCELLED' ? 'cancelled' : 'failed', error_code: appError.code, error_message: appError.message, finished_at: new Date() });
-    await event({ runId, workspaceId, eventType: 'run.failed', payload: { code: appError.code, message: appError.message } });
-    publishAgentEvent({ workspaceId, type: 'run.failed', runId, pageId: page?.pageId ?? null });
+    const status = appError.code === 'AGENT_RUN_CANCELLED' ? 'cancelled' : 'failed';
+    await repo.finalizeRun({
+      runId,
+      workspaceId,
+      status,
+      patch: { error_code: appError.code, error_message: appError.message, finished_at: new Date() },
+      eventPayload: { code: appError.code, message: appError.message },
+      pageId: page?.pageId ?? null,
+      actorId: userId === 'system' ? null : userId,
+    });
   } finally { activeRuns.delete(runId); }
+}
+
+export async function executePersistedAgentRun(run: AgentRun) {
+  if (['completed', 'failed', 'cancelled', 'waiting_approval'].includes(run.status)) return;
+  const subscription = await repo.getWorkspacePlan(run.workspaceId);
+  const module = isAgentModule(run.plan?.module) ? run.plan.module : 'general';
+  const capabilities = getAgentCapabilities(subscription.plan_key, module);
+  const page = sanitizeAgentPageContext(run.plan?.page as Record<string, unknown> | null | undefined);
+  const actorId = run.createdBy ?? await repo.getWorkspaceActorId(run.workspaceId) ?? 'system';
+  await executeRun(
+    run.id,
+    run.workspaceId,
+    actorId,
+    run.goal,
+    capabilities.autonomous ? 'autonomous' : 'analysis_only',
+    module,
+    capabilities,
+    page,
+    true,
+  );
 }
 export async function startRun(
   workspaceId: string,
@@ -463,7 +498,6 @@ export async function startRun(
   const executionMode = capabilities.autonomous ? 'autonomous' : 'analysis_only';
   const initialPlan = buildInitialPlan(resolvedModule, capabilities, executionMode, page);
   let run;
-  let created = true;
   if (page && dedupeMinutes) {
     const result = await repo.createOrReusePageRun({
       workspaceId,
@@ -474,14 +508,10 @@ export async function startRun(
       initialPlan,
     });
     run = result.run;
-    created = result.created;
   } else {
     run = await repo.createRun(workspaceId, userId, goal, page ? initialPlan : null);
   }
   if (!run) throw new AppError(500, 'AGENT_RUN_CREATION_FAILED', 'The agent run could not be created');
-  if (created) {
-    void executeRun(run.id, workspaceId, userId, goal, executionMode, resolvedModule, capabilities, page, true);
-  }
   return run;
 }
 export async function startAutomaticRun(
@@ -502,25 +532,20 @@ export async function startAutomaticRun(
   const executionMode = automaticCapabilities.autonomous ? 'autonomous' : 'analysis_only';
   const initialPlan = buildInitialPlan(resolvedModule, automaticCapabilities, executionMode, page);
   let run;
-  let created = true;
   if (page && dedupeMinutes) {
     const result = await repo.createOrReusePageRun({
       workspaceId,
-      userId: null,
+      userId: actorUserId ?? null,
       goal,
       pageId: page.pageId,
       dedupeMinutes,
       initialPlan,
     });
     run = result.run;
-    created = result.created;
   } else {
-    run = await repo.createRun(workspaceId, null, goal, page ? initialPlan : null);
+    run = await repo.createRun(workspaceId, actorUserId ?? null, goal, page ? initialPlan : null);
   }
   if (!run) throw new AppError(500, 'AGENT_AUTOMATIC_RUN_CREATION_FAILED', 'The automatic analysis run could not be created');
-  if (created) {
-    void executeRun(run.id, workspaceId, actorUserId ?? 'system', goal, executionMode, resolvedModule, automaticCapabilities, page, true);
-  }
   return run;
 }
 export async function listRuns(workspaceId: string, pageId?: string) {
@@ -622,12 +647,18 @@ export async function getRunDetails(workspaceId: string, runId: string) {
   const [steps, events] = await Promise.all([repo.listSteps(workspaceId, runId), repo.listEvents(workspaceId, runId)]);
   return { run, steps, events };
 }
-export async function cancelRun(workspaceId: string, runId: string) {
+export async function cancelRun(workspaceId: string, runId: string, userId: string) {
   const run = await repo.getRun(workspaceId, runId);
   if (!run) throw notFoundError('Agent run not found');
   if (['completed', 'failed', 'cancelled'].includes(run.status)) throw conflictError('This agent run is already finished');
-  await repo.updateRun(runId, { status: 'cancelled', finished_at: new Date(), error_code: 'AGENT_RUN_CANCELLED', error_message: 'Cancelled by workspace user' });
-  await event({ runId, workspaceId, eventType: 'run.cancelled', payload: {} });
+  await repo.finalizeRun({
+    runId,
+    workspaceId,
+    status: 'cancelled',
+    patch: { finished_at: new Date(), error_code: 'AGENT_RUN_CANCELLED', error_message: 'Cancelled by workspace user' },
+    eventPayload: { code: 'AGENT_RUN_CANCELLED', message: 'Cancelled by workspace user' },
+    actorId: userId,
+  });
   return repo.getRun(workspaceId, runId);
 }
 export async function approveStep(workspaceId: string, runId: string, stepId: string, userId: string, decision: DecideApprovalInput) {
@@ -656,12 +687,15 @@ export async function approveStep(workspaceId: string, runId: string, stepId: st
   });
   await repo.updateRun(runId, { status: 'running', error_code: null, error_message: null });
   await event({ runId, stepId, workspaceId, eventType: 'step.approved', agentRole: 'executor', payload: {} });
-  const run = await repo.getRun(workspaceId, runId);
-  const subscription = await repo.getWorkspacePlan(workspaceId);
-  const module = isAgentModule(run?.plan?.module) ? run.plan.module : 'general';
-  const capabilities = getAgentCapabilities(subscription.plan_key, module);
-  const page = sanitizeAgentPageContext(run?.plan?.page as Record<string, unknown> | null | undefined);
-  void executeRun(runId, workspaceId, userId, run?.goal ?? 'approved agent run', capabilities.autonomous ? 'autonomous' : 'analysis_only', module, capabilities, page);
+  await appendDomainEvent({
+    workspaceId,
+    type: DOMAIN_EVENT_TYPES.AGENT_RUN_RESUME_REQUESTED,
+    aggregateType: 'agent_run',
+    aggregateId: runId,
+    payload: { runId, stepId },
+    metadata: { actorId: userId, source: 'agents.approval' },
+    idempotencyKey: `agent-run:${runId}:resume:${stepId}:v1`,
+  });
   return getRunDetails(workspaceId, runId);
 }
 

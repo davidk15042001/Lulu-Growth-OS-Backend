@@ -7,7 +7,8 @@ import type {
   ListRecordsQuery,
   UpdateRecordInput,
 } from './record.validator.js';
-import { publishAgentEvent } from '../agents/agent.events.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 export type WorkspaceRecord = {
   id: string;
@@ -255,9 +256,17 @@ export async function createRecord(
     const record = rows[0];
     if (!record) throw new Error('Record insert did not return a row');
     await insertAudit(client, workspaceId, userId, 'record.created', resourceType, record.id, null, record);
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.RECORD_CREATED,
+      aggregateType: 'workspace_record',
+      aggregateId: record.id,
+      payload: { resourceType, recordId: record.id, version: record.version },
+      metadata: { actorId: userId, source: 'records' },
+      idempotencyKey: `record:${record.id}:created:v${record.version}`,
+    }, client);
     return record;
   });
-  publishAgentEvent({ workspaceId, type: 'record.created', resourceType, recordId: record.id });
   return record;
 }
 
@@ -309,6 +318,15 @@ export async function updateRecord(
     const record = rows[0];
     if (!record) return { status: 'not_found' as const };
     await insertAudit(client, workspaceId, userId, 'record.updated', resourceType, record.id, before, record);
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.RECORD_UPDATED,
+      aggregateType: 'workspace_record',
+      aggregateId: record.id,
+      payload: { resourceType, recordId: record.id, version: record.version, changedFields: Object.keys(mutableInput) },
+      metadata: { actorId: userId, source: 'records' },
+      idempotencyKey: `record:${record.id}:updated:v${record.version}`,
+    }, client);
     return { status: 'updated' as const, record };
   });
 }
@@ -331,6 +349,18 @@ export async function archiveRecord(
       client
     );
     await insertAudit(client, workspaceId, userId, 'record.archived', resourceType, recordId, before, rows[0] ?? null);
+    const record = rows[0];
+    if (record) {
+      await appendDomainEvent({
+        workspaceId,
+        type: DOMAIN_EVENT_TYPES.RECORD_ARCHIVED,
+        aggregateType: 'workspace_record',
+        aggregateId: record.id,
+        payload: { resourceType, recordId: record.id, version: record.version },
+        metadata: { actorId: userId, source: 'records' },
+        idempotencyKey: `record:${record.id}:archived:v${record.version}`,
+      }, client);
+    }
     return true;
   });
 }
@@ -355,6 +385,15 @@ export async function restoreRecord(
     const record = rows[0];
     if (!record) return undefined;
     await insertAudit(client, workspaceId, userId, 'record.restored', resourceType, recordId, before, record);
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.RECORD_RESTORED,
+      aggregateType: 'workspace_record',
+      aggregateId: record.id,
+      payload: { resourceType, recordId: record.id, version: record.version },
+      metadata: { actorId: userId, source: 'records' },
+      idempotencyKey: `record:${record.id}:restored:v${record.version}`,
+    }, client);
     return record;
   });
 }

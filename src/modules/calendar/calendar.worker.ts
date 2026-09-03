@@ -2,6 +2,8 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import * as repo from './calendar.repo.js';
 import { executeSyncJob } from './calendar.service.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 let interval: NodeJS.Timeout | undefined;
 let activeCycle: Promise<void> | null = null;
@@ -45,6 +47,14 @@ export function requestCalendarSyncWorkerRun() {
 
 export function startCalendarSyncWorker() {
   if (interval) return;
+  registerDomainEventHandler({
+    name: 'calendar.sync-job-wakeup.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.CALENDAR_SYNC_REQUESTED],
+    handle() {
+      requestCalendarSyncWorkerRun();
+      return { woken: true };
+    },
+  });
   stopping = false;
   lastDueScanAt = 0;
   interval = setInterval(requestCalendarSyncWorkerRun, env.CALENDAR_WORKER_INTERVAL_MS);

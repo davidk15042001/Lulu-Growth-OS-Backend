@@ -1,5 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { query } from '../../db/pool.js';
+import { query, withTransaction } from '../../db/pool.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type { WebsiteDomain, WebsiteGenerationJob, WebsiteGenerationWorkItem, WebsiteSite } from './website.types.js';
 import type { WebsiteGenerationActivity } from './website.activity.js';
 
@@ -109,14 +111,36 @@ export async function markDomainVerified(siteId: string, domainId: string) {
   return result.rowCount ? true : false;
 }
 export async function createJob(input: { siteId: string; prompt: string; createdBy: string; requestedLanguage?: string; autoPublish?: boolean; preview?: Record<string, unknown> }) {
-  const result = await query<any>(
-    `INSERT INTO website_generation_jobs (site_id, prompt, created_by, requested_language, auto_publish, preview)
-     VALUES ($1,$2,$3,$4,$5,$6)
-     ON CONFLICT (site_id) WHERE status IN ('queued','planning','generated','preview','publishing') DO NOTHING
-     RETURNING id`,
-    [input.siteId, input.prompt.trim(), input.createdBy, input.requestedLanguage ?? null, input.autoPublish ?? false, JSON.stringify(input.preview ?? {})],
-  );
-  if (result.rows[0]) return { job: await getJob(input.siteId, result.rows[0].id), created: true };
+  const createdJobId = await withTransaction(async (client) => {
+    const result = await query<{ id: string }>(
+      `INSERT INTO website_generation_jobs (site_id, prompt, created_by, requested_language, auto_publish, preview)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (site_id) WHERE status IN ('queued','planning','generated','preview','publishing') DO NOTHING
+       RETURNING id`,
+      [input.siteId, input.prompt.trim(), input.createdBy, input.requestedLanguage ?? null, input.autoPublish ?? false, JSON.stringify(input.preview ?? {})],
+      client,
+    );
+    const jobId = result.rows[0]?.id;
+    if (!jobId) return null;
+    const site = await query<{ workspaceId: string }>(
+      `SELECT workspace_id AS "workspaceId" FROM workspace_sites WHERE id=$1`,
+      [input.siteId],
+      client,
+    );
+    const workspaceId = site.rows[0]?.workspaceId;
+    if (!workspaceId) throw new Error('Website generation site did not return a workspace');
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.WEBSITE_GENERATION_REQUESTED,
+      aggregateType: 'website_generation_job',
+      aggregateId: jobId,
+      payload: { jobId, siteId: input.siteId },
+      metadata: { actorId: input.createdBy, source: 'websites' },
+      idempotencyKey: `website-generation:${jobId}:requested:v1`,
+    }, client);
+    return jobId;
+  });
+  if (createdJobId) return { job: await getJob(input.siteId, createdJobId), created: true };
   return { job: await findActiveJob(input.siteId), created: false };
 }
 export async function findActiveJob(siteId: string) {
@@ -176,7 +200,37 @@ export const failExhaustedJobsSql = `WITH exhausted AS (
      WHERE site.id IN (SELECT exhausted.site_id FROM exhausted)`;
 
 export async function failExhaustedJobs(maxAttempts: number, leaseSeconds: number, siteId?: string) {
-  await query(failExhaustedJobsSql, [maxAttempts, leaseSeconds, siteId ?? null]);
+  await withTransaction(async (client) => {
+    await query(failExhaustedJobsSql, [maxAttempts, leaseSeconds, siteId ?? null], client);
+    const { rows } = await query<{ jobId: string; siteId: string; workspaceId: string; attemptCount: number }>(
+      `SELECT job.id AS "jobId", job.site_id AS "siteId", site.workspace_id AS "workspaceId",
+              job.attempt_count AS "attemptCount"
+       FROM website_generation_jobs AS job
+       JOIN workspace_sites AS site ON site.id=job.site_id
+       WHERE job.status='failed'
+         AND job.error_code='WEBSITE_JOB_RETRY_EXHAUSTED'
+         AND ($1::uuid IS NULL OR job.site_id=$1::uuid)
+         AND NOT EXISTS (
+           SELECT 1 FROM domain_events AS event
+           WHERE event.idempotency_key = 'website-generation:' || job.id::text || ':failed:attempt:' || job.attempt_count::text || ':v1'
+         )
+       ORDER BY job.updated_at ASC
+       LIMIT 100`,
+      [siteId ?? null],
+      client,
+    );
+    for (const job of rows) {
+      await appendDomainEvent({
+        workspaceId: job.workspaceId,
+        type: DOMAIN_EVENT_TYPES.WEBSITE_GENERATION_FAILED,
+        aggregateType: 'website_generation_job',
+        aggregateId: job.jobId,
+        payload: { jobId: job.jobId, siteId: job.siteId, status: 'failed', errorCode: 'WEBSITE_JOB_RETRY_EXHAUSTED', attemptCount: job.attemptCount },
+        metadata: { source: 'websites.worker' },
+        idempotencyKey: `website-generation:${job.jobId}:failed:attempt:${job.attemptCount}:v1`,
+      }, client);
+    }
+  });
 }
 
 export async function getJob(siteId: string, jobId: string) {
@@ -214,16 +268,70 @@ export const markGenerationJobFailedSql = `UPDATE website_generation_jobs
   RETURNING id`;
 
 export async function updateJob(siteId: string, jobId: string, patch: { status?: string; plan?: Record<string, unknown>; preview?: Record<string, unknown>; providerResult?: Record<string, unknown>; errorCode?: string | null; errorMessage?: string | null }) {
-  const result = await query<any>(
-    updateGenerationJobSql,
-    [siteId, jobId, patch.status ?? null, patch.plan ? JSON.stringify(patch.plan) : null, patch.preview ? JSON.stringify(patch.preview) : null, patch.providerResult ? JSON.stringify(patch.providerResult) : null, patch.errorCode ?? null, patch.errorMessage ?? null],
-  );
-  return result.rowCount ? getJob(siteId, jobId) : null;
+  const updated = await withTransaction(async (client) => {
+    const result = await query<{ id: string }>(
+      updateGenerationJobSql,
+      [siteId, jobId, patch.status ?? null, patch.plan ? JSON.stringify(patch.plan) : null, patch.preview ? JSON.stringify(patch.preview) : null, patch.providerResult ? JSON.stringify(patch.providerResult) : null, patch.errorCode ?? null, patch.errorMessage ?? null],
+      client,
+    );
+    if (!result.rowCount) return false;
+    if (patch.status === 'preview' || patch.status === 'published' || patch.status === 'failed') {
+      const { rows } = await query<{ workspaceId: string; attemptCount: number }>(
+        `SELECT site.workspace_id AS "workspaceId", job.attempt_count AS "attemptCount"
+         FROM website_generation_jobs AS job
+         JOIN workspace_sites AS site ON site.id=job.site_id
+         WHERE job.id=$1 AND job.site_id=$2`,
+        [jobId, siteId],
+        client,
+      );
+      const state = rows[0];
+      if (state) await appendDomainEvent({
+        workspaceId: state.workspaceId,
+        type: patch.status === 'failed'
+          ? DOMAIN_EVENT_TYPES.WEBSITE_GENERATION_FAILED
+          : DOMAIN_EVENT_TYPES.WEBSITE_GENERATION_COMPLETED,
+        aggregateType: 'website_generation_job',
+        aggregateId: jobId,
+        payload: {
+          jobId,
+          siteId,
+          status: patch.status,
+          attemptCount: state.attemptCount,
+          ...(patch.errorCode ? { errorCode: patch.errorCode } : {}),
+        },
+        metadata: { source: 'websites' },
+        idempotencyKey: `website-generation:${jobId}:${patch.status}:attempt:${state.attemptCount}:v1`,
+      }, client);
+    }
+    return true;
+  });
+  return updated ? getJob(siteId, jobId) : null;
 }
 
 export async function markGenerationJobFailed(siteId: string, jobId: string, errorCode: string, errorMessage: string) {
-  const result = await query(markGenerationJobFailedSql, [siteId, jobId, errorCode, errorMessage]);
-  return result.rowCount > 0;
+  return withTransaction(async (client) => {
+    const result = await query(markGenerationJobFailedSql, [siteId, jobId, errorCode, errorMessage], client);
+    if (!result.rowCount) return false;
+    const { rows } = await query<{ workspaceId: string; attemptCount: number }>(
+      `SELECT site.workspace_id AS "workspaceId", job.attempt_count AS "attemptCount"
+       FROM website_generation_jobs AS job
+       JOIN workspace_sites AS site ON site.id=job.site_id
+       WHERE job.id=$1 AND job.site_id=$2`,
+      [jobId, siteId],
+      client,
+    );
+    const state = rows[0];
+    if (state) await appendDomainEvent({
+      workspaceId: state.workspaceId,
+      type: DOMAIN_EVENT_TYPES.WEBSITE_GENERATION_FAILED,
+      aggregateType: 'website_generation_job',
+      aggregateId: jobId,
+      payload: { jobId, siteId, status: 'failed', attemptCount: state.attemptCount, errorCode },
+      metadata: { source: 'websites' },
+      idempotencyKey: `website-generation:${jobId}:failed:attempt:${state.attemptCount}:v1`,
+    }, client);
+    return true;
+  });
 }
 
 export async function findLatestCancelledJob(siteId: string) {

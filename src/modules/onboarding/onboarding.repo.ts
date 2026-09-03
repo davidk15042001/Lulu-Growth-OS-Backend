@@ -1,5 +1,7 @@
 import { query, withTransaction } from '../../db/pool.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type {
   AiPreferencesInput,
   BusinessDescriptionInput,
@@ -1219,61 +1221,81 @@ export type PlatformOAuthCredentialInput = {
 };
 
 export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredentialInput) {
-  const connectionStatus = 'connected';
-  const existing = await query<{ id: string }>(
-    `SELECT id FROM workspace_platforms
-     WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL
-     LIMIT 1`,
-    [input.workspaceId, input.integrationKey]
-  );
+  return withTransaction(async (client) => {
+    const connectionStatus = 'connected';
+    const existing = await query<{ id: string }>(
+      `SELECT id FROM workspace_platforms
+       WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL
+       LIMIT 1`,
+      [input.workspaceId, input.integrationKey],
+      client,
+    );
 
-  let platformId = existing.rows[0]?.id;
-  if (platformId) {
+    let platformId = existing.rows[0]?.id;
+    if (platformId) {
+      await query(
+        `UPDATE workspace_platforms
+         SET name = $3,
+             category = $4,
+             connection_status = $5,
+             external_account_id = $6,
+             granted_scopes = $7,
+             settings = $8,
+             last_error = NULL,
+             updated_at = NOW()
+         WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
+        [input.workspaceId, platformId, input.name, input.category, connectionStatus, input.externalAccountId, input.grantedScopes, input.settings],
+        client,
+      );
+    } else {
+      const created = await query<{ id: string }>(
+        `INSERT INTO workspace_platforms (
+           workspace_id, integration_key, name, category, connection_status,
+           external_account_id, granted_scopes, settings
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING id`,
+        [input.workspaceId, input.integrationKey, input.name, input.category, connectionStatus, input.externalAccountId, input.grantedScopes, input.settings],
+        client,
+      );
+      platformId = created.rows[0]?.id;
+    }
+
+    if (!platformId) throw new Error('Could not create platform connection');
+
     await query(
-      `UPDATE workspace_platforms
-       SET name = $3,
-           category = $4,
-           connection_status = $5,
-           external_account_id = $6,
-           granted_scopes = $7,
-           settings = $8,
-           last_error = NULL,
-           updated_at = NOW()
-       WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
-      [input.workspaceId, platformId, input.name, input.category, connectionStatus, input.externalAccountId, input.grantedScopes, input.settings]
+      `INSERT INTO workspace_platform_oauth_credentials (
+         platform_id, provider, encrypted_access_token, encrypted_refresh_token, token_expires_at
+       ) VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (platform_id) DO UPDATE SET
+         provider = EXCLUDED.provider,
+         encrypted_access_token = EXCLUDED.encrypted_access_token,
+         encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token, workspace_platform_oauth_credentials.encrypted_refresh_token),
+         token_expires_at = EXCLUDED.token_expires_at,
+         updated_at = NOW()`,
+      [platformId, input.integrationKey, input.encryptedAccessToken, input.encryptedRefreshToken, input.tokenExpiresAt],
+      client,
     );
-  } else {
-    const created = await query<{ id: string }>(
-      `INSERT INTO workspace_platforms (
-         workspace_id, integration_key, name, category, connection_status,
-         external_account_id, granted_scopes, settings
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING id`,
-      [input.workspaceId, input.integrationKey, input.name, input.category, connectionStatus, input.externalAccountId, input.grantedScopes, input.settings]
+
+    const { rows } = await query<Platform>(
+      `SELECT ${platformSelect} FROM workspace_platforms WHERE id = $1`,
+      [platformId],
+      client,
     );
-    platformId = created.rows[0]?.id;
-  }
-
-  if (!platformId) throw new Error('Could not create platform connection');
-
-  await query(
-    `INSERT INTO workspace_platform_oauth_credentials (
-       platform_id, provider, encrypted_access_token, encrypted_refresh_token, token_expires_at
-     ) VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (platform_id) DO UPDATE SET
-       provider = EXCLUDED.provider,
-       encrypted_access_token = EXCLUDED.encrypted_access_token,
-       encrypted_refresh_token = COALESCE(EXCLUDED.encrypted_refresh_token, workspace_platform_oauth_credentials.encrypted_refresh_token),
-       token_expires_at = EXCLUDED.token_expires_at,
-       updated_at = NOW()`,
-    [platformId, input.integrationKey, input.encryptedAccessToken, input.encryptedRefreshToken, input.tokenExpiresAt]
-  );
-
-  const { rows } = await query<Platform>(
-    `SELECT ${platformSelect} FROM workspace_platforms WHERE id = $1`,
-    [platformId]
-  );
-  return rows[0];
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED,
+      aggregateType: 'workspace_platform',
+      aggregateId: platformId,
+      payload: {
+        platformId,
+        integrationKey: input.integrationKey,
+        category: input.category,
+        externalAccountId: input.externalAccountId,
+      },
+      metadata: { source: 'onboarding.oauth' },
+    }, client);
+    return rows[0];
+  });
 }
 
 export async function getPlatformOAuthCredential(workspaceId: string, integrationKey: string) {

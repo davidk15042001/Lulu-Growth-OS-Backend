@@ -9,6 +9,8 @@ import {
   normalizeAgentExecutionCommands,
   type AgentExecutionCommand,
 } from './agent.execution-command.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
@@ -491,6 +493,14 @@ export async function runAgentExecutionCycle() {
 
 export function startAgentExecutionWorker() {
   if (timer) return;
+  registerDomainEventHandler({
+    name: 'agents.execution-record-wakeup.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED],
+    handle() {
+      void runAgentExecutionCycle();
+      return { woken: true };
+    },
+  });
   timer = setInterval(() => void runAgentExecutionCycle(), intervalMs);
   timer.unref();
   void runAgentExecutionCycle();

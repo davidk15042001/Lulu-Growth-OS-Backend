@@ -62,6 +62,14 @@ npm run check
 
 This runs strict TypeScript validation, all SQL migrations in a PostgreSQL-compatible test engine, API/unit tests, and the production build.
 
+## Event-driven runtime
+
+Asynchronous business workflows use the durable PostgreSQL event runtime in `src/events`. A business change and its versioned domain event are written in the same database transaction, so a committed action cannot lose its follow-up work. PostgreSQL `LISTEN/NOTIFY` wakes consumers immediately; ordered database catch-up remains the recovery path after disconnects or restarts.
+
+Consumers use `FOR UPDATE SKIP LOCKED`, leases, heartbeats, bounded exponential retries, per-consumer receipts and a dead-letter state. Agent runs and long-running website/content work use separate leased job workers so slow AI or provider calls never block the event dispatcher. Records, metrics, approvals, integrations, email/calendar sync, website/content generation, automatic agents, billing, onboarding cleanup and notifications publish or consume domain events.
+
+Authenticated clients can subscribe to `GET /workspaces/:workspaceId/events/stream`. The SSE `id` is the durable global event sequence; reconnect with `Last-Event-ID` to replay missed workspace events in order. Authentication, validation, reads and transaction-local invariants intentionally remain synchronous. Timed work is represented by schedulers that publish durable events instead of performing the business operation in the timer callback.
+
 ## Main API routes
 
 All application routes are below `/api/v1`.
@@ -71,6 +79,7 @@ All application routes are below `/api/v1`.
 | API metadata | `GET /`, `GET /resource-types` |
 | Auth | `/auth/register`, `/auth/verify-otp`, `/auth/login`, `/auth/refresh`, `/auth/logout`, `/auth/me` |
 | Workspaces | `GET/POST /workspaces`, `GET/PATCH /workspaces/:workspaceId` |
+| Workspace event stream | `GET /workspaces/:workspaceId/events/stream` |
 | Workspace bootstrap | `GET /workspaces/:workspaceId/bootstrap` |
 | Members and invitations | `/workspaces/:workspaceId/members`, `POST /workspaces/invitations/:token/accept` |
 | Saved views and audit | `/workspaces/:workspaceId/saved-views`, `GET /workspaces/:workspaceId/audit` |

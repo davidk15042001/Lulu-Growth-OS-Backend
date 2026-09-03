@@ -2,6 +2,8 @@ import { query, withTransaction } from '../../db/pool.js';
 import type { PoolClient } from 'pg';
 import type { CalendarAccount, CalendarAccountCredential, CalendarEvent, CalendarSyncJob, CalendarProvider, ProviderCalendarEvent } from './calendar.types.js';
 import type { ListEventsQuery } from './calendar.validator.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 const accountSelect = `
   id, workspace_id AS "workspaceId", provider, external_account_id AS "externalAccountId",
@@ -41,6 +43,22 @@ async function findExistingAccount(client: PoolClient, workspaceId: string, prov
     client,
   );
   return rows[0]?.id ?? null;
+}
+
+async function appendCalendarConnectedEvent(
+  client: PoolClient,
+  input: { workspaceId: string; userId: string; provider: CalendarProvider },
+  account: CalendarAccount,
+) {
+  await appendDomainEvent({
+    workspaceId: input.workspaceId,
+    type: DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED,
+    aggregateType: 'calendar_account',
+    aggregateId: account.id,
+    payload: { accountId: account.id, provider: input.provider, category: 'calendar' },
+    metadata: { actorId: input.userId, source: 'calendar.connection' },
+  }, client);
+  return account;
 }
 
 export async function listAccounts(workspaceId: string) {
@@ -111,7 +129,7 @@ export async function upsertOAuthAccount(input: {
         [...params, accountId],
         client,
       );
-      return rows[0]!;
+      return appendCalendarConnectedEvent(client, input, rows[0]!);
     }
     const { rows } = await query<CalendarAccount>(
       `INSERT INTO calendar_accounts (
@@ -124,7 +142,7 @@ export async function upsertOAuthAccount(input: {
       params,
       client,
     );
-    return rows[0]!;
+    return appendCalendarConnectedEvent(client, input, rows[0]!);
   });
 }
 
@@ -173,7 +191,7 @@ export async function upsertTokenAccount(input: {
         [...params, accountId],
         client,
       );
-      return rows[0]!;
+      return appendCalendarConnectedEvent(client, input, rows[0]!);
     }
     const { rows } = await query<CalendarAccount>(
       `INSERT INTO calendar_accounts (
@@ -185,7 +203,7 @@ export async function upsertTokenAccount(input: {
       params,
       client,
     );
-    return rows[0]!;
+    return appendCalendarConnectedEvent(client, input, rows[0]!);
   });
 }
 
@@ -346,40 +364,56 @@ export async function listEvents(workspaceId: string, filters: ListEventsQuery) 
 }
 
 export async function createSyncJob(workspaceId: string, accountId: string, userId: string | null) {
-  const { rows } = await query<CalendarSyncJob>(
-    `WITH stale_jobs AS (
-       UPDATE calendar_sync_jobs
-          SET status = 'failed',
-              error_code = 'CALENDAR_SYNC_INTERRUPTED',
-              error_message = 'Synchronization was interrupted and can be retried.',
-              finished_at = NOW()
-        WHERE account_id = $2
-          AND status IN ('queued', 'running')
-          AND COALESCE(started_at, created_at) < NOW() - INTERVAL '15 minutes'
-     )
-     INSERT INTO calendar_sync_jobs (workspace_id, account_id, requested_by)
-     SELECT $1, $2, $3
-      WHERE EXISTS (
-        SELECT 1
-          FROM calendar_accounts
-         WHERE workspace_id = $1
-           AND id = $2
-           AND status <> 'disconnected'
-      )
-     ON CONFLICT DO NOTHING
-     RETURNING ${syncJobSelect}`,
-    [workspaceId, accountId, userId],
-  );
-  if (rows[0]) return rows[0];
-  const existing = await query<CalendarSyncJob>(
-    `SELECT ${syncJobSelect}
-       FROM calendar_sync_jobs
-      WHERE workspace_id = $1 AND account_id = $2 AND status IN ('queued', 'running')
-      ORDER BY created_at DESC
-      LIMIT 1`,
-    [workspaceId, accountId],
-  );
-  return existing.rows[0] ?? null;
+  return withTransaction(async (client) => {
+    const { rows } = await query<CalendarSyncJob>(
+      `WITH stale_jobs AS (
+         UPDATE calendar_sync_jobs
+            SET status = 'failed',
+                error_code = 'CALENDAR_SYNC_INTERRUPTED',
+                error_message = 'Synchronization was interrupted and can be retried.',
+                finished_at = NOW()
+          WHERE account_id = $2
+            AND status IN ('queued', 'running')
+            AND COALESCE(started_at, created_at) < NOW() - INTERVAL '15 minutes'
+       )
+       INSERT INTO calendar_sync_jobs (workspace_id, account_id, requested_by)
+       SELECT $1, $2, $3
+        WHERE EXISTS (
+          SELECT 1
+            FROM calendar_accounts
+           WHERE workspace_id = $1
+             AND id = $2
+             AND status <> 'disconnected'
+        )
+       ON CONFLICT DO NOTHING
+       RETURNING ${syncJobSelect}`,
+      [workspaceId, accountId, userId],
+      client,
+    );
+    const created = rows[0];
+    if (created) {
+      await appendDomainEvent({
+        workspaceId,
+        type: DOMAIN_EVENT_TYPES.CALENDAR_SYNC_REQUESTED,
+        aggregateType: 'calendar_sync_job',
+        aggregateId: created.id,
+        payload: { jobId: created.id, accountId },
+        metadata: { actorId: userId, source: 'calendar' },
+        idempotencyKey: `calendar-sync:${created.id}:requested:v1`,
+      }, client);
+      return created;
+    }
+    const existing = await query<CalendarSyncJob>(
+      `SELECT ${syncJobSelect}
+         FROM calendar_sync_jobs
+        WHERE workspace_id = $1 AND account_id = $2 AND status IN ('queued', 'running')
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [workspaceId, accountId],
+      client,
+    );
+    return existing.rows[0] ?? null;
+  });
 }
 
 export async function startSyncJob(jobId: string) {
@@ -435,24 +469,52 @@ export async function getSyncJob(workspaceId: string, accountId: string, jobId: 
 }
 
 export async function finishSyncJob(jobId: string, eventsSynced: number) {
-  await query(
-    `UPDATE calendar_sync_jobs
-        SET status = 'succeeded',
-            events_synced = $2,
-            finished_at = NOW()
-      WHERE id = $1`,
-    [jobId, eventsSynced],
-  );
+  await withTransaction(async (client) => {
+    const { rows } = await query<{ workspaceId: string; accountId: string }>(
+      `UPDATE calendar_sync_jobs
+          SET status = 'succeeded',
+              events_synced = $2,
+              finished_at = NOW()
+        WHERE id = $1
+        RETURNING workspace_id AS "workspaceId", account_id AS "accountId"`,
+      [jobId, eventsSynced],
+      client,
+    );
+    const job = rows[0];
+    if (job) await appendDomainEvent({
+      workspaceId: job.workspaceId,
+      type: DOMAIN_EVENT_TYPES.CALENDAR_SYNC_COMPLETED,
+      aggregateType: 'calendar_sync_job',
+      aggregateId: jobId,
+      payload: { jobId, accountId: job.accountId, eventsSynced },
+      metadata: { source: 'calendar' },
+      idempotencyKey: `calendar-sync:${jobId}:completed:v1`,
+    }, client);
+  });
 }
 
 export async function failSyncJob(jobId: string, code: string, message: string) {
-  await query(
-    `UPDATE calendar_sync_jobs
-        SET status = 'failed',
-            error_code = $2,
-            error_message = $3,
-            finished_at = NOW()
-      WHERE id = $1`,
-    [jobId, code, message.slice(0, 2000)],
-  );
+  await withTransaction(async (client) => {
+    const { rows } = await query<{ workspaceId: string; accountId: string }>(
+      `UPDATE calendar_sync_jobs
+          SET status = 'failed',
+              error_code = $2,
+              error_message = $3,
+              finished_at = NOW()
+        WHERE id = $1
+        RETURNING workspace_id AS "workspaceId", account_id AS "accountId"`,
+      [jobId, code, message.slice(0, 2000)],
+      client,
+    );
+    const job = rows[0];
+    if (job) await appendDomainEvent({
+      workspaceId: job.workspaceId,
+      type: DOMAIN_EVENT_TYPES.CALENDAR_SYNC_FAILED,
+      aggregateType: 'calendar_sync_job',
+      aggregateId: jobId,
+      payload: { jobId, accountId: job.accountId, code, message: message.slice(0, 2000) },
+      metadata: { source: 'calendar' },
+      idempotencyKey: `calendar-sync:${jobId}:failed:v1`,
+    }, client);
+  });
 }

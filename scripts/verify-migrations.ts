@@ -6,6 +6,7 @@ import { RESOURCE_CATALOG } from '../src/domain/resource-catalog.js';
 import { failExhaustedJobsSql, markGenerationJobFailedSql, updateGenerationJobSql, updateSiteStatusSql } from '../src/modules/websites/website.repo.js';
 import { claimExpiredOnboardingWorkspaceSql, finishOnboardingFileCleanupSql } from '../src/modules/onboarding/onboarding-cleanup.repo.js';
 import { saveBusinessDescriptionSql } from '../src/modules/onboarding/onboarding.repo.js';
+import { claimDomainEventsSql } from '../src/events/domain-event.repo.js';
 
 const migrationsDirectory = path.resolve('src/database/migrations');
 
@@ -60,6 +61,8 @@ async function main() {
       'background_jobs',
       'webhook_endpoints',
       'audit_log',
+      'domain_events',
+      'domain_event_receipts',
     ];
     for (const table of expectedTables) {
       assert.ok(actualTables.includes(table), `Expected migration table ${table}`);
@@ -326,6 +329,44 @@ async function main() {
       [workspaceId, userId]
     );
     assert.ok(record.rows[0]?.id);
+
+    const domainEvent = await database.query<{ id: string; sequence: string; status: string }>(
+      `INSERT INTO domain_events (
+         workspace_id, event_type, aggregate_type, aggregate_id, payload, idempotency_key
+       ) VALUES ($1, 'record.created', 'workspace_record', $2, $3::jsonb, $4)
+       RETURNING id, sequence::text, status`,
+      [workspaceId, record.rows[0]?.id, JSON.stringify({ resourceType: 'crm_contacts' }), `migration-record:${record.rows[0]?.id}:created`],
+    );
+    assert.ok(domainEvent.rows[0]?.id);
+    assert.equal(domainEvent.rows[0]?.status, 'pending');
+    assert.ok(Number(domainEvent.rows[0]?.sequence) > 0);
+    const duplicateDomainEvent = await database.query<{ id: string }>(
+      `INSERT INTO domain_events (
+         workspace_id, event_type, aggregate_type, aggregate_id, payload, idempotency_key
+       ) VALUES ($1, 'record.created', 'workspace_record', $2, '{}'::jsonb, $3)
+       ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [workspaceId, record.rows[0]?.id, `migration-record:${record.rows[0]?.id}:created`],
+    );
+    assert.equal(duplicateDomainEvent.rows.length, 0);
+    const claimedDomainEvent = await database.query<{ id: string; status: string; attempts: number; lockedBy: string }>(
+      claimDomainEventsSql,
+      ['migration-event-worker', 10, 60],
+    );
+    assert.equal(claimedDomainEvent.rows[0]?.id, domainEvent.rows[0]?.id);
+    assert.equal(claimedDomainEvent.rows[0]?.status, 'processing');
+    assert.equal(claimedDomainEvent.rows[0]?.attempts, 1);
+    assert.equal(claimedDomainEvent.rows[0]?.lockedBy, 'migration-event-worker');
+    await database.query(
+      `INSERT INTO domain_event_receipts (event_id, consumer_name, result)
+       VALUES ($1, 'migration-test-consumer.v1', '{"verified":true}'::jsonb)`,
+      [domainEvent.rows[0]?.id],
+    );
+    const receipt = await database.query<{ total: number }>(
+      `SELECT count(*)::int AS total FROM domain_event_receipts WHERE event_id=$1`,
+      [domainEvent.rows[0]?.id],
+    );
+    assert.equal(receipt.rows[0]?.total, 1);
 
     const metric = await database.query<{ id: string }>(
       `INSERT INTO metric_definitions (workspace_id, key, name, domain)

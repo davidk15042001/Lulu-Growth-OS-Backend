@@ -1,6 +1,8 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import type { CreateWorkspaceInput, UpdateWorkspaceInput } from './workspace.validator.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer';
 
@@ -123,6 +125,15 @@ export async function createWorkspace(
 
     const workspace = await findWorkspaceForUser(workspaceId, userId, client);
     if (!workspace) throw new Error('Created workspace could not be loaded');
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.WORKSPACE_CREATED,
+      aggregateType: 'workspace',
+      aggregateId: workspaceId,
+      payload: { workspaceId, companyName: workspace.companyName },
+      metadata: { actorId: userId, source: 'workspaces' },
+      idempotencyKey: `workspace:${workspaceId}:created:v1`,
+    }, client);
     return workspace;
   });
 }
@@ -225,14 +236,24 @@ export async function updateWorkspace(
     return `${updateColumnMap[key]} = $${index + 2}`;
   });
 
-  await query(
-    `UPDATE workspaces
-     SET ${assignments.join(', ')}
-     WHERE id = $1 AND deleted_at IS NULL`,
-    values
-  );
-
-  return findWorkspaceForUser(workspaceId, userId);
+  return withTransaction(async (client) => {
+    const { rowCount } = await query(
+      `UPDATE workspaces
+       SET ${assignments.join(', ')}
+       WHERE id = $1 AND deleted_at IS NULL`,
+      values,
+      client,
+    );
+    if (rowCount > 0) await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.WORKSPACE_UPDATED,
+      aggregateType: 'workspace',
+      aggregateId: workspaceId,
+      payload: { workspaceId, changedFields: entries.map(([key]) => key) },
+      metadata: { actorId: userId, source: 'workspaces' },
+    }, client);
+    return findWorkspaceForUser(workspaceId, userId, client);
+  });
 }
 
 export async function findMembership(workspaceId: string, userId: string) {
