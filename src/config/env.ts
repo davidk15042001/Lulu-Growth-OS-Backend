@@ -12,6 +12,11 @@ const optionalNonEmptyString = z.preprocess((value) => {
   return trimmed === '' ? undefined : trimmed;
 }, z.string().min(1).optional());
 
+const optionalTestPlanPassword = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+  return value.trim() === '' ? undefined : value;
+}, z.string().min(12).max(128).optional());
+
 const EnvSchema = z
   .object({
     NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -131,6 +136,7 @@ const EnvSchema = z
     AIRWALLEX_STARTER_PRICE_ID: z.string().min(1).optional(),
     AIRWALLEX_AI_PRICE_ID: z.string().min(1).optional(),
     AIRWALLEX_TEST_PRICE_ID: z.string().min(1).optional(),
+    BILLING_TEST_PLAN_PASSWORD: optionalTestPlanPassword,
     AIRWALLEX_WEBHOOK_SECRET: z.string().min(1).optional(),
     AIRWALLEX_LOGIN_AS: z.string().min(1).optional(),
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),

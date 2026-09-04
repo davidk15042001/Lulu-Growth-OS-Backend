@@ -38,7 +38,7 @@ export async function snapshot(req: WorkspaceRequest, res: Response, next: NextF
 
 const MAX_DOCUMENT_SIZE = 5000 * 1024;
 const allowedMimeTypes = new Set([
-  'image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml',
+  'image/jpeg', 'image/png', 'image/gif', 'image/webp',
   'application/pdf', 'text/plain', 'text/csv',
   'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

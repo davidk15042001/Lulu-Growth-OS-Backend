@@ -17,7 +17,7 @@ describe('request validators', () => {
   it('normalizes registration email and enforces strong passwords', () => {
     const valid = registerSchema.parse({
       email: '  USER@Example.COM ',
-      password: 'a-secure-password',
+      password: 'A-secure-password1',
       first_name: 'Ada',
       last_name: 'Lovelace',
     });
@@ -28,6 +28,14 @@ describe('request validators', () => {
       first_name: 'Ada',
       last_name: 'Lovelace',
     }).success, false);
+    for (const password of ['alllowercase1!', 'ALLUPPERCASE1!', 'NoNumber!', 'NoSpecial1']) {
+      assert.equal(registerSchema.safeParse({
+        email: 'user@example.com',
+        password,
+        first_name: 'Ada',
+        last_name: 'Lovelace',
+      }).success, false);
+    }
   });
 
   it('provides AI preference defaults matching onboarding', () => {

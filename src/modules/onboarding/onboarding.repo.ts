@@ -1097,7 +1097,10 @@ export async function getCompletionState(workspaceId: string) {
     `SELECT
        w.onboarding_completed_at AS "onboardingCompletedAt",
        (w.name IS NOT NULL AND trim(w.name) <> '') AS "hasCompanyInformation",
-       (w.business_description IS NOT NULL AND trim(w.business_description) <> '') AS "hasBusinessDescription",
+       (
+         (w.business_description IS NOT NULL AND trim(w.business_description) <> '')
+         OR EXISTS (SELECT 1 FROM onboarding_documents d WHERE d.workspace_id = w.id)
+       ) AS "hasBusinessDescription",
        (SELECT count(*)::int FROM workspace_offerings o WHERE o.workspace_id = w.id AND o.deleted_at IS NULL) AS "offeringCount",
        EXISTS (SELECT 1 FROM workspace_ai_preferences p WHERE p.workspace_id = w.id) AS "hasAiPreferences",
        EXISTS (

@@ -3,6 +3,9 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { sendMail } from '../../utils/mailer.js';
 import { query, withTransaction } from '../../db/pool.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AppError } from '../../utils/app-error.js';
 import { queueInitialBusinessAnalysis } from '../agents/initial-analysis.service.js';
 import { startContentRefresh } from '../content-generation/content-generation.service.js';
@@ -296,17 +299,55 @@ function planPriceId(planKey: BillingPlanKey) {
   return priceId;
 }
 
-async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey, metadata: Record<string, unknown>) {
-  await query(
-    `INSERT INTO workspace_subscriptions (workspace_id, provider, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
-     VALUES ($1, 'internal', $2, 'active', NOW(), NOW() + INTERVAL '1 year', $3::jsonb)
-     ON CONFLICT (workspace_id) DO UPDATE SET provider='internal', plan_key=EXCLUDED.plan_key, status='active', cancel_at_period_end=false, current_period_starts_at=NOW(), current_period_ends_at=NOW() + INTERVAL '1 year', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
-    [workspaceId, planKey, JSON.stringify(metadata)]
-  );
-  await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
+async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey, metadata: Record<string, unknown>, automationTrigger?: string) {
+  await withTransaction(async (client) => {
+    await query(
+      `INSERT INTO workspace_subscriptions (workspace_id, provider, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
+       VALUES ($1, 'internal', $2, 'active', NOW(), NOW() + INTERVAL '1 year', $3::jsonb)
+       ON CONFLICT (workspace_id) DO UPDATE SET provider='internal', plan_key=EXCLUDED.plan_key, status='active', cancel_at_period_end=false, current_period_starts_at=NOW(), current_period_ends_at=NOW() + INTERVAL '1 year', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
+      [workspaceId, planKey, JSON.stringify(metadata)],
+      client,
+    );
+    await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId], client);
+    if (automationTrigger) {
+      await appendDomainEvent({
+        workspaceId,
+        type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
+        aggregateType: 'workspace_subscription',
+        aggregateId: workspaceId,
+        payload: { planKey, trigger: automationTrigger },
+        metadata: { source: 'billing' },
+        idempotencyKey: `billing-activated:${workspaceId}`,
+      }, client);
+    }
+  });
 }
 
-const TEST_PLAN_PASSWORD = '#Plumbum50#';
+async function assertOnboardingReadyForBilling(workspaceId: string) {
+  const [workspace, state] = await Promise.all([
+    findWorkspaceById(workspaceId),
+    onboardingRepo.getCompletionState(workspaceId),
+  ]);
+  if (!workspace || !state) throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Workspace not found.');
+
+  const missing: string[] = [];
+  if (!state.hasCompanyInformation) missing.push('companyInformation');
+  if (!state.hasBusinessDescription || workspace.onboardingFileReuploadRequired) missing.push('businessDescription');
+  if (!workspace.onboardingCompletedAt && !['billing', 'setup_complete'].includes(workspace.onboardingStep)) missing.push('existingPlatforms');
+  if (missing.length > 0) {
+    throw new AppError(422, 'ONBOARDING_INCOMPLETE', 'Complete the required onboarding steps before choosing a billing plan.', { missing });
+  }
+}
+
+function testPlanPasswordMatches(password?: string) {
+  const configuredPassword = env.BILLING_TEST_PLAN_PASSWORD;
+  if (!configuredPassword) {
+    throw new AppError(503, 'BILLING_TEST_PLAN_DISABLED', 'The internal Test plan is not enabled on this server.');
+  }
+  const suppliedHash = crypto.createHash('sha256').update(password ?? '').digest();
+  const configuredHash = crypto.createHash('sha256').update(configuredPassword).digest();
+  return crypto.timingSafeEqual(suppliedHash, configuredHash);
+}
 
 function detectSearchLanguageCode(languages: string[]) {
   const primary = String(languages[0] ?? '').trim().toLowerCase();
@@ -318,23 +359,6 @@ function detectSearchLanguageCode(languages: string[]) {
   if (primary.startsWith('pt') || primary.includes('portuguese') || primary.includes('português') || primary.includes('portugues')) return 'pt';
   if (primary.startsWith('nl') || primary.includes('dutch') || primary.includes('nederlands')) return 'nl';
   return primary.slice(0, 2) || 'en';
-}
-
-async function claimPostPaymentAutomation(workspaceId: string, trigger: string) {
-  const claimedAt = new Date().toISOString();
-  const result = await query(
-    `UPDATE workspace_subscriptions
-     SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
-           'postPaymentAutomationStartedAt', $2,
-           'postPaymentAutomationTrigger', $3
-         ),
-         updated_at = NOW()
-     WHERE workspace_id = $1
-       AND (COALESCE(metadata, '{}'::jsonb)->>'postPaymentAutomationStartedAt') IS NULL
-     RETURNING workspace_id`,
-    [workspaceId, claimedAt, trigger],
-  );
-  return result.rowCount > 0;
 }
 
 async function startPostPaymentSearchAutomation(workspaceId: string, userId: string, languageCode: string) {
@@ -409,20 +433,17 @@ async function startPostPaymentWebsiteAutomation(workspaceId: string, userId: st
 }
 
 async function startPostPaymentAutomation(workspaceId: string, trigger: string) {
-  const claimed = await claimPostPaymentAutomation(workspaceId, trigger);
-  if (!claimed) return false;
-
   const workspace = await findWorkspaceById(workspaceId);
   if (!workspace) {
-    logger.warn({ workspaceId, trigger }, 'Post-payment automation skipped because the workspace could not be loaded');
-    return false;
+    throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Post-payment automation workspace could not be loaded.');
   }
 
   const userId = workspace.createdBy;
   const languageCode = detectSearchLanguageCode(workspace.languages);
 
-  void startContentRefresh(workspaceId, 'system').catch((error) => logger.error({ error, workspaceId, trigger }, 'Post-payment content refresh could not be queued'));
-  void (async () => {
+  await Promise.all([
+    startContentRefresh(workspaceId, 'system'),
+    (async () => {
     try {
       const competitors = await onboardingRepo.listCompetitors(workspaceId);
       if (competitors.length === 0) await discoverCompetitors(workspaceId, userId);
@@ -434,29 +455,33 @@ async function startPostPaymentAutomation(workspaceId: string, trigger: string) 
     } catch (error) {
       logger.error({ error, workspaceId, trigger }, 'Post-payment initial analysis could not be queued');
     }
-  })();
-  void startPostPaymentSearchAutomation(workspaceId, userId, languageCode);
-  void startPostPaymentWebsiteAutomation(workspaceId, userId);
+    })(),
+    startPostPaymentSearchAutomation(workspaceId, userId, languageCode),
+    startPostPaymentWebsiteAutomation(workspaceId, userId),
+  ]);
 
   return true;
 }
 
-export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string; password?: string }) {
+export async function createCheckout(input: { workspaceId: string; planKey: BillingPlanKey; successUrl: string; backUrl: string; customerEmail?: string; password?: string; allowInternalPlans?: boolean }) {
   const config = planConfig[input.planKey];
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
 
   if (input.planKey === 'explorer') throw new AppError(422, 'BILLING_PLAN_REMOVED', 'The Explorer plan is no longer available.');
+  if ((input.planKey === 'viewer' || input.planKey === 'test') && !input.allowInternalPlans) {
+    throw new AppError(403, 'BILLING_PLAN_NOT_AVAILABLE', 'The selected billing plan is not available for this account.');
+  }
+  await assertOnboardingReadyForBilling(input.workspaceId);
   if (input.planKey === 'viewer') {
     await activateInternalPlan(input.workspaceId, 'viewer', { source: 'viewer-plan', activatedAt: new Date().toISOString() });
     return { planKey: 'viewer' as const, free: true as const, status: 'active' as const };
   }
-  if (input.planKey === 'test' && input.password !== TEST_PLAN_PASSWORD) {
-    throw new AppError(422, 'TEST_PASSWORD_INVALID', 'The Test plan password is invalid.');
+  if (input.planKey === 'test' && !testPlanPasswordMatches(input.password)) {
+    throw new AppError(403, 'TEST_PASSWORD_INVALID', 'The Test plan password is invalid.');
   }
   if (input.planKey === 'test') {
-    await activateInternalPlan(input.workspaceId, 'test', { source: 'test-plan', activatedAt: new Date().toISOString(), billingExempt: true });
+    await activateInternalPlan(input.workspaceId, 'test', { source: 'test-plan', activatedAt: new Date().toISOString(), billingExempt: true }, 'test_plan_activation');
     await disableWorkspacePaygBilling(input.workspaceId);
-    void startPostPaymentAutomation(input.workspaceId, 'test_plan_activation').catch((error) => logger.error({ error, workspaceId: input.workspaceId }, 'Test plan automation could not be queued'));
     return { planKey: 'test' as const, free: true as const, status: 'active' as const };
   }
 
@@ -472,48 +497,96 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     );
   }
 
-  const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
-    mode: 'SUBSCRIPTION',
-    ui_mode: 'HOSTED',
-    locale: 'AUTO',
-    customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS', ...(input.customerEmail ? { email: input.customerEmail } : {}) },
-    line_items: [{ price_id: planPriceId(input.planKey), quantity: 1 }],
-    subscription_data: {
-      duration: { period: 1, period_unit: 'YEAR' },
-      default_invoice_template: { invoice_memo: `Lulu AI ${config.label} annual subscription` },
+  return withTransaction(async (client) => {
+    await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`billing-checkout:${input.workspaceId}`], client);
+    const existingResult = await query<{
+      planKey: BillingPlanKey;
+      checkoutId: string;
+      checkoutUrl: string;
+      status: string;
+    }>(
+      `SELECT plan_key AS "planKey", provider_checkout_id AS "checkoutId", checkout_url AS "checkoutUrl", status
+       FROM workspace_billing_checkouts
+       WHERE workspace_id=$1
+         AND checkout_url IS NOT NULL
+         AND upper(status) NOT IN ('CANCELLED', 'EXPIRED', 'FAILED')
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [input.workspaceId],
+      client,
+    );
+    const existing = existingResult.rows[0];
+    if (existing) {
+      try {
+        const providerCheckout = await airwallexGet(`/api/v1/billing/billing_checkouts/${encodeURIComponent(existing.checkoutId)}`);
+        const providerStatus = String(providerCheckout.status ?? existing.status).toUpperCase();
+        if (['CANCELLED', 'EXPIRED', 'FAILED'].includes(providerStatus)) {
+          await query(
+            `UPDATE workspace_billing_checkouts SET status=$3, raw_response=$4::jsonb, updated_at=NOW()
+             WHERE workspace_id=$1 AND provider_checkout_id=$2`,
+            [input.workspaceId, existing.checkoutId, providerStatus, JSON.stringify(providerCheckout)],
+            client,
+          );
+        } else if (existing.planKey === input.planKey) {
+          return { planKey: input.planKey, free: false as const, checkoutId: existing.checkoutId, checkoutUrl: existing.checkoutUrl, status: providerStatus, reused: true as const };
+        } else {
+          throw new AppError(409, 'BILLING_CHECKOUT_ALREADY_ACTIVE', 'Another billing checkout is already active for this workspace.', { planKey: existing.planKey });
+        }
+      } catch (error) {
+        if (error instanceof AppError && error.code === 'BILLING_CHECKOUT_ALREADY_ACTIVE') throw error;
+        logger.warn({ error, workspaceId: input.workspaceId, checkoutId: existing.checkoutId }, 'Existing billing checkout could not be refreshed; reusing its stored URL');
+        if (existing.planKey === input.planKey) {
+          return { planKey: input.planKey, free: false as const, checkoutId: existing.checkoutId, checkoutUrl: existing.checkoutUrl, status: existing.status, reused: true as const };
+        }
+        throw new AppError(409, 'BILLING_CHECKOUT_ALREADY_ACTIVE', 'Another billing checkout is already active for this workspace.', { planKey: existing.planKey });
+      }
+    }
+
+    const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
+      mode: 'SUBSCRIPTION',
+      ui_mode: 'HOSTED',
+      locale: 'AUTO',
+      customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS', ...(input.customerEmail ? { email: input.customerEmail } : {}) },
+      line_items: [{ price_id: planPriceId(input.planKey), quantity: 1 }],
+      subscription_data: {
+        duration: { period: 1, period_unit: 'YEAR' },
+        default_invoice_template: { invoice_memo: `Lulu AI ${config.label} annual subscription` },
+        metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
+      },
+      payment_options: {
+        payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
+        payment_method_types: ['card'],
+      },
+      ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+      ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
       metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
-    },
-    payment_options: {
-      payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
-      payment_method_types: ['card'],
-    },
-    ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
-    ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
-    metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
-    success_url: input.successUrl,
-    back_url: input.backUrl,
-    hosted_completion_page: { display: true },
-  }, crypto.randomUUID(), 'CHECKOUT_CREATE');
+      success_url: input.successUrl,
+      back_url: input.backUrl,
+      hosted_completion_page: { display: true },
+    }, crypto.randomUUID(), 'CHECKOUT_CREATE');
 
-  const checkoutId = String(checkout.id ?? '');
-  if (!checkoutId) throw providerError('AIRWALLEX_CHECKOUT_ID_MISSING', 'Airwallex did not return a Billing Checkout ID');
-  const checkoutUrl = typeof checkout.url === 'string' ? checkout.url : typeof checkout.checkout_url === 'string' ? checkout.checkout_url : typeof checkout.hosted_checkout_url === 'string' ? checkout.hosted_checkout_url : null;
-  if (!checkoutUrl) throw providerError('AIRWALLEX_CHECKOUT_URL_MISSING', 'Airwallex did not return a hosted Checkout URL', { checkoutId });
+    const checkoutId = String(checkout.id ?? '');
+    if (!checkoutId) throw providerError('AIRWALLEX_CHECKOUT_ID_MISSING', 'Airwallex did not return a Billing Checkout ID');
+    const checkoutUrl = typeof checkout.url === 'string' ? checkout.url : typeof checkout.checkout_url === 'string' ? checkout.checkout_url : typeof checkout.hosted_checkout_url === 'string' ? checkout.hosted_checkout_url : null;
+    if (!checkoutUrl) throw providerError('AIRWALLEX_CHECKOUT_URL_MISSING', 'Airwallex did not return a hosted Checkout URL', { checkoutId });
 
-  await query(
-    `INSERT INTO workspace_billing_checkouts (workspace_id, plan_key, provider_checkout_id, provider_customer_id, provider_subscription_id, provider_invoice_id, customer_email, status, checkout_url, amount_minor, currency, raw_response)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CNY', $11::jsonb)`,
-    [input.workspaceId, input.planKey, checkoutId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, checkout.invoice_id ?? null, input.customerEmail ?? null, checkout.status ?? 'ACTIVE', checkoutUrl, config.amountMinor, JSON.stringify(checkout)]
-  );
+    await query(
+      `INSERT INTO workspace_billing_checkouts (workspace_id, plan_key, provider_checkout_id, provider_customer_id, provider_subscription_id, provider_invoice_id, customer_email, status, checkout_url, amount_minor, currency, raw_response)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CNY', $11::jsonb)`,
+      [input.workspaceId, input.planKey, checkoutId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, checkout.invoice_id ?? null, input.customerEmail ?? null, checkout.status ?? 'ACTIVE', checkoutUrl, config.amountMinor, JSON.stringify(checkout)],
+      client,
+    );
 
-  await query(
-    `INSERT INTO workspace_subscriptions (workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
-     VALUES ($1, 'airwallex', $2, $3, $4, 'trialing', NOW(), NOW() + INTERVAL '1 year', $5::jsonb)
-     ON CONFLICT (workspace_id) DO UPDATE SET provider='airwallex', provider_customer_id=COALESCE(EXCLUDED.provider_customer_id, workspace_subscriptions.provider_customer_id), provider_subscription_id=COALESCE(EXCLUDED.provider_subscription_id, workspace_subscriptions.provider_subscription_id), plan_key=EXCLUDED.plan_key, status='trialing', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
-    [input.workspaceId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, input.planKey, JSON.stringify({ checkoutId, amountMinor: config.amountMinor, checkoutUrl })]
-  );
+    await query(
+      `INSERT INTO workspace_subscriptions (workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
+       VALUES ($1, 'airwallex', $2, $3, $4, 'trialing', NOW(), NOW() + INTERVAL '1 year', $5::jsonb)
+       ON CONFLICT (workspace_id) DO UPDATE SET provider='airwallex', provider_customer_id=COALESCE(EXCLUDED.provider_customer_id, workspace_subscriptions.provider_customer_id), provider_subscription_id=COALESCE(EXCLUDED.provider_subscription_id, workspace_subscriptions.provider_subscription_id), plan_key=EXCLUDED.plan_key, status='trialing', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
+      [input.workspaceId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, input.planKey, JSON.stringify({ checkoutId, amountMinor: config.amountMinor, checkoutUrl })],
+      client,
+    );
 
-  return { planKey: input.planKey, free: false, checkoutId, checkoutUrl, status: checkout.status ?? 'ACTIVE' };
+    return { planKey: input.planKey, free: false as const, checkoutId, checkoutUrl, status: checkout.status ?? 'ACTIVE', reused: false as const };
+  });
 }
 
 async function airwallexGet(path: string, operation = 'CHECKOUT_STATUS') {
@@ -541,7 +614,8 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
     `SELECT plan_key, provider_checkout_id FROM workspace_billing_checkouts WHERE workspace_id=$1 AND provider_checkout_id=$2 LIMIT 1`,
     [workspaceId, checkoutId]
   );
-  if (!local.rows[0]) throw providerError('BILLING_CHECKOUT_NOT_FOUND', 'The billing checkout does not belong to this workspace', { checkoutId }, 404);
+  const localCheckout = local.rows[0];
+  if (!localCheckout) throw providerError('BILLING_CHECKOUT_NOT_FOUND', 'The billing checkout does not belong to this workspace', { checkoutId }, 404);
 
   const checkout = await airwallexGet(`/api/v1/billing/billing_checkouts/${encodeURIComponent(checkoutId)}`);
   const subscription = (checkout.subscription ?? {}) as AirwallexObject;
@@ -564,20 +638,30 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
     [workspaceId, checkoutId, customerId, subscriptionId, invoiceId, completed ? 'COMPLETED' : providerStatus === 'CANCELLED' ? 'CANCELLED' : providerStatus === 'EXPIRED' ? 'EXPIRED' : 'ACTIVE', JSON.stringify(checkout)]
   );
 
-  if (!completed) return { checkoutId, planKey: local.rows[0].plan_key, status: 'pending' as const, providerStatus };
+  if (!completed) return { checkoutId, planKey: localCheckout.plan_key, status: 'pending' as const, providerStatus };
 
   await query(
     `UPDATE workspace_subscriptions
      SET provider='airwallex', provider_customer_id=COALESCE($2, provider_customer_id), provider_subscription_id=COALESCE($3, provider_subscription_id), plan_key=$4, status='active', metadata=metadata || $5::jsonb, updated_at=NOW()
      WHERE workspace_id=$1`,
-    [workspaceId, customerId, subscriptionId, local.rows[0].plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId, paymentSourceId })]
+    [workspaceId, customerId, subscriptionId, localCheckout.plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId, paymentSourceId })]
   );
-  if (local.rows[0].plan_key === 'starter' || local.rows[0].plan_key === 'ai') {
+  if (localCheckout.plan_key === 'starter' || localCheckout.plan_key === 'ai') {
     await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
   }
-  await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
-  void startPostPaymentAutomation(workspaceId, 'checkout_sync').catch((error) => logger.error({ error, workspaceId, checkoutId }, 'Post-payment automation could not be queued after checkout sync'));
-  return { checkoutId, planKey: local.rows[0].plan_key, status: 'active' as const, providerStatus, subscriptionId, invoiceId };
+  await withTransaction(async (client) => {
+    await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId], client);
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
+      aggregateType: 'workspace_subscription',
+      aggregateId: workspaceId,
+      payload: { planKey: localCheckout.plan_key, trigger: 'checkout_sync' },
+      metadata: { source: 'billing', correlationId: checkoutId },
+      idempotencyKey: `billing-activated:${workspaceId}`,
+    }, client);
+  });
+  return { checkoutId, planKey: localCheckout.plan_key, status: 'active' as const, providerStatus, subscriptionId, invoiceId };
 }
 
 export function verifyWebhookSignature(rawBody: string, timestamp: string | undefined, signature: string | undefined, nonce: string | undefined) {
@@ -680,8 +764,18 @@ export async function handleWebhook(event: AirwallexObject) {
       if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai') {
         await ensurePaygProfile(workspaceId, typeof webhookPaymentSourceId === 'string' ? webhookPaymentSourceId : null);
       }
-      await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId]);
-      void startPostPaymentAutomation(workspaceId, `webhook:${eventType}`).catch((error) => logger.error({ error, workspaceId, eventId }, 'Post-payment automation could not be queued from webhook'));
+      await withTransaction(async (client) => {
+        await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId], client);
+        await appendDomainEvent({
+          workspaceId,
+          type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
+          aggregateType: 'workspace_subscription',
+          aggregateId: workspaceId,
+          payload: { planKey: metadata.plan_key ?? null, trigger: `webhook:${eventType}` },
+          metadata: { source: 'airwallex_webhook', correlationId: eventId },
+          idempotencyKey: `billing-activated:${workspaceId}`,
+        }, client);
+      });
     }
     const invoiceId = String(data.invoice_id ?? data.invoice?.id ?? subscription.invoice_id ?? subscription.latest_invoice_id ?? checkout.invoice_id ?? checkout.latest_invoice_id ?? '');
     const planKey = metadata.plan_key as BillingPlanKey | undefined;
@@ -700,5 +794,16 @@ export async function handleWebhook(event: AirwallexObject) {
     throw error;
   }
 }
+
+registerDomainEventHandler({
+  name: 'billing.post-payment-automation',
+  eventTypes: [DOMAIN_EVENT_TYPES.BILLING_ACTIVATED],
+  async handle(event) {
+    if (!event.workspaceId) throw new Error('Billing activation event is missing a workspace ID');
+    const trigger = typeof event.payload.trigger === 'string' ? event.payload.trigger : 'billing_activation';
+    await startPostPaymentAutomation(event.workspaceId, trigger);
+    return { workspaceId: event.workspaceId, trigger };
+  },
+});
 
 export const billingPlans = Object.entries(planConfig).map(([key, value]) => ({ key, label: value.label, amountMinor: value.amountMinor, currency: 'CNY', interval: 'year' }));

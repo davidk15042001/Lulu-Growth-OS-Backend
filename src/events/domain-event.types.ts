@@ -30,6 +30,7 @@ export const DOMAIN_EVENT_TYPES = {
   CONTENT_REFRESH_COMPLETED: 'content.refresh.completed',
   CONTENT_REFRESH_FAILED: 'content.refresh.failed',
   BILLING_CYCLE_REQUESTED: 'billing.cycle.requested',
+  BILLING_ACTIVATED: 'billing.activated',
   ONBOARDING_CLEANUP_REQUESTED: 'onboarding.cleanup.requested',
   INTEGRATION_CONNECTED: 'integration.connected',
   NOTIFICATION_CREATED: 'notification.created',

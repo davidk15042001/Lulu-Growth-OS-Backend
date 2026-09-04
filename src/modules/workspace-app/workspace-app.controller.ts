@@ -4,6 +4,7 @@ import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
 import { createCheckout, syncCheckoutStatus, type BillingPlanKey } from '../billing/airwallex.service.js';
+import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import * as contentGeneration from '../content-generation/content-generation.service.js';
 import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
 import {
@@ -168,7 +169,8 @@ export async function createBillingCheckout(req: WorkspaceRequest, res: Response
       backUrl: z.string().url(),
       password: z.string().max(128).optional(),
     }).parse(req.body);
-    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl, ...(req.user?.email ? { customerEmail: req.user.email } : {}), ...(input.password ? { password: input.password } : {}) }));
+    const allowInternalPlans = await isBillingAdminUser(req.user?.id);
+    return successResponse(res, 'Billing checkout created', await createCheckout({ workspaceId, planKey: input.planKey as BillingPlanKey, successUrl: input.successUrl, backUrl: input.backUrl, allowInternalPlans, ...(req.user?.email ? { customerEmail: req.user.email } : {}), ...(input.password ? { password: input.password } : {}) }));
   } catch (error) { next(error); }
 }
 

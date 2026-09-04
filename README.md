@@ -159,9 +159,9 @@ Set `AI_PROVIDER=alibaba`, `AI_PROVIDER=openai`, or `AI_PROVIDER=groq` with the 
 
 ## Pay-as-you-go billing
 
-Starter, AI and Test workspaces receive a weekly usage period that closes every Monday in `Europe/Berlin`. Customer API pricing is fixed at USD 5 per million input tokens and USD 10 per million output tokens. The actual daily AWS cost allocated through `PAYG_SERVER_COST_USD_PER_DAY` is charged at exactly 2× provider cost. The worker creates separate Airwallex API and AWS invoice lines and explicitly pays the finalized invoice with the saved Payment Source.
+Starter and AI workspaces receive a weekly usage period that closes every Monday in `Europe/Berlin`. Customer API pricing is fixed at USD 5 per million input tokens and USD 10 per million output tokens. The actual daily AWS cost allocated through `PAYG_SERVER_COST_USD_PER_DAY` is charged at exactly 2× provider cost. The worker creates separate Airwallex API and AWS invoice lines and explicitly pays the finalized invoice with the saved Payment Source.
 
-The Test access price remains zero, but `AIRWALLEX_TEST_PRICE_ID` must reference a recurring zero-price Airwallex Price. Its hosted checkout saves a card before the Test workspace is activated. If an automatic weekly payment fails, or a legacy Test workspace has no saved card, AI access is blocked server-side. The Billing API then exposes the hosted invoice/payment link; a successful payment webhook saves the Payment Source and restores AI access automatically. Viewer remains read-only and is not usage billed.
+Viewer and Test are internal-only plans. They are unavailable through public onboarding and require the designated billing administrator; Test additionally requires `BILLING_TEST_PLAN_PASSWORD`. Test workspaces are billing-exempt, while Viewer remains read-only and is not usage billed.
 
 Set `PAYG_SERVER_COST_USD_PER_DAY` to the real daily AWS cost allocated to one active workspace before enabling live billing. The safe default is `0`, so deployment cannot invent infrastructure charges. The worker interval and invoice due window are controlled by `PAYG_BILLING_WORKER_INTERVAL_MINUTES` and `PAYG_INVOICE_DAYS_UNTIL_DUE`.
 
