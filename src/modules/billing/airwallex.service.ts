@@ -337,6 +337,8 @@ export async function configurePaygPaymentMethod(input: {
   const billingCustomerId = await ensurePaygBillingCustomer(input.workspaceId);
   const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
     mode: 'SETUP',
+    // Airwallex requires a checkout currency even when SETUP only saves a card.
+    currency: 'USD',
     billing_customer_id: billingCustomerId,
     success_url: input.successUrl,
     back_url: input.backUrl,
@@ -344,10 +346,6 @@ export async function configurePaygPaymentMethod(input: {
     metadata: {
       workspace_id: input.workspaceId,
       billing_type: 'payg_payment_method_setup',
-    },
-    payment_options: {
-      payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
-      payment_method_types: ['card'],
     },
     ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
     ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
