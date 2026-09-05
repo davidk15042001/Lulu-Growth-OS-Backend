@@ -60,6 +60,16 @@ export const listUsageQuerySchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+export const configurePaygPaymentMethodSchema = z.object({
+  paymentMethod: z.enum(['card', 'wechatpay', 'alipaycn']),
+  successUrl: z.string().url().optional(),
+  backUrl: z.string().url().optional(),
+}).strict().superRefine((value, context) => {
+  if (value.paymentMethod === 'card' && (!value.successUrl || !value.backUrl)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Card payment setup requires successUrl and backUrl.' });
+  }
+});
+
 const salesSettingsSchema = z.object({
   moduleName: z.string().trim().max(120).optional(),
   defaultCurrency: z.string().trim().toUpperCase().refine(
@@ -102,6 +112,7 @@ export type CreateSavedViewInput = z.infer<typeof createSavedViewSchema>;
 export type UpdateSavedViewInput = z.infer<typeof updateSavedViewSchema>;
 export type ListAuditQuery = z.infer<typeof listAuditQuerySchema>;
 export type ListUsageQuery = z.infer<typeof listUsageQuerySchema>;
+export type ConfigurePaygPaymentMethodInput = z.infer<typeof configurePaygPaymentMethodSchema>;
 export type UpdateWorkspaceSettingsInput = z.infer<typeof updateWorkspaceSettingsSchema>;
 export type ListGoogleReviewsQuery = z.infer<typeof listGoogleReviewsQuerySchema>;
 export type UpdateGoogleReviewReplyInput = z.infer<typeof updateGoogleReviewReplySchema>;

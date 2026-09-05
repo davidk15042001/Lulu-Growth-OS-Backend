@@ -80,6 +80,7 @@ async function issuePeriodInvoice(period: PaygPeriod) {
       periodEnd: period.periodEnd,
       billingCustomerId: period.providerCustomerId,
       paymentSourceId: period.paymentSourceId,
+      preferredPaymentMethod: period.preferredPaymentMethod,
     });
     invoiceId = String(draft.id ?? '');
     if (!invoiceId) throw new AppError(502, 'AIRWALLEX_PAYG_INVOICE_ID_MISSING', 'Airwallex did not return an invoice ID for the PAYG period.');

@@ -3,12 +3,13 @@ import { z } from 'zod';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
-import { createCheckout, createPaygApiUsageCheckout as createPaygApiUsageCheckoutInvoice, syncCheckoutStatus, type BillingPlanKey } from '../billing/airwallex.service.js';
+import { configurePaygPaymentMethod as configurePaygPaymentMethodCheckout, createCheckout, createPaygApiUsageCheckout as createPaygApiUsageCheckoutInvoice, syncCheckoutStatus, syncPaygPaymentMethodSetup, type BillingPlanKey } from '../billing/airwallex.service.js';
 import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import * as contentGeneration from '../content-generation/content-generation.service.js';
 import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
 import {
   createSavedViewSchema,
+  configurePaygPaymentMethodSchema,
   googleBusinessConnectSchema,
   inviteMemberSchema,
   inviteTokenParamsSchema,
@@ -189,6 +190,28 @@ export async function createPaygApiUsageCheckout(req: WorkspaceRequest, res: Res
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'API usage payment checkout created', await createPaygApiUsageCheckoutInvoice(workspaceId));
+  } catch (error) { next(error); }
+}
+
+export async function configurePaygPaymentMethod(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const input = configurePaygPaymentMethodSchema.parse(req.body);
+    return successResponse(res, 'PAYG payment method configured', await configurePaygPaymentMethodCheckout({
+      workspaceId,
+      userId: req.user!.id,
+      paymentMethod: input.paymentMethod,
+      ...(input.successUrl ? { successUrl: input.successUrl } : {}),
+      ...(input.backUrl ? { backUrl: input.backUrl } : {}),
+    }));
+  } catch (error) { next(error); }
+}
+
+export async function syncPaygPaymentMethod(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const setupId = z.string().uuid().parse(req.params.setupId);
+    return successResponse(res, 'PAYG payment method setup synchronized', await syncPaygPaymentMethodSetup({ workspaceId, userId: req.user!.id, setupId }));
   } catch (error) { next(error); }
 }
 

@@ -80,6 +80,14 @@ router.route('/billing/payg/api-checkout')
   .post(requireWorkspaceAdmin, controller.createPaygApiUsageCheckout)
   .all(methodNotAllowed);
 
+router.route('/billing/payg/payment-method')
+  .post(requireWorkspaceAdmin, controller.configurePaygPaymentMethod)
+  .all(methodNotAllowed);
+
+router.route('/billing/payg/payment-method/setups/:setupId/sync')
+  .post(requireWorkspaceAdmin, controller.syncPaygPaymentMethod)
+  .all(methodNotAllowed);
+
 router.route('/billing/checkouts/:checkoutId/sync')
   .post(requireWorkspaceAdmin, controller.syncBillingCheckout)
   .all(methodNotAllowed);

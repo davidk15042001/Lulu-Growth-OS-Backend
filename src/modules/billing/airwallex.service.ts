@@ -24,8 +24,13 @@ import {
   markPaygLineItemsAdded,
   reservePaygApiCheckout,
   savePaygProviderInvoice,
+  completePaygCardPaymentMethodSetup,
+  configurePaygDirectPaymentMethod,
+  createPaygPaymentMethodSetup,
+  getPaygPaymentMethodSetup,
+  updatePaygPaymentMethodSetupStatus,
 } from './payg-billing.repo.js';
-import { getPaygDirectPaymentMethods } from './payg-payment-methods.js';
+import { getPaygDirectPaymentMethods, getPaygInvoicePaymentMethods } from './payg-payment-methods.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -146,8 +151,10 @@ export async function createPaygInvoiceDraft(input: {
   periodEnd: string;
   billingCustomerId: string;
   paymentSourceId?: string | null;
+  preferredPaymentMethod?: string | null;
 }) {
   const autoCharge = Boolean(input.paymentSourceId);
+  const paymentMethodTypes = getPaygInvoicePaymentMethods(input.preferredPaymentMethod);
   return airwallexRequest('/api/v1/billing/invoices/create', {
     billing_customer_id: input.billingCustomerId,
     collection_method: autoCharge ? 'AUTO_CHARGE' : 'CHARGE_ON_CHECKOUT',
@@ -167,8 +174,10 @@ export async function createPaygInvoiceDraft(input: {
       ? { payment_source_id: input.paymentSourceId }
       : {
           payment_options: {
-            payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
-            payment_method_types: ['card', 'googlepay', 'applepay'],
+            ...(paymentMethodTypes.includes('card')
+              ? { payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' } }
+              : {}),
+            payment_method_types: paymentMethodTypes,
           },
         }),
   }, deterministicBillingRequestId(`payg-invoice:${input.periodId}`), 'PAYG_INVOICE_CREATE');
@@ -240,6 +249,170 @@ export async function createPaygBillingCustomer(input: {
     ...(input.email ? { email: input.email } : {}),
     ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { default_legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
   }, deterministicBillingRequestId(`payg-customer:${input.workspaceId}`), 'PAYG_CUSTOMER_CREATE');
+}
+
+async function ensurePaygBillingCustomer(workspaceId: string) {
+  const existing = await query<{
+    providerCustomerId: string | null;
+    workspaceName: string;
+    ownerEmail: string | null;
+  }>(
+    `SELECT s.provider_customer_id AS "providerCustomerId", w.name AS "workspaceName",
+            owner.email AS "ownerEmail"
+     FROM workspaces w
+     JOIN workspace_subscriptions s ON s.workspace_id=w.id
+     LEFT JOIN LATERAL (
+       SELECT u.email
+       FROM workspace_members wm
+       JOIN users u ON u.id=wm.user_id
+       WHERE wm.workspace_id=w.id AND wm.role='owner'
+       ORDER BY wm.joined_at
+       LIMIT 1
+     ) owner ON TRUE
+     WHERE w.id=$1 AND w.deleted_at IS NULL`,
+    [workspaceId],
+  );
+  const workspace = existing.rows[0];
+  if (!workspace) throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Workspace not found.');
+  if (workspace.providerCustomerId) return workspace.providerCustomerId;
+
+  const customer = await createPaygBillingCustomer({
+    workspaceId,
+    name: workspace.workspaceName,
+    email: workspace.ownerEmail,
+  });
+  const customerId = String(customer.id ?? customer.customer_id ?? '');
+  if (!customerId) throw providerError('AIRWALLEX_PAYG_CUSTOMER_ID_MISSING', 'Airwallex did not return a billing customer ID.');
+
+  const stored = await query<{ providerCustomerId: string }>(
+    `UPDATE workspace_subscriptions
+     SET provider='airwallex',
+         provider_customer_id=COALESCE(provider_customer_id, $2),
+         metadata=metadata || jsonb_build_object('paygCustomerProvisionedAt', NOW()),
+         updated_at=NOW()
+     WHERE workspace_id=$1
+     RETURNING provider_customer_id AS "providerCustomerId"`,
+    [workspaceId, customerId],
+  );
+  const storedCustomerId = stored.rows[0]?.providerCustomerId;
+  if (!storedCustomerId) throw new AppError(409, 'PAYG_BILLING_SUBSCRIPTION_REQUIRED', 'A workspace billing subscription is required before configuring payment.');
+  return storedCustomerId;
+}
+
+function assertPaygReturnUrl(url: string) {
+  const configuredFrontend = env.FRONTEND_BASE_URL;
+  if (!configuredFrontend) return;
+  const expectedOrigin = new URL(configuredFrontend).origin;
+  if (new URL(url).origin !== expectedOrigin) {
+    throw new AppError(422, 'PAYG_PAYMENT_RETURN_URL_INVALID', 'The payment setup return URL must use the configured Lulu application origin.');
+  }
+}
+
+export async function configurePaygPaymentMethod(input: {
+  workspaceId: string;
+  userId: string;
+  paymentMethod: 'card' | 'wechatpay' | 'alipaycn';
+  successUrl?: string;
+  backUrl?: string;
+}) {
+  if (!getPaygDirectPaymentMethods().includes(input.paymentMethod)) {
+    throw new AppError(422, 'PAYG_PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not enabled for the Lulu billing account.');
+  }
+
+  if (input.paymentMethod !== 'card') {
+    await configurePaygDirectPaymentMethod(input.workspaceId, input.userId, input.paymentMethod);
+    return {
+      mode: 'manual_invoice' as const,
+      paymentMethod: input.paymentMethod,
+      collectionMethod: 'CHARGE_ON_CHECKOUT' as const,
+    };
+  }
+
+  if (!input.successUrl || !input.backUrl) {
+    throw new AppError(422, 'PAYG_PAYMENT_RETURN_URL_REQUIRED', 'Card payment setup requires success and back URLs.');
+  }
+  assertPaygReturnUrl(input.successUrl);
+  assertPaygReturnUrl(input.backUrl);
+  await ensurePaygProfile(input.workspaceId);
+  const billingCustomerId = await ensurePaygBillingCustomer(input.workspaceId);
+  const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
+    mode: 'SETUP',
+    billing_customer_id: billingCustomerId,
+    success_url: input.successUrl,
+    back_url: input.backUrl,
+    locale: 'AUTO',
+    metadata: {
+      workspace_id: input.workspaceId,
+      billing_type: 'payg_payment_method_setup',
+    },
+    payment_options: {
+      payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
+      payment_method_types: ['card'],
+    },
+    ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+    ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
+  }, crypto.randomUUID(), 'PAYG_PAYMENT_METHOD_SETUP_CREATE');
+  const checkoutId = String(checkout.id ?? '');
+  const checkoutUrl = typeof checkout.url === 'string'
+    ? checkout.url
+    : typeof checkout.checkout_url === 'string'
+      ? checkout.checkout_url
+      : typeof checkout.hosted_checkout_url === 'string'
+        ? checkout.hosted_checkout_url
+        : null;
+  if (!checkoutId) throw providerError('AIRWALLEX_PAYG_PAYMENT_SETUP_ID_MISSING', 'Airwallex did not return a payment setup ID.');
+  if (!checkoutUrl) throw providerError('AIRWALLEX_PAYG_PAYMENT_SETUP_URL_MISSING', 'Airwallex did not return a hosted payment setup URL.');
+  const setup = await createPaygPaymentMethodSetup({
+    workspaceId: input.workspaceId,
+    paymentMethod: 'card',
+    providerCheckoutId: checkoutId,
+    providerCustomerId: billingCustomerId,
+    checkoutUrl,
+  });
+  await query(
+    `INSERT INTO audit_log (workspace_id, actor_id, action, entity_type, entity_id, after_data)
+     VALUES ($1, $2, 'payg_payment_method.setup_started', 'workspace_payg_payment_setup', $3,
+       $4::jsonb)`,
+    [input.workspaceId, input.userId, setup.id, JSON.stringify({ paymentMethod: 'card', provider: 'airwallex' })],
+  );
+  return {
+    mode: 'card_setup' as const,
+    paymentMethod: 'card' as const,
+    setupId: setup.id,
+    checkoutUrl,
+  };
+}
+
+export async function syncPaygPaymentMethodSetup(input: { workspaceId: string; userId: string; setupId: string }) {
+  const setup = await getPaygPaymentMethodSetup(input.workspaceId, input.setupId);
+  if (!setup) throw new AppError(404, 'PAYG_PAYMENT_SETUP_NOT_FOUND', 'The payment-method setup does not belong to this workspace.');
+  const checkout = await airwallexGet(`/api/v1/billing/billing_checkouts/${encodeURIComponent(setup.providerCheckoutId)}`, 'PAYG_PAYMENT_METHOD_SETUP_STATUS');
+  const providerStatus = String(checkout.status ?? '').toUpperCase();
+  if (!['COMPLETED', 'SUCCEEDED'].includes(providerStatus)) {
+    const status = providerStatus === 'CANCELLED' ? 'CANCELLED'
+      : providerStatus === 'EXPIRED' ? 'EXPIRED'
+        : providerStatus === 'FAILED' ? 'FAILED'
+          : 'PENDING';
+    await updatePaygPaymentMethodSetupStatus(input.workspaceId, input.setupId, status);
+    return { setupId: setup.id, paymentMethod: setup.paymentMethod, status: status === 'PENDING' ? 'pending' as const : 'failed' as const, providerStatus };
+  }
+
+  const paymentSourceId = typeof checkout.payment_source_id === 'string'
+    ? checkout.payment_source_id
+    : typeof checkout.payment_source?.id === 'string'
+      ? checkout.payment_source.id
+      : null;
+  if (!paymentSourceId) {
+    await updatePaygPaymentMethodSetupStatus(input.workspaceId, input.setupId, 'FAILED', 'AIRWALLEX_PAYMENT_SOURCE_MISSING');
+    throw providerError('AIRWALLEX_PAYMENT_SOURCE_MISSING', 'Airwallex completed the payment setup without a reusable payment source.');
+  }
+  await completePaygCardPaymentMethodSetup({
+    workspaceId: input.workspaceId,
+    setupId: input.setupId,
+    paymentSourceId,
+    userId: input.userId,
+  });
+  return { setupId: setup.id, paymentMethod: setup.paymentMethod, status: 'active' as const, providerStatus };
 }
 
 export async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
@@ -365,7 +538,7 @@ export async function createPaygApiUsageCheckout(workspaceId: string) {
           billing_type: 'payg_api_pay_now',
         },
         payment_options: {
-          payment_method_types: getPaygDirectPaymentMethods(),
+          payment_method_types: getPaygInvoicePaymentMethods(period.preferredPaymentMethod),
         },
         ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
         ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
@@ -620,11 +793,21 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       }
     }
 
+    const existingCustomer = await query<{ providerCustomerId: string | null }>(
+      `SELECT provider_customer_id AS "providerCustomerId"
+       FROM workspace_subscriptions
+       WHERE workspace_id=$1`,
+      [input.workspaceId],
+      client,
+    );
+    const billingCustomerId = existingCustomer.rows[0]?.providerCustomerId ?? null;
     const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
       mode: 'SUBSCRIPTION',
       ui_mode: 'HOSTED',
       locale: 'AUTO',
-      customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS', ...(input.customerEmail ? { email: input.customerEmail } : {}) },
+      ...(billingCustomerId
+        ? { billing_customer_id: billingCustomerId }
+        : { customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS', ...(input.customerEmail ? { email: input.customerEmail } : {}) } }),
       line_items: [{ price_id: planPriceId(input.planKey), quantity: 1 }],
       subscription_data: {
         duration: { period: 1, period_unit: 'YEAR' },

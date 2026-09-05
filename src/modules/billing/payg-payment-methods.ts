@@ -18,3 +18,14 @@ export function parsePaygDirectPaymentMethods(value: string): PaygDirectPaymentM
 export function getPaygDirectPaymentMethods(): PaygDirectPaymentMethod[] {
   return parsePaygDirectPaymentMethods(env.AIRWALLEX_PAYG_DIRECT_PAYMENT_METHODS);
 }
+
+export function isPaygDirectPaymentMethod(value: string | null | undefined): value is PaygDirectPaymentMethod {
+  return typeof value === 'string' && (PAYG_DIRECT_PAYMENT_METHODS as readonly string[]).includes(value);
+}
+
+export function getPaygInvoicePaymentMethods(preferredMethod?: string | null): PaygDirectPaymentMethod[] {
+  const configured = getPaygDirectPaymentMethods();
+  return isPaygDirectPaymentMethod(preferredMethod) && configured.includes(preferredMethod)
+    ? [preferredMethod]
+    : configured;
+}

@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
-import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
+import { getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import { getPaygDirectPaymentMethods } from '../billing/payg-payment-methods.js';
 import type {
   CreateSavedViewInput,
@@ -427,7 +427,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     values.push(filters.to);
     usageConditions.push(`period_start <= $${values.length}`);
   }
-  const [subscription, usage, paygCurrent, paygInvoices] = await Promise.all([
+  const [subscription, usage, paygCurrent, paygInvoices, latestPaygPaymentSetup] = await Promise.all([
     query(
       `SELECT workspace_id AS "workspaceId", provider, plan_key AS "planKey", status, seats,
               trial_ends_at AS "trialEndsAt", current_period_starts_at AS "currentPeriodStartsAt",
@@ -452,6 +452,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       periodStart: string;
       periodEnd: string;
       collectionMethod: string;
+      preferredPaymentMethod: 'card' | 'wechatpay' | 'alipaycn' | null;
+      paymentSourceConfigured: boolean;
       aiAccessBlocked: boolean;
       blockedAt: string | null;
       blockReason: string | null;
@@ -467,6 +469,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
               p.current_period_start AS "periodStart",
               p.current_period_end AS "periodEnd",
               p.collection_method AS "collectionMethod",
+              p.preferred_payment_method AS "preferredPaymentMethod",
+              p.provider_payment_source_id IS NOT NULL AS "paymentSourceConfigured",
               p.ai_access_blocked AS "aiAccessBlocked",
               p.blocked_at AS "blockedAt",
               p.block_reason AS "blockReason",
@@ -529,6 +533,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
        LIMIT 12`,
       [workspaceId],
     ),
+    getLatestPaygPaymentMethodSetup(workspaceId),
   ]);
   const current = paygCurrent.rows[0];
   const subscriptionRow = subscription.rows[0] ?? null;
@@ -536,7 +541,25 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
   return {
     subscription: subscriptionRow,
     usage: usage.rows,
-    payg: current && subscriptionRow?.planKey !== 'test' ? {
+    paygConfiguration: {
+      availablePaymentMethods: getPaygDirectPaymentMethods(),
+      selectedPaymentMethod: current?.preferredPaymentMethod ?? latestPaygPaymentSetup?.paymentMethod ?? null,
+      status: current?.paymentSourceConfigured || (current?.preferredPaymentMethod && current.preferredPaymentMethod !== 'card')
+        ? 'active'
+        : latestPaygPaymentSetup?.status === 'PENDING'
+          ? 'pending'
+          : latestPaygPaymentSetup?.status === 'FAILED'
+            ? 'failed'
+            : 'not_configured',
+      automaticCollection: Boolean(current?.paymentSourceConfigured),
+      paymentSourceConfigured: Boolean(current?.paymentSourceConfigured),
+      latestSetup: latestPaygPaymentSetup ? {
+        id: latestPaygPaymentSetup.id,
+        status: latestPaygPaymentSetup.status,
+        paymentMethod: latestPaygPaymentSetup.paymentMethod,
+      } : null,
+    },
+    payg: current ? {
       enabled: current.enabled,
       currency: current.currency,
       intervalDays: current.intervalDays,
@@ -544,6 +567,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       periodEnd: current.periodEnd,
       nextInvoiceAt: current.periodEnd,
       collectionMethod: current.collectionMethod,
+      preferredPaymentMethod: current.preferredPaymentMethod,
       aiAccessBlocked: adminBillingBypass ? false : current.aiAccessBlocked,
       blockedAt: adminBillingBypass ? null : current.blockedAt,
       blockReason: adminBillingBypass ? null : current.blockReason,

@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
+import type { PaygDirectPaymentMethod } from './payg-payment-methods.js';
 
 const nextBerlinMondaySql = `(date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days') AT TIME ZONE 'Europe/Berlin'`;
 const currentBerlinMondaySql = `date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin'`;
@@ -37,9 +38,24 @@ export type PaygPeriod = {
   totalCostUsd: string;
   providerCustomerId: string;
   paymentSourceId: string | null;
+  preferredPaymentMethod: PaygDirectPaymentMethod | null;
   providerInvoiceId: string | null;
   lineItemsAddedAt: string | null;
   finalizedAt: string | null;
+};
+
+export type PaygPaymentMethodSetup = {
+  id: string;
+  workspaceId: string;
+  paymentMethod: PaygDirectPaymentMethod;
+  providerCheckoutId: string;
+  providerCustomerId: string;
+  providerPaymentSourceId: string | null;
+  status: 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
+  checkoutUrl: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type PaygApiCheckoutReservation = PaygPeriod & {
@@ -49,7 +65,7 @@ export type PaygApiCheckoutReservation = PaygPeriod & {
   reused: boolean;
 };
 
-export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: string | null) {
+export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: string | null, client?: PoolClient) {
   await query(
     `INSERT INTO workspace_payg_profiles (
        workspace_id, interval_days, current_period_start, current_period_end,
@@ -82,6 +98,169 @@ export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: s
          ELSE workspace_payg_profiles.blocked_period_id
        END`,
     [workspaceId, paymentSourceId ?? null],
+    client,
+  );
+}
+
+export async function configurePaygDirectPaymentMethod(
+  workspaceId: string,
+  userId: string,
+  paymentMethod: Exclude<PaygDirectPaymentMethod, 'card'>,
+) {
+  return withTransaction(async (client) => {
+    const before = await query<{ preferredPaymentMethod: PaygDirectPaymentMethod | null; hasPaymentSource: boolean }>(
+      `SELECT preferred_payment_method AS "preferredPaymentMethod",
+              provider_payment_source_id IS NOT NULL AS "hasPaymentSource"
+       FROM workspace_payg_profiles
+       WHERE workspace_id=$1
+       FOR UPDATE`,
+      [workspaceId],
+      client,
+    );
+    await query(
+      `INSERT INTO workspace_payg_profiles (
+         workspace_id, interval_days, current_period_start, current_period_end,
+         collection_method, provider_payment_source_id, preferred_payment_method,
+         payment_method_configured_at
+       ) VALUES ($1, 7, ${currentBerlinMondaySql}, ${nextBerlinMondaySql},
+         'CHARGE_ON_CHECKOUT', NULL, $2, NOW())
+       ON CONFLICT (workspace_id) DO UPDATE SET
+         enabled=TRUE,
+         interval_days=7,
+         collection_method='CHARGE_ON_CHECKOUT',
+         provider_payment_source_id=NULL,
+         preferred_payment_method=EXCLUDED.preferred_payment_method,
+         payment_method_configured_at=NOW()`,
+      [workspaceId, paymentMethod],
+      client,
+    );
+    await query(
+      `INSERT INTO audit_log (
+         workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data
+       ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $1,
+         $3::jsonb, $4::jsonb)`,
+      [
+        workspaceId,
+        userId,
+        JSON.stringify(before.rows[0] ?? { preferredPaymentMethod: null, hasPaymentSource: false }),
+        JSON.stringify({ paymentMethod, collectionMethod: 'CHARGE_ON_CHECKOUT', automaticCollection: false }),
+      ],
+      client,
+    );
+  });
+}
+
+export async function createPaygPaymentMethodSetup(input: {
+  workspaceId: string;
+  paymentMethod: 'card';
+  providerCheckoutId: string;
+  providerCustomerId: string;
+  checkoutUrl: string | null;
+}) {
+  const { rows } = await query<PaygPaymentMethodSetup>(
+    `INSERT INTO workspace_payg_payment_setups (
+       workspace_id, payment_method, provider_checkout_id, provider_customer_id,
+       checkout_url
+     ) VALUES ($1, $2, $3, $4, $5)
+     RETURNING id, workspace_id AS "workspaceId", payment_method AS "paymentMethod",
+               provider_checkout_id AS "providerCheckoutId",
+               provider_customer_id AS "providerCustomerId",
+               provider_payment_source_id AS "providerPaymentSourceId", status,
+               checkout_url AS "checkoutUrl", last_error_code AS "lastErrorCode",
+               created_at AS "createdAt", updated_at AS "updatedAt"`,
+    [input.workspaceId, input.paymentMethod, input.providerCheckoutId, input.providerCustomerId, input.checkoutUrl],
+  );
+  const setup = rows[0];
+  if (!setup) throw new Error('PAYG payment method setup insert did not return a row');
+  return setup;
+}
+
+export async function getPaygPaymentMethodSetup(workspaceId: string, setupId: string) {
+  const { rows } = await query<PaygPaymentMethodSetup>(
+    `SELECT id, workspace_id AS "workspaceId", payment_method AS "paymentMethod",
+            provider_checkout_id AS "providerCheckoutId",
+            provider_customer_id AS "providerCustomerId",
+            provider_payment_source_id AS "providerPaymentSourceId", status,
+            checkout_url AS "checkoutUrl", last_error_code AS "lastErrorCode",
+            created_at AS "createdAt", updated_at AS "updatedAt"
+     FROM workspace_payg_payment_setups
+     WHERE workspace_id=$1 AND id=$2`,
+    [workspaceId, setupId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function getLatestPaygPaymentMethodSetup(workspaceId: string) {
+  const { rows } = await query<PaygPaymentMethodSetup>(
+    `SELECT id, workspace_id AS "workspaceId", payment_method AS "paymentMethod",
+            provider_checkout_id AS "providerCheckoutId",
+            provider_customer_id AS "providerCustomerId",
+            provider_payment_source_id AS "providerPaymentSourceId", status,
+            checkout_url AS "checkoutUrl", last_error_code AS "lastErrorCode",
+            created_at AS "createdAt", updated_at AS "updatedAt"
+     FROM workspace_payg_payment_setups
+     WHERE workspace_id=$1
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [workspaceId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function completePaygCardPaymentMethodSetup(input: {
+  workspaceId: string;
+  setupId: string;
+  paymentSourceId: string;
+  userId: string;
+}) {
+  return withTransaction(async (client) => {
+    const setup = await query<PaygPaymentMethodSetup>(
+      `UPDATE workspace_payg_payment_setups
+       SET status='COMPLETED', provider_payment_source_id=$3, last_error_code=NULL
+       WHERE workspace_id=$1 AND id=$2 AND payment_method='card'
+       RETURNING id, workspace_id AS "workspaceId", payment_method AS "paymentMethod",
+                 provider_checkout_id AS "providerCheckoutId",
+                 provider_customer_id AS "providerCustomerId",
+                 provider_payment_source_id AS "providerPaymentSourceId", status,
+                 checkout_url AS "checkoutUrl", last_error_code AS "lastErrorCode",
+                 created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [input.workspaceId, input.setupId, input.paymentSourceId],
+      client,
+    );
+    const result = setup.rows[0];
+    if (!result) throw new AppError(404, 'PAYG_PAYMENT_SETUP_NOT_FOUND', 'The payment-method setup does not belong to this workspace.');
+
+    await ensurePaygProfile(input.workspaceId, input.paymentSourceId, client);
+    await query(
+      `UPDATE workspace_payg_profiles
+       SET preferred_payment_method='card', payment_method_configured_at=NOW()
+       WHERE workspace_id=$1`,
+      [input.workspaceId],
+      client,
+    );
+    await query(
+      `INSERT INTO audit_log (
+         workspace_id, actor_id, action, entity_type, entity_id, after_data
+       ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $1,
+         $3::jsonb)`,
+      [input.workspaceId, input.userId, JSON.stringify({ paymentMethod: 'card', collectionMethod: 'AUTO_CHARGE', automaticCollection: true })],
+      client,
+    );
+    return result;
+  });
+}
+
+export async function updatePaygPaymentMethodSetupStatus(
+  workspaceId: string,
+  setupId: string,
+  status: PaygPaymentMethodSetup['status'],
+  errorCode?: string | null,
+) {
+  await query(
+    `UPDATE workspace_payg_payment_setups
+     SET status=$3, last_error_code=$4
+     WHERE workspace_id=$1 AND id=$2`,
+    [workspaceId, setupId, status, errorCode ?? null],
   );
 }
 
@@ -122,11 +301,13 @@ export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygA
       currency: 'USD';
       providerCustomerId: string | null;
       paymentSourceId: string | null;
+      preferredPaymentMethod: PaygDirectPaymentMethod | null;
     }>(
       `SELECT p.workspace_id AS "workspaceId", p.current_period_start AS "periodStart",
               p.current_period_end AS "periodEnd", p.currency,
               s.provider_customer_id AS "providerCustomerId",
-              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId"
+              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId",
+              p.preferred_payment_method AS "preferredPaymentMethod"
        FROM workspace_payg_profiles p
        JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
        WHERE p.workspace_id=$1 AND p.enabled=TRUE
@@ -177,6 +358,7 @@ export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygA
         workspaceId,
         providerCustomerId: profile.providerCustomerId,
         paymentSourceId: profile.paymentSourceId,
+        preferredPaymentMethod: profile.preferredPaymentMethod,
         billingMode: 'api_pay_now',
         reused: true,
       };
@@ -247,6 +429,7 @@ export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygA
       workspaceId,
       providerCustomerId: profile.providerCustomerId,
       paymentSourceId: profile.paymentSourceId,
+      preferredPaymentMethod: profile.preferredPaymentMethod,
       billingMode: 'api_pay_now',
       reused: false,
     };
@@ -294,13 +477,15 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
       currency: 'USD';
       providerCustomerId: string;
       paymentSourceId: string | null;
+      preferredPaymentMethod: PaygDirectPaymentMethod | null;
     }>(
       `SELECT p.workspace_id AS "workspaceId",
               p.current_period_start AS "periodStart",
               p.current_period_end AS "periodEnd",
               p.currency,
               s.provider_customer_id AS "providerCustomerId",
-              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId"
+              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId",
+              p.preferred_payment_method AS "preferredPaymentMethod"
        FROM workspace_payg_profiles p
        JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
        WHERE p.enabled=TRUE
