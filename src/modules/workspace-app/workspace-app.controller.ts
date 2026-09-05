@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
-import { createCheckout, syncCheckoutStatus, type BillingPlanKey } from '../billing/airwallex.service.js';
+import { createCheckout, createPaygApiUsageCheckout as createPaygApiUsageCheckoutInvoice, syncCheckoutStatus, type BillingPlanKey } from '../billing/airwallex.service.js';
 import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import * as contentGeneration from '../content-generation/content-generation.service.js';
 import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
@@ -181,6 +181,13 @@ export async function syncBillingCheckout(req: WorkspaceRequest, res: Response, 
     const checkoutId = Array.isArray(rawCheckoutId) ? rawCheckoutId[0] : rawCheckoutId;
     if (!checkoutId) throw new Error('Billing checkout ID is required');
     return successResponse(res, 'Billing checkout status synchronized', await syncCheckoutStatus(workspaceId, checkoutId));
+  } catch (error) { next(error); }
+}
+
+export async function createPaygApiUsageCheckout(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'API usage payment checkout created', await createPaygApiUsageCheckoutInvoice(workspaceId));
   } catch (error) { next(error); }
 }
 

@@ -42,6 +42,13 @@ export type PaygPeriod = {
   finalizedAt: string | null;
 };
 
+export type PaygApiCheckoutReservation = PaygPeriod & {
+  status: 'processing' | 'payment_due' | 'payment_failed' | 'failed';
+  billingMode: 'api_pay_now';
+  hostedInvoiceUrl: string | null;
+  reused: boolean;
+};
+
 export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: string | null) {
   await query(
     `INSERT INTO workspace_payg_profiles (
@@ -97,6 +104,153 @@ export async function allocateDailyServerUsage(providerCostUsd: number, customer
     [providerCostUsd, customerCostUsd],
   );
   return result.rowCount;
+}
+
+/**
+ * Reserves only the API usage accrued so far for a one-off customer payment.
+ * Server/storage entries deliberately remain unassigned, so their weekly
+ * charge continues without being reset by an API payment.
+ */
+export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygApiCheckoutReservation> {
+  return withTransaction(async (client) => {
+    await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`payg-api-checkout:${workspaceId}`], client);
+
+    const profileResult = await query<{
+      workspaceId: string;
+      periodStart: string;
+      periodEnd: string;
+      currency: 'USD';
+      providerCustomerId: string | null;
+      paymentSourceId: string | null;
+    }>(
+      `SELECT p.workspace_id AS "workspaceId", p.current_period_start AS "periodStart",
+              p.current_period_end AS "periodEnd", p.currency,
+              s.provider_customer_id AS "providerCustomerId",
+              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId"
+       FROM workspace_payg_profiles p
+       JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
+       WHERE p.workspace_id=$1 AND p.enabled=TRUE
+         AND s.provider='airwallex' AND s.status='active'
+         AND s.plan_key IN ('starter', 'ai')
+       FOR UPDATE OF p`,
+      [workspaceId],
+      client,
+    );
+    const profile = profileResult.rows[0];
+    if (!profile?.providerCustomerId) {
+      throw new AppError(409, 'PAYG_BILLING_CUSTOMER_REQUIRED', 'A confirmed billing customer is required before API usage can be paid.');
+    }
+
+    const existingResult = await query<{
+      id: string;
+      periodStart: string;
+      periodEnd: string;
+      currency: 'USD';
+      apiCostUsd: string;
+      serverCostUsd: string;
+      totalCostUsd: string;
+      providerInvoiceId: string | null;
+      lineItemsAddedAt: string | null;
+      finalizedAt: string | null;
+      hostedInvoiceUrl: string | null;
+      status: 'processing' | 'payment_due' | 'payment_failed' | 'failed';
+    }>(
+      `SELECT id, period_start AS "periodStart", period_end AS "periodEnd", currency,
+              api_cost_usd AS "apiCostUsd", server_cost_usd AS "serverCostUsd",
+              total_cost_usd AS "totalCostUsd", provider_invoice_id AS "providerInvoiceId",
+              line_items_added_at AS "lineItemsAddedAt", finalized_at AS "finalizedAt",
+              hosted_invoice_url AS "hostedInvoiceUrl", status
+       FROM workspace_payg_periods
+       WHERE workspace_id=$1
+         AND billing_mode='api_pay_now'
+         AND status IN ('processing', 'payment_due', 'payment_failed', 'failed')
+       ORDER BY created_at DESC
+       LIMIT 1
+       FOR UPDATE`,
+      [workspaceId],
+      client,
+    );
+    const existing = existingResult.rows[0];
+    if (existing) {
+      return {
+        ...existing,
+        workspaceId,
+        providerCustomerId: profile.providerCustomerId,
+        paymentSourceId: profile.paymentSourceId,
+        billingMode: 'api_pay_now',
+        reused: true,
+      };
+    }
+
+    const cutoffResult = await query<{ cutoff: string }>('SELECT clock_timestamp() AS cutoff', [], client);
+    const cutoff = cutoffResult.rows[0]?.cutoff;
+    if (!cutoff) throw new AppError(500, 'PAYG_API_CHECKOUT_CUTOFF_MISSING', 'Could not establish the API usage payment cutoff.');
+
+    const totalsResult = await query<{ apiCostUsd: string }>(
+      `SELECT COALESCE(SUM(customer_cost_usd), 0)::numeric AS "apiCostUsd"
+       FROM ai_usage_ledger
+       WHERE workspace_id=$1
+         AND payg_period_id IS NULL
+         AND created_at >= $2::timestamptz
+         AND created_at < $3::timestamptz`,
+      [workspaceId, profile.periodStart, cutoff],
+      client,
+    );
+    const apiCostUsd = totalsResult.rows[0]?.apiCostUsd ?? '0';
+    if (Number(apiCostUsd) <= 0) {
+      throw new AppError(422, 'PAYG_API_USAGE_EMPTY', 'There is no unbilled API usage to pay right now.');
+    }
+
+    const periodResult = await query<{
+      id: string;
+      periodStart: string;
+      periodEnd: string;
+      currency: 'USD';
+      apiCostUsd: string;
+      serverCostUsd: string;
+      totalCostUsd: string;
+      providerInvoiceId: string | null;
+      lineItemsAddedAt: string | null;
+      finalizedAt: string | null;
+      hostedInvoiceUrl: string | null;
+    }>(
+      `INSERT INTO workspace_payg_periods (
+         workspace_id, period_start, period_end, status, currency,
+         api_cost_usd, server_cost_usd, billing_mode, metadata
+       ) VALUES ($1, $2::timestamptz, $3::timestamptz, 'processing', $4, $5, 0, 'api_pay_now',
+         jsonb_build_object('apiUsageCutoff', $3::timestamptz, 'source', 'customer_api_pay_now'))
+       RETURNING id, period_start AS "periodStart", period_end AS "periodEnd", currency,
+                 api_cost_usd AS "apiCostUsd", server_cost_usd AS "serverCostUsd",
+                 total_cost_usd AS "totalCostUsd", provider_invoice_id AS "providerInvoiceId",
+                 line_items_added_at AS "lineItemsAddedAt", finalized_at AS "finalizedAt",
+                 hosted_invoice_url AS "hostedInvoiceUrl"`,
+      [workspaceId, profile.periodStart, cutoff, profile.currency, apiCostUsd],
+      client,
+    );
+    const period = periodResult.rows[0];
+    if (!period) throw new AppError(500, 'PAYG_API_CHECKOUT_RESERVATION_FAILED', 'Could not reserve API usage for payment.');
+
+    await query(
+      `UPDATE ai_usage_ledger
+       SET payg_period_id=$1
+       WHERE workspace_id=$2
+         AND payg_period_id IS NULL
+         AND created_at >= $3::timestamptz
+         AND created_at < $4::timestamptz`,
+      [period.id, workspaceId, profile.periodStart, cutoff],
+      client,
+    );
+
+    return {
+      ...period,
+      status: 'processing',
+      workspaceId,
+      providerCustomerId: profile.providerCustomerId,
+      paymentSourceId: profile.paymentSourceId,
+      billingMode: 'api_pay_now',
+      reused: false,
+    };
+  });
 }
 
 async function advanceCompletedProfile(client: PoolClient, workspaceId: string, periodStart: string, periodEnd: string) {
@@ -302,6 +456,24 @@ export async function finalizePaygPeriod(
   });
 }
 
+export async function finalizePaygApiCheckoutPeriod(
+  periodId: string,
+  invoice: { payment_status?: string; hosted_url?: string; pdf_url?: string; paid_at?: string },
+) {
+  const paid = String(invoice.payment_status ?? '').toUpperCase() === 'PAID';
+  await query(
+    `UPDATE workspace_payg_periods
+     SET status=$2,
+         hosted_invoice_url=COALESCE($3, hosted_invoice_url),
+         invoice_pdf_url=COALESCE($4, invoice_pdf_url),
+         finalized_at=NOW(),
+         paid_at=CASE WHEN $2='paid' THEN COALESCE($5::timestamptz, NOW()) ELSE paid_at END,
+         metadata=metadata || jsonb_build_object('providerPaymentStatus', $6::text)
+     WHERE id=$1 AND billing_mode='api_pay_now'`,
+    [periodId, paid ? 'paid' : 'payment_due', invoice.hosted_url ?? null, invoice.pdf_url ?? null, invoice.paid_at ?? null, invoice.payment_status ?? null],
+  );
+}
+
 async function blockWorkspaceAi(client: PoolClient, workspaceId: string, periodId: string, reason: string) {
   await query(
     `UPDATE workspace_payg_profiles
@@ -366,7 +538,7 @@ export async function applyPaygInvoiceWebhook(input: {
   const failureSignal = `${input.paymentStatus} ${input.eventType ?? ''}`.toUpperCase();
   const failed = !paid && /(FAILED|DECLINED|PAST_DUE|OVERDUE|PAYMENT_FAILURE)/.test(failureSignal);
   return withTransaction(async (client) => {
-    const updated = await query<{ workspaceId: string }>(
+    const updated = await query<{ workspaceId: string; billingMode: 'weekly' | 'api_pay_now' }>(
       `UPDATE workspace_payg_periods
        SET status=CASE WHEN $3 THEN 'paid' WHEN $8 THEN 'payment_failed' ELSE status END,
            provider_invoice_id=COALESCE($2, provider_invoice_id),
@@ -375,13 +547,16 @@ export async function applyPaygInvoiceWebhook(input: {
            paid_at=CASE WHEN $3 THEN COALESCE($6::timestamptz, NOW()) ELSE paid_at END,
            metadata=metadata || jsonb_build_object('lastPaymentStatus', $7::text, 'lastPaymentEventType', $9::text)
        WHERE id=$1
-       RETURNING workspace_id AS "workspaceId"`,
+       RETURNING workspace_id AS "workspaceId", billing_mode AS "billingMode"`,
       [input.periodId, input.providerInvoiceId ?? null, paid, input.hostedUrl ?? null, input.pdfUrl ?? null, input.paidAt ?? null, input.paymentStatus, failed, input.eventType ?? null],
       client,
     );
-    const workspaceId = updated.rows[0]?.workspaceId;
-    if (!workspaceId) return false;
-    if (input.paymentSourceId) {
+    const updatedPeriod = updated.rows[0];
+    if (!updatedPeriod) return false;
+    const workspaceId = updatedPeriod.workspaceId;
+    // A one-off Alipay/WeChat payment must not silently become the recurring
+    // weekly auto-charge source. Only the normal weekly flow may save it.
+    if (input.paymentSourceId && updatedPeriod.billingMode === 'weekly') {
       await query(
         `UPDATE workspace_payg_profiles
          SET provider_payment_source_id=$2, collection_method='AUTO_CHARGE'

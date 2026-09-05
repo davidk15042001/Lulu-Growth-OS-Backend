@@ -71,6 +71,10 @@ router.route('/billing')
   .post(requireWorkspaceAdmin, controller.createBillingCheckout)
   .all(methodNotAllowed);
 
+router.route('/billing/payg/api-checkout')
+  .post(requireWorkspaceAdmin, controller.createPaygApiUsageCheckout)
+  .all(methodNotAllowed);
+
 router.route('/billing/checkouts/:checkoutId/sync')
   .post(requireWorkspaceAdmin, controller.syncBillingCheckout)
   .all(methodNotAllowed);

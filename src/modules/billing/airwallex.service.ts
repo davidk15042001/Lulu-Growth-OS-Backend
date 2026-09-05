@@ -15,7 +15,17 @@ import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import { startAutomaticWebsiteGeneration, syncWordpressProviderSites } from '../websites/website.automation.service.js';
 import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
-import { applyPaygInvoiceWebhook, disableWorkspacePaygBilling, ensurePaygProfile } from './payg-billing.repo.js';
+import {
+  applyPaygInvoiceWebhook,
+  disableWorkspacePaygBilling,
+  ensurePaygProfile,
+  failPaygPeriod,
+  finalizePaygApiCheckoutPeriod,
+  markPaygLineItemsAdded,
+  reservePaygApiCheckout,
+  savePaygProviderInvoice,
+} from './payg-billing.repo.js';
+import { getPaygDirectPaymentMethods } from './payg-payment-methods.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -321,6 +331,74 @@ async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey
       }, client);
     }
   });
+}
+
+export async function createPaygApiUsageCheckout(workspaceId: string) {
+  const period = await reservePaygApiCheckout(workspaceId);
+  if (period.providerInvoiceId && period.finalizedAt) {
+    return {
+      periodId: period.id,
+      paymentUrl: period.hostedInvoiceUrl,
+      status: period.status,
+      reused: true,
+    };
+  }
+  if (period.reused && period.status === 'processing' && !period.providerInvoiceId) {
+    throw new AppError(409, 'PAYG_API_CHECKOUT_IN_PROGRESS', 'An API usage payment is already being prepared. Please try again shortly.');
+  }
+
+  try {
+    let invoiceId = period.providerInvoiceId;
+    let paymentUrl = period.hostedInvoiceUrl;
+    if (!invoiceId) {
+      const draft = await airwallexRequest('/api/v1/billing/invoices/create', {
+        billing_customer_id: period.providerCustomerId,
+        collection_method: 'CHARGE_ON_CHECKOUT',
+        currency: period.currency,
+        days_until_due: env.PAYG_INVOICE_DAYS_UNTIL_DUE,
+        default_tax_percent: 0,
+        memo: 'Lulu AI API usage payment',
+        footer: 'This invoice settles API usage accrued to the payment cutoff. Server and storage usage continue in the weekly billing cycle.',
+        metadata: {
+          workspace_id: workspaceId,
+          payg_period_id: period.id,
+          billing_type: 'payg_api_pay_now',
+        },
+        payment_options: {
+          payment_method_types: getPaygDirectPaymentMethods(),
+        },
+        ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+        ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
+      }, deterministicBillingRequestId(`payg-api-pay-now:${period.id}`), 'PAYG_API_CHECKOUT_CREATE');
+      invoiceId = String(draft.id ?? '');
+      if (!invoiceId) throw providerError('AIRWALLEX_PAYG_API_INVOICE_ID_MISSING', 'Airwallex did not return an invoice ID for the API usage payment.');
+      paymentUrl = typeof draft.hosted_url === 'string' ? draft.hosted_url : null;
+      await savePaygProviderInvoice(period.id, invoiceId, paymentUrl);
+    }
+
+    if (!period.lineItemsAddedAt) {
+      await addPaygInvoiceLineItems({
+        periodId: period.id,
+        invoiceId,
+        apiCostUsd: Number(period.apiCostUsd),
+        serverCostUsd: 0,
+        periodStart: period.periodStart,
+        periodEnd: period.periodEnd,
+      });
+      await markPaygLineItemsAdded(period.id);
+    }
+    const finalized = await finalizePaygInvoice(invoiceId);
+    await finalizePaygApiCheckoutPeriod(period.id, finalized);
+    return {
+      periodId: period.id,
+      paymentUrl: typeof finalized.hosted_url === 'string' ? finalized.hosted_url : paymentUrl,
+      status: String(finalized.payment_status ?? '').toUpperCase() === 'PAID' ? 'paid' as const : 'payment_due' as const,
+      reused: period.reused,
+    };
+  } catch (error) {
+    await failPaygPeriod(period.id, error instanceof AppError ? error.code : 'PAYG_API_CHECKOUT_FAILED', error instanceof Error ? error.message : 'Unknown API usage checkout error');
+    throw error;
+  }
 }
 
 async function assertOnboardingReadyForBilling(workspaceId: string) {

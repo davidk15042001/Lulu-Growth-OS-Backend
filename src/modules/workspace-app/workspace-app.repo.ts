@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
+import { getPaygDirectPaymentMethods } from '../billing/payg-payment-methods.js';
 import type {
   CreateSavedViewInput,
   InviteMemberInput,
@@ -506,12 +507,14 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       invoicePdfUrl: string | null;
       finalizedAt: string | null;
       paidAt: string | null;
+      billingMode: 'weekly' | 'api_pay_now';
     }>(
       `SELECT id, period_start AS "periodStart", period_end AS "periodEnd",
               status, currency, api_cost_usd AS "apiCostUsd",
               server_cost_usd AS "serverCostUsd", total_cost_usd AS "totalCostUsd",
               hosted_invoice_url AS "hostedInvoiceUrl", invoice_pdf_url AS "invoicePdfUrl",
-              finalized_at AS "finalizedAt", paid_at AS "paidAt"
+              finalized_at AS "finalizedAt", paid_at AS "paidAt",
+              billing_mode AS "billingMode"
        FROM workspace_payg_periods
        WHERE workspace_id=$1
        ORDER BY period_end DESC
@@ -544,6 +547,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       outputTokens: Number(current.outputTokens),
       apiEvents: current.apiEvents,
       serverDays: current.serverDays,
+      paymentMethods: getPaygDirectPaymentMethods(),
       invoices: paygInvoices.rows.map((invoice) => ({
         ...invoice,
         apiCost: Number(invoice.apiCostUsd),

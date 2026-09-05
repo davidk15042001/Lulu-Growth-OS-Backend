@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { calculateUsageCost } from '../src/modules/usage/usage.service.js';
 import { deterministicBillingRequestId } from '../src/modules/billing/airwallex.service.js';
 import { AWS_USAGE_CUSTOMER_MULTIPLIER } from '../src/modules/billing/payg-billing.repo.js';
+import { parsePaygDirectPaymentMethods } from '../src/modules/billing/payg-payment-methods.js';
 
 describe('AI usage pricing', () => {
   it('prices qwen3.7-plus usage with the Singapore international list rate', () => {
@@ -56,5 +57,12 @@ describe('PAYG billing idempotency', () => {
     assert.match(invoice, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     assert.equal(invoice, deterministicBillingRequestId(`payg-invoice:${periodId}`));
     assert.notEqual(invoice, lineItems);
+  });
+});
+
+describe('PAYG direct payment methods', () => {
+  it('allows only the supported hosted payment methods and always keeps a card fallback', () => {
+    assert.deepEqual(parsePaygDirectPaymentMethods('wechatpay,alipaycn,unknown,wechatpay'), ['wechatpay', 'alipaycn']);
+    assert.deepEqual(parsePaygDirectPaymentMethods('unsupported-only'), ['card']);
   });
 });

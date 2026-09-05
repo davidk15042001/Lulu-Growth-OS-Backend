@@ -79,6 +79,7 @@ const EnvSchema = z
     PAYG_BILLING_WORKER_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
     PAYG_SERVER_COST_USD_PER_DAY: z.coerce.number().min(0).max(100_000).default(0),
     PAYG_INVOICE_DAYS_UNTIL_DUE: z.coerce.number().int().min(1).max(30).default(7),
+    AIRWALLEX_PAYG_DIRECT_PAYMENT_METHODS: z.string().default('card,alipaycn,wechatpay'),
     EMAIL_FROM: z.string().optional(),
     FRONTEND_BASE_URL: z.string().url().optional(),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
