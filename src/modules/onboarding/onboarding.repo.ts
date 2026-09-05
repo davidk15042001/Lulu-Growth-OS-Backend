@@ -921,6 +921,7 @@ export type AiBusinessProfilePayload = {
   summary: string;
   recommendedProfile: {
     valueProposition: string;
+    vision: string;
     targetMarket: string;
     primaryIcp: string;
     usp: string;
@@ -930,6 +931,7 @@ export type AiBusinessProfilePayload = {
   };
   suggestions: {
     valuePropositions: AiBusinessProfileSuggestion[];
+    visions: AiBusinessProfileSuggestion[];
     targetMarkets: AiBusinessProfileSuggestion[];
     primaryIcps: AiBusinessProfileSuggestion[];
     usps: AiBusinessProfileSuggestion[];

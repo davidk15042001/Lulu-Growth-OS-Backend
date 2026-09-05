@@ -206,18 +206,19 @@ function buildAiBusinessProfileInstructions() {
     'You are Lulu AI, an elite business strategist and positioning expert.',
     'Generate an AI business profile draft for the workspace.',
     'Use the provided workspace context, offerings, segments, connected platforms, existing intelligence, and exactly the provided competitor set.',
-    'Return 5 to 10 high-quality options for each of these categories: value propositions, target markets, primary ICPs, USPs, short brand descriptions, primary challenges, and languages.',
+    'Return exactly one high-quality value proposition, exactly one durable vision statement, and exactly five distinct, ranked target-market recommendations.',
+    'Return 5 to 10 high-quality options for each remaining category: primary ICPs, USPs, short brand descriptions, primary challenges, and languages.',
     'Also return exactly 20 customer segments ranked from strongest to weakest opportunity for this business.',
     'Every option must be materially distinct, strategically useful, specific, and stronger than a generic marketing phrase.',
     'The suggestions must explicitly use competitor gaps, weaknesses, blind spots, or whitespace opportunities from the competitor set.',
     'Do not invent company facts, certifications, metrics, customers, or product capabilities that are not supported by the context.',
     'Treat the output as strategic recommendations, not verified facts.',
-    'Also return a recommended best profile consisting of the single best value proposition, target market, primary ICP, USP, short brand description, plus the best list of primary challenges and languages.',
+    'Also return a recommended best profile consisting of the generated value proposition, vision, top-ranked target market, primary ICP, USP, short brand description, plus the best list of primary challenges and languages.',
     'For each customer segment include: name, industry, companySize, region, maturityLevel, painPoints, jobsToBeDone, decisionCriteria, useCases, buyingRoles, priceSensitivity, primarySegment, notes, score, and whyItFits.',
     'The 20 customer segments must be the best 20, not filler. They should be ordered by expected strategic fit and revenue opportunity.',
     'Also compare all 10 competitors and explain for each where whitespace exists and why the workspace can win.',
     'Use only valid JSON without markdown fences.',
-    'Output shape: {"summary":string,"recommendedProfile":{"valueProposition":string,"targetMarket":string,"primaryIcp":string,"usp":string,"shortBrandDescription":string,"primaryChallenges":string[],"languages":string[]},"suggestions":{"valuePropositions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"targetMarkets":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryIcps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"usps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"shortBrandDescriptions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryChallenges":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"languages":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}]},"customerSegments":[{"name":string,"industry":string|null,"companySize":string|null,"region":string|null,"maturityLevel":string|null,"painPoints":string[],"jobsToBeDone":string[],"decisionCriteria":string[],"useCases":string[],"buyingRoles":string[],"priceSensitivity":string|null,"primarySegment":boolean,"notes":string|null,"score":number,"whyItFits":string}],"competitorComparison":[{"name":string,"websiteUrl":string|null,"competitorType":string|null,"market":string|null,"positioning":string|null,"strengths":string[],"weaknesses":string[],"whitespace":string[],"whyYouCanWin":string}]}',
+    'Output shape: {"summary":string,"recommendedProfile":{"valueProposition":string,"vision":string,"targetMarket":string,"primaryIcp":string,"usp":string,"shortBrandDescription":string,"primaryChallenges":string[],"languages":string[]},"suggestions":{"valuePropositions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"visions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"targetMarkets":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryIcps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"usps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"shortBrandDescriptions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryChallenges":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"languages":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}]},"customerSegments":[{"name":string,"industry":string|null,"companySize":string|null,"region":string|null,"maturityLevel":string|null,"painPoints":string[],"jobsToBeDone":string[],"decisionCriteria":string[],"useCases":string[],"buyingRoles":string[],"priceSensitivity":string|null,"primarySegment":boolean,"notes":string|null,"score":number,"whyItFits":string}],"competitorComparison":[{"name":string,"websiteUrl":string|null,"competitorType":string|null,"market":string|null,"positioning":string|null,"strengths":string[],"weaknesses":string[],"whitespace":string[],"whyYouCanWin":string}]}',
   ].join(' ');
 }
 
@@ -239,12 +240,19 @@ function normaliseSuggestion(entry: unknown) {
   } satisfies repo.AiBusinessProfileSuggestion;
 }
 
-function normaliseSuggestionList(value: unknown, minimum = 3) {
+function normaliseSuggestionList(value: unknown, minimum = 3, maximum = 10) {
   if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
   const items = value
     .map((entry) => normaliseSuggestion(entry))
     .filter((entry): entry is repo.AiBusinessProfileSuggestion => Boolean(entry))
-    .slice(0, 10);
+    .filter((entry) => {
+      const key = entry.value.toLocaleLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, maximum);
   if (items.length < minimum) return [];
   return items;
 }
@@ -365,7 +373,7 @@ function fallbackCompetitorComparisons(competitors: CompetitorContext[]) {
   }));
 }
 
-function normaliseAiBusinessProfilePayload(
+export function normaliseAiBusinessProfilePayload(
   raw: unknown,
   competitors: CompetitorContext[],
   fallbackSegments: CustomerSegmentContext[],
@@ -376,8 +384,9 @@ function normaliseAiBusinessProfilePayload(
     : {};
 
   const suggestions = {
-    valuePropositions: normaliseSuggestionList(suggestionsValue.valuePropositions),
-    targetMarkets: normaliseSuggestionList(suggestionsValue.targetMarkets),
+    valuePropositions: normaliseSuggestionList(suggestionsValue.valuePropositions, 1, 1),
+    visions: normaliseSuggestionList(suggestionsValue.visions, 1, 1),
+    targetMarkets: normaliseSuggestionList(suggestionsValue.targetMarkets, 5, 5),
     primaryIcps: normaliseSuggestionList(suggestionsValue.primaryIcps),
     usps: normaliseSuggestionList(suggestionsValue.usps),
     shortBrandDescriptions: normaliseSuggestionList(suggestionsValue.shortBrandDescriptions),
@@ -385,8 +394,18 @@ function normaliseAiBusinessProfilePayload(
     languages: normaliseSuggestionList(suggestionsValue.languages),
   } satisfies repo.AiBusinessProfilePayload['suggestions'];
 
-  const mandatoryGroups = Object.values(suggestions);
-  if (mandatoryGroups.some((group) => group.length < 3)) {
+  if (
+    suggestions.valuePropositions.length !== 1
+    || suggestions.visions.length !== 1
+    || suggestions.targetMarkets.length !== 5
+    || [
+      suggestions.primaryIcps,
+      suggestions.usps,
+      suggestions.shortBrandDescriptions,
+      suggestions.primaryChallenges,
+      suggestions.languages,
+    ].some((group) => group.length < 3)
+  ) {
     throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return enough usable profile suggestions');
   }
 
@@ -396,6 +415,7 @@ function normaliseAiBusinessProfilePayload(
 
   const recommendedProfile = {
     valueProposition: normaliseOptionalText(recommendedProfileValue.valueProposition, 2000) ?? suggestions.valuePropositions[0]!.value,
+    vision: normaliseOptionalText(recommendedProfileValue.vision, 2000) ?? suggestions.visions[0]!.value,
     targetMarket: normaliseOptionalText(recommendedProfileValue.targetMarket, 2000) ?? suggestions.targetMarkets[0]!.value,
     primaryIcp: normaliseOptionalText(recommendedProfileValue.primaryIcp, 2000) ?? suggestions.primaryIcps[0]!.value,
     usp: normaliseOptionalText(recommendedProfileValue.usp, 2000) ?? suggestions.usps[0]!.value,
