@@ -1,11 +1,12 @@
 import bcrypt from 'bcryptjs';
 import { signToken } from '../../utils/jwt.js';
 import { sendOtpEmail, sendResetEmail } from '../../utils/mailer.js';
-import { logger } from '../../config/logger.js';
+import { recordSecurityEvent } from '../security/security-event.service.js';
+import { assertAdminCapability, getAdminCapabilities } from '../admin/admin.authorization.js';
 import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 
-export type RegisterResult = { ok: true; userId: string } | { conflict: true };
+export type RegisterResult = { ok: true; userId: string; verificationSent: boolean } | { conflict: true };
 type SessionUser = {
   id: string;
   email: string;
@@ -16,16 +17,17 @@ type SessionUser = {
 };
 type SessionActor = repo.ImpersonationActor;
 
-function buildSessionUser(
+async function buildSessionUser(
   user: { id: string; email: string; first_name: string | null; last_name: string | null; role: 'user' | 'admin' },
   impersonator?: SessionActor | null,
-): SessionUser {
+): Promise<SessionUser & { adminCapabilities: string[] }> {
   return {
     id: user.id,
     email: user.email,
     firstName: user.first_name,
     lastName: user.last_name,
     role: user.role,
+    adminCapabilities: impersonator ? [] : await getAdminCapabilities(user.id),
     impersonation: {
       active: Boolean(impersonator),
       adminEmail: impersonator?.email ?? null,
@@ -36,12 +38,14 @@ function buildSessionUser(
 function signSessionToken(
   user: { id: string; email: string },
   tokenVersion: number,
+  sessionId: string,
   impersonator?: SessionActor | null,
 ) {
   return signToken({
     sub: user.id,
     email: user.email,
     tv: tokenVersion,
+    sid: sessionId,
     ...(impersonator ? {
       impersonatorUserId: impersonator.userId,
       impersonatorEmail: impersonator.email,
@@ -54,69 +58,57 @@ export async function registerUser(email: string, password: string, firstName: s
   if (existingUser) return { conflict: true };
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
-  const user = await repo.createUser(email, passwordHash, firstName, lastName);
-  if (!user) throw new Error('Failed to create user');
-
-  await repo.verifyUser(user.id);
-  logger.info({ email }, 'User registered and activated without verification email');
-
-  return { ok: true, userId: user.id };
+  let user;
+  try { user = await repo.createUnverifiedUser(email, passwordHash, firstName, lastName); }
+  catch(error) { if((error as {code?:string}).code==='23505') return {conflict:true}; throw error; }
+  // Commit account + challenge atomically before sending. Delivery failure leaves
+  // a recoverable unverified account; resend never grants workspace access.
+  let verificationSent=true;
+  try {
+    await sendOtpEmail(email,user.code);
+    await recordSecurityEvent({eventType:'EMAIL_VERIFICATION_SENT',userId:user.id,metadata:{reason:'verification'}});
+  }
+  catch { verificationSent=false; await recordSecurityEvent({eventType:'EMAIL_DELIVERY_FAILED',userId:user.id,metadata:{reason:'verification'}}); }
+  return { ok: true, userId: user.id, verificationSent };
 }
 
-export type VerifyResult = { ok: true } | { notFound: true } | { invalid: true } | { used: true } | { expired: true };
+export type VerifyResult = { ok: true } | { alreadyVerified:true } | { invalid: true } | { used: true } | { expired: true };
 
 export async function verifyEmailOtp(email: string, code: string): Promise<VerifyResult> {
-  const user = await repo.getUserByEmail(email);
-  if (!user) return { notFound: true };
-  
-  const otps = await repo.getUnusedOtpsForUser(user.id, 'verify_email');
-  for (const otp of otps) {
-    const ok = await bcrypt.compare(code, otp.otp_hash);
-    if (ok) {
-      await repo.markOtpAsUsed(otp.id);
-      await repo.verifyUser(user.id);
-      logger.info({ email }, 'Email OTP verified');
-      return { ok: true };
-    } else {
-      await repo.incrementOtpAttempts(otp.id);
-    }
-  }
-  
-  return { invalid: true };
+  return repo.consumeOtp(email,code,'verify_email');
 }
 
 export type LoginResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { unverified: true };
 
 export async function loginUser(email: string, password: string, options?: { userAgent?: string | null; ipAddress?: string | null }): Promise<LoginResult> {
   const user = await repo.getUserByEmail(email);
-  if (!user) return { invalid: true };
+  if (!user) { await recordSecurityEvent({eventType:'LOGIN_FAILURE',metadata:{reason:'invalid_credentials'}}); return { invalid: true }; }
 
   const ok = await bcrypt.compare(password, user.password_hash);
-  if (!ok) return { invalid: true };
+  if (!ok) { await recordSecurityEvent({eventType:'LOGIN_FAILURE',userId:user.id,metadata:{reason:'invalid_credentials'}}); return { invalid: true }; }
 
-  // Registration no longer requires email OTP. Legacy accounts that were
-  // created before that change are activated after a successful password
-  // check, so they do not get trapped in the retired verification flow.
   if (!user.verified_at) {
-    await repo.verifyUser(user.id);
+    await recordSecurityEvent({eventType:'LOGIN_FAILURE',userId:user.id,metadata:{reason:'unverified'}});
+    return {unverified:true};
   }
 
-  const session = await repo.createSingleDeviceSession(user.id, {
+  const session = await repo.createAdditionalSession(user.id, {
     userAgent: options?.userAgent ?? null,
     ipAddress: options?.ipAddress ?? null,
   });
-  const token = signSessionToken({ id: user.id, email }, session.tokenVersion);
+  const token = signSessionToken({ id: user.id, email }, session.tokenVersion, session.sessionId);
+  await recordSecurityEvent({eventType:'LOGIN_SUCCESS',userId:user.id,metadata:{sessionId:session.sessionId}});
   const refreshToken = session.token;
 
   return {
     ok: true, 
     token, 
     refreshToken, 
-    user: buildSessionUser({ ...user, email })
+    user: await buildSessionUser({ ...user, email })
   };
 }
 
-export type RefreshResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { expired: true };
+export type RefreshResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { expired: true } | {reused:true};
 
 export async function refreshAccessToken(rawToken: string, options?: { userAgent?: string | null; ipAddress?: string | null }): Promise<RefreshResult> {
   const parts = String(rawToken).split('.');
@@ -130,16 +122,18 @@ export async function refreshAccessToken(rawToken: string, options?: { userAgent
   });
   if (rotated.status === 'invalid') return { invalid: true };
   if (rotated.status === 'expired') return { expired: true };
+  if (rotated.status === 'reused') return { reused: true };
 
   const user = await repo.getUserById(rotated.userId);
   if (!user) return { invalid: true };
-  const token = signSessionToken({ id: user.id, email: user.email }, user.token_version, rotated.impersonator);
+  if(rotated.impersonator) await assertAdminCapability(rotated.impersonator.userId,'users.impersonate');
+  const token = signSessionToken({ id: user.id, email: user.email }, user.token_version, rotated.sessionId, rotated.impersonator);
 
   return {
     ok: true, 
     token, 
     refreshToken: rotated.refreshToken,
-    user: buildSessionUser(user, rotated.impersonator)
+    user: await buildSessionUser(user, rotated.impersonator)
   };
 }
 
@@ -153,6 +147,7 @@ export async function impersonateUser(
   targetUserId: string,
   options?: { userAgent?: string | null; ipAddress?: string | null },
 ): Promise<ImpersonationResult> {
+  await assertAdminCapability(actor.userId,'users.impersonate');
   if (!targetUserId || actor.userId === targetUserId) return { invalidTarget: true };
 
   const user = await repo.getUserById(targetUserId);
@@ -167,9 +162,9 @@ export async function impersonateUser(
 
   return {
     ok: true,
-    token: signSessionToken({ id: user.id, email: user.email }, session.tokenVersion, actor),
+    token: signSessionToken({ id: user.id, email: user.email }, session.tokenVersion, session.sessionId, actor),
     refreshToken: session.token,
-    user: buildSessionUser(user, actor),
+    user: await buildSessionUser(user, actor),
   };
 }
 
@@ -181,6 +176,7 @@ export async function stopImpersonation(
   actor: SessionActor,
   options?: { userAgent?: string | null; ipAddress?: string | null },
 ): Promise<StopImpersonationResult> {
+  await assertAdminCapability(actor.userId,'users.impersonate');
   const admin = await repo.getUserById(actor.userId);
   if (!admin || admin.role !== 'admin' || admin.email.trim().toLowerCase() !== actor.email.trim().toLowerCase()) {
     return { invalid: true };
@@ -193,23 +189,19 @@ export async function stopImpersonation(
 
   return {
     ok: true,
-    token: signSessionToken({ id: admin.id, email: admin.email }, session.tokenVersion),
+    token: signSessionToken({ id: admin.id, email: admin.email }, session.tokenVersion, session.sessionId),
     refreshToken: session.token,
-    user: buildSessionUser(admin),
+    user: await buildSessionUser(admin),
   };
 }
 
 export async function logout(rawToken?: string) {
   if (!rawToken) return;
-  const parts = String(rawToken).split('.');
-  if (parts.length === 2 && parts[0]) {
-    await repo.revokeRefreshTokenBySelector(parts[0]);
-  }
+  await repo.revokeRefreshToken(rawToken);
 }
 
 export async function logoutAll(userId: string) {
-  await repo.revokeAllRefreshTokensForUser(userId);
-  await repo.incrementTokenVersion(userId);
+  await repo.revokeSessions(userId);
 }
 
 export type ResendOtpResult = { ok: true } | { alreadyVerified: true };
@@ -220,15 +212,16 @@ export async function resendOtp(email: string, purpose: 'verify' | 'password_res
   
   if (purpose === 'verify' && user.verified_at) return { alreadyVerified: true };
   
-  const code = await repo.issueOtp(user.id, purpose === 'verify' ? 'verify_email' : 'password_reset', null);
+  const code = await repo.issueOtp(user.id, purpose === 'verify' ? 'verify_email' : 'password_reset');
+  if(!code) return {alreadyVerified:true};
   
   if (purpose === 'verify') {
     await sendOtpEmail(email, code);
+    await recordSecurityEvent({eventType:'EMAIL_VERIFICATION_SENT',userId:user.id,metadata:{reason:'verify_resend'}});
   } else {
     await sendResetEmail(email, code);
   }
   
-  logger.info({ email, purpose }, `${purpose === 'verify' ? 'Verification' : 'Password reset'} OTP re-sent`);
   return { ok: true };
 }
 
@@ -236,32 +229,15 @@ export async function createPasswordResetOtp(email: string) {
   const user = await repo.getUserByEmail(email);
   if (!user) return;
   
-  const code = await repo.issueOtp(user.id, 'password_reset', null);
-  await sendResetEmail(email, code);
-  logger.info({ email }, 'Password reset OTP generated');
+  const code = await repo.issueOtp(user.id, 'password_reset');
+  if(code) await sendResetEmail(email, code);
 }
 
 export type ResetPasswordResult = { ok: true } | { invalid: true } | { expired: true };
 
 export async function resetPasswordWithOtp(email: string, code: string, password: string): Promise<ResetPasswordResult> {
-  const user = await repo.getUserByEmail(email);
-  if (!user) return { invalid: true };
-  
-  const otps = await repo.getUnusedOtpsForUser(user.id, 'password_reset');
-  for (const otp of otps) {
-    const ok = await bcrypt.compare(code, otp.otp_hash);
-    if (ok) {
-      await repo.markOtpAsUsed(otp.id);
-      const hash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
-      await repo.resetPasswordAndRevokeSessions(user.id, hash);
-      logger.info({ email }, 'Password reset with OTP');
-      return { ok: true };
-    } else {
-      await repo.incrementOtpAttempts(otp.id);
-    }
-  }
-  
-  return { invalid: true };
+  const result=await repo.consumeOtp(email,code,'password_reset',await bcrypt.hash(password,env.BCRYPT_ROUNDS));
+  return 'ok' in result ? {ok:true} : 'expired' in result ? {expired:true} : {invalid:true};
 }
 
 export async function getCurrentUser(userId: string) {

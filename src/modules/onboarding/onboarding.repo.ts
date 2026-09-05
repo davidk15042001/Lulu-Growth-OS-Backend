@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../../db/pool.js';
+import { rotateStoredCredentials } from '../security/provider-credential.service.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
@@ -1319,7 +1320,7 @@ export async function getPlatformOAuthCredential(workspaceId: string, integratio
      WHERE p.workspace_id = $1 AND p.integration_key = $2 AND p.deleted_at IS NULL`,
     [workspaceId, integrationKey]
   );
-  return rows[0] ?? null;
+  return rows[0] ? rotateStoredCredentials('platform', workspaceId, rows[0].platformId, rows[0]) : null;
 }
 
 export async function updatePlatformOAuthTokens(input: {

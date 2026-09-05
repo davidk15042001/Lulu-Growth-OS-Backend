@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../../db/pool.js';
+import { revokeSessionsInTransaction } from '../auth/auth.repo.js';
 
 export async function listCustomerBillingOverview(periodStart: string, periodEnd: string) {
   const { rows } = await query(`
@@ -156,7 +157,7 @@ export async function listUsers(limit = 100, offset = 0, search?: string) {
       u.role, u.verified_at AS "verifiedAt", u.created_at AS "createdAt",
       u.updated_at AS "updatedAt", u.token_version AS "tokenVersion",
       (SELECT COUNT(*) FROM workspace_members wm WHERE wm.user_id = u.id)::int AS "workspaceCount",
-      (SELECT COUNT(*) FROM refresh_tokens rt WHERE rt.user_id = u.id AND rt.revoked = FALSE)::int AS "activeSessions"
+      (SELECT COUNT(*) FROM auth_sessions s WHERE s.user_id = u.id AND s.revoked_at IS NULL AND s.expires_at>NOW())::int AS "activeSessions"
     FROM users u
     WHERE ${where}
     ORDER BY u.created_at DESC
@@ -187,10 +188,10 @@ export async function getUserDetail(userId: string) {
       ORDER BY wm.role = 'owner' DESC, w.created_at ASC
     `, [userId]),
     query(`
-      SELECT id, selector, user_agent AS "userAgent", ip_address AS "ipAddress",
+      SELECT id, device_label AS "userAgent", NULL::text AS "ipAddress",
              created_at AS "createdAt", last_used_at AS "lastUsedAt",
-             expires_at AS "expiresAt", revoked
-      FROM refresh_tokens
+             expires_at AS "expiresAt", (revoked_at IS NOT NULL) AS revoked
+      FROM auth_sessions
       WHERE user_id = $1
       ORDER BY created_at DESC
       LIMIT 50
@@ -221,21 +222,24 @@ export async function getUserDetail(userId: string) {
 }
 
 export async function updateUserStatus(userId: string, action: 'lock' | 'unlock' | 'verify' | 'reset-sessions') {
+  await withTransaction(async client => {
   switch (action) {
     case 'lock':
-      await query(`UPDATE users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, [userId]);
+      await query(`UPDATE users SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, [userId],client);
+      await revokeSessionsInTransaction(userId,null,'admin_locked',client);
       break;
     case 'unlock':
-      await query(`UPDATE users SET deleted_at = NULL WHERE id = $1`, [userId]);
+      await query(`UPDATE users SET deleted_at = NULL WHERE id = $1`, [userId],client);
       break;
     case 'verify':
-      await query(`UPDATE users SET verified_at = NOW() WHERE id = $1 AND verified_at IS NULL`, [userId]);
+      await query(`UPDATE users SET verified_at = NOW() WHERE id = $1 AND verified_at IS NULL`, [userId],client);
       break;
     case 'reset-sessions':
-      await query(`UPDATE users SET token_version = token_version + 1 WHERE id = $1`, [userId]);
-      await query(`UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE`, [userId]);
+      await query(`UPDATE users SET token_version = token_version + 1 WHERE id = $1`, [userId],client);
+      await revokeSessionsInTransaction(userId,null,'admin_reset',client);
       break;
   }
+  });
   return getUserDetail(userId);
 }
 
@@ -322,6 +326,7 @@ export async function deleteUserAndOwnedData(userId: string) {
     await query(`DELETE FROM workspace_members WHERE user_id = $1`, [userId], client);
     await query(`DELETE FROM device_push_tokens WHERE user_id = $1`, [userId], client);
     await query(`DELETE FROM otp_codes WHERE user_id = $1`, [userId], client);
+    await revokeSessionsInTransaction(userId,null,'admin_deleted',client);
     await query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId], client);
 
     const redactedEmail = `deleted+${user.id}@lulu.local`;

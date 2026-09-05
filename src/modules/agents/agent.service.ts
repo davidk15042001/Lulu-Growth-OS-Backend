@@ -17,7 +17,7 @@ import {
   type AgentPageContext,
 } from './agent.page-context.js';
 import { registerAgentTools } from './agent.tools.js';
-import { decideAgentToolPolicy } from './agent.autonomy-policy.js';
+import { authorizeAgentTool, authorizeAgentIdentity, agentActionDigest } from './agent.authorization.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 
@@ -353,8 +353,8 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
   const tool = step.toolName ? tools.get(step.toolName) : undefined;
   if (step.toolName && !tool) throw new AppError(500, 'AGENT_TOOL_NOT_REGISTERED', `Tool ${step.toolName} is not registered`);
   const toolInput = step.toolInput ?? {};
-  const approvalDecision = typeof toolInput.approvalDecision === 'string' ? toolInput.approvalDecision : null;
-  const policyDecision = decideAgentToolPolicy(tool, autonomous, approvalDecision);
+  const identity = { runId, workspaceId, userId, stepId: step.id };
+  const policyDecision = (await authorizeAgentTool(identity, step.toolName)).decision;
   const effectiveToolInput = {
     ...toolInput,
     policyDecision,
@@ -373,6 +373,7 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
         stepId: step.id,
         toolName: tool.name,
         toolInput: effectiveToolInput,
+        digest: agentActionDigest(toolInput),
       },
     });
     if (!approval) throw new AppError(500, 'AGENT_APPROVAL_CREATION_FAILED', 'The approval request could not be created');
@@ -381,7 +382,7 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
     await event({ runId, stepId: step.id, workspaceId, eventType: 'step.waiting_approval', agentRole: 'executor', payload: { approvalId: approval.id, toolName: tool.name } });
     return { waiting: true, output: undefined };
   }
-  const toolOutput = tool ? await withTimeout(tool.execute(effectiveToolInput, { workspaceId, userId }), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
+  const toolOutput = tool ? await withTimeout(tool.execute(effectiveToolInput, identity), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
   await repo.updateStep(step.id, { status: 'completed', tool_output: toolOutput, result: toolOutput, finished_at: new Date() });
   await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: toolOutput });
   return { waiting: false, output: toolOutput };
@@ -432,6 +433,8 @@ async function executeRun(
       },
     };
     if (isAiGenerationConfigured()) {
+      if (!steps[0]) throw new AppError(403,'AGENT_EXECUTION_FORBIDDEN','Agent synthesis requires a persisted step identity');
+      await authorizeAgentIdentity({workspaceId,userId,runId,stepId:steps[0].id});
       const response = await withTimeout(getOpenAIResponsesClient().create({ model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL, instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: { workspaceId, userId: userId === 'system' ? null : userId } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
       finalResult = { ...finalResult, summary: response.output_text?.trim() ?? null };
     }
@@ -677,13 +680,7 @@ export async function approveStep(workspaceId: string, runId: string, stepId: st
   }
   await repo.updateStep(stepId, {
     status: 'pending',
-    approval_id: null,
-    tool_input: {
-      ...(step.toolInput ?? {}),
-      approvalDecision: 'approved',
-      approvedAt: new Date().toISOString(),
-      approvedBy: userId,
-    },
+    approval_id: step.approvalId,
   });
   await repo.updateRun(runId, { status: 'running', error_code: null, error_message: null });
   await event({ runId, stepId, workspaceId, eventType: 'step.approved', agentRole: 'executor', payload: {} });

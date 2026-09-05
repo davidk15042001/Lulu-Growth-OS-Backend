@@ -5,11 +5,11 @@ import * as repo from './admin.repo.js';
 import * as authService from '../auth/auth.service.js';
 import { setRefreshTokenCookie } from '../auth/auth.controller.js';
 
-const ADMIN_BILLING_EMAIL = 'lulu.ai.cn@gmail.com';
+import { assertAdminCapability } from './admin.authorization.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
-  if (req.user?.role !== 'admin' || req.user.email.trim().toLowerCase() !== ADMIN_BILLING_EMAIL) {
-    forbidden(res, 'Administrator access restricted to the billing administrator account');
+  if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
+    forbidden(res, 'Administrator capability required');
     return false;
   }
   return true;
@@ -99,6 +99,7 @@ export async function patchUser(req: AuthedRequest, res: Response, next: NextFun
     if (!action || !['lock', 'unlock', 'verify', 'reset-sessions'].includes(action)) {
       return res.status(422).json({ success: false, error: { code: 'INVALID_ACTION', message: 'Action must be lock, unlock, verify, or reset-sessions' } });
     }
+    if(action==='verify'||action==='reset-sessions') await assertAdminCapability(req.user!.id,'security.manage');
     const result = await repo.updateUserStatus(userId, action);
     if (!result) return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } });
     return successResponse(res, `User ${action} complete`, result);
@@ -176,6 +177,7 @@ export async function patchWorkspace(req: AuthedRequest, res: Response, next: Ne
       return res.status(422).json({ success: false, error: { code: 'INVALID_ACTION', message: 'Action invalid' } });
     }
     const planKey = typeof req.body?.planKey === 'string' ? req.body.planKey : undefined;
+    if(action==='set-plan'||action==='skip-onboarding') await assertAdminCapability(req.user!.id,'billing.manage');
     const result = await repo.updateWorkspaceStatus(workspaceId, action, planKey);
     if (!result) return res.status(404).json({ success: false, error: { code: 'WORKSPACE_NOT_FOUND', message: 'Workspace not found' } });
     return successResponse(res, `Workspace ${action} complete`, result);

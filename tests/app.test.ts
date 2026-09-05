@@ -47,6 +47,18 @@ describe('HTTP application', () => {
     assert.equal(catalog.body.data.items.length, RESOURCE_CATALOG.length);
   });
 
+  it('exposes privacy-safe landing KPI data without authentication', async () => {
+    const response = await request(createApp()).get('/api/v1/public/landing-kpis');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(typeof response.body.data.generatedAt, 'string');
+    assert.equal(typeof response.body.data.metrics.activeFactories, 'object');
+    assert.equal(Object.keys(response.body.data.metrics).length, 40);
+    assert.deepEqual(response.body.data.breakdowns.factories, []);
+    assert.deepEqual(response.body.data.breakdowns.caseStudies, []);
+  });
+
   it('accepts case-insensitive UTF-8 charset parameters from browsers and proxies', async () => {
     const response = await request(createApp())
       .post('/api/v1/auth/login')

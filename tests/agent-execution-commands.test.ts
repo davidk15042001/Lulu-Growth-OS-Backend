@@ -86,7 +86,7 @@ describe('agent execution commands', () => {
     assert.equal(command.idempotencyKey, 'explicit-command-1');
   });
 
-  it('allows operational commands in fully autonomous mode', () => {
+  it('requires explicit authorization for financial operations even in autonomous mode', () => {
     const [command] = normalizeAgentExecutionCommands(undefined, {
       module: 'finance',
       targetSystem: 'finance',
@@ -101,8 +101,8 @@ describe('agent execution commands', () => {
 
     assert.ok(command);
     const decision = applyExecutionCommandPolicies([command], 'autonomous');
-    assert.equal(decision.overallDecision, 'allow');
-    assert.match(decision.commands[0]?.policyReason ?? '', /without human approval/i);
+    assert.equal(decision.overallDecision, 'require_approval');
+    assert.match(decision.commands[0]?.policyReason ?? '', /human authorization is required/i);
   });
 
   it('allows internal sales follow-up task creation in autonomous mode', () => {

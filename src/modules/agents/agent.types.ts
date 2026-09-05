@@ -25,5 +25,5 @@ export type AgentRunEvent = {
 export type AgentTool = {
   name: string; version: string; risk: 'read' | 'write' | 'external' | 'financial';
   autonomy: 'always_safe' | 'autonomous_only' | 'approval_required';
-  description: string; execute: (input: Record<string, unknown>, context: { workspaceId: string; userId: string }) => Promise<Record<string, unknown>>;
+  description: string; execute: (input: Record<string, unknown>, context: { workspaceId: string; userId: string; runId: string; stepId: string }) => Promise<Record<string, unknown>>;
 };

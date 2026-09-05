@@ -1625,30 +1625,6 @@ export const canonicalAgentPageProfiles: readonly CanonicalAgentPageProfile[] = 
   },
   {
     "sectionLabel": "CRM",
-    "pageId": "bright-meadow-7537",
-    "pageLabel": "Overview",
-    "agentName": "CRM Lead Agent",
-    "autonomy": "A2",
-    "objective": "Keep the CRM healthy as one system.",
-    "integrations": [
-      "CRM records",
-      "tasks",
-      "activities"
-    ],
-    "jobs": [
-      "audit hygiene",
-      "summarize state"
-    ],
-    "successMetrics": [
-      "CRM completeness",
-      "CRM hygiene"
-    ],
-    "approvalGates": [
-      "bulk edits"
-    ]
-  },
-  {
-    "sectionLabel": "CRM",
     "pageId": "sturdy-month-1562",
     "pageLabel": "Contacts",
     "agentName": "Contact Agent",
@@ -1697,78 +1673,6 @@ export const canonicalAgentPageProfiles: readonly CanonicalAgentPageProfile[] = 
   },
   {
     "sectionLabel": "CRM",
-    "pageId": "swift-hour-7844",
-    "pageLabel": "Leads",
-    "agentName": "CRM Lead Agent",
-    "autonomy": "A3",
-    "objective": "Turn inbound contacts into qualified leads.",
-    "integrations": [
-      "Forms",
-      "imports",
-      "enrichment"
-    ],
-    "jobs": [
-      "score leads",
-      "classify leads"
-    ],
-    "successMetrics": [
-      "qualification speed",
-      "lead quality"
-    ],
-    "approvalGates": [
-      "external outreach"
-    ]
-  },
-  {
-    "sectionLabel": "CRM",
-    "pageId": "smartly-shade-4619",
-    "pageLabel": "Deals",
-    "agentName": "CRM Deal Agent",
-    "autonomy": "A3",
-    "objective": "Improve CRM deal execution.",
-    "integrations": [
-      "Pipeline",
-      "contacts",
-      "notes"
-    ],
-    "jobs": [
-      "update next steps",
-      "flag blockers"
-    ],
-    "successMetrics": [
-      "deal progression speed",
-      "close probability"
-    ],
-    "approvalGates": [
-      "offers or commitments"
-    ]
-  },
-  {
-    "sectionLabel": "CRM",
-    "pageId": "calmly-cloud-9988",
-    "pageLabel": "Pipeline",
-    "agentName": "CRM Pipeline Agent",
-    "autonomy": "A2",
-    "objective": "Preserve a clean, useful pipeline.",
-    "integrations": [
-      "CRM stages",
-      "owners",
-      "activities"
-    ],
-    "jobs": [
-      "detect stagnation",
-      "suggest stage moves"
-    ],
-    "successMetrics": [
-      "stalled-deal reduction",
-      "pipeline clarity"
-    ],
-    "approvalGates": [
-      "bulk stage changes"
-    ]
-  },
-  {
-    "sectionLabel": "CRM",
     "pageId": "cosmic-pool-1616",
     "pageLabel": "Activities",
     "agentName": "CRM Activity Agent",
@@ -1813,31 +1717,6 @@ export const canonicalAgentPageProfiles: readonly CanonicalAgentPageProfile[] = 
     ],
     "approvalGates": [
       "external writes"
-    ]
-  },
-  {
-    "sectionLabel": "CRM",
-    "pageId": "sunnily-gulf-7520",
-    "pageLabel": "Customer Segments",
-    "agentName": "CRM Segmentation Agent",
-    "autonomy": "A2",
-    "objective": "Create usable CRM segments.",
-    "integrations": [
-      "Contacts",
-      "companies",
-      "revenue",
-      "behavior"
-    ],
-    "jobs": [
-      "compute segments",
-      "refresh labels"
-    ],
-    "successMetrics": [
-      "segmentation adoption",
-      "segment accuracy"
-    ],
-    "approvalGates": [
-      "external activation"
     ]
   },
   {

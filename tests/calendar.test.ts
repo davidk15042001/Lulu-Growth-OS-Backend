@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { before, after, describe, it } from 'node:test';
+import { env } from '../src/config/env.js';
 import { encryptSecret } from '../src/utils/secret-box.js';
 import {
   normalizeCalcomBaseUrl,
@@ -8,6 +9,9 @@ import {
 import { tokenConnectSchema } from '../src/modules/calendar/calendar.validator.js';
 import { mergeCalendarEvents } from '../src/modules/calendar/calendar.merge.js';
 import type { CalendarAccountCredential, CalendarEvent } from '../src/modules/calendar/calendar.types.js';
+const previousCredentialKey=env.PROVIDER_CREDENTIAL_KEY;
+before(()=>{env.PROVIDER_CREDENTIAL_KEY='71'.repeat(32);});
+after(()=>{env.PROVIDER_CREDENTIAL_KEY=previousCredentialKey;});
 
 function calendarEvent(overrides: Partial<CalendarEvent>): CalendarEvent {
   const now = new Date().toISOString();

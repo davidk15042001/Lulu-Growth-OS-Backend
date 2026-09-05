@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { env } from '../../config/env.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
@@ -8,7 +9,7 @@ import type { WebsiteGenerationActivity } from './website.activity.js';
 function mapSite(row: any, domains: WebsiteDomain[] = []): WebsiteSite {
   return { id: row.id, workspaceId: row.workspaceId, provider: row.provider, ownershipMode: row.ownershipMode, name: row.name, externalSiteId: row.externalSiteId ?? null, externalSiteUrl: row.externalSiteUrl ?? null, status: row.status, settings: row.settings ?? {}, domains, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
-function mapDomain(row: any): WebsiteDomain { return { id: row.id, siteId: row.siteId, hostname: row.hostname, verificationToken: row.verificationToken, verificationMethod: row.verificationMethod, status: row.status, verifiedAt: row.verifiedAt ?? null, lastError: row.lastError ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt }; }
+function mapDomain(row: any): WebsiteDomain { return { id: row.id, siteId: row.siteId, hostname: row.hostname, verificationToken: row.verificationToken, recordName: `_lulu-verification.${row.hostname}`, expiresAt: row.expiresAt, verificationMethod: row.verificationMethod, status: row.status, verifiedAt: row.verifiedAt ?? null, lastError: row.lastError ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt }; }
 function mapJob(row: any): WebsiteGenerationJob {
   return {
     id: row.id,
@@ -31,7 +32,7 @@ function mapJob(row: any): WebsiteGenerationJob {
 }
 
 const siteSelect = `SELECT id, workspace_id AS "workspaceId", provider, ownership_mode AS "ownershipMode", name, external_site_id AS "externalSiteId", external_site_url AS "externalSiteUrl", status, settings, created_at AS "createdAt", updated_at AS "updatedAt" FROM workspace_sites`;
-const domainSelect = `SELECT id, site_id AS "siteId", hostname, verification_token AS "verificationToken", verification_method AS "verificationMethod", status, verified_at AS "verifiedAt", last_error AS "lastError", created_at AS "createdAt", updated_at AS "updatedAt" FROM workspace_site_domains`;
+const domainSelect = `SELECT id, site_id AS "siteId", hostname, verification_token AS "verificationToken", expires_at AS "expiresAt", verification_method AS "verificationMethod", status, verified_at AS "verifiedAt", last_error AS "lastError", created_at AS "createdAt", updated_at AS "updatedAt" FROM workspace_site_domains`;
 const jobSelect = `SELECT id, site_id AS "siteId", prompt, status, plan, preview, provider_result AS "providerResult", error_code AS "errorCode", error_message AS "errorMessage", created_by AS "createdBy", requested_language AS "requestedLanguage", auto_publish AS "autoPublish", attempt_count AS "attemptCount", heartbeat_at AS "heartbeatAt", created_at AS "createdAt", updated_at AS "updatedAt" FROM website_generation_jobs`;
 
 export async function listSites(workspaceId: string) {
@@ -102,13 +103,9 @@ export async function createSite(input: { workspaceId: string; provider: string;
 }
 export async function createDomain(siteId: string, hostname: string) {
   const token = `lulu-site=${randomBytes(18).toString('hex')}`;
-  const result = await query<any>(`INSERT INTO workspace_site_domains (site_id, hostname, verification_token) VALUES ($1, lower($2), $3) RETURNING id`, [siteId, hostname.trim(), token]);
+  const result = await query<any>(`INSERT INTO workspace_site_domains (site_id, hostname, verification_token, expires_at) VALUES ($1, lower($2), $3, NOW()+$4*INTERVAL '1 hour') RETURNING id`, [siteId, hostname.trim(), token, env.DOMAIN_VERIFICATION_TTL_HOURS]);
   const domain = await query<any>(`${domainSelect} WHERE id = $1`, [result.rows[0].id]);
   return mapDomain(domain.rows[0]);
-}
-export async function markDomainVerified(siteId: string, domainId: string) {
-  const result = await query<any>(`UPDATE workspace_site_domains SET status = 'verified', verified_at = NOW(), last_error = NULL WHERE id = $1 AND site_id = $2 RETURNING id`, [domainId, siteId]);
-  return result.rowCount ? true : false;
 }
 export async function createJob(input: { siteId: string; prompt: string; createdBy: string; requestedLanguage?: string; autoPublish?: boolean; preview?: Record<string, unknown> }) {
   const createdJobId = await withTransaction(async (client) => {

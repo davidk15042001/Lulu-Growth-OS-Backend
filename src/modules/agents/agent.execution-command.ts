@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { evaluateAgentActionPolicy } from './agent.autonomy-policy.js';
 import { z } from 'zod';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 
@@ -357,7 +358,8 @@ export function normalizeAgentExecutionCommands(value: unknown, context: InferCo
   if (Array.isArray(value) && value.length > 0) {
     const parsed = value.flatMap((item) => {
       const result = agentExecutionCommandSchema.safeParse(item);
-      return result.success ? [result.data] : [];
+      if (!result.success) throw new Error('Agent command forbidden: invalid or unregistered action');
+      return [result.data];
     });
     if (parsed.length > 0) {
       return parsed.map((command) => ({
@@ -389,34 +391,9 @@ export function decideExecutionCommandPolicy(
   command: AgentExecutionCommand,
   executionMode: 'analysis_only' | 'autonomous',
 ): AgentExecutionCommandPolicy {
-  if (isBudgetCommand(command)) {
-    return { decision: 'require_approval', reason: 'Budget changes are never executed automatically; they are suggestions only.' };
-  }
-  if (executionMode === 'autonomous') {
-    return { decision: 'allow', reason: 'Fully autonomous mode executes all commands without human approval.' };
-  }
-  if (command.type === 'record.create_artifact') {
-    return { decision: 'allow', reason: 'Internal artifact creation is safe.' };
-  }
-  if (command.type === 'crm.create_followup_task' || command.type === 'sales.create_followup_task') {
-    return { decision: 'require_approval', reason: 'Task creation requires autonomous mode or a human approval.' };
-  }
-  if (command.type === 'email.create_ai_draft') {
-    return { decision: 'require_approval', reason: 'Draft preparation outside autonomous mode should be reviewed first.' };
-  }
-  if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation' || command.type === 'email.create_draft') {
-    return { decision: 'require_approval', reason: `Command ${command.type} affects an operational workflow and must be reviewed.` };
-  }
-  if (command.type === 'google_reviews.reply' || command.type === 'website.publish_job') {
-    return { decision: 'require_approval', reason: `Command ${command.type} has direct external impact and always requires approval.` };
-  }
-  if (command.type === 'ecommerce.generate_product_images') {
-    return { decision: 'require_approval', reason: 'Product image generation outside autonomous mode should be reviewed first.' };
-  }
-  if (command.riskLevel === 'high') {
-    return { decision: 'require_approval', reason: `High-risk command ${command.type} requires explicit approval.` };
-  }
-  return { decision: 'allow', reason: `Command ${command.type} is allowed by the default safe policy.` };
+  return evaluateAgentActionPolicy(command.type,executionMode==='autonomous',{
+    highRisk:command.riskLevel==='high',budgetProtected:isBudgetCommand(command),
+  });
 }
 
 export function applyExecutionCommandPolicies(

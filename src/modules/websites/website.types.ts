@@ -1,7 +1,7 @@
 export type WebsiteProvider = 'wordpress' | 'webflow' | 'managed';
 export type OwnershipMode = 'connected' | 'managed';
 export type WebsiteStatus = 'draft' | 'connected' | 'generating' | 'preview' | 'publishing' | 'published' | 'error' | 'disconnected';
-export type DomainStatus = 'pending' | 'verified' | 'failed' | 'removed';
+export type DomainStatus = 'pending' | 'verifying' | 'verified' | 'failed' | 'expired' | 'removed';
 export type WebsiteJobStatus = 'queued' | 'planning' | 'generated' | 'preview' | 'publishing' | 'published' | 'failed' | 'cancelled';
 export type WebsiteGenerationTargetMode = 'existing' | 'new';
 
@@ -25,6 +25,8 @@ export type WebsiteDomain = {
   siteId: string;
   hostname: string;
   verificationToken: string;
+  expiresAt: string;
+  recordName: string;
   verificationMethod: 'dns_txt' | 'dns_cname';
   status: DomainStatus;
   verifiedAt: string | null;

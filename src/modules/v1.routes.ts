@@ -10,6 +10,7 @@ import billingRoutes from './billing/billing.routes.js';
 import adminRoutes from './admin/admin.routes.js';
 import emailOAuthRoutes from './email/email.oauth.routes.js';
 import calendarOAuthRoutes from './calendar/calendar.oauth.routes.js';
+import publicRoutes from './public/public.routes.js';
 
 const router = Router();
 
@@ -55,6 +56,7 @@ router.use('/billing', billingRoutes);
 router.use('/admin', adminRoutes);
 router.use('/email', emailOAuthRoutes);
 router.use('/calendar', calendarOAuthRoutes);
+router.use('/public', publicRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;

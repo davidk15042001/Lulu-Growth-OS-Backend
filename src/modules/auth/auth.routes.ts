@@ -22,13 +22,15 @@ const loginAccountLimiter = dbRateLimit({ keyPrefix: 'auth-login-account', windo
 const refreshLimiter = dbRateLimit({ keyPrefix: 'auth-refresh', windowMs: 60 * 60 * 1000, limit: 120, message: authLimitMessage });
 const passwordResetIpLimiter = dbRateLimit({ keyPrefix: 'auth-password-reset-ip', windowMs: 60 * 60 * 1000, limit: 10, message: authLimitMessage });
 const passwordResetAccountLimiter = dbRateLimit({ keyPrefix: 'auth-password-reset-account', windowMs: 60 * 60 * 1000, limit: 5, message: authLimitMessage, identifier: emailIdentifier });
+const verificationAccountLimiter = dbRateLimit({keyPrefix:'auth-verify-account',windowMs:15*60*1000,limit:20,message:authLimitMessage,identifier:emailIdentifier});
+const resendAccountLimiter = dbRateLimit({keyPrefix:'auth-resend-account',windowMs:60*60*1000,limit:5,message:authLimitMessage,identifier:emailIdentifier});
 
 router.route('/register')
   .post(registrationLimiter, controller.register)
   .all(methodNotAllowed);
 
 router.route('/verify-otp')
-  .post(otpLimiter, controller.verifyOtp)
+  .post(otpLimiter, verificationAccountLimiter, controller.verifyOtp)
   .all(methodNotAllowed);
 
 router.route('/login')
@@ -52,7 +54,7 @@ router.route('/forgot-password')
   .all(methodNotAllowed);
 
 router.route('/resend-otp')
-  .post(otpLimiter, controller.resendOtp)
+  .post(otpLimiter, resendAccountLimiter, controller.resendOtp)
   .all(methodNotAllowed);
 
 router.route('/reset-password')
@@ -67,5 +69,9 @@ router.route('/me')
 router.route('/impersonation/stop')
   .post(requireAuth, controller.stopImpersonation)
   .all(methodNotAllowed);
+
+router.route('/sessions').get(requireAuth,controller.sessions).all(methodNotAllowed);
+router.route('/sessions/revoke-others').post(requireAuth,controller.revokeOtherSessions).all(methodNotAllowed);
+router.route('/sessions/:sessionId').delete(requireAuth,controller.revokeSession).all(methodNotAllowed);
 
 export default router;

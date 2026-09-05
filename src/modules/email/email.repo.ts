@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../../db/pool.js';
+import { rotateStoredCredentials } from '../security/provider-credential.service.js';
 import type { PoolClient } from 'pg';
 import type { EmailAccount, EmailAccountCredential, EmailProvider, ProviderFolder, ProviderMessage } from './email.types.js';
 import type { CreateDraftInput, CreateRuleInput, ListThreadsQuery, UpdateDraftInput, UpdateRuleInput } from './email.validator.js';
@@ -35,7 +36,7 @@ export async function listAccounts(workspaceId: string) {
 
 export async function findAccount(workspaceId: string, accountId: string) {
   const { rows } = await query<EmailAccountCredential>(`SELECT ${credentialSelect} FROM email_accounts WHERE workspace_id = $1 AND id = $2`, [workspaceId, accountId]);
-  return rows[0] ?? null;
+  return rows[0] ? rotateStoredCredentials('email', workspaceId, accountId, rows[0]) : null;
 }
 
 export async function upsertOAuthAccount(input: {

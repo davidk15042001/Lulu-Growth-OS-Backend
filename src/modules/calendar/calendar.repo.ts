@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../../db/pool.js';
+import { rotateStoredCredentials } from '../security/provider-credential.service.js';
 import type { PoolClient } from 'pg';
 import type { CalendarAccount, CalendarAccountCredential, CalendarEvent, CalendarSyncJob, CalendarProvider, ProviderCalendarEvent } from './calendar.types.js';
 import type { ListEventsQuery } from './calendar.validator.js';
@@ -79,7 +80,7 @@ export async function findAccount(workspaceId: string, accountId: string) {
       WHERE workspace_id = $1 AND id = $2`,
     [workspaceId, accountId],
   );
-  return rows[0] ?? null;
+  return rows[0] ? rotateStoredCredentials('calendar', workspaceId, accountId, rows[0]) : null;
 }
 
 export async function upsertOAuthAccount(input: {

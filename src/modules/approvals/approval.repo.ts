@@ -153,8 +153,13 @@ export async function decideApproval(
     const { rows } = await query<Approval>(
       `UPDATE approval_requests
        SET status = $4, decision_note = $5, decided_by = $3, decided_at = NOW()
-       WHERE workspace_id = $1 AND id = $2 AND status = 'pending'
+      WHERE workspace_id = $1 AND id = $2 AND status = 'pending'
          AND (expires_at IS NULL OR expires_at > NOW())
+         AND (action_type NOT LIKE 'agent_%' OR EXISTS (
+           SELECT 1 FROM workspace_members m JOIN users u ON u.id=m.user_id
+           WHERE m.workspace_id=$1 AND m.user_id=$3 AND m.role IN ('owner','admin')
+             AND u.verified_at IS NOT NULL AND u.deleted_at IS NULL
+         ))
          ${assignmentCondition}
        RETURNING ${approvalSelect}`,
       values,

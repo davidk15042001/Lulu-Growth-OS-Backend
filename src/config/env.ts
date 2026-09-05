@@ -38,8 +38,13 @@ const EnvSchema = z
     CONTENT_JOB_LEASE_SECONDS: z.coerce.number().int().min(60).max(3_600).default(1_800),
     CONTENT_JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
-    ACCESS_TOKEN_TTL: z.string().min(2).default('7d'),
-    REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(3650).default(3650),
+    ACCESS_TOKEN_TTL: z.string().regex(/^([1-9]\d*)(s|m|h|d)$/).default('15m'),
+    REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(3650).default(30).transform(days => Math.min(days, 90)),
+    PROVIDER_CREDENTIAL_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+    PROVIDER_CREDENTIAL_KEY_VERSION: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/).default('1'),
+    PROVIDER_CREDENTIAL_PREVIOUS_KEYS: z.string().optional(),
+    PROVIDER_CREDENTIAL_LEGACY_KEY: z.string().min(32).optional(),
+    DOMAIN_VERIFICATION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
     REFRESH_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).optional(),
     BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
     OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
@@ -155,6 +160,12 @@ const EnvSchema = z
     }
     if (data.AI_PROVIDER === 'groq' && !data.GROQ_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['GROQ_API_KEY'], message: 'GROQ_API_KEY is required when AI_PROVIDER=groq in production' });
+    }
+    if (!data.PROVIDER_CREDENTIAL_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PROVIDER_CREDENTIAL_KEY'], message: 'PROVIDER_CREDENTIAL_KEY is required in production' });
+    }
+    if (data.PROVIDER_CREDENTIAL_KEY && crypto.createHash('sha256').update(data.JWT_SECRET, 'utf8').digest('hex').toLowerCase() === data.PROVIDER_CREDENTIAL_KEY.toLowerCase()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PROVIDER_CREDENTIAL_KEY'], message: 'PROVIDER_CREDENTIAL_KEY must be independent from JWT_SECRET' });
     }
 
     const required: Array<keyof typeof data> = ['DATABASE_URL', 'CORS_ORIGIN'];

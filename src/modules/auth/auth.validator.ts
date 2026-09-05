@@ -19,7 +19,7 @@ export const registerSchema = z.object({
 
 export const verifyOtpSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
-  code: z.string().length(6),
+  code: z.string().regex(/^\d{6}$/),
 });
 
 export const loginSchema = z.object({
@@ -37,7 +37,7 @@ export const forgotPasswordSchema = z.object({
 
 export const resetPasswordSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
-  code: z.string().length(6),
+  code: z.string().regex(/^\d{6}$/),
   password: strongPassword(12),
 });
 

@@ -1,4 +1,5 @@
 import { isResourceType, type ResourceType } from '../../domain/resource-catalog.js';
+import { registerAgentActionPacket, type AgentExecutionIdentity } from './agent.authorization.js';
 import * as agentRepo from './agent.repo.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import * as recordRepo from '../records/record.repo.js';
@@ -488,7 +489,7 @@ async function reputationSnapshot(input: AgentSnapshotInput, workspaceId: string
   };
 }
 
-async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: string, userId: string) {
+async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: string, userId: string, identity: AgentExecutionIdentity) {
   const resourceType = normalizeActionResourceType(input.actionResourceType);
   const jobs = parseStringList(input.jobs);
   const approvalGates = parseStringList(input.approvalGates);
@@ -497,8 +498,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const goal = compactText(input.goal, 400);
   const executionMode = compactText(input.executionMode, 40) || 'analysis_only';
   const policyDecision = compactText((input as Record<string, unknown>).policyDecision, 40) || 'require_approval';
-  const approvedBy = compactText((input as Record<string, unknown>).approvedBy, 120) || userId;
-  const approvedAt = compactText((input as Record<string, unknown>).approvedAt, 120) || null;
+  const approvedBy = null;
+  const approvedAt = null;
   const targetSystem = resolveTargetSystem(module, resourceType);
   const normalizedCommands = normalizeAgentExecutionCommands(input.commands, {
     module,
@@ -552,7 +553,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
     status: 'approved',
-    stage: executionReady ? 'queued_for_execution' : 'waiting_approval',
+    stage: 'waiting_approval',
     source: 'page_agent',
     tags: [module, resourceType, ...(input.pageId ? [String(input.pageId)] : [])].slice(0, 12),
     data: {
@@ -566,7 +567,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       executionMode,
       policyDecision: effectivePolicyDecision,
       approvalStatus,
-      executionReady,
+      executionReady: false,
       executionStatus: executionReady ? 'queued' : 'waiting_approval',
       targetSystem,
       targetModule: module,
@@ -577,11 +578,12 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       budgetProtected,
       approvedBy,
       approvedAt,
-      approvedAutomatically: approvedBy === 'system',
+      approvedAutomatically: false,
       createdByAgent: true,
       createdAt: new Date().toISOString(),
     },
   });
+  const authorization = await registerAgentActionPacket(identity,record,commands);
   return {
     snapshotType: 'page_action_writeback',
     module,
@@ -593,8 +595,9 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     approvalGates,
     executionMode,
     policyDecision: effectivePolicyDecision,
-    approvalStatus,
-    executionReady,
+    approvalStatus: authorization.executionReady ? 'not_required' : 'pending',
+    executionReady: authorization.executionReady,
+    approvalId: authorization.approvalId,
     targetSystem,
     commandTypes,
     requiresHumanReviewReason,
@@ -671,6 +674,6 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     risk: 'write',
     autonomy: 'autonomous_only',
     description: 'Creates an approval-gated action packet record for the page-specific backend specialist.',
-    execute: async (input, context) => pageActionWriteback(input as AgentSnapshotInput, context.workspaceId, context.userId),
+    execute: async (input, context) => pageActionWriteback(input as AgentSnapshotInput, context.workspaceId, context.userId, context),
   });
 }

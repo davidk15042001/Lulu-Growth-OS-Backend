@@ -1,4 +1,5 @@
 import { logger } from '../../config/logger.js';
+import { executeAuthorizedAgentPacket, releaseApprovedAgentPackets } from './agent.authorization.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as recordRepo from '../records/record.repo.js';
 import { createAiDraft, createDraft } from '../email/email.service.js';
@@ -386,10 +387,7 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     provider: textValue(data.provider) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
   });
-  const commandResults: Array<{ type: string; resultRecordId: string }> = [];
-  for (const command of commands) {
-    commandResults.push(await executeAgentCommand(record, command));
-  }
+  const commandResults = await executeAuthorizedAgentPacket(record,commands,command=>executeAgentCommand(record,command));
   const artifacts = await createExecutionArtifacts(record);
   const commandResultEntries: Array<{ id: string; resourceType: ResourceType }> = commands.flatMap((command, index) => {
     const resultId = commandResults[index]?.resultRecordId;
@@ -475,6 +473,7 @@ export async function runAgentExecutionCycle() {
   if (running) return;
   running = true;
   try {
+    await releaseApprovedAgentPackets();
     const claimed = await recordRepo.claimExecutionReadyRecords(batchSize);
     for (const record of claimed) {
       try {
@@ -491,16 +490,21 @@ export async function runAgentExecutionCycle() {
   }
 }
 
-export function startAgentExecutionWorker() {
-  if (timer) return;
+export function registerAgentExecutionHandlers() {
   registerDomainEventHandler({
     name: 'agents.execution-record-wakeup.v1',
-    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED],
-    handle() {
-      void runAgentExecutionCycle();
+    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.APPROVAL_DECIDED],
+    async handle(event) {
+      if(event.type===DOMAIN_EVENT_TYPES.APPROVAL_DECIDED) await releaseApprovedAgentPackets(event.workspaceId ?? undefined,event.aggregateId ?? undefined);
+      await runAgentExecutionCycle();
       return { woken: true };
     },
   });
+}
+
+export function startAgentExecutionWorker() {
+  if (timer) return;
+  registerAgentExecutionHandlers();
   timer = setInterval(() => void runAgentExecutionCycle(), intervalMs);
   timer.unref();
   void runAgentExecutionCycle();

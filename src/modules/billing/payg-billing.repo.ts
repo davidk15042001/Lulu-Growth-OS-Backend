@@ -4,25 +4,17 @@ import { AppError } from '../../utils/app-error.js';
 
 const nextBerlinMondaySql = `(date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days') AT TIME ZONE 'Europe/Berlin'`;
 const currentBerlinMondaySql = `date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin'`;
-export const ADMIN_BILLING_EMAIL = 'lulu.ai.cn@gmail.com';
+import { hasAdminCapability } from '../admin/admin.authorization.js';
 
 export const AWS_USAGE_CUSTOMER_MULTIPLIER = 2;
 
 export async function isBillingAdminUser(userId?: string | null) {
-  if (!userId) return false;
-  const { rows } = await query<{ email: string; role: 'user' | 'admin' }>(
-    `SELECT email, role
-     FROM users
-     WHERE id=$1`,
-    [userId],
-  );
-  const user = rows[0];
-  return user?.role === 'admin' && String(user.email ?? '').trim().toLowerCase() === ADMIN_BILLING_EMAIL;
+  return hasAdminCapability(userId,'billing.bypass');
 }
 
 async function isAdminOwnedWorkspace(workspaceId: string) {
-  const { rows } = await query<{ email: string; role: 'user' | 'admin' }>(
-    `SELECT u.email, u.role
+  const { rows } = await query<{ id: string }>(
+    `SELECT u.id
      FROM workspace_members wm
      JOIN users u ON u.id = wm.user_id
      WHERE wm.workspace_id = $1 AND wm.role = 'owner'
@@ -31,7 +23,7 @@ async function isAdminOwnedWorkspace(workspaceId: string) {
     [workspaceId],
   );
   const owner = rows[0];
-  return owner?.role === 'admin' && String(owner.email ?? '').trim().toLowerCase() === ADMIN_BILLING_EMAIL;
+  return hasAdminCapability(owner?.id,'billing.bypass');
 }
 
 export type PaygPeriod = {

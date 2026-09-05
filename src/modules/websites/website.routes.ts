@@ -14,6 +14,7 @@ router.route('/sync-provider').post(requireWorkspaceEditor, controller.syncProvi
 router.route('/cleanup-provider').post(requireWorkspaceEditor, controller.cleanupProvider).all(methodNotAllowed);
 router.route('/:siteId/domains').post(requireWorkspaceEditor, controller.addDomain).all(methodNotAllowed);
 router.route('/:siteId/domains/:domainId/verify').post(requireWorkspaceEditor, controller.verifyDomain).all(methodNotAllowed);
+router.route('/:siteId/domains/:domainId/renew').post(requireWorkspaceEditor, controller.renewDomain).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs').post(requireWorkspaceEditor, controller.createJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/active').get(controller.getActiveJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId').get(controller.getJob).all(methodNotAllowed);
