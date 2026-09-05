@@ -161,9 +161,11 @@ const EnvSchema = z
     if (data.AI_PROVIDER === 'groq' && !data.GROQ_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['GROQ_API_KEY'], message: 'GROQ_API_KEY is required when AI_PROVIDER=groq in production' });
     }
-    if (!data.PROVIDER_CREDENTIAL_KEY) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PROVIDER_CREDENTIAL_KEY'], message: 'PROVIDER_CREDENTIAL_KEY is required in production' });
-    }
+    // Provider credentials may predate the dedicated encryption key.  Keeping
+    // the key optional lets those legacy v1 credentials remain readable while
+    // the application is being upgraded. New provider credentials are still
+    // rejected by secret-box until an independent key is configured, rather
+    // than falling back to the JWT signing secret for new writes.
     if (data.PROVIDER_CREDENTIAL_KEY && crypto.createHash('sha256').update(data.JWT_SECRET, 'utf8').digest('hex').toLowerCase() === data.PROVIDER_CREDENTIAL_KEY.toLowerCase()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PROVIDER_CREDENTIAL_KEY'], message: 'PROVIDER_CREDENTIAL_KEY must be independent from JWT_SECRET' });
     }
