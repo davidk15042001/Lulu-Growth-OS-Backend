@@ -249,6 +249,15 @@ export async function getIntegrations(req: AuthedRequest, res: Response, next: N
   } catch (error) { next(error); }
 }
 
+export async function getOAuthConnections(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const { limit, offset, search } = paginate(req);
+    const connections = await repo.listOAuthConnections(limit, offset, search);
+    return successResponse(res, 'OAuth connections loaded', { connections, limit, offset });
+  } catch (error) { next(error); }
+}
+
 export async function getApprovals(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     if (!requireAdmin(req, res)) return;

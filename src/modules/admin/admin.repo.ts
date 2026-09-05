@@ -584,6 +584,116 @@ export async function listIntegrations(limit = 100, offset = 0) {
   return rows;
 }
 
+/**
+ * Return every persisted external OAuth connection without exposing secrets.
+ * OAuth is currently stored in three domain-specific tables, so this view
+ * deliberately normalizes their operational metadata for the admin console.
+ */
+export async function listOAuthConnections(limit = 100, offset = 0, search?: string) {
+  const searchPattern = search?.trim() ? `%${search.trim()}%` : null;
+  const { rows } = await query(`
+    WITH oauth_connections AS (
+      SELECT
+        p.id,
+        'platform'::text AS "connectionType",
+        COALESCE(c.provider, p.integration_key) AS provider,
+        p.name AS "displayName",
+        p.workspace_id AS "workspaceId",
+        w.name AS "workspaceName",
+        p.connection_status AS "sourceStatus",
+        CASE WHEN c.platform_id IS NULL THEN 'missing_credentials' ELSE p.connection_status END AS status,
+        (c.platform_id IS NOT NULL) AS "hasCredentials",
+        p.external_account_id AS "accountIdentifier",
+        p.granted_scopes AS scopes,
+        c.token_expires_at AS "tokenExpiresAt",
+        p.last_synced_at AS "lastSyncedAt",
+        p.last_error AS "lastError",
+        p.created_at AS "connectedAt",
+        p.updated_at AS "updatedAt"
+      FROM workspace_platforms p
+      LEFT JOIN workspace_platform_oauth_credentials c ON c.platform_id = p.id
+      JOIN workspaces w ON w.id = p.workspace_id
+      WHERE p.deleted_at IS NULL
+        AND w.deleted_at IS NULL
+        AND (
+          c.platform_id IS NOT NULL
+          OR p.integration_key IN (
+            'salesforce', 'pipedrive', 'hubspot', 'google-ads',
+            'google-analytics', 'google-business', 'meta', 'linkedin',
+            'webflow', 'wordpress', 'shopify'
+          )
+        )
+
+      UNION ALL
+
+      SELECT
+        a.id,
+        'email'::text AS "connectionType",
+        a.provider,
+        COALESCE(NULLIF(a.display_name, ''), a.email_address) AS "displayName",
+        a.workspace_id AS "workspaceId",
+        w.name AS "workspaceName",
+        a.status AS "sourceStatus",
+        CASE
+          WHEN a.encrypted_access_token IS NULL AND a.encrypted_refresh_token IS NULL THEN 'missing_credentials'
+          ELSE a.status
+        END AS status,
+        (a.encrypted_access_token IS NOT NULL OR a.encrypted_refresh_token IS NOT NULL) AS "hasCredentials",
+        a.email_address AS "accountIdentifier",
+        NULL::text[] AS scopes,
+        a.token_expires_at AS "tokenExpiresAt",
+        a.last_sync_at AS "lastSyncedAt",
+        NULLIF(CONCAT_WS(': ', NULLIF(a.last_error_code, ''), NULLIF(a.last_error_message, '')), '') AS "lastError",
+        a.created_at AS "connectedAt",
+        a.updated_at AS "updatedAt"
+      FROM email_accounts a
+      JOIN workspaces w ON w.id = a.workspace_id
+      WHERE w.deleted_at IS NULL
+        AND a.provider IN ('google', 'microsoft')
+
+      UNION ALL
+
+      SELECT
+        a.id,
+        'calendar'::text AS "connectionType",
+        a.provider,
+        COALESCE(NULLIF(a.display_name, ''), a.email_address, a.external_account_id, a.provider) AS "displayName",
+        a.workspace_id AS "workspaceId",
+        w.name AS "workspaceName",
+        a.status AS "sourceStatus",
+        CASE
+          WHEN a.encrypted_access_token IS NULL AND a.encrypted_refresh_token IS NULL THEN 'missing_credentials'
+          ELSE a.status
+        END AS status,
+        (a.encrypted_access_token IS NOT NULL OR a.encrypted_refresh_token IS NOT NULL) AS "hasCredentials",
+        COALESCE(a.email_address, a.external_account_id) AS "accountIdentifier",
+        NULL::text[] AS scopes,
+        a.token_expires_at AS "tokenExpiresAt",
+        a.last_sync_at AS "lastSyncedAt",
+        NULLIF(CONCAT_WS(': ', NULLIF(a.last_error_code, ''), NULLIF(a.last_error_message, '')), '') AS "lastError",
+        a.created_at AS "connectedAt",
+        a.updated_at AS "updatedAt"
+      FROM calendar_accounts a
+      JOIN workspaces w ON w.id = a.workspace_id
+      WHERE w.deleted_at IS NULL
+        AND a.provider IN ('google', 'microsoft')
+    )
+    SELECT
+      id, "connectionType", provider, "displayName", "workspaceId", "workspaceName",
+      "sourceStatus", status, "hasCredentials", "accountIdentifier", scopes,
+      "tokenExpiresAt", "lastSyncedAt", "lastError", "connectedAt", "updatedAt"
+    FROM oauth_connections
+    WHERE ($3::text IS NULL OR
+      provider ILIKE $3 OR
+      "displayName" ILIKE $3 OR
+      "workspaceName" ILIKE $3 OR
+      COALESCE("accountIdentifier", '') ILIKE $3)
+    ORDER BY "updatedAt" DESC
+    LIMIT $1 OFFSET $2
+  `, [limit, offset, searchPattern]);
+  return rows;
+}
+
 export async function listApprovals(limit = 100, offset = 0) {
   const { rows } = await query(`
     SELECT

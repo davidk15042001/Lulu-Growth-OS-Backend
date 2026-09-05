@@ -25,6 +25,7 @@ router.route('/crm').get(requireAuth, requireAdminCapabilities('workspaces.read'
 router.route('/websites').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getWebsites).all(methodNotAllowed);
 router.route('/agents').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getAgents).all(methodNotAllowed);
 router.route('/integrations').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getIntegrations).all(methodNotAllowed);
+router.route('/oauth-connections').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getOAuthConnections).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getConversations).all(methodNotAllowed);
 router.route('/files').get(requireAuth, requireAdminCapabilities('workspaces.read'), controller.getFiles).all(methodNotAllowed);
