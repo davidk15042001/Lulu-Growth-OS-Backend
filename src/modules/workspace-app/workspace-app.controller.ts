@@ -19,6 +19,7 @@ import {
   updateGoogleReviewReplySchema,
   updateMemberSchema,
   updateSavedViewSchema,
+  updateWorkspaceSettingsSchema,
   workspaceAppParamsSchema,
 } from './workspace-app.validator.js';
 
@@ -195,6 +196,16 @@ export async function billing(req: WorkspaceRequest, res: Response, next: NextFu
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'Billing state loaded', await service.getBilling(workspaceId, req.user!.id, listUsageQuerySchema.parse(req.query)));
+  } catch (error) { next(error); }
+}
+
+export async function settings(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    if (req.method === 'GET') {
+      return successResponse(res, 'Workspace settings loaded', await service.getWorkspaceSettings(workspaceId));
+    }
+    return successResponse(res, 'Workspace settings updated', await service.updateWorkspaceSettings(workspaceId, req.user!.id, updateWorkspaceSettingsSchema.parse(req.body)));
   } catch (error) { next(error); }
 }
 

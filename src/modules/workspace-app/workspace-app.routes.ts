@@ -66,6 +66,11 @@ router.route('/audit')
   .get(requireWorkspaceAdmin, controller.audit)
   .all(methodNotAllowed);
 
+router.route('/settings')
+  .get(requireWorkspaceMember, controller.settings)
+  .patch(requireWorkspaceAdmin, controller.settings)
+  .all(methodNotAllowed);
+
 router.route('/billing')
   .get(requireWorkspaceAdmin, controller.billing)
   .post(requireWorkspaceAdmin, controller.createBillingCheckout)

@@ -60,6 +60,26 @@ export const listUsageQuerySchema = z.object({
   to: z.coerce.date().optional(),
 });
 
+const salesSettingsSchema = z.object({
+  moduleName: z.string().trim().max(120).optional(),
+  defaultCurrency: z.string().trim().toUpperCase().refine(
+    (value) => value === '' || /^[A-Z]{3}$/.test(value),
+    'Currency must be a 3-letter ISO code',
+  ).optional(),
+  defaultTimeZone: z.string().trim().max(100).optional(),
+  defaultLanguage: z.string().trim().max(35).optional(),
+  defaultDateFormat: z.string().trim().max(40).optional(),
+  defaultNumberFormat: z.string().trim().max(40).optional(),
+  salesModuleEnabled: z.boolean().optional(),
+  aiSalesAssistanceEnabled: z.boolean().optional(),
+  salesNotificationsEnabled: z.boolean().optional(),
+  salesActivityTrackingEnabled: z.boolean().optional(),
+}).strict();
+
+export const updateWorkspaceSettingsSchema = z.object({
+  sales: salesSettingsSchema.optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one settings group must be provided');
+
 export const listGoogleReviewsQuerySchema = z.object({
   locationId: z.string().trim().min(1).max(200).optional(),
   limit: z.coerce.number().int().min(1).max(250).default(120),
@@ -82,6 +102,7 @@ export type CreateSavedViewInput = z.infer<typeof createSavedViewSchema>;
 export type UpdateSavedViewInput = z.infer<typeof updateSavedViewSchema>;
 export type ListAuditQuery = z.infer<typeof listAuditQuerySchema>;
 export type ListUsageQuery = z.infer<typeof listUsageQuerySchema>;
+export type UpdateWorkspaceSettingsInput = z.infer<typeof updateWorkspaceSettingsSchema>;
 export type ListGoogleReviewsQuery = z.infer<typeof listGoogleReviewsQuerySchema>;
 export type UpdateGoogleReviewReplyInput = z.infer<typeof updateGoogleReviewReplySchema>;
 export type GoogleBusinessConnectInput = z.infer<typeof googleBusinessConnectSchema>;

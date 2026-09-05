@@ -22,6 +22,7 @@ import type {
   UpdateGoogleReviewReplyInput,
   UpdateMemberInput,
   UpdateSavedViewInput,
+  UpdateWorkspaceSettingsInput,
 } from './workspace-app.validator.js';
 
 export async function getBootstrap(workspaceId: string, userId: string) {
@@ -114,6 +115,14 @@ export function listAudit(workspaceId: string, filters: ListAuditQuery) {
 
 export function getBilling(workspaceId: string, userId: string, filters: ListUsageQuery) {
   return repo.getBilling(workspaceId, userId, filters);
+}
+
+export function getWorkspaceSettings(workspaceId: string) {
+  return repo.getWorkspaceSettings(workspaceId);
+}
+
+export function updateWorkspaceSettings(workspaceId: string, userId: string, input: UpdateWorkspaceSettingsInput) {
+  return repo.updateWorkspaceSettings(workspaceId, userId, input);
 }
 
 export async function queueIntegrationSync(workspaceId: string, platformId: string) {

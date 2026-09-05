@@ -10,9 +10,17 @@ import type {
   ListAuditQuery,
   ListSavedViewsQuery,
   ListUsageQuery,
+  UpdateWorkspaceSettingsInput,
   UpdateMemberInput,
   UpdateSavedViewInput,
 } from './workspace-app.validator.js';
+
+export type WorkspaceSettings = {
+  workspaceId: string;
+  settings: Record<string, unknown>;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
 
 export type WorkspaceMember = {
   id: string;
@@ -556,6 +564,55 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       })),
     } : null,
   };
+}
+
+export async function getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettings> {
+  const { rows } = await query<WorkspaceSettings>(
+    `SELECT workspace_id AS "workspaceId", settings,
+            created_at AS "createdAt", updated_at AS "updatedAt"
+     FROM workspace_settings
+     WHERE workspace_id = $1`,
+    [workspaceId],
+  );
+  return rows[0] ?? { workspaceId, settings: {}, createdAt: null, updatedAt: null };
+}
+
+export async function updateWorkspaceSettings(
+  workspaceId: string,
+  userId: string,
+  input: UpdateWorkspaceSettingsInput,
+): Promise<WorkspaceSettings> {
+  return withTransaction(async (client) => {
+    const beforeResult = await query<WorkspaceSettings>(
+      `SELECT workspace_id AS "workspaceId", settings,
+              created_at AS "createdAt", updated_at AS "updatedAt"
+       FROM workspace_settings
+       WHERE workspace_id = $1
+       FOR UPDATE`,
+      [workspaceId],
+      client,
+    );
+    const before = beforeResult.rows[0] ?? null;
+    const { rows } = await query<WorkspaceSettings>(
+      `INSERT INTO workspace_settings (workspace_id, settings)
+       VALUES ($1, $2::jsonb)
+       ON CONFLICT (workspace_id) DO UPDATE
+         SET settings = workspace_settings.settings || EXCLUDED.settings
+       RETURNING workspace_id AS "workspaceId", settings,
+                 created_at AS "createdAt", updated_at AS "updatedAt"`,
+      [workspaceId, JSON.stringify(input)],
+      client,
+    );
+    const settings = rows[0]!;
+    await query(
+      `INSERT INTO audit_log (
+         workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data
+       ) VALUES ($1, $2, 'workspace_settings.updated', 'workspace_settings', $1, $3::jsonb, $4::jsonb)`,
+      [workspaceId, userId, JSON.stringify(before?.settings ?? {}), JSON.stringify(settings.settings)],
+      client,
+    );
+    return settings;
+  });
 }
 
 export async function queueIntegrationSync(workspaceId: string, platformId: string) {
