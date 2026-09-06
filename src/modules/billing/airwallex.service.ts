@@ -326,6 +326,12 @@ export async function configurePaygPaymentMethod(input: {
   }
 
   if (input.paymentMethod !== 'card') {
+    // QR payments are still tied to an Airwallex Billing Customer. Provision it
+    // when the wallet is selected so the first QR payment can be created
+    // immediately. This is intentionally separate from wallet credentials:
+    // Lulu never stores a WeChat Pay or Alipay payment source.
+    await ensurePaygProfile(input.workspaceId);
+    await ensurePaygBillingCustomer(input.workspaceId);
     await configurePaygDirectPaymentMethod(input.workspaceId, input.userId, input.paymentMethod);
     return {
       mode: 'manual_invoice' as const,
@@ -627,6 +633,11 @@ export async function createPaygApiUsageQrPayment(input: {
     throw new AppError(422, 'PAYG_PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not enabled for the Lulu billing account.');
   }
   assertPaygReturnUrl(input.returnUrl);
+  // Workspaces that chose WeChat Pay or Alipay before Billing Customer
+  // provisioning was introduced must remain payable. Provisioning here makes
+  // QR creation self-healing without requiring the customer to reconfigure the
+  // payment method.
+  await ensurePaygBillingCustomer(input.workspaceId);
   const period = input.periodId
     ? await getPaygQrEligiblePeriod(input.workspaceId, input.periodId)
     : await reservePaygApiCheckout(input.workspaceId);
