@@ -168,7 +168,7 @@ export async function createBillingCheckout(req: WorkspaceRequest, res: Response
   try {
     const { workspaceId } = params(req);
     const input = z.object({
-      planKey: z.enum(['viewer', 'starter', 'ai', 'test']),
+      planKey: z.enum(['viewer', 'ai', 'test']),
       successUrl: z.string().url(),
       backUrl: z.string().url(),
       password: z.string().max(128).optional(),

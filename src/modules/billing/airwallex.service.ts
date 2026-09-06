@@ -894,7 +894,9 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   const config = planConfig[input.planKey];
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
 
-  if (input.planKey === 'explorer') throw new AppError(422, 'BILLING_PLAN_REMOVED', 'The Explorer plan is no longer available.');
+  if (input.planKey === 'explorer' || input.planKey === 'starter') {
+    throw new AppError(422, 'BILLING_PLAN_REMOVED', 'The Explorer and Starter plans are no longer available.');
+  }
   if (input.planKey !== 'ai' && !input.allowInternalPlans) {
     throw new AppError(403, 'BILLING_PLAN_NOT_AVAILABLE', 'The Lulu AI package is the only plan available for this account.');
   }
@@ -1268,4 +1270,8 @@ registerDomainEventHandler({
   },
 });
 
-export const billingPlans = Object.entries(planConfig).map(([key, value]) => ({ key, label: value.label, amountMinor: value.amountMinor, currency: 'CNY', interval: 'year' }));
+// Explorer and Starter remain recognizable as legacy subscription states for
+// existing workspaces, but they are no longer offered as payable packages.
+export const billingPlans = Object.entries(planConfig)
+  .filter(([key]) => key === 'ai')
+  .map(([key, value]) => ({ key, label: value.label, amountMinor: value.amountMinor, currency: 'CNY', interval: 'year' }));
