@@ -137,13 +137,14 @@ export async function configurePaygDirectPaymentMethod(
     await query(
       `INSERT INTO audit_log (
          workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data
-       ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $1::text,
+       ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $5,
          $3::jsonb, $4::jsonb)`,
       [
         workspaceId,
         userId,
         JSON.stringify(before.rows[0] ?? { preferredPaymentMethod: null, hasPaymentSource: false }),
         JSON.stringify({ paymentMethod, collectionMethod: 'CHARGE_ON_CHECKOUT', automaticCollection: false }),
+        workspaceId,
       ],
       client,
     );
@@ -241,9 +242,9 @@ export async function completePaygCardPaymentMethodSetup(input: {
     await query(
       `INSERT INTO audit_log (
          workspace_id, actor_id, action, entity_type, entity_id, after_data
-       ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $1::text,
+       ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $4,
          $3::jsonb)`,
-      [input.workspaceId, input.userId, JSON.stringify({ paymentMethod: 'card', collectionMethod: 'AUTO_CHARGE', automaticCollection: true })],
+      [input.workspaceId, input.userId, JSON.stringify({ paymentMethod: 'card', collectionMethod: 'AUTO_CHARGE', automaticCollection: true }), input.workspaceId],
       client,
     );
     return result;
