@@ -37,6 +37,14 @@ export async function createUnverifiedUser(email: string, passwordHash: string, 
     return {id:user.id,code};
   });
 }
+export async function createVerifiedUser(email: string, passwordHash: string, firstName: string, lastName: string) {
+  return withTransaction(async client=>{
+    const user=(await query<{id:string}>(
+      'INSERT INTO users(email,password_hash,first_name,last_name,verified_at) VALUES($1,$2,$3,$4,NOW()) RETURNING id',
+      [email.toLowerCase(),passwordHash,firstName,lastName],client)).rows[0]!;
+    return {id:user.id};
+  });
+}
 export async function issueOtp(userId: string, purpose: 'verify_email'|'password_reset') {
   return withTransaction(async client=>{
     const user=(await query<User>(`SELECT ${userColumns} FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,[userId],client)).rows[0];

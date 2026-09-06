@@ -6,7 +6,7 @@ import { assertAdminCapability, getAdminCapabilities } from '../admin/admin.auth
 import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 
-export type RegisterResult = { ok: true; userId: string; verificationSent: boolean } | { conflict: true };
+export type RegisterResult = { ok: true; userId: string; verificationRequired: false } | { conflict: true };
 type SessionUser = {
   id: string;
   email: string;
@@ -59,17 +59,9 @@ export async function registerUser(email: string, password: string, firstName: s
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
   let user;
-  try { user = await repo.createUnverifiedUser(email, passwordHash, firstName, lastName); }
+  try { user = await repo.createVerifiedUser(email, passwordHash, firstName, lastName); }
   catch(error) { if((error as {code?:string}).code==='23505') return {conflict:true}; throw error; }
-  // Commit account + challenge atomically before sending. Delivery failure leaves
-  // a recoverable unverified account; resend never grants workspace access.
-  let verificationSent=true;
-  try {
-    await sendOtpEmail(email,user.code);
-    await recordSecurityEvent({eventType:'EMAIL_VERIFICATION_SENT',userId:user.id,metadata:{reason:'verification'}});
-  }
-  catch { verificationSent=false; await recordSecurityEvent({eventType:'EMAIL_DELIVERY_FAILED',userId:user.id,metadata:{reason:'verification'}}); }
-  return { ok: true, userId: user.id, verificationSent };
+  return { ok: true, userId: user.id, verificationRequired: false };
 }
 
 export type VerifyResult = { ok: true } | { alreadyVerified:true } | { invalid: true } | { used: true } | { expired: true };

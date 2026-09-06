@@ -57,7 +57,7 @@ export async function register(req: Request, res: Response, next: NextFunction) 
       return jsonError(res, 409, 'EMAIL_IN_USE', 'Email already in use');
     }
     
-    return res.status(201).json({ success: true, message: 'Verify your email to continue.', data: { verificationRequired:true, verificationSent:result.verificationSent } });
+    return res.status(201).json({ success: true, message: 'Account created. You can sign in.', data: { verificationRequired: false } });
   } catch (e) {
     next(e);
   }
