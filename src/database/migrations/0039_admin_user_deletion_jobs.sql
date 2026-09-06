@@ -1,5 +1,5 @@
--- Durable de-duplication for irreversible admin account deletion jobs.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_background_jobs_unique_admin_user_deletion
-  ON background_jobs ((payload->>'targetUserId'))
-  WHERE job_type = 'admin.user.delete'
-    AND status IN ('queued', 'running');
+-- Admin deletion jobs are de-duplicated while the target `users` row is
+-- locked inside the queuing transaction. Do not add an index to
+-- background_jobs here: existing production installations can contain a
+-- very large historical job table, and a full-table index build would delay
+-- an otherwise small, availability-critical deployment.
