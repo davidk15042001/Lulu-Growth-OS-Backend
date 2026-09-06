@@ -24,7 +24,10 @@ const EnvSchema = z
     DATABASE_URL: z.string().url({ message: 'DATABASE_URL must be a valid URL' }).optional(),
     DATABASE_SSL: booleanString.default(false),
     DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
-    RUN_MIGRATIONS_ON_STARTUP: booleanString.default(true),
+    // Production deployments run migrations explicitly before restarting the
+    // API. Keeping this off by default prevents a web worker from blocking
+    // its HTTP startup indefinitely behind a stale migration advisory lock.
+    RUN_MIGRATIONS_ON_STARTUP: booleanString.default(false),
     BACKGROUND_WORKERS_ENABLED: booleanString.default(true),
     EVENT_WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
     EVENT_WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
