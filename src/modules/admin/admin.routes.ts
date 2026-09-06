@@ -13,6 +13,7 @@ router.route('/search').get(requireAuth, requireAdminCapabilities('users.read', 
 router.route('/billing-overview').get(requireAuth, requireAdminCapabilities('billing.read'), controller.overview).all(methodNotAllowed);
 
 router.route('/users').get(requireAuth, requireAdminCapabilities('users.read'), controller.getUsers).all(methodNotAllowed);
+router.route('/user-deletion-jobs/:jobId').get(requireAuth, requireAdminCapabilities('users.manage'), controller.getUserDeletionJob).all(methodNotAllowed);
 router.route('/users/:userId').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read', 'billing.read'), controller.getUser).patch(requireAuth, requireAdminCapabilities('users.manage'), controller.patchUser).delete(requireAuth, requireAdminCapabilities('users.manage'), controller.deleteUser).all(methodNotAllowed);
 router.route('/users/:userId/impersonate').post(requireAuth, requireAdminCapabilities('users.impersonate'), controller.impersonateUser).all(methodNotAllowed);
 

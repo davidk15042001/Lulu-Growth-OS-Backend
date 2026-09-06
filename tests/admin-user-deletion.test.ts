@@ -10,6 +10,7 @@ process.env.JWT_SECRET = 'admin-user-deletion-tests-only-not-a-production-key';
 
 const { pool } = await import('../src/db/pool.js');
 const admin = await import('../src/modules/admin/admin.repo.js');
+const adminUserDeletionWorker = await import('../src/modules/admin/admin-user-deletion.worker.js');
 const { RESOURCE_CATALOG } = await import('../src/domain/resource-catalog.js');
 const db = new PGlite();
 
@@ -156,5 +157,35 @@ describe('admin user deletion', () => {
     await db.query(`INSERT INTO admin_user_roles(user_id, role) VALUES($1, 'SUPER_ADMIN')`, [onlySuperAdmin]);
     await assert.rejects(admin.deleteUserAndOwnedData(onlySuperAdmin), /LAST_SUPER_ADMIN_DELETE_FORBIDDEN/);
     assert.equal((await db.query('SELECT id FROM users WHERE id=$1', [onlySuperAdmin])).rows.length, 1);
+  });
+
+  it('queues a durable deletion job and completes the account erasure outside the request', async () => {
+    const target = await createUser(`queued-delete-${crypto.randomUUID()}@example.test`);
+    const requestedBy = await createUser(`queued-admin-${crypto.randomUUID()}@example.test`, 'admin');
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name, created_by) VALUES('Queued deletion workspace', $1) RETURNING id`,
+      [target],
+    )).rows[0]!;
+    await db.query(
+      `INSERT INTO workspace_members(workspace_id, user_id, role) VALUES($1, $2, 'owner')`,
+      [workspace.id, target],
+    );
+
+    const queued = await admin.queueUserDeletion(target, requestedBy);
+    assert.ok(queued);
+    assert.equal(queued.status, 'queued');
+    assert.equal(queued.targetUserId, target);
+
+    // Repeated clicks must attach to the same outstanding job, rather than
+    // scheduling a second destructive operation.
+    const duplicate = await admin.queueUserDeletion(target, requestedBy);
+    assert.equal(duplicate?.id, queued.id);
+
+    await adminUserDeletionWorker.runAdminUserDeletionWorkerCycle();
+
+    const completed = await admin.getUserDeletionJob(queued.id);
+    assert.equal(completed?.status, 'succeeded');
+    assert.equal((await db.query('SELECT id FROM users WHERE id=$1', [target])).rows.length, 0);
+    assert.equal((await db.query('SELECT id FROM workspaces WHERE id=$1', [workspace.id])).rows.length, 0);
   });
 });

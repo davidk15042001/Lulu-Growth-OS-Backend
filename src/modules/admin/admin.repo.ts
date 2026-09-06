@@ -250,6 +250,210 @@ type RestrictingUserReference = {
   columnName: string;
 };
 
+const ADMIN_USER_DELETION_JOB_TYPE = 'admin.user.delete';
+
+export type AdminUserDeletionJob = {
+  id: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  targetUserId: string;
+  targetEmail: string | null;
+  requestedByUserId: string | null;
+  attempts: number;
+  errorMessage: string | null;
+  result: Record<string, unknown> | null;
+  createdAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+function mapAdminUserDeletionJob(row: Record<string, unknown>): AdminUserDeletionJob {
+  const status = String(row.status ?? 'queued');
+  return {
+    id: String(row.id),
+    status: ['queued', 'running', 'succeeded', 'failed', 'cancelled'].includes(status)
+      ? status as AdminUserDeletionJob['status']
+      : 'failed',
+    targetUserId: String(row.targetUserId ?? ''),
+    targetEmail: typeof row.targetEmail === 'string' ? row.targetEmail : null,
+    requestedByUserId: typeof row.requestedByUserId === 'string' ? row.requestedByUserId : null,
+    attempts: Number(row.attempts ?? 0),
+    errorMessage: typeof row.errorMessage === 'string' ? row.errorMessage : null,
+    result: row.result && typeof row.result === 'object' && !Array.isArray(row.result) ? row.result as Record<string, unknown> : null,
+    createdAt: String(row.createdAt),
+    startedAt: typeof row.startedAt === 'string' ? row.startedAt : null,
+    completedAt: typeof row.completedAt === 'string' ? row.completedAt : null,
+  };
+}
+
+const adminUserDeletionJobSelect = `
+  id, status,
+  payload->>'targetUserId' AS "targetUserId",
+  payload->>'targetEmail' AS "targetEmail",
+  payload->>'requestedByUserId' AS "requestedByUserId",
+  attempts,
+  error_message AS "errorMessage",
+  result,
+  created_at AS "createdAt",
+  started_at AS "startedAt",
+  completed_at AS "completedAt"
+`;
+
+/**
+ * Account erasure can cascade through hundreds of thousands of workspace
+ * records. It must be durable and asynchronous so reverse-proxy timeouts do
+ * not falsely report a failed deletion while the database is still working.
+ */
+export async function queueUserDeletion(userId: string, requestedByUserId: string) {
+  return withTransaction(async (client) => {
+    const target = await query<{ id: string; email: string; isSuperAdmin: boolean }>(
+      `SELECT u.id, u.email,
+              EXISTS(
+                SELECT 1
+                  FROM admin_user_roles aur
+                 WHERE aur.user_id = u.id AND aur.role = 'SUPER_ADMIN'
+              ) AS "isSuperAdmin"
+         FROM users u
+        WHERE u.id = $1
+        LIMIT 1
+        FOR UPDATE`,
+      [userId],
+      client,
+    );
+    const user = target.rows[0];
+    if (!user) return null;
+
+    // Fail this protected case before creating a job. The worker repeats the
+    // guard during the actual delete so a role change between queueing and
+    // execution is still safe.
+    if (user.isSuperAdmin) {
+      const remainingSuperAdmins = await query<{ count: string }>(
+        `SELECT COUNT(*)::bigint AS count
+           FROM admin_user_roles aur
+           JOIN users u ON u.id = aur.user_id
+          WHERE aur.role = 'SUPER_ADMIN'
+            AND aur.user_id <> $1
+            AND u.deleted_at IS NULL`,
+        [userId],
+        client,
+      );
+      if (Number(remainingSuperAdmins.rows[0]?.count ?? 0) === 0) {
+        throw new Error('LAST_SUPER_ADMIN_DELETE_FORBIDDEN');
+      }
+    }
+
+    const existing = await query<Record<string, unknown>>(
+      `SELECT ${adminUserDeletionJobSelect}
+         FROM background_jobs
+        WHERE job_type = $1
+          AND payload->>'targetUserId' = $2
+          AND status IN ('queued', 'running')
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE`,
+      [ADMIN_USER_DELETION_JOB_TYPE, userId],
+      client,
+    );
+    if (existing.rows[0]) return mapAdminUserDeletionJob(existing.rows[0]);
+
+    const created = await query<Record<string, unknown>>(
+      `INSERT INTO background_jobs (workspace_id, job_type, payload, max_attempts)
+       VALUES (NULL, $1, jsonb_build_object(
+         'targetUserId', $2::text,
+         'targetEmail', $3::text,
+         'requestedByUserId', $4::text
+       ), 1)
+       ON CONFLICT DO NOTHING
+       RETURNING ${adminUserDeletionJobSelect}`,
+      [ADMIN_USER_DELETION_JOB_TYPE, user.id, user.email, requestedByUserId],
+      client,
+    );
+    if (created.rows[0]) return mapAdminUserDeletionJob(created.rows[0]);
+
+    // The partial unique index protects simultaneous clicks or admin sessions.
+    const concurrent = await query<Record<string, unknown>>(
+      `SELECT ${adminUserDeletionJobSelect}
+         FROM background_jobs
+        WHERE job_type = $1
+          AND payload->>'targetUserId' = $2
+          AND status IN ('queued', 'running')
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      [ADMIN_USER_DELETION_JOB_TYPE, userId],
+      client,
+    );
+    if (concurrent.rows[0]) return mapAdminUserDeletionJob(concurrent.rows[0]);
+    throw new Error('USER_DELETION_JOB_CREATE_FAILED');
+  });
+}
+
+export async function getUserDeletionJob(jobId: string) {
+  const result = await query<Record<string, unknown>>(
+    `SELECT ${adminUserDeletionJobSelect}
+       FROM background_jobs
+      WHERE id = $1 AND job_type = $2
+      LIMIT 1`,
+    [jobId, ADMIN_USER_DELETION_JOB_TYPE],
+  );
+  return result.rows[0] ? mapAdminUserDeletionJob(result.rows[0]) : null;
+}
+
+export async function claimNextUserDeletionJob() {
+  const result = await query<Record<string, unknown>>(
+    `WITH candidate AS (
+       SELECT id
+         FROM background_jobs
+        WHERE job_type = $1
+          AND (
+            (status = 'queued' AND scheduled_at <= NOW())
+            OR (status = 'running' AND started_at < NOW() - INTERVAL '15 minutes')
+          )
+        ORDER BY scheduled_at ASC, created_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+     )
+     UPDATE background_jobs AS job
+        SET status = 'running',
+            attempts = attempts + 1,
+            started_at = NOW(),
+            completed_at = NULL,
+            error_message = NULL
+       FROM candidate
+      WHERE job.id = candidate.id
+      RETURNING
+        job.id,
+        job.status,
+        job.payload->>'targetUserId' AS "targetUserId",
+        job.payload->>'targetEmail' AS "targetEmail",
+        job.payload->>'requestedByUserId' AS "requestedByUserId",
+        job.attempts,
+        job.error_message AS "errorMessage",
+        job.result,
+        job.created_at AS "createdAt",
+        job.started_at AS "startedAt",
+        job.completed_at AS "completedAt"`,
+    [ADMIN_USER_DELETION_JOB_TYPE],
+  );
+  return result.rows[0] ? mapAdminUserDeletionJob(result.rows[0]) : null;
+}
+
+export async function markUserDeletionJobSucceeded(jobId: string, result: Record<string, unknown>) {
+  await query(
+    `UPDATE background_jobs
+        SET status = 'succeeded', result = $2::jsonb, completed_at = NOW(), error_message = NULL
+      WHERE id = $1 AND job_type = $3 AND status = 'running'`,
+    [jobId, JSON.stringify(result), ADMIN_USER_DELETION_JOB_TYPE],
+  );
+}
+
+export async function markUserDeletionJobFailed(jobId: string, errorMessage: string) {
+  await query(
+    `UPDATE background_jobs
+        SET status = 'failed', error_message = $2, completed_at = NOW()
+      WHERE id = $1 AND job_type = $3 AND status = 'running'`,
+    [jobId, errorMessage.slice(0, 1_000), ADMIN_USER_DELETION_JOB_TYPE],
+  );
+}
+
 function quoteIdentifier(identifier: string) {
   // Every name is obtained from PostgreSQL's own catalogue. Keep this guard
   // nevertheless: an identifier must never be interpolated unchecked.

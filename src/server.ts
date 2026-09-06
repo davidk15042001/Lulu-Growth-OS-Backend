@@ -16,6 +16,7 @@ import { startCalendarSyncWorker, stopCalendarSyncWorker } from './modules/calen
 import { startRateLimitCleanupWorker, stopRateLimitCleanupWorker } from './middlewares/rateLimit.middleware.js';
 import { startContentGenerationWorker, stopContentGenerationWorker } from './modules/content-generation/content-generation.worker.js';
 import { startDomainEventRuntime, stopDomainEventRuntime } from './events/domain-event.runtime.js';
+import { startAdminUserDeletionWorker, stopAdminUserDeletionWorker } from './modules/admin/admin-user-deletion.worker.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -40,6 +41,7 @@ async function bootstrap() {
       startWebsiteGenerationWorker();
       startOnboardingFileCleanupWorker();
       startPaygBillingWorker();
+      startAdminUserDeletionWorker();
     }
   }
 
@@ -70,6 +72,7 @@ async function bootstrap() {
       stopWebsiteGenerationWorker();
       stopOnboardingFileCleanupWorker();
       stopPaygBillingWorker();
+      stopAdminUserDeletionWorker();
     }
     server.close(async () => {
       if (hasDb) {

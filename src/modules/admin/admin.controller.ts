@@ -8,6 +8,7 @@ import { setRefreshTokenCookie } from '../auth/auth.controller.js';
 import { assertAdminCapability } from './admin.authorization.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
+import { requestAdminUserDeletionWorkerRun } from './admin-user-deletion.worker.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -116,9 +117,10 @@ export async function deleteUser(req: AuthedRequest, res: Response, next: NextFu
     if (req.user?.id === userId) {
       return res.status(409).json({ success: false, error: { code: 'ADMIN_SELF_DELETE_FORBIDDEN', message: 'The active administrator account cannot be deleted.' } });
     }
-    const result = await repo.deleteUserAndOwnedData(userId);
-    if (!result) return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } });
-    return successResponse(res, 'User and related data deleted', result);
+    const job = await repo.queueUserDeletion(userId, req.user!.id);
+    if (!job) return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } });
+    requestAdminUserDeletionWorkerRun();
+    return res.status(202).json({ success: true, message: 'User deletion queued', data: job });
   } catch (error) {
     if (error instanceof Error && error.message === 'LAST_SUPER_ADMIN_DELETE_FORBIDDEN') {
       return res.status(409).json({ success: false, error: { code: 'LAST_SUPER_ADMIN_DELETE_FORBIDDEN', message: 'At least one active Super Admin account must remain.' } });
@@ -128,6 +130,17 @@ export async function deleteUser(req: AuthedRequest, res: Response, next: NextFu
     logger.error({ error, actorUserId: req.user?.id, targetUserId: userId, requestId: req.id }, 'Admin user deletion failed');
     next(new AppError(500, 'USER_DELETE_FAILED', 'The account could not be deleted. No data was changed. Please retry shortly or contact support with the request ID.'));
   }
+}
+
+export async function getUserDeletionJob(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const jobId = typeof req.params.jobId === 'string' ? req.params.jobId : '';
+    if (!jobId) return jsonError(res, 400, 'INVALID_JOB_ID', 'Deletion job ID is required');
+    const job = await repo.getUserDeletionJob(jobId);
+    if (!job) return jsonError(res, 404, 'USER_DELETION_JOB_NOT_FOUND', 'Deletion job not found');
+    return successResponse(res, 'User deletion job loaded', job);
+  } catch (error) { next(error); }
 }
 
 export async function impersonateUser(req: AuthedRequest, res: Response, next: NextFunction) {
