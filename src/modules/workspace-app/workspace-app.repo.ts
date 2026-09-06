@@ -457,6 +457,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       aiAccessBlocked: boolean;
       blockedAt: string | null;
       blockReason: string | null;
+      blockedPeriodId: string | null;
       paymentLink: string | null;
       apiCostUsd: string;
       serverCostUsd: string;
@@ -474,6 +475,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
               p.ai_access_blocked AS "aiAccessBlocked",
               p.blocked_at AS "blockedAt",
               p.block_reason AS "blockReason",
+              p.blocked_period_id AS "blockedPeriodId",
               blocked.hosted_invoice_url AS "paymentLink",
               COALESCE(api.customer_cost_usd, 0)::numeric AS "apiCostUsd",
               COALESCE(server.customer_cost_usd, 0)::numeric AS "serverCostUsd",
@@ -571,6 +573,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       aiAccessBlocked: adminBillingBypass ? false : current.aiAccessBlocked,
       blockedAt: adminBillingBypass ? null : current.blockedAt,
       blockReason: adminBillingBypass ? null : current.blockReason,
+      blockedPeriodId: adminBillingBypass ? null : current.blockedPeriodId,
       paymentLink: adminBillingBypass ? null : current.paymentLink,
       apiCost: Number(current.apiCostUsd),
       serverCost: Number(current.serverCostUsd),

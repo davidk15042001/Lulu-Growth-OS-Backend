@@ -18,6 +18,7 @@ import {
   failPaygPeriod,
   finalizePaygPeriod,
   markPaygLineItemsAdded,
+  markPaygPeriodAwaitingQrPayment,
   markPaygPeriodSkipped,
   repairCompletedProfilePointers,
   savePaygProviderInvoice,
@@ -58,6 +59,12 @@ async function issuePeriodInvoice(period: PaygPeriod) {
   if (apiCostUsd + serverCostUsd <= 0) {
     await markPaygPeriodSkipped(period);
     logger.info({ periodId: period.id, workspaceId: period.workspaceId }, 'PAYG period closed without billable usage');
+    return;
+  }
+
+  if (!period.paymentSourceId && (period.preferredPaymentMethod === 'wechatpay' || period.preferredPaymentMethod === 'alipaycn')) {
+    await markPaygPeriodAwaitingQrPayment(period);
+    logger.info({ periodId: period.id, workspaceId: period.workspaceId, paymentMethod: period.preferredPaymentMethod }, 'PAYG period is awaiting a manual wallet QR payment');
     return;
   }
 

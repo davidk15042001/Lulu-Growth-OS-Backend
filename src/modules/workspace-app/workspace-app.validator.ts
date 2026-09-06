@@ -70,6 +70,16 @@ export const configurePaygPaymentMethodSchema = z.object({
   }
 });
 
+export const createPaygQrPaymentSchema = z.object({
+  paymentMethod: z.enum(['wechatpay', 'alipaycn']),
+  returnUrl: z.string().url(),
+  periodId: z.string().uuid().optional(),
+}).strict();
+
+export const paygQrPaymentParamsSchema = z.object({
+  paymentId: z.string().uuid(),
+});
+
 const salesSettingsSchema = z.object({
   moduleName: z.string().trim().max(120).optional(),
   defaultCurrency: z.string().trim().toUpperCase().refine(

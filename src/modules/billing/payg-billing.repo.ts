@@ -65,6 +65,36 @@ export type PaygApiCheckoutReservation = PaygPeriod & {
   reused: boolean;
 };
 
+export type PaygQrPayment = {
+  id: string;
+  workspaceId: string;
+  periodId: string;
+  paymentMethod: 'wechatpay' | 'alipaycn';
+  providerPaymentIntentId: string;
+  merchantOrderId: string;
+  amount: string;
+  currency: 'USD';
+  status: 'REQUIRES_CUSTOMER_ACTION' | 'PENDING' | 'SUCCEEDED' | 'CANCELLED' | 'FAILED' | 'EXPIRED';
+  qrPayload: string | null;
+  paymentUrl: string | null;
+  expiresAt: string | null;
+  paidAt: string | null;
+  lastErrorCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaygQrEligiblePeriod = {
+  id: string;
+  workspaceId: string;
+  currency: 'USD';
+  apiCostUsd: string;
+  serverCostUsd: string;
+  totalCostUsd: string;
+  providerInvoiceId: string | null;
+  billingMode: 'weekly' | 'api_pay_now';
+};
+
 export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: string | null, client?: PoolClient) {
   await query(
     `INSERT INTO workspace_payg_profiles (
@@ -434,6 +464,196 @@ export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygA
       billingMode: 'api_pay_now',
       reused: false,
     };
+  });
+}
+
+export async function getPaygQrEligiblePeriod(workspaceId: string, periodId: string) {
+  const { rows } = await query<PaygQrEligiblePeriod>(
+    `SELECT pp.id, pp.workspace_id AS "workspaceId", pp.currency,
+            pp.api_cost_usd AS "apiCostUsd", pp.server_cost_usd AS "serverCostUsd",
+            pp.total_cost_usd AS "totalCostUsd", pp.provider_invoice_id AS "providerInvoiceId",
+            pp.billing_mode AS "billingMode"
+     FROM workspace_payg_periods pp
+     JOIN workspace_subscriptions s ON s.workspace_id=pp.workspace_id
+     WHERE pp.workspace_id=$1 AND pp.id=$2
+       AND pp.status IN ('payment_due', 'payment_failed', 'failed')
+       AND s.provider='airwallex' AND s.status='active'
+       AND s.plan_key IN ('starter', 'ai')`,
+    [workspaceId, periodId],
+  );
+  return rows[0] ?? null;
+}
+
+function paygQrPaymentSelect() {
+  return `id, workspace_id AS "workspaceId", payg_period_id AS "periodId",
+          payment_method AS "paymentMethod",
+          provider_payment_intent_id AS "providerPaymentIntentId",
+          merchant_order_id AS "merchantOrderId", amount, currency, status,
+          qr_payload AS "qrPayload", payment_url AS "paymentUrl",
+          expires_at AS "expiresAt", paid_at AS "paidAt",
+          last_error_code AS "lastErrorCode", created_at AS "createdAt",
+          updated_at AS "updatedAt"`;
+}
+
+export async function getActivePaygQrPayment(
+  workspaceId: string,
+  periodId: string,
+  client?: PoolClient,
+) {
+  const { rows } = await query<PaygQrPayment>(
+    `SELECT ${paygQrPaymentSelect()}
+     FROM workspace_payg_qr_payments
+     WHERE workspace_id=$1 AND payg_period_id=$2
+       AND status IN ('REQUIRES_CUSTOMER_ACTION', 'PENDING')
+       AND (expires_at IS NULL OR expires_at > NOW())
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [workspaceId, periodId],
+    client,
+  );
+  return rows[0] ?? null;
+}
+
+export async function getPaygQrPayment(workspaceId: string, paymentId: string) {
+  const { rows } = await query<PaygQrPayment>(
+    `SELECT ${paygQrPaymentSelect()}
+     FROM workspace_payg_qr_payments
+     WHERE workspace_id=$1 AND id=$2`,
+    [workspaceId, paymentId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function savePaygQrPayment(input: {
+  workspaceId: string;
+  periodId: string;
+  paymentMethod: 'wechatpay' | 'alipaycn';
+  providerPaymentIntentId: string;
+  merchantOrderId: string;
+  amount: string;
+  currency: 'USD';
+  status: PaygQrPayment['status'];
+  qrPayload: string;
+  paymentUrl?: string | null;
+  expiresAt: string;
+  providerResponse: Record<string, unknown>;
+}, client?: PoolClient) {
+  const { rows } = await query<PaygQrPayment>(
+    `INSERT INTO workspace_payg_qr_payments (
+       workspace_id, payg_period_id, payment_method, provider_payment_intent_id,
+       merchant_order_id, amount, currency, status, qr_payload, payment_url,
+       expires_at, provider_response
+     ) VALUES ($1, $2, $3, $4, $5, $6::numeric, $7, $8, $9, $10, $11::timestamptz, $12::jsonb)
+     ON CONFLICT (provider_payment_intent_id) DO UPDATE SET
+       status=EXCLUDED.status,
+       qr_payload=EXCLUDED.qr_payload,
+       payment_url=EXCLUDED.payment_url,
+       expires_at=EXCLUDED.expires_at,
+       provider_response=EXCLUDED.provider_response,
+       last_error_code=NULL,
+       updated_at=NOW()
+     RETURNING ${paygQrPaymentSelect()}`,
+    [
+      input.workspaceId,
+      input.periodId,
+      input.paymentMethod,
+      input.providerPaymentIntentId,
+      input.merchantOrderId,
+      input.amount,
+      input.currency,
+      input.status,
+      input.qrPayload,
+      input.paymentUrl ?? null,
+      input.expiresAt,
+      JSON.stringify(input.providerResponse),
+    ],
+    client,
+  );
+  const payment = rows[0];
+  if (!payment) throw new Error('PAYG QR payment insert did not return a row');
+  return payment;
+}
+
+export async function markPaygQrPaymentReady(periodId: string, paymentId: string, client?: PoolClient) {
+  await query(
+    `UPDATE workspace_payg_periods
+     SET status='payment_due', finalized_at=COALESCE(finalized_at, NOW()),
+         metadata=metadata || jsonb_build_object('paygQrPaymentId', $2::text)
+     WHERE id=$1`,
+    [periodId, paymentId],
+    client,
+  );
+}
+
+export async function markPaygPeriodAwaitingQrPayment(period: PaygPeriod) {
+  return withTransaction(async (client) => {
+    await query(
+      `UPDATE workspace_payg_periods
+       SET status='payment_due', finalized_at=NOW(), processing_started_at=NOW(),
+           metadata=metadata || jsonb_build_object('paymentFlow', 'manual_qr', 'paymentMethod', $2::text)
+       WHERE id=$1`,
+      [period.id, period.preferredPaymentMethod],
+      client,
+    );
+    await blockWorkspaceAi(client, period.workspaceId, period.id, 'PAYMENT_SOURCE_REQUIRED');
+    await advanceCompletedProfile(client, period.workspaceId, period.periodStart, period.periodEnd);
+  });
+}
+
+export async function applyPaygQrPaymentIntentStatus(input: {
+  providerPaymentIntentId: string;
+  providerStatus: string;
+  paidAt?: string | null;
+  providerResponse?: Record<string, unknown>;
+}) {
+  const normalized = input.providerStatus.toUpperCase();
+  const status: PaygQrPayment['status'] = normalized === 'SUCCEEDED'
+    ? 'SUCCEEDED'
+    : normalized === 'PENDING'
+      ? 'PENDING'
+      : normalized === 'CANCELLED'
+        ? 'CANCELLED'
+        : normalized === 'REQUIRES_CUSTOMER_ACTION'
+          ? 'REQUIRES_CUSTOMER_ACTION'
+          : normalized === 'REQUIRES_PAYMENT_METHOD'
+            ? 'EXPIRED'
+            : 'FAILED';
+
+  return withTransaction(async (client) => {
+    const paymentResult = await query<PaygQrPayment>(
+      `UPDATE workspace_payg_qr_payments
+       SET status=$2,
+           paid_at=CASE WHEN $2='SUCCEEDED' THEN COALESCE($3::timestamptz, paid_at, NOW()) ELSE paid_at END,
+           provider_response=CASE WHEN $4::jsonb IS NULL THEN provider_response ELSE $4::jsonb END,
+           last_error_code=CASE WHEN $2 IN ('FAILED', 'CANCELLED', 'EXPIRED') THEN $5 ELSE NULL END,
+           updated_at=NOW()
+       WHERE provider_payment_intent_id=$1
+       RETURNING ${paygQrPaymentSelect()}`,
+      [
+        input.providerPaymentIntentId,
+        status,
+        input.paidAt ?? null,
+        input.providerResponse ? JSON.stringify(input.providerResponse) : null,
+        status === 'FAILED' ? normalized : status === 'CANCELLED' ? 'PAYMENT_CANCELLED' : status === 'EXPIRED' ? 'PAYMENT_EXPIRED' : null,
+      ],
+      client,
+    );
+    const payment = paymentResult.rows[0];
+    if (!payment) return null;
+
+    if (status === 'SUCCEEDED') {
+      await query(
+        `UPDATE workspace_payg_periods
+         SET status='paid', paid_at=COALESCE($2::timestamptz, paid_at, NOW()),
+             finalized_at=COALESCE(finalized_at, NOW()),
+             metadata=metadata || jsonb_build_object('providerPaymentIntentId', $3::text, 'providerPaymentStatus', $4::text)
+         WHERE id=$1`,
+        [payment.periodId, input.paidAt ?? null, payment.providerPaymentIntentId, normalized],
+        client,
+      );
+      await clearWorkspaceAiBlock(client, payment.workspaceId);
+    }
+    return payment;
   });
 }
 

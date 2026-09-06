@@ -21,9 +21,15 @@ import {
   ensurePaygProfile,
   failPaygPeriod,
   finalizePaygApiCheckoutPeriod,
+  getActivePaygQrPayment,
+  getPaygQrEligiblePeriod,
+  getPaygQrPayment,
   markPaygLineItemsAdded,
+  markPaygQrPaymentReady,
+  applyPaygQrPaymentIntentStatus,
   reservePaygApiCheckout,
   savePaygProviderInvoice,
+  savePaygQrPayment,
   completePaygCardPaymentMethodSetup,
   configurePaygDirectPaymentMethod,
   createPaygPaymentMethodSetup,
@@ -572,6 +578,167 @@ export async function createPaygApiUsageCheckout(workspaceId: string) {
   }
 }
 
+type PaygQrPaymentMethod = 'wechatpay' | 'alipaycn';
+
+function formatPaygQrPayment(payment: {
+  id: string;
+  paymentMethod: PaygQrPaymentMethod;
+  amount: string;
+  currency: 'USD';
+  status: string;
+  qrPayload: string | null;
+  paymentUrl: string | null;
+  expiresAt: string | null;
+  paidAt: string | null;
+}) {
+  return {
+    paymentId: payment.id,
+    paymentMethod: payment.paymentMethod,
+    amount: Number(payment.amount),
+    currency: payment.currency,
+    status: payment.status.toLowerCase(),
+    qrPayload: payment.qrPayload,
+    paymentUrl: payment.paymentUrl,
+    expiresAt: payment.expiresAt,
+    paidAt: payment.paidAt,
+  };
+}
+
+function paygQrExpiry(paymentMethod: PaygQrPaymentMethod) {
+  // Airwallex documents a 10-minute Alipay QR lifetime and a two-hour WeChat
+  // QR lifetime. This local expiry only prevents a stale QR from being reused.
+  const minutes = paymentMethod === 'alipaycn' ? 10 : 120;
+  return new Date(Date.now() + minutes * 60_000).toISOString();
+}
+
+/**
+ * Creates a one-time, provider-hosted QR payment for the currently accrued
+ * API usage. The amount is calculated entirely on the server and the QR
+ * payload is never accepted from the client.
+ */
+export async function createPaygApiUsageQrPayment(input: {
+  workspaceId: string;
+  userId: string;
+  paymentMethod: PaygQrPaymentMethod;
+  returnUrl: string;
+  periodId?: string;
+}) {
+  if (!getPaygDirectPaymentMethods().includes(input.paymentMethod)) {
+    throw new AppError(422, 'PAYG_PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not enabled for the Lulu billing account.');
+  }
+  assertPaygReturnUrl(input.returnUrl);
+  const period = input.periodId
+    ? await getPaygQrEligiblePeriod(input.workspaceId, input.periodId)
+    : await reservePaygApiCheckout(input.workspaceId);
+  if (!period) throw new AppError(404, 'PAYG_QR_PAYMENT_PERIOD_NOT_FOUND', 'The usage payment period does not belong to this workspace or is no longer payable.');
+  if (period.providerInvoiceId) {
+    throw new AppError(409, 'PAYG_QR_PAYMENT_INVOICE_EXISTS', 'This usage payment already has an invoice. Open the invoice to complete payment instead of creating a second charge.');
+  }
+
+  try {
+    return await withTransaction(async (client) => {
+      await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`payg-qr-payment:${period.id}`], client);
+      const active = await getActivePaygQrPayment(input.workspaceId, period.id, client);
+      if (active) {
+        if (active.paymentMethod !== input.paymentMethod) {
+          throw new AppError(409, 'PAYG_QR_PAYMENT_ALREADY_ACTIVE', 'A QR payment is already active for this usage amount. Wait for it to expire before choosing another payment method.', { paymentMethod: active.paymentMethod, expiresAt: active.expiresAt ?? null });
+        }
+        return { ...formatPaygQrPayment(active), reused: true };
+      }
+
+      const amount = Number(period.billingMode === 'weekly' ? period.totalCostUsd : period.apiCostUsd);
+      if (!Number.isFinite(amount) || amount < 0.01) {
+        throw new AppError(422, 'PAYG_QR_PAYMENT_AMOUNT_TOO_LOW', 'At least USD 0.01 of usage is required to create a WeChat Pay or Alipay QR payment.');
+      }
+
+      const merchantOrderId = `lulu-payg-${period.id}-${input.paymentMethod}`;
+      const intent = await airwallexRequest('/api/v1/pa/payment_intents/create', {
+        amount: Number(amount.toFixed(2)),
+        currency: period.currency,
+        merchant_order_id: merchantOrderId,
+        return_url: input.returnUrl,
+      }, deterministicBillingRequestId(`payg-qr-intent:${period.id}:${input.paymentMethod}`), 'PAYG_QR_PAYMENT_INTENT_CREATE');
+      const providerPaymentIntentId = typeof intent.id === 'string' ? intent.id : null;
+      if (!providerPaymentIntentId) {
+        throw providerError('AIRWALLEX_PAYG_QR_PAYMENT_INTENT_ID_MISSING', 'Airwallex did not return a Payment Intent ID for the QR payment.');
+      }
+
+      const confirmation = await airwallexRequest(`/api/v1/pa/payment_intents/${encodeURIComponent(providerPaymentIntentId)}/confirm`, {
+        payment_method: {
+          type: input.paymentMethod,
+          [input.paymentMethod]: { flow: 'qrcode' },
+        },
+      }, deterministicBillingRequestId(`payg-qr-confirm:${period.id}:${input.paymentMethod}`), 'PAYG_QR_PAYMENT_CONFIRM');
+      const nextAction = (confirmation.next_action ?? {}) as AirwallexObject;
+      const qrPayload = typeof nextAction.qrcode === 'string'
+        ? nextAction.qrcode
+        : typeof nextAction.qrcode_url === 'string'
+          ? nextAction.qrcode_url
+          : null;
+      if (!qrPayload) {
+        throw providerError('AIRWALLEX_PAYG_QR_PAYLOAD_MISSING', 'Airwallex did not return a QR code for this payment method.', {
+          providerStatus: confirmation.status ?? null,
+          nextActionType: nextAction.type ?? null,
+        });
+      }
+
+      const payment = await savePaygQrPayment({
+        workspaceId: input.workspaceId,
+        periodId: period.id,
+        paymentMethod: input.paymentMethod,
+        providerPaymentIntentId,
+        merchantOrderId,
+        amount: amount.toFixed(8),
+        currency: period.currency,
+        status: String(confirmation.status ?? 'REQUIRES_CUSTOMER_ACTION').toUpperCase() === 'PENDING' ? 'PENDING' : 'REQUIRES_CUSTOMER_ACTION',
+        qrPayload,
+        paymentUrl: typeof nextAction.url === 'string' ? nextAction.url : null,
+        expiresAt: paygQrExpiry(input.paymentMethod),
+        providerResponse: confirmation,
+      }, client);
+      await markPaygQrPaymentReady(period.id, payment.id, client);
+      await query(
+        `INSERT INTO audit_log (workspace_id, actor_id, action, entity_type, entity_id, after_data)
+         VALUES ($1, $2, 'payg_qr_payment.created', 'workspace_payg_qr_payment', $3,
+           $4::jsonb)`,
+        [input.workspaceId, input.userId, payment.id, JSON.stringify({ paymentMethod: input.paymentMethod, amount: Number(payment.amount), currency: payment.currency, periodId: period.id, provider: 'airwallex' })],
+        client,
+      );
+      return { ...formatPaygQrPayment(payment), reused: false };
+    });
+  } catch (error) {
+    // An already-active QR belongs to this same reserved amount and must stay
+    // payable. Mark only actual QR-creation failures as failed.
+    if (!(error instanceof AppError && ['PAYG_QR_PAYMENT_ALREADY_ACTIVE', 'PAYG_QR_PAYMENT_INVOICE_EXISTS'].includes(error.code))) {
+      await failPaygPeriod(period.id, error instanceof AppError ? error.code : 'PAYG_QR_PAYMENT_CREATE_FAILED', error instanceof Error ? error.message : 'Unknown PAYG QR payment error');
+    }
+    throw error;
+  }
+}
+
+export async function syncPaygApiUsageQrPayment(workspaceId: string, paymentId: string) {
+  const local = await getPaygQrPayment(workspaceId, paymentId);
+  if (!local) throw new AppError(404, 'PAYG_QR_PAYMENT_NOT_FOUND', 'The QR payment does not belong to this workspace.');
+
+  if (local.status === 'SUCCEEDED') return formatPaygQrPayment(local);
+  if (local.expiresAt && new Date(local.expiresAt).getTime() <= Date.now()) {
+    const expired = await applyPaygQrPaymentIntentStatus({
+      providerPaymentIntentId: local.providerPaymentIntentId,
+      providerStatus: 'REQUIRES_PAYMENT_METHOD',
+    });
+    return formatPaygQrPayment(expired ?? local);
+  }
+
+  const intent = await airwallexGet(`/api/v1/pa/payment_intents/${encodeURIComponent(local.providerPaymentIntentId)}`, 'PAYG_QR_PAYMENT_STATUS');
+  const updated = await applyPaygQrPaymentIntentStatus({
+    providerPaymentIntentId: local.providerPaymentIntentId,
+    providerStatus: String(intent.status ?? 'REQUIRES_CUSTOMER_ACTION'),
+    paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null,
+    providerResponse: intent,
+  });
+  return formatPaygQrPayment(updated ?? local);
+}
+
 async function assertOnboardingReadyForBilling(workspaceId: string) {
   const [workspace, state] = await Promise.all([
     findWorkspaceById(workspaceId),
@@ -978,6 +1145,31 @@ export async function handleWebhook(event: AirwallexObject) {
     const data = eventData.object && typeof eventData.object === 'object'
       ? eventData.object as AirwallexObject
       : eventData;
+
+    const paymentIntent = (data.payment_intent ?? data) as AirwallexObject;
+    const paymentIntentId = typeof paymentIntent.id === 'string'
+      ? paymentIntent.id
+      : typeof data.payment_intent_id === 'string'
+        ? data.payment_intent_id
+        : null;
+    const paymentIntentStatus = typeof paymentIntent.status === 'string'
+      ? paymentIntent.status
+      : eventType.toUpperCase().includes('PAYMENT_INTENT.SUCCEEDED')
+        ? 'SUCCEEDED'
+        : null;
+    if (paymentIntentId && paymentIntentStatus && eventType.toUpperCase().includes('PAYMENT_INTENT')) {
+      const handledPayment = await applyPaygQrPaymentIntentStatus({
+        providerPaymentIntentId: paymentIntentId,
+        providerStatus: paymentIntentStatus,
+        paidAt: typeof paymentIntent.paid_at === 'string' ? paymentIntent.paid_at : null,
+        providerResponse: paymentIntent,
+      });
+      if (handledPayment) {
+        await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
+        return { processed: true, eventId, paygQrPaymentId: handledPayment.id, status: handledPayment.status.toLowerCase() };
+      }
+    }
+
     const metadata = (data.metadata ?? data.invoice?.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
     const workspaceId = typeof metadata.workspace_id === 'string' ? metadata.workspace_id : null;
     if (!workspaceId) {

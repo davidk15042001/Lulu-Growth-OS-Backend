@@ -3,13 +3,14 @@ import { z } from 'zod';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
-import { configurePaygPaymentMethod as configurePaygPaymentMethodCheckout, createCheckout, createPaygApiUsageCheckout as createPaygApiUsageCheckoutInvoice, syncCheckoutStatus, syncPaygPaymentMethodSetup, type BillingPlanKey } from '../billing/airwallex.service.js';
+import { configurePaygPaymentMethod as configurePaygPaymentMethodCheckout, createCheckout, createPaygApiUsageCheckout as createPaygApiUsageCheckoutInvoice, createPaygApiUsageQrPayment, syncCheckoutStatus, syncPaygApiUsageQrPayment, syncPaygPaymentMethodSetup, type BillingPlanKey } from '../billing/airwallex.service.js';
 import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import * as contentGeneration from '../content-generation/content-generation.service.js';
 import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
 import {
   createSavedViewSchema,
   configurePaygPaymentMethodSchema,
+  createPaygQrPaymentSchema,
   googleBusinessConnectSchema,
   inviteMemberSchema,
   inviteTokenParamsSchema,
@@ -17,6 +18,7 @@ import {
   listGoogleReviewsQuerySchema,
   listSavedViewsQuerySchema,
   listUsageQuerySchema,
+  paygQrPaymentParamsSchema,
   updateGoogleReviewReplySchema,
   updateMemberSchema,
   updateSavedViewSchema,
@@ -190,6 +192,28 @@ export async function createPaygApiUsageCheckout(req: WorkspaceRequest, res: Res
   try {
     const { workspaceId } = params(req);
     return successResponse(res, 'API usage payment checkout created', await createPaygApiUsageCheckoutInvoice(workspaceId));
+  } catch (error) { next(error); }
+}
+
+export async function createPaygQrPayment(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const input = createPaygQrPaymentSchema.parse(req.body);
+    return successResponse(res, 'PAYG QR payment created', await createPaygApiUsageQrPayment({
+      workspaceId,
+      userId: req.user!.id,
+      paymentMethod: input.paymentMethod,
+      returnUrl: input.returnUrl,
+      ...(input.periodId ? { periodId: input.periodId } : {}),
+    }));
+  } catch (error) { next(error); }
+}
+
+export async function syncPaygQrPayment(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const { paymentId } = paygQrPaymentParamsSchema.parse(req.params);
+    return successResponse(res, 'PAYG QR payment synchronized', await syncPaygApiUsageQrPayment(workspaceId, paymentId));
   } catch (error) { next(error); }
 }
 
