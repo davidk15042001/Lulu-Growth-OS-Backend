@@ -248,20 +248,41 @@ export async function deleteUserAndOwnedData(userId: string) {
     const userResult = await query<{
       id: string;
       email: string;
-      role: 'user' | 'admin';
-      deletedAt: string | null;
+      isSuperAdmin: boolean;
     }>(
-      `SELECT id, email, role, deleted_at AS "deletedAt"
-       FROM users
-       WHERE id = $1
-       LIMIT 1`,
+      `SELECT u.id, u.email,
+              EXISTS(
+                SELECT 1
+                FROM admin_user_roles aur
+                WHERE aur.user_id = u.id AND aur.role = 'SUPER_ADMIN'
+              ) AS "isSuperAdmin"
+       FROM users u
+       WHERE u.id = $1
+       LIMIT 1
+       FOR UPDATE`,
       [userId],
       client,
     );
     const user = userResult.rows[0];
-    if (!user || user.deletedAt) return null;
-    if (user.role === 'admin') {
-      throw new Error('ADMIN_DELETE_FORBIDDEN');
+    if (!user) return null;
+
+    // The old `users.role` flag predates capability-based administration and
+    // must not make an otherwise deletable customer account undeletable. Only
+    // protect the final active SUPER_ADMIN account from being removed.
+    if (user.isSuperAdmin) {
+      const remainingSuperAdmins = await query<{ count: string }>(
+        `SELECT COUNT(*)::bigint AS count
+         FROM admin_user_roles aur
+         JOIN users u ON u.id = aur.user_id
+         WHERE aur.role = 'SUPER_ADMIN'
+           AND aur.user_id <> $1
+           AND u.deleted_at IS NULL`,
+        [userId],
+        client,
+      );
+      if (Number(remainingSuperAdmins.rows[0]?.count ?? 0) === 0) {
+        throw new Error('LAST_SUPER_ADMIN_DELETE_FORBIDDEN');
+      }
     }
 
     const ownedWorkspaces = await query<{
@@ -274,8 +295,7 @@ export async function deleteUserAndOwnedData(userId: string) {
          ON wm.workspace_id = w.id
         AND wm.user_id = $1
         AND wm.role = 'owner'
-       WHERE w.deleted_at IS NULL
-         AND (w.created_by = $1 OR wm.user_id IS NOT NULL)
+       WHERE w.created_by = $1 OR wm.user_id IS NOT NULL
        ORDER BY w.created_at DESC`,
       [userId],
       client,
@@ -285,6 +305,28 @@ export async function deleteUserAndOwnedData(userId: string) {
     let deletedWorkspaceCount = 0;
     let deletedIntegrationCount = 0;
     let deletedMembershipCount = 0;
+
+    // These tables intentionally use ON DELETE RESTRICT because normal users
+    // must not disappear while their shared-workspace content still exists.
+    // An explicit account erasure removes that content before the user row is
+    // deleted, so no personal content or credentials remain behind.
+    const deletedRelationships = await query(`DELETE FROM record_relationships WHERE created_by = $1`, [userId], client);
+    const deletedComments = await query(`DELETE FROM record_comments WHERE author_id = $1`, [userId], client);
+    const deletedAttachments = await query(`DELETE FROM record_attachments WHERE uploaded_by = $1`, [userId], client);
+    const deletedInvitations = await query(`DELETE FROM workspace_invitations WHERE invited_by = $1`, [userId], client);
+    const deletedDocuments = await query(`DELETE FROM onboarding_documents WHERE uploaded_by = $1`, [userId], client);
+    const deletedWebhooks = await query(`DELETE FROM webhook_endpoints WHERE created_by = $1`, [userId], client);
+    const deletedRecords = await query(`DELETE FROM workspace_records WHERE created_by = $1`, [userId], client);
+
+    const deletedSharedWorkspaceDataCount = [
+      deletedRelationships.rowCount,
+      deletedComments.rowCount,
+      deletedAttachments.rowCount,
+      deletedInvitations.rowCount,
+      deletedDocuments.rowCount,
+      deletedWebhooks.rowCount,
+      deletedRecords.rowCount,
+    ].reduce((total, count) => total + count, 0);
 
     if (workspaceIds.length) {
       const integrationCountResult = await query<{ count: string }>(
@@ -324,34 +366,24 @@ export async function deleteUserAndOwnedData(userId: string) {
     deletedMembershipCount += Number(remainingMembershipCount.rows[0]?.count ?? 0);
 
     await query(`DELETE FROM workspace_members WHERE user_id = $1`, [userId], client);
-    await query(`DELETE FROM device_push_tokens WHERE user_id = $1`, [userId], client);
-    await query(`DELETE FROM otp_codes WHERE user_id = $1`, [userId], client);
-    await revokeSessionsInTransaction(userId,null,'admin_deleted',client);
-    await query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [userId], client);
-
-    const redactedEmail = `deleted+${user.id}@lulu.local`;
-    await query(
-      `UPDATE users
-       SET email = $2,
-           password_hash = gen_random_uuid()::text,
-           first_name = NULL,
-           last_name = NULL,
-           verified_at = NULL,
-           token_version = token_version + 1,
-           deleted_at = NOW(),
-           updated_at = NOW()
-       WHERE id = $1`,
-      [userId, redactedEmail],
+    // All session, refresh-token, OTP, notification, AI, usage and admin-role
+    // records are protected by database-level ON DELETE CASCADE constraints.
+    // A physical DELETE is required here: anonymising the users row left a
+    // recoverable account behind and was the source of the broken admin action.
+    const deletedUser = await query<{ id: string }>(
+      `DELETE FROM users WHERE id = $1 RETURNING id`,
+      [userId],
       client,
     );
+    if (!deletedUser.rows[0]) throw new Error('USER_DELETE_FAILED');
 
     return {
       userId: user.id,
       previousEmail: user.email,
-      redactedEmail,
       deletedWorkspaceCount,
       deletedIntegrationCount,
       deletedMembershipCount,
+      deletedSharedWorkspaceDataCount,
       deletedWorkspaceNames: ownedWorkspaces.rows.map((workspace) => workspace.companyName),
     };
   });

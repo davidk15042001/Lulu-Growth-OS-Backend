@@ -118,8 +118,8 @@ export async function deleteUser(req: AuthedRequest, res: Response, next: NextFu
     if (!result) return res.status(404).json({ success: false, error: { code: 'USER_NOT_FOUND', message: 'User not found' } });
     return successResponse(res, 'User and related data deleted', result);
   } catch (error) {
-    if (error instanceof Error && error.message === 'ADMIN_DELETE_FORBIDDEN') {
-      return res.status(409).json({ success: false, error: { code: 'ADMIN_DELETE_FORBIDDEN', message: 'Administrator accounts cannot be deleted from this tool.' } });
+    if (error instanceof Error && error.message === 'LAST_SUPER_ADMIN_DELETE_FORBIDDEN') {
+      return res.status(409).json({ success: false, error: { code: 'LAST_SUPER_ADMIN_DELETE_FORBIDDEN', message: 'At least one active Super Admin account must remain.' } });
     }
     next(error);
   }
