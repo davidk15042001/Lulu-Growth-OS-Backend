@@ -6,6 +6,8 @@ import * as authService from '../auth/auth.service.js';
 import { setRefreshTokenCookie } from '../auth/auth.controller.js';
 
 import { assertAdminCapability } from './admin.authorization.js';
+import { AppError } from '../../utils/app-error.js';
+import { logger } from '../../config/logger.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -107,9 +109,9 @@ export async function patchUser(req: AuthedRequest, res: Response, next: NextFun
 }
 
 export async function deleteUser(req: AuthedRequest, res: Response, next: NextFunction) {
+  const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
   try {
     if (!requireAdmin(req, res)) return;
-    const userId = typeof req.params.userId === 'string' ? req.params.userId : '';
     if (!userId) return res.status(400).json({ success: false, error: { code: 'INVALID_USER_ID', message: 'User ID is required' } });
     if (req.user?.id === userId) {
       return res.status(409).json({ success: false, error: { code: 'ADMIN_SELF_DELETE_FORBIDDEN', message: 'The active administrator account cannot be deleted.' } });
@@ -121,7 +123,10 @@ export async function deleteUser(req: AuthedRequest, res: Response, next: NextFu
     if (error instanceof Error && error.message === 'LAST_SUPER_ADMIN_DELETE_FORBIDDEN') {
       return res.status(409).json({ success: false, error: { code: 'LAST_SUPER_ADMIN_DELETE_FORBIDDEN', message: 'At least one active Super Admin account must remain.' } });
     }
-    next(error);
+    // Do not expose database internals in the admin UI. Log enough context to
+    // correlate the request, while returning a non-generic, actionable code.
+    logger.error({ error, actorUserId: req.user?.id, targetUserId: userId, requestId: req.id }, 'Admin user deletion failed');
+    next(new AppError(500, 'USER_DELETE_FAILED', 'The account could not be deleted. No data was changed. Please retry shortly or contact support with the request ID.'));
   }
 }
 

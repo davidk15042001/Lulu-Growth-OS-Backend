@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { revokeSessionsInTransaction } from '../auth/auth.repo.js';
 
@@ -243,6 +244,64 @@ export async function updateUserStatus(userId: string, action: 'lock' | 'unlock'
   return getUserDetail(userId);
 }
 
+type RestrictingUserReference = {
+  schemaName: string;
+  tableName: string;
+  columnName: string;
+};
+
+function quoteIdentifier(identifier: string) {
+  // Every name is obtained from PostgreSQL's own catalogue. Keep this guard
+  // nevertheless: an identifier must never be interpolated unchecked.
+  if (!/^[A-Za-z_][A-Za-z0-9_$]*$/.test(identifier)) {
+    throw new Error('INVALID_DATABASE_IDENTIFIER');
+  }
+  return `"${identifier}"`;
+}
+
+/**
+ * Remove rows from any *actual* single-column RESTRICT/NO ACTION foreign key
+ * to users. The explicit deletes below document the normal schema and define
+ * the order for its dependent CRM data. This catalogue-driven last pass keeps
+ * a production database with a historical, not-yet-documented FK from making
+ * an account permanently undeletable.
+ */
+async function deleteLegacyRestrictingUserReferences(userId: string, client: PoolClient) {
+  const references = await query<RestrictingUserReference>(
+    `SELECT namespace.nspname AS "schemaName",
+            relation.relname AS "tableName",
+            attribute.attname AS "columnName"
+       FROM pg_constraint fk_constraint
+       JOIN pg_class relation ON relation.oid = fk_constraint.conrelid
+       JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+       JOIN pg_attribute attribute
+         ON attribute.attrelid = fk_constraint.conrelid
+        AND attribute.attnum = fk_constraint.conkey[1]
+      WHERE fk_constraint.contype = 'f'
+        AND fk_constraint.confrelid = 'users'::regclass
+        AND fk_constraint.confdeltype IN ('a', 'r')
+        AND cardinality(fk_constraint.conkey) = 1
+        AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+      ORDER BY namespace.nspname, relation.relname, attribute.attname`,
+    [],
+    client,
+  );
+
+  let deletedCount = 0;
+  for (const reference of references.rows) {
+    const schemaName = quoteIdentifier(reference.schemaName);
+    const tableName = quoteIdentifier(reference.tableName);
+    const columnName = quoteIdentifier(reference.columnName);
+    const result = await query(
+      `DELETE FROM ${schemaName}.${tableName} WHERE ${columnName} = $1`,
+      [userId],
+      client,
+    );
+    deletedCount += result.rowCount;
+  }
+  return deletedCount;
+}
+
 export async function deleteUserAndOwnedData(userId: string) {
   return withTransaction(async (client) => {
     const userResult = await query<{
@@ -366,6 +425,13 @@ export async function deleteUserAndOwnedData(userId: string) {
     deletedMembershipCount += Number(remainingMembershipCount.rows[0]?.count ?? 0);
 
     await query(`DELETE FROM workspace_members WHERE user_id = $1`, [userId], client);
+
+    // This pass is intentionally after the documented, ordered deletes. It
+    // makes permanent deletion safe for production databases that retain an
+    // older RESTRICT/NO ACTION user reference which is not present in the
+    // current migrations. The transaction still rolls back in full on error.
+    const deletedLegacyReferenceCount = await deleteLegacyRestrictingUserReferences(userId, client);
+
     // All session, refresh-token, OTP, notification, AI, usage and admin-role
     // records are protected by database-level ON DELETE CASCADE constraints.
     // A physical DELETE is required here: anonymising the users row left a
@@ -383,7 +449,7 @@ export async function deleteUserAndOwnedData(userId: string) {
       deletedWorkspaceCount,
       deletedIntegrationCount,
       deletedMembershipCount,
-      deletedSharedWorkspaceDataCount,
+      deletedSharedWorkspaceDataCount: deletedSharedWorkspaceDataCount + deletedLegacyReferenceCount,
       deletedWorkspaceNames: ownedWorkspaces.rows.map((workspace) => workspace.companyName),
     };
   });

@@ -110,6 +110,18 @@ describe('admin user deletion', () => {
        VALUES($1, 'Delete webhook', 'https://example.test/webhook', 'hash', $2)`,
       [sharedWorkspace.id, target],
     );
+    // Simulates an older production table that was created before the current
+    // migrations documented every RESTRICT reference to users.
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS legacy_user_delete_blockers (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT
+      )
+    `);
+    await db.query(
+      `INSERT INTO legacy_user_delete_blockers(user_id) VALUES($1)`,
+      [target],
+    );
 
     const result = await admin.deleteUserAndOwnedData(target);
 
@@ -125,6 +137,7 @@ describe('admin user deletion', () => {
     for (const table of ['record_relationships', 'record_comments', 'record_attachments', 'workspace_invitations', 'onboarding_documents', 'webhook_endpoints']) {
       assert.equal((await db.query(`SELECT * FROM ${table}`)).rows.length, 0, `${table} should be removed`);
     }
+    assert.equal((await db.query('SELECT * FROM legacy_user_delete_blockers WHERE user_id=$1', [target])).rows.length, 0);
   });
 
   it('keeps the final Super Admin protected', async () => {
