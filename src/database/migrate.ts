@@ -39,9 +39,20 @@ export async function ensureMigrations() {
   }
 
   const client = await getPool().connect();
+  let hasMigrationLock = false;
 
   try {
-    await client.query('SELECT pg_advisory_lock(hashtext($1))', [migrationLockName]);
+    // Never wait indefinitely for a stale or independently running migration.
+    // Deployments can retry safely, while the HTTP service remains available.
+    const lock = await client.query<{ acquired: boolean }>(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS acquired',
+      [migrationLockName],
+    );
+    hasMigrationLock = lock.rows[0]?.acquired === true;
+    if (!hasMigrationLock) {
+      logger.warn({ migrationLockName }, 'Migration lock is already held; skipping this migration attempt');
+      throw new Error('Database migration lock is already held by another process');
+    }
     await ensureSchemaTable(client);
 
     const dir = path.join(__dirname, 'migrations');
@@ -69,7 +80,9 @@ export async function ensureMigrations() {
       }
     }
   } finally {
-    await client.query('SELECT pg_advisory_unlock(hashtext($1))', [migrationLockName]).catch(() => undefined);
+    if (hasMigrationLock) {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [migrationLockName]).catch(() => undefined);
+    }
     client.release();
   }
 }
