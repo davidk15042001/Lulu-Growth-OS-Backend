@@ -302,6 +302,50 @@ async function deleteLegacyRestrictingUserReferences(userId: string, client: Poo
   return deletedCount;
 }
 
+/**
+ * The same historical-schema safeguard for data owned by an account's
+ * workspaces. Current migrations cascade workspace data, but a production
+ * database can still contain an older RESTRICT/NO ACTION relation. Remove only
+ * rows that belong to the workspaces being erased, never other tenants' data.
+ */
+async function deleteLegacyRestrictingWorkspaceReferences(workspaceIds: string[], client: PoolClient) {
+  if (!workspaceIds.length) return 0;
+
+  const references = await query<RestrictingUserReference>(
+    `SELECT namespace.nspname AS "schemaName",
+            relation.relname AS "tableName",
+            attribute.attname AS "columnName"
+       FROM pg_constraint fk_constraint
+       JOIN pg_class relation ON relation.oid = fk_constraint.conrelid
+       JOIN pg_namespace namespace ON namespace.oid = relation.relnamespace
+       JOIN pg_attribute attribute
+         ON attribute.attrelid = fk_constraint.conrelid
+        AND attribute.attnum = fk_constraint.conkey[1]
+      WHERE fk_constraint.contype = 'f'
+        AND fk_constraint.confrelid = 'workspaces'::regclass
+        AND fk_constraint.confdeltype IN ('a', 'r')
+        AND cardinality(fk_constraint.conkey) = 1
+        AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+      ORDER BY namespace.nspname, relation.relname, attribute.attname`,
+    [],
+    client,
+  );
+
+  let deletedCount = 0;
+  for (const reference of references.rows) {
+    const schemaName = quoteIdentifier(reference.schemaName);
+    const tableName = quoteIdentifier(reference.tableName);
+    const columnName = quoteIdentifier(reference.columnName);
+    const result = await query(
+      `DELETE FROM ${schemaName}.${tableName} WHERE ${columnName} = ANY($1::uuid[])`,
+      [workspaceIds],
+      client,
+    );
+    deletedCount += result.rowCount;
+  }
+  return deletedCount;
+}
+
 export async function deleteUserAndOwnedData(userId: string) {
   return withTransaction(async (client) => {
     const userResult = await query<{
@@ -377,7 +421,7 @@ export async function deleteUserAndOwnedData(userId: string) {
     const deletedWebhooks = await query(`DELETE FROM webhook_endpoints WHERE created_by = $1`, [userId], client);
     const deletedRecords = await query(`DELETE FROM workspace_records WHERE created_by = $1`, [userId], client);
 
-    const deletedSharedWorkspaceDataCount = [
+    let deletedSharedWorkspaceDataCount = [
       deletedRelationships.rowCount,
       deletedComments.rowCount,
       deletedAttachments.rowCount,
@@ -406,6 +450,8 @@ export async function deleteUserAndOwnedData(userId: string) {
       );
       deletedMembershipCount += Number(membershipCountResult.rows[0]?.count ?? 0);
 
+      const deletedLegacyWorkspaceReferenceCount = await deleteLegacyRestrictingWorkspaceReferences(workspaceIds, client);
+
       const deletedWorkspacesResult = await query<{ id: string }>(
         `DELETE FROM workspaces
          WHERE id = ANY($1::uuid[])`,
@@ -413,6 +459,7 @@ export async function deleteUserAndOwnedData(userId: string) {
         client,
       );
       deletedWorkspaceCount = deletedWorkspacesResult.rowCount;
+      deletedSharedWorkspaceDataCount += deletedLegacyWorkspaceReferenceCount;
     }
 
     const remainingMembershipCount = await query<{ count: string }>(

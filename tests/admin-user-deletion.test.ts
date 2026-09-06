@@ -122,6 +122,16 @@ describe('admin user deletion', () => {
       `INSERT INTO legacy_user_delete_blockers(user_id) VALUES($1)`,
       [target],
     );
+    await db.exec(`
+      CREATE TABLE IF NOT EXISTS legacy_workspace_delete_blockers (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE RESTRICT
+      )
+    `);
+    await db.query(
+      `INSERT INTO legacy_workspace_delete_blockers(workspace_id) VALUES($1)`,
+      [ownedWorkspace.id],
+    );
 
     const result = await admin.deleteUserAndOwnedData(target);
 
@@ -138,6 +148,7 @@ describe('admin user deletion', () => {
       assert.equal((await db.query(`SELECT * FROM ${table}`)).rows.length, 0, `${table} should be removed`);
     }
     assert.equal((await db.query('SELECT * FROM legacy_user_delete_blockers WHERE user_id=$1', [target])).rows.length, 0);
+    assert.equal((await db.query('SELECT * FROM legacy_workspace_delete_blockers WHERE workspace_id=$1', [ownedWorkspace.id])).rows.length, 0);
   });
 
   it('keeps the final Super Admin protected', async () => {
