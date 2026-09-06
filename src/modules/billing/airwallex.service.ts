@@ -884,8 +884,8 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   if (!config) throw providerError('BILLING_PLAN_INVALID', 'The selected billing plan is not supported', { planKey: input.planKey }, 422);
 
   if (input.planKey === 'explorer') throw new AppError(422, 'BILLING_PLAN_REMOVED', 'The Explorer plan is no longer available.');
-  if ((input.planKey === 'viewer' || input.planKey === 'test') && !input.allowInternalPlans) {
-    throw new AppError(403, 'BILLING_PLAN_NOT_AVAILABLE', 'The selected billing plan is not available for this account.');
+  if (input.planKey !== 'ai' && !input.allowInternalPlans) {
+    throw new AppError(403, 'BILLING_PLAN_NOT_AVAILABLE', 'The Lulu AI package is the only plan available for this account.');
   }
   await assertOnboardingReadyForBilling(input.workspaceId);
   if (input.planKey === 'viewer') {
