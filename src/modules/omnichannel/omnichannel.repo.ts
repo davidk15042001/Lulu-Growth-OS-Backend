@@ -112,7 +112,10 @@ export async function createWebsiteIdentity(workspaceId:string,input:{websiteId:
 
 export async function createPublicSession(widgetId:string, origin?:string, visitorId?:string, pageContext?:Record<string,unknown>) {
   const identity=await getWebsiteIdentityByWidget(widgetId); if(!identity || identity.status!=='ACTIVE' || identity.identity_status!=='ACTIVE') return null;
-  const origins=(identity.allowed_origins??[]) as string[]; if(origins.length && (!origin || !origins.includes(origin))) return null;
+  const origins=(identity.allowed_origins??[]) as string[];
+  // Browser origins must be explicitly allowlisted. Requests without an
+  // Origin header remain supported for same-origin/server-side integrations.
+  if(origin && (!origins.length || !origins.includes(origin))) return null;
   const conversation=await createConversation({workspaceId:identity.workspace_id,channelId:identity.channel_id,channelIdentityId:identity.channel_identity_id,handlingMode:identity.ai_handling_mode,language:identity.default_language,metadata:{pageContext:pageContext??{}}});
   const token=randomBytes(32).toString('hex'); await query(`INSERT INTO omni_website_chat_sessions(website_chat_identity_id,workspace_id,conversation_id,token_hash,visitor_id,metadata) VALUES($1,$2,$3,$4,$5,$6)`,[identity.id,identity.workspace_id,conversation.id,hashToken(token),visitorId??null,pageContext??{}]);
   await appendDomainEvent({workspaceId:identity.workspace_id,type:DOMAIN_EVENT_TYPES.WEBSITE_CHAT_SESSION_STARTED,aggregateType:'website_chat_session',aggregateId:conversation.id,payload:{websiteChatIdentityId:identity.id},metadata:{source:'omnichannel.public'}});
