@@ -53,4 +53,18 @@ describe('security and finance hardening', () => {
     const row = await db.query<{ user_id: string | null }>(`SELECT user_id FROM ai_usage_ledger WHERE id=$1`, [first?.id]);
     assert.equal(row.rows[0]?.user_id, null);
   });
+
+  it('rejects generic record parents, relationships and assignees from another workspace', async () => {
+    const userA = (await db.query<{ id: string }>(`INSERT INTO users(email,password_hash,verified_at) VALUES($1,'hash',NOW()) RETURNING id`, [`${crypto.randomUUID()}@example.test`])).rows[0]!.id;
+    const userB = (await db.query<{ id: string }>(`INSERT INTO users(email,password_hash,verified_at) VALUES($1,'hash',NOW()) RETURNING id`, [`${crypto.randomUUID()}@example.test`])).rows[0]!.id;
+    const workspaceA = (await db.query<{ id: string }>(`INSERT INTO workspaces(name,created_by) VALUES('Records A',$1) RETURNING id`, [userA])).rows[0]!.id;
+    const workspaceB = (await db.query<{ id: string }>(`INSERT INTO workspaces(name,created_by) VALUES('Records B',$1) RETURNING id`, [userB])).rows[0]!.id;
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner'),($3,$4,'owner')`, [workspaceA, userA, workspaceB, userB]);
+    await db.query(`INSERT INTO resource_types(key,domain,label) VALUES('crm_leads','crm','CRM Leads') ON CONFLICT (key) DO NOTHING`);
+    const recordA = (await db.query<{ id: string }>(`INSERT INTO workspace_records(workspace_id,resource_type,name,created_by) VALUES($1,'crm_leads','A',$2) RETURNING id`, [workspaceA, userA])).rows[0]!.id;
+    const recordB = (await db.query<{ id: string }>(`INSERT INTO workspace_records(workspace_id,resource_type,name,created_by) VALUES($1,'crm_leads','B',$2) RETURNING id`, [workspaceB, userB])).rows[0]!.id;
+    await assert.rejects(() => db.query(`INSERT INTO workspace_records(workspace_id,resource_type,parent_id,name,created_by) VALUES($1,'crm_leads',$2,'cross',$3)`, [workspaceA, recordB, userA]), /workspace_records_parent_same_workspace_fk/);
+    await assert.rejects(() => db.query(`INSERT INTO record_relationships(workspace_id,source_record_id,target_record_id,relationship_type,created_by) VALUES($1,$2,$3,'related_to',$4)`, [workspaceA, recordA, recordB, userA]), /record_relationships_target_same_workspace_fk/);
+    await assert.rejects(() => db.query(`UPDATE workspace_records SET assignee_id=$1 WHERE id=$2`, [userB, recordA]), /workspace_records_assignee_workspace_fk/);
+  });
 });
