@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { revokeSessionsInTransaction } from '../auth/auth.repo.js';
+import { AppError } from '../../utils/app-error.js';
 
 export async function listCustomerBillingOverview(periodStart: string, periodEnd: string) {
   const { rows } = await query(`
@@ -89,6 +90,143 @@ export async function addWorkspaceCredits(workspaceId: string, amount: number, g
       client,
     );
     return balance;
+  });
+}
+
+export type UsageAdjustmentMetric = 'api' | 'server';
+
+export async function listWorkspaceUsageAdjustments(workspaceId: string) {
+  const { rows } = await query(`
+    SELECT a.id,
+           a.metric,
+           a.amount_usd AS "amountUsd",
+           a.period_start AS "periodStart",
+           a.period_end AS "periodEnd",
+           a.payg_period_id AS "paygPeriodId",
+           a.applied_at AS "appliedAt",
+           a.reason,
+           a.created_by AS "createdBy",
+           u.email AS "createdByEmail",
+           a.created_at AS "createdAt"
+    FROM workspace_usage_adjustments a
+    LEFT JOIN users u ON u.id = a.created_by
+    WHERE a.workspace_id = $1
+    ORDER BY a.created_at DESC
+    LIMIT 100
+  `, [workspaceId]);
+  return rows;
+}
+
+export async function getWorkspacePaygUsage(workspaceId: string) {
+  const { rows } = await query(`
+    SELECT p.current_period_start AS "periodStart",
+           p.current_period_end AS "periodEnd",
+           COALESCE((
+             SELECT SUM(u.customer_cost_usd)
+             FROM ai_usage_ledger u
+             WHERE u.workspace_id = p.workspace_id
+               AND u.payg_period_id IS NULL
+               AND u.created_at >= p.current_period_start
+               AND u.created_at < p.current_period_end
+           ), 0)::numeric AS "apiCostUsd",
+           COALESCE((
+             SELECT SUM(s.customer_cost_usd)
+             FROM workspace_server_usage_ledger s
+             WHERE s.workspace_id = p.workspace_id
+               AND s.payg_period_id IS NULL
+               AND s.created_at >= p.current_period_start
+               AND s.created_at < p.current_period_end
+           ), 0)::numeric AS "serverCostUsd",
+           COALESCE((
+             SELECT SUM(a.amount_usd)
+             FROM workspace_usage_adjustments a
+             WHERE a.workspace_id = p.workspace_id
+               AND a.payg_period_id IS NULL
+               AND a.period_start = p.current_period_start
+               AND a.period_end = p.current_period_end
+               AND a.metric = 'api'
+           ), 0)::numeric AS "apiCreditUsd",
+           COALESCE((
+             SELECT SUM(a.amount_usd)
+             FROM workspace_usage_adjustments a
+             WHERE a.workspace_id = p.workspace_id
+               AND a.payg_period_id IS NULL
+               AND a.period_start = p.current_period_start
+               AND a.period_end = p.current_period_end
+               AND a.metric = 'server'
+           ), 0)::numeric AS "serverCreditUsd"
+    FROM workspace_payg_profiles p
+    WHERE p.workspace_id = $1
+  `, [workspaceId]);
+  const row = rows[0];
+  if (!row) return null;
+  const apiCostUsd = Number(row.apiCostUsd ?? 0);
+  const serverCostUsd = Number(row.serverCostUsd ?? 0);
+  const apiCreditUsd = Number(row.apiCreditUsd ?? 0);
+  const serverCreditUsd = Number(row.serverCreditUsd ?? 0);
+  return {
+    periodStart: row.periodStart,
+    periodEnd: row.periodEnd,
+    apiCostUsd,
+    serverCostUsd,
+    apiCreditUsd,
+    serverCreditUsd,
+    apiBillableUsd: Math.max(0, apiCostUsd - apiCreditUsd),
+    serverBillableUsd: Math.max(0, serverCostUsd - serverCreditUsd),
+    totalBillableUsd: Math.max(0, apiCostUsd - apiCreditUsd) + Math.max(0, serverCostUsd - serverCreditUsd),
+  };
+}
+
+export async function addWorkspaceUsageAdjustment(
+  workspaceId: string,
+  metric: UsageAdjustmentMetric,
+  amountUsd: number,
+  reason: string,
+  createdBy: string,
+) {
+  return withTransaction(async (client) => {
+    const profile = await query<{ periodStart: string; periodEnd: string }>(
+      `SELECT current_period_start AS "periodStart", current_period_end AS "periodEnd"
+       FROM workspace_payg_profiles
+       WHERE workspace_id = $1 AND enabled = TRUE
+       FOR UPDATE`,
+      [workspaceId],
+      client,
+    );
+    const current = profile.rows[0];
+    if (!current) {
+      throw new AppError(409, 'PAYG_USAGE_NOT_CONFIGURED', 'PAYG usage is not configured for this workspace.');
+    }
+    if (new Date(current.periodEnd).getTime() <= Date.now()) {
+      throw new AppError(409, 'PAYG_PERIOD_CLOSED', 'The current PAYG usage period is already closed.');
+    }
+    const inserted = await query(
+      `INSERT INTO workspace_usage_adjustments (
+         workspace_id, period_start, period_end, metric, amount_usd, reason, created_by
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id,
+                 metric,
+                 amount_usd AS "amountUsd",
+                 period_start AS "periodStart",
+                 period_end AS "periodEnd",
+                 payg_period_id AS "paygPeriodId",
+                 applied_at AS "appliedAt",
+                 reason,
+                 created_by AS "createdBy",
+                 created_at AS "createdAt"`,
+      [workspaceId, current.periodStart, current.periodEnd, metric, amountUsd, reason, createdBy],
+      client,
+    );
+    const adjustment = inserted.rows[0];
+    if (!adjustment) throw new AppError(500, 'USAGE_ADJUSTMENT_NOT_CREATED', 'The usage adjustment could not be recorded.');
+    await query(
+      `INSERT INTO audit_log (
+         workspace_id, actor_id, action, entity_type, entity_id, after_data
+       ) VALUES ($1, $2, 'payg_usage.adjusted', 'workspace_usage_adjustment', $3, $4::jsonb)`,
+      [workspaceId, createdBy, adjustment.id, JSON.stringify({ metric, amountUsd, reason, periodStart: current.periodStart, periodEnd: current.periodEnd })],
+      client,
+    );
+    return adjustment;
   });
 }
 
@@ -764,7 +902,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
   `, [workspaceId]);
   if (!wsResult.rows[0]) return null;
 
-  const [members, records, websites, usage, credits] = await Promise.all([
+  const [members, records, websites, usage, credits, paygUsage, usageAdjustments] = await Promise.all([
     query(`
       SELECT u.id, u.email, u.first_name AS "firstName", u.last_name AS "lastName",
              wm.role, wm.joined_at AS "joinedAt"
@@ -796,6 +934,8 @@ export async function getWorkspaceDetail(workspaceId: string) {
     query(`
       SELECT balance FROM workspace_credit_balances WHERE workspace_id = $1
     `, [workspaceId]),
+    getWorkspacePaygUsage(workspaceId),
+    listWorkspaceUsageAdjustments(workspaceId),
   ]);
 
   return {
@@ -805,6 +945,8 @@ export async function getWorkspaceDetail(workspaceId: string) {
     websites: websites.rows,
     usage: usage.rows,
     creditBalance: Number(credits.rows[0]?.balance ?? 0),
+    paygUsage,
+    usageAdjustments,
   };
 }
 

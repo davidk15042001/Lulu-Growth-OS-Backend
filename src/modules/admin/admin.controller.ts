@@ -230,6 +230,41 @@ export async function addWorkspaceCredits(req: AuthedRequest, res: Response, nex
   } catch (error) { next(error); }
 }
 
+export async function getWorkspaceUsageAdjustments(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const [adjustments, paygUsage] = await Promise.all([
+      repo.listWorkspaceUsageAdjustments(workspaceId),
+      repo.getWorkspacePaygUsage(workspaceId),
+    ]);
+    return successResponse(res, 'Workspace usage adjustments loaded', { workspaceId, adjustments, paygUsage });
+  } catch (error) { next(error); }
+}
+
+export async function addWorkspaceUsageAdjustment(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const metric = req.body?.metric;
+    if (metric !== 'api' && metric !== 'server') {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_USAGE_METRIC', message: 'Metric must be api or server' } });
+    }
+    const amountUsd = Number(req.body?.amountUsd);
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > 1_000_000) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_USAGE_ADJUSTMENT', message: 'Adjustment must be greater than 0 and no more than 1,000,000 USD' } });
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+    if (!reason) {
+      return res.status(422).json({ success: false, error: { code: 'USAGE_ADJUSTMENT_REASON_REQUIRED', message: 'A reason is required for every usage adjustment' } });
+    }
+    const adjustment = await repo.addWorkspaceUsageAdjustment(workspaceId, metric, amountUsd, reason, req.user!.id);
+    return successResponse(res, 'Workspace usage credit added', adjustment);
+  } catch (error) { next(error); }
+}
+
 export async function getCrm(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     if (!requireAdmin(req, res)) return;
@@ -346,4 +381,3 @@ export async function getSupport(req: AuthedRequest, res: Response, next: NextFu
     return successResponse(res, 'Support tickets loaded', { tickets, limit, offset });
   } catch (error) { next(error); }
 }
-

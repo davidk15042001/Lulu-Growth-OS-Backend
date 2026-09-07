@@ -477,8 +477,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
               p.block_reason AS "blockReason",
               p.blocked_period_id AS "blockedPeriodId",
               blocked.hosted_invoice_url AS "paymentLink",
-              COALESCE(api.customer_cost_usd, 0)::numeric AS "apiCostUsd",
-              COALESCE(server.customer_cost_usd, 0)::numeric AS "serverCostUsd",
+              GREATEST(0::numeric, COALESCE(api.customer_cost_usd, 0) - COALESCE(adjustments.api_credit_usd, 0))::numeric AS "apiCostUsd",
+              GREATEST(0::numeric, COALESCE(server.customer_cost_usd, 0) - COALESCE(adjustments.server_credit_usd, 0))::numeric AS "serverCostUsd",
               COALESCE(api.input_tokens, 0)::bigint AS "inputTokens",
               COALESCE(api.output_tokens, 0)::bigint AS "outputTokens",
               COALESCE(api.event_count, 0)::int AS "apiEvents",
@@ -505,6 +505,16 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
            AND created_at >= p.current_period_start
            AND created_at < p.current_period_end
        ) server ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT
+           COALESCE(SUM(amount_usd) FILTER (WHERE metric='api'), 0) AS api_credit_usd,
+           COALESCE(SUM(amount_usd) FILTER (WHERE metric='server'), 0) AS server_credit_usd
+         FROM workspace_usage_adjustments
+         WHERE workspace_id=p.workspace_id
+           AND payg_period_id IS NULL
+           AND period_start=p.current_period_start
+           AND period_end=p.current_period_end
+       ) adjustments ON TRUE
        WHERE p.workspace_id=$1`,
       [workspaceId],
     ),

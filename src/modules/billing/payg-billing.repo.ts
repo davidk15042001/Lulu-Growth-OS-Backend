@@ -775,10 +775,29 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
       client,
     );
 
+    // Bind each one-time admin credit to the exact period it was created for.
+    // Raw usage remains immutable; only the billable total is reduced.
+    await query(
+      `UPDATE workspace_usage_adjustments
+       SET payg_period_id=$1, applied_at=NOW()
+       WHERE workspace_id=$2
+         AND payg_period_id IS NULL
+         AND period_start=$3::timestamptz
+         AND period_end=$4::timestamptz`,
+      [claimed.id, selected.workspaceId, selected.periodStart, selected.periodEnd],
+      client,
+    );
+
     const totals = await query<{ apiCostUsd: string; serverCostUsd: string }>(
       `SELECT
-         COALESCE((SELECT SUM(customer_cost_usd) FROM ai_usage_ledger WHERE payg_period_id=$1), 0)::numeric AS "apiCostUsd",
-         COALESCE((SELECT SUM(customer_cost_usd) FROM workspace_server_usage_ledger WHERE payg_period_id=$1), 0)::numeric AS "serverCostUsd"`,
+         GREATEST(0::numeric,
+           COALESCE((SELECT SUM(customer_cost_usd) FROM ai_usage_ledger WHERE payg_period_id=$1), 0)
+           - COALESCE((SELECT SUM(amount_usd) FROM workspace_usage_adjustments WHERE payg_period_id=$1 AND metric='api'), 0)
+         )::numeric AS "apiCostUsd",
+         GREATEST(0::numeric,
+           COALESCE((SELECT SUM(customer_cost_usd) FROM workspace_server_usage_ledger WHERE payg_period_id=$1), 0)
+           - COALESCE((SELECT SUM(amount_usd) FROM workspace_usage_adjustments WHERE payg_period_id=$1 AND metric='server'), 0)
+         )::numeric AS "serverCostUsd"`,
       [claimed.id],
       client,
     );
