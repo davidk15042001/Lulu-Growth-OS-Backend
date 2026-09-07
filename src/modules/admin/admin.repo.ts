@@ -535,7 +535,7 @@ export async function getUserDeletionJob(jobId: string) {
   return result.rows[0] ? mapAdminUserDeletionJob(result.rows[0]) : null;
 }
 
-export async function claimNextUserDeletionJob() {
+export async function claimNextUserDeletionJob(workerId = 'admin-user-deletion-worker') {
   const result = await query<Record<string, unknown>>(
     `WITH candidate AS (
        SELECT id
@@ -543,7 +543,7 @@ export async function claimNextUserDeletionJob() {
         WHERE job_type = $1
           AND (
             (status = 'queued' AND scheduled_at <= NOW())
-            OR (status = 'running' AND started_at < NOW() - INTERVAL '15 minutes')
+             OR (status = 'running' AND COALESCE(heartbeat_at, started_at) < NOW() - INTERVAL '15 minutes')
           )
         ORDER BY scheduled_at ASC, created_at ASC
         FOR UPDATE SKIP LOCKED
@@ -552,7 +552,9 @@ export async function claimNextUserDeletionJob() {
      UPDATE background_jobs AS job
         SET status = 'running',
             attempts = attempts + 1,
-            started_at = NOW(),
+             started_at = NOW(),
+             worker_id = $2,
+             heartbeat_at = NOW(),
             completed_at = NULL,
             error_message = NULL
        FROM candidate
@@ -569,7 +571,7 @@ export async function claimNextUserDeletionJob() {
         job.created_at AS "createdAt",
         job.started_at AS "startedAt",
         job.completed_at AS "completedAt"`,
-    [ADMIN_USER_DELETION_JOB_TYPE],
+     [ADMIN_USER_DELETION_JOB_TYPE, workerId],
   );
   return result.rows[0] ? mapAdminUserDeletionJob(result.rows[0]) : null;
 }
@@ -577,7 +579,8 @@ export async function claimNextUserDeletionJob() {
 export async function markUserDeletionJobSucceeded(jobId: string, result: Record<string, unknown>) {
   await query(
     `UPDATE background_jobs
-        SET status = 'succeeded', result = $2::jsonb, completed_at = NOW(), error_message = NULL
+        SET status = 'succeeded', result = $2::jsonb, completed_at = NOW(), error_message = NULL,
+            worker_id = NULL, heartbeat_at = NULL
       WHERE id = $1 AND job_type = $3 AND status = 'running'`,
     [jobId, JSON.stringify(result), ADMIN_USER_DELETION_JOB_TYPE],
   );
@@ -586,7 +589,8 @@ export async function markUserDeletionJobSucceeded(jobId: string, result: Record
 export async function markUserDeletionJobFailed(jobId: string, errorMessage: string) {
   await query(
     `UPDATE background_jobs
-        SET status = 'failed', error_message = $2, completed_at = NOW()
+        SET status = 'failed', error_message = $2, completed_at = NOW(),
+            worker_id = NULL, heartbeat_at = NULL
       WHERE id = $1 AND job_type = $3 AND status = 'running'`,
     [jobId, errorMessage.slice(0, 1_000), ADMIN_USER_DELETION_JOB_TYPE],
   );
@@ -948,6 +952,15 @@ export async function getWorkspaceDetail(workspaceId: string) {
     paygUsage,
     usageAdjustments,
   };
+}
+
+export async function heartbeatUserDeletionJob(jobId: string, workerId: string) {
+  await query(
+    `UPDATE background_jobs
+        SET heartbeat_at=NOW()
+      WHERE id=$1 AND job_type=$2 AND status='running' AND worker_id=$3`,
+    [jobId, ADMIN_USER_DELETION_JOB_TYPE, workerId],
+  );
 }
 
 export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' | 'unlock' | 'reset-onboarding' | 'skip-onboarding' | 'set-plan', planKey?: string) {

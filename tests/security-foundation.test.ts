@@ -244,7 +244,9 @@ describe('deterministic agent execution authorization',()=>{
     await agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;});
     assert.equal(executed,1);
     await assert.rejects(agentAuth.authorizeAgentTool({...f.context,workspaceId:crypto.randomUUID()},'page_action_writeback'),{code:'AGENT_EXECUTION_FORBIDDEN'});
-    await db.query(`UPDATE workspace_members SET role='viewer' WHERE workspace_id=$1`,[f.context.workspaceId]);
+    const replacementOwner = await newUser(true);
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,[f.context.workspaceId,replacementOwner.id]);
+    await db.query(`UPDATE workspace_members SET role='viewer' WHERE workspace_id=$1 AND user_id=$2`,[f.context.workspaceId,f.user.id]);
     await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
     assert.equal(executed,1);
   });

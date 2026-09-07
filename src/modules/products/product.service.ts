@@ -1,8 +1,18 @@
 import { conflictError, notFoundError } from '../../utils/app-error.js';
 import * as repo from './product.repo.js';
-import type { CreateProductInput, UpdateProductInput } from './product.validator.js';
+import type { CreateCategoryInput, CreateProductInput, UpdateCategoryInput, UpdateProductInput } from './product.validator.js';
 
 export const listProducts = repo.listProducts;
+export const listCategories = repo.listCategories;
+export async function createCategory(workspaceId: string, userId: string, input: CreateCategoryInput) {
+  try { return await repo.createCategory(workspaceId, userId, input); }
+  catch (error) { if ((error as {code?: string}).code === '23505') throw conflictError('A category with this slug already exists'); throw error; }
+}
+export async function updateCategory(workspaceId: string, categoryId: string, userId: string, input: UpdateCategoryInput) {
+  try { const result = await repo.updateCategory(workspaceId, categoryId, userId, input); if (!result) throw notFoundError('Product category not found'); return result; }
+  catch (error) { if ((error as {code?: string}).code === '23505') throw conflictError('A category with this slug already exists'); throw error; }
+}
+export async function archiveCategory(workspaceId: string, categoryId: string, userId: string) { if (!(await repo.archiveCategory(workspaceId, categoryId, userId))) throw notFoundError('Product category not found'); }
 export async function getProduct(workspaceId: string, productId: string) { const value = await repo.getProductDetail(workspaceId, productId); if (!value) throw notFoundError('Product not found'); return value; }
 export async function createProduct(workspaceId: string, userId: string, input: CreateProductInput) { try { const id = await repo.createProduct(workspaceId,userId,input); return getProduct(workspaceId,id); } catch (error) { if ((error as {code?:string}).code === '23505') throw conflictError('A product with this SKU or internal code already exists'); throw error; } }
 export async function updateProduct(workspaceId: string, productId: string, userId: string, input: UpdateProductInput) { try { if (!(await repo.updateProduct(workspaceId,productId,userId,input))) throw notFoundError('Product not found or version conflict'); return getProduct(workspaceId,productId); } catch (error) { if ((error as {code?:string}).code === '23505') throw conflictError('A product with this SKU or internal code already exists'); throw error; } }

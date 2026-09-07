@@ -2,12 +2,18 @@ import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './product.service.js';
-import { productParamsSchema, createProductSchema, updateProductSchema, listProductsQuerySchema, variantSchema, specificationSchema, mediaSchema, certificateSchema, marketSchema, translationSchema, applicationSchema, packagingSchema, capacitySchema, priceSchema, seoSchema, relationshipSchema } from './product.validator.js';
+import { productParamsSchema, createProductSchema, updateProductSchema, listProductsQuerySchema, variantSchema, specificationSchema, mediaSchema, certificateSchema, marketSchema, translationSchema, applicationSchema, packagingSchema, capacitySchema, priceSchema, seoSchema, relationshipSchema, createCategorySchema, updateCategorySchema } from './product.validator.js';
 
 const childSchemas = { variants: variantSchema, specifications: specificationSchema, media: mediaSchema, certificates: certificateSchema, markets: marketSchema, translations: translationSchema, applications: applicationSchema, packaging: packagingSchema, capacity: capacitySchema, prices: priceSchema, seo: seoSchema } as const;
 type ChildKey = keyof typeof childSchemas;
 function userId(req: WorkspaceRequest) { if (!req.user?.id) throw new Error('Authentication is required'); return req.user.id; }
 function params(req: WorkspaceRequest) { return productParamsSchema.parse(req.params); }
+function categoryParams(req: WorkspaceRequest) { return productParamsSchema.pick({ workspaceId: true }).extend({ categoryId: productParamsSchema.shape.childId.unwrap() }).parse(req.params); }
+
+export async function listCategories(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const {workspaceId}=params(req); return successResponse(res,'Product categories loaded',await service.listCategories(workspaceId)); } catch(e){next(e);} }
+export async function createCategory(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const {workspaceId}=params(req); return createdResponse(res,'Product category created',await service.createCategory(workspaceId,userId(req),createCategorySchema.parse(req.body))); } catch(e){next(e);} }
+export async function updateCategory(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const p=categoryParams(req); return successResponse(res,'Product category updated',await service.updateCategory(p.workspaceId,p.categoryId,userId(req),updateCategorySchema.parse(req.body))); } catch(e){next(e);} }
+export async function archiveCategory(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const p=categoryParams(req); await service.archiveCategory(p.workspaceId,p.categoryId,userId(req)); return successResponse(res,'Product category archived'); } catch(e){next(e);} }
 
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const {workspaceId}=params(req); return successResponse(res,'Products loaded',await service.listProducts(workspaceId,listProductsQuerySchema.parse(req.query))); } catch(e){next(e);} }
 export async function get(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);return successResponse(res,'Product loaded',await service.getProduct(p.workspaceId,p.productId!));}catch(e){next(e);}}

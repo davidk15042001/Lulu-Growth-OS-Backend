@@ -30,8 +30,17 @@ export async function resolveWorkspaceEntitlements(workspaceId: string, client?:
         WHERE workspace_id = $1 AND (expires_at IS NULL OR expires_at > NOW())
         ORDER BY entitlement_key, created_at DESC
      )
-     SELECT p.key, p."valueType", COALESCE(r.enabled, o.enabled, p.enabled) AS enabled,
-            CASE WHEN r.key IS NOT NULL THEN r."limitValue" WHEN o.key IS NOT NULL THEN o."limitValue" ELSE p."limitValue" END AS "limitValue",
+     SELECT p.key, p."valueType",
+            CASE
+              WHEN r.key IS NOT NULL AND r.enabled = FALSE THEN FALSE
+              ELSE COALESCE(o.enabled, p.enabled)
+            END AS enabled,
+            CASE
+              WHEN r.key IS NOT NULL AND r."limitValue" IS NOT NULL
+                THEN LEAST(r."limitValue", COALESCE(o."limitValue", p."limitValue", r."limitValue"))
+              WHEN o.key IS NOT NULL THEN o."limitValue"
+              ELSE p."limitValue"
+            END AS "limitValue",
             COALESCE(r.source, o.source, p.source) AS source,
             COALESCE(r.reason, o.reason, p.reason) AS reason
        FROM plan_values p

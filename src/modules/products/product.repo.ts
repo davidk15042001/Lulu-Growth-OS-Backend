@@ -2,13 +2,14 @@ import { query, withTransaction } from '../../db/pool.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-import type { CreateProductInput, UpdateProductInput, ListProductsQuery } from './product.validator.js';
+import type { CreateCategoryInput, CreateProductInput, UpdateCategoryInput, UpdateProductInput, ListProductsQuery } from './product.validator.js';
 
 export type Product = Record<string, unknown> & { id: string; workspaceId: string; name: string; version: number };
 export type ProductDetail = Product & { variants: unknown[]; specifications: unknown[]; media: unknown[]; certificates: unknown[]; packaging: unknown[]; capacity: unknown[]; prices: unknown[]; markets: unknown[]; translations: unknown[]; seo: unknown[]; applications: unknown[]; relationships: unknown[]; completeness: ProductCompleteness };
 export type ProductCompleteness = { score: number; missing: string[]; readyForPublishing: boolean };
 
 const productSelect = `p.id, p.workspace_id AS "workspaceId", p.factory_id AS "factoryId", p.brand_id AS "brandId", p.category_id AS "categoryId", p.status, p.product_type AS "productType", p.sku, p.internal_code AS "internalCode", p.name, p.short_description AS "shortDescription", p.long_description AS "longDescription", p.default_currency AS "defaultCurrency", p.default_price AS "defaultPrice", p.pricing_type AS "pricingType", p.moq_quantity AS "moqQuantity", p.moq_unit AS "moqUnit", p.lead_time_min_days AS "leadTimeMinDays", p.lead_time_max_days AS "leadTimeMaxDays", p.production_capacity_value AS "productionCapacityValue", p.production_capacity_unit AS "productionCapacityUnit", p.production_capacity_period AS "productionCapacityPeriod", p.country_of_origin AS "countryOfOrigin", p.hs_code AS "hsCode", p.visibility, p.source_language AS "sourceLanguage", p.version, p.legacy_source_type AS "legacySourceType", p.legacy_source_id AS "legacySourceId", p.created_by AS "createdBy", p.updated_by AS "updatedBy", p.created_at AS "createdAt", p.updated_at AS "updatedAt"`;
+const categorySelect = `id, workspace_id AS "workspaceId", parent_id AS "parentId", name, slug, status, sort_order AS "sortOrder", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
 function completeness(product: Product, nested: Record<string, unknown[]>): ProductCompleteness {
   const checks: Array<[string, boolean]> = [
@@ -38,6 +39,40 @@ export async function listProducts(workspaceId: string, filters: ListProductsQue
     query<{ total: string }>(`SELECT count(*)::text AS total FROM products p WHERE ${conditions.join(' AND ')}`, values),
   ]);
   return { items: items.rows.map((p) => ({ ...p, completeness: completeness(p, {}) })), pagination: { page: filters.page, limit: filters.limit, total: Number(count.rows[0]?.total ?? 0), totalPages: Math.ceil(Number(count.rows[0]?.total ?? 0) / filters.limit) } };
+}
+
+export async function listCategories(workspaceId: string) {
+  const { rows } = await query(`SELECT ${categorySelect} FROM product_categories WHERE workspace_id=$1 AND status <> 'ARCHIVED' ORDER BY sort_order, name, id`, [workspaceId]);
+  return rows;
+}
+
+export async function createCategory(workspaceId: string, userId: string, input: CreateCategoryInput) {
+  const slug = input.slug ?? (input.name.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 220) || 'category');
+  return withTransaction(async (client) => {
+    const { rows } = await query(`INSERT INTO product_categories(workspace_id,parent_id,name,slug,status,sort_order) VALUES($1,$2,$3,$4,$5,$6) RETURNING ${categorySelect}`, [workspaceId,input.parentId??null,input.name,slug,input.status,input.sortOrder], client);
+    const category = rows[0];
+    if (!category) throw new Error('Product category insert did not return a row');
+    await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,after_data) VALUES($1,$2,'product_category.created','product_category',$3,$4::jsonb)`, [workspaceId,userId,category.id,JSON.stringify(input)], client);
+    return category;
+  });
+}
+
+export async function updateCategory(workspaceId: string, categoryId: string, userId: string, input: UpdateCategoryInput) {
+  const columns: Record<string,string> = { parentId:'parent_id', name:'name', slug:'slug', status:'status', sortOrder:'sort_order' };
+  const entries = Object.entries(input).filter(([key]) => columns[key]);
+  if (!entries.length) return null;
+  const values: unknown[] = [workspaceId, categoryId];
+  const assignments = entries.map(([key, value]) => { values.push(value); return `${columns[key]}=$${values.length}`; });
+  const { rows } = await query(`UPDATE product_categories SET ${assignments.join(', ')}, updated_at=NOW() WHERE workspace_id=$1 AND id=$2 RETURNING ${categorySelect}`, values);
+  if (!rows[0]) return null;
+  await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,after_data) VALUES($1,$2,'product_category.updated','product_category',$3,$4::jsonb)`, [workspaceId,userId,categoryId,JSON.stringify(input)]);
+  return rows[0];
+}
+
+export async function archiveCategory(workspaceId: string, categoryId: string, userId: string) {
+  const { rowCount } = await query(`UPDATE product_categories SET status='ARCHIVED', updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND status <> 'ARCHIVED'`, [workspaceId, categoryId]);
+  if (rowCount) await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id) VALUES($1,$2,'product_category.archived','product_category',$3)`, [workspaceId,userId,categoryId]);
+  return rowCount > 0;
 }
 
 export async function findProduct(workspaceId: string, productId: string) {

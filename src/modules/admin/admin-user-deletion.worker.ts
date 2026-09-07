@@ -9,6 +9,12 @@ let activeCycle: Promise<void> | null = null;
 let stopping = false;
 
 async function processJob(job: NonNullable<Awaited<ReturnType<typeof repo.claimNextUserDeletionJob>>>) {
+  const heartbeat = setInterval(() => {
+    void repo.heartbeatUserDeletionJob(job.id, workerId).catch((error: unknown) => {
+      logger.warn({ error, jobId: job.id }, 'Could not refresh account deletion lease');
+    });
+  }, 30_000);
+  heartbeat.unref();
   try {
     const result = await repo.deleteUserAndOwnedData(job.targetUserId);
     await repo.markUserDeletionJobSucceeded(job.id, result ?? {
@@ -22,6 +28,8 @@ async function processJob(job: NonNullable<Awaited<ReturnType<typeof repo.claimN
       logger.error({ error: markError, jobId: job.id }, 'Could not record admin account deletion failure');
     });
     logger.error({ error, jobId: job.id, targetUserId: job.targetUserId }, 'Admin account deletion job failed');
+  } finally {
+    clearInterval(heartbeat);
   }
 }
 
@@ -29,7 +37,7 @@ export function runAdminUserDeletionWorkerCycle(): Promise<void> {
   if (activeCycle) return activeCycle;
   activeCycle = (async () => {
     while (!stopping) {
-      const job = await repo.claimNextUserDeletionJob();
+      const job = await repo.claimNextUserDeletionJob(workerId);
       if (!job) return;
       await processJob(job);
     }

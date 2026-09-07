@@ -41,7 +41,17 @@ export async function authorizeAgentIdentity(context:AgentExecutionIdentity,writ
   if(!isAgentModule(state.module) || !['active','trialing'].includes(state.subscription_status)) return deny(context,'inactive_entitlement');
   const effectiveEntitlements = await resolveWorkspaceEntitlements(context.workspaceId);
   if (!effectiveEntitlements['ai.enabled'].enabled) return deny(context, 'ai_entitlement_disabled');
-  const capabilities=getAgentCapabilities(state.plan_key,state.module);
+  // Plan-specific agent behavior is retained for compatibility, but it may
+  // never exceed the backend-owned effective entitlement set. In particular,
+  // autonomous/write actions require an explicit autonomous-agent entitlement.
+  const planCapabilities=getAgentCapabilities(state.plan_key,state.module);
+  const autonomousEnabled = effectiveEntitlements['ai.autonomous_agents'].enabled;
+  const capabilities = {
+    ...planCapabilities,
+    act: planCapabilities.act && autonomousEnabled,
+    autonomous: planCapabilities.autonomous && autonomousEnabled,
+    automatic: planCapabilities.automatic && autonomousEnabled,
+  };
   if(!capabilities.analyze || (write && !capabilities.act)) return deny(context,'missing_entitlement');
   await assertAiBillingAccess(context.workspaceId,context.userId);
   return {...state,capabilities};

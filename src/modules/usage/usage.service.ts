@@ -90,11 +90,13 @@ export async function recordUsage(input: UsageInput) {
   const calculated = calculateUsageCost(input);
   if (calculated.totalTokens === 0) return null;
 
-  const { rows } = await query(
+  const responseId = input.responseId?.trim() || null;
+  const { rows } = await query<{ id: string; createdAt: string }>(
     `INSERT INTO ai_usage_ledger (
        workspace_id, user_id, provider, model, input_tokens, output_tokens,
        provider_cost_usd, customer_cost_usd, metadata
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ON CONFLICT DO NOTHING
      RETURNING id, created_at AS "createdAt"`,
     [
       input.workspaceId,
@@ -105,11 +107,24 @@ export async function recordUsage(input: UsageInput) {
       calculated.outputTokens,
       calculated.providerCostUsd,
       calculated.customerCostUsd,
-      { responseId: input.responseId ?? null },
+      { responseId },
     ],
   );
+  if (rows[0]) return { ...calculated, id: rows[0].id, createdAt: rows[0].createdAt };
 
-  return { ...calculated, id: rows[0]?.id ?? null, createdAt: rows[0]?.createdAt ?? null };
+  // A provider retry with the same response ID is already accounted for. Read
+  // the existing append-only entry so callers get a deterministic result.
+  if (responseId) {
+    const existing = await query<{ id: string; createdAt: string }>(
+      `SELECT id, created_at AS "createdAt"
+         FROM ai_usage_ledger
+        WHERE workspace_id=$1 AND metadata->>'responseId'=$2
+        LIMIT 1`,
+      [input.workspaceId, responseId],
+    );
+    if (existing.rows[0]) return { ...calculated, id: existing.rows[0].id, createdAt: existing.rows[0].createdAt };
+  }
+  return { ...calculated, id: null, createdAt: null };
 }
 
 export async function getWorkspaceCredits(workspaceId: string) {

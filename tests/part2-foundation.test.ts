@@ -52,6 +52,11 @@ describe('Part 2 tenant and authorization foundation', () => {
     await assert.rejects(() => db.query(`DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2`, [f.a, f.owner]), { code: '23514' });
   });
 
+  it('prevents a sole owner from being demoted', async () => {
+    const f = await fixture();
+    await assert.rejects(() => db.query(`UPDATE workspace_members SET role='member' WHERE workspace_id=$1 AND user_id=$2`, [f.a, f.owner]), { code: '23514' });
+  });
+
   it('prevents new record relationships from crossing workspace boundaries', async () => {
     const f = await fixture();
     await db.query(`INSERT INTO resource_types(key,domain,label) VALUES('part2_record','crm','Part 2 record') ON CONFLICT DO NOTHING`);

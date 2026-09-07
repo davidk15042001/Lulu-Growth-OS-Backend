@@ -55,6 +55,15 @@ export const priceSchema = z.object({ variantId: uuid.nullable().optional(), mar
 export const seoSchema = z.object({ language: z.string().trim().regex(/^[a-z]{2,3}(-[A-Z]{2})?$/), slug: z.string().trim().regex(/^[a-z0-9][a-z0-9-]*$/).max(300), title: nullableText(300), description: nullableText(1000), keywords: z.array(z.string().trim().max(100)).max(100).default([]), canonicalUrl: nullableText(4000), faqCandidates: z.array(z.unknown()).max(100).default([]), buyerQuestions: z.array(z.string().trim().max(500)).max(100).default([]), applications: z.array(z.string().trim().max(200)).max(100).default([]), searchIntent: nullableText(100), source: z.enum(['MANUAL', 'AI_GENERATED', 'IMPORTED']).default('MANUAL'), status: z.enum(['DRAFT', 'ACTIVE', 'OUTDATED']).default('DRAFT') });
 export const relationshipSchema = z.object({ relatedProductId: uuid, relationshipType: z.enum(['ACCESSORY', 'REPLACEMENT', 'COMPATIBLE_WITH', 'UPSELL', 'CROSS_SELL', 'COMPONENT_OF', 'ALTERNATIVE']), notes: nullableText(2000) });
 
+export const createCategorySchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  slug: z.string().trim().regex(/^[a-z0-9][a-z0-9-]*$/).max(220).optional(),
+  parentId: uuid.nullable().optional(),
+  status: z.enum(['ACTIVE', 'INACTIVE', 'ARCHIVED']).default('ACTIVE'),
+  sortOrder: z.coerce.number().int().default(0),
+});
+export const updateCategorySchema = createCategorySchema.partial().refine((value) => Object.keys(value).length > 0, 'At least one category field must be provided');
+
 export type CreateProductInput = z.infer<typeof createProductSchema>;
 export type UpdateProductInput = z.infer<typeof updateProductSchema>;
 export type ListProductsQuery = z.infer<typeof listProductsQuerySchema>;
@@ -70,3 +79,5 @@ export type CapacityInput = z.infer<typeof capacitySchema>;
 export type PriceInput = z.infer<typeof priceSchema>;
 export type SeoInput = z.infer<typeof seoSchema>;
 export type RelationshipInput = z.infer<typeof relationshipSchema>;
+export type CreateCategoryInput = z.infer<typeof createCategorySchema>;
+export type UpdateCategoryInput = z.infer<typeof updateCategorySchema>;

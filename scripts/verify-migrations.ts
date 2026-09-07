@@ -79,6 +79,7 @@ async function main() {
       'product_applications',
       'product_relationships',
       'product_legacy_mappings',
+      'financial_ledger_entries',
     ];
     for (const table of expectedTables) {
       assert.ok(actualTables.includes(table), `Expected migration table ${table}`);

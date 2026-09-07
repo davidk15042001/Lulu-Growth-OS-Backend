@@ -4,7 +4,6 @@ import type { AuthedRequest } from './auth.middleware.js';
 import { forbiddenError, notFoundError } from '../utils/app-error.js';
 import { findMembership, type WorkspaceRole } from '../modules/workspaces/workspace.repo.js';
 import { getCompletionState } from '../modules/onboarding/onboarding.repo.js';
-import { getWorkspacePlan } from '../modules/agents/agent.repo.js';
 import { assertWorkspaceCapability } from '../modules/workspaces/workspace-authorization.service.js';
 import type { WorkspaceCapability } from '../modules/workspaces/workspace-permissions.js';
 import { hasWorkspaceEntitlement } from '../modules/entitlements/entitlement.service.js';
@@ -15,6 +14,20 @@ export type WorkspaceRequest = AuthedRequest & {
 };
 
 const workspaceIdSchema = z.string().uuid();
+
+// Commercial plans are not authorization roles. Only capabilities that mutate
+// workspace state require the technical workspace.write entitlement; read
+// access remains available to Viewer-plan members where their role permits it.
+const WRITE_CAPABILITIES = new Set<WorkspaceCapability>([
+  'workspace.write', 'workspace.manage', 'members.invite', 'members.manage',
+  'members.remove', 'products.create', 'products.update', 'products.delete',
+  'crm.manage', 'leads.manage', 'opportunities.manage', 'quotes.create',
+  'quotes.send', 'quotes.approve', 'orders.manage', 'website.manage',
+  'website.publish', 'omnichannel.reply', 'omnichannel.manage',
+  'advertising.manage', 'advertising.budget_authorize', 'finance.manage',
+  'payouts.request', 'payouts.manage', 'providers.connect', 'providers.manage',
+  'agents.manage', 'agents.execute', 'settings.manage',
+]);
 
 export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
   return async function workspaceAccessMiddleware(
@@ -39,14 +52,6 @@ export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
         next(forbiddenError('Your workspace role does not allow this action'));
         return;
       }
-      if (allowedRoles.length > 0) {
-        const plan = await getWorkspacePlan(workspaceId);
-        if (plan.plan_key === 'viewer') {
-          next(forbiddenError('The Viewer plan is read-only'));
-          return;
-        }
-      }
-
       req.workspaceAccess = { id: workspaceId, role: membership.role };
       next();
     } catch (error) {
@@ -69,9 +74,8 @@ export function requireWorkspaceCapability(capability: WorkspaceCapability) {
       const membership = await findMembership(workspaceId, userId);
       if (!membership) { next(notFoundError('Workspace not found')); return; }
       await assertWorkspaceCapability({ workspaceId, userId, capability });
-      const plan = await getWorkspacePlan(workspaceId);
-      if (plan.plan_key === 'viewer' && capability !== 'workspace.read' && capability !== 'members.read') {
-        next(forbiddenError('The Viewer plan is read-only')); return;
+      if (WRITE_CAPABILITIES.has(capability) && !(await hasWorkspaceEntitlement(workspaceId, 'workspace.write'))) {
+        next(forbiddenError('Workspace write access is not enabled for this plan or workspace')); return;
       }
       req.workspaceAccess = { id: workspaceId, role: membership.role };
       next();

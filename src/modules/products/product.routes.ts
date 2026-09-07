@@ -4,6 +4,8 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './product.controller.js';
 
 const router = Router({ mergeParams: true });
+router.route('/categories').get(requireWorkspaceCapability('products.read'), controller.listCategories).post(requireWorkspaceCapability('products.update'), controller.createCategory).all(methodNotAllowed);
+router.route('/categories/:categoryId').patch(requireWorkspaceCapability('products.update'), controller.updateCategory).delete(requireWorkspaceCapability('products.delete'), controller.archiveCategory).all(methodNotAllowed);
 router.route('/').get(requireWorkspaceCapability('products.read'), controller.list).post(requireWorkspaceCapability('products.create'), controller.create).all(methodNotAllowed);
 router.route('/:productId').get(requireWorkspaceCapability('products.read'), controller.get).patch(requireWorkspaceCapability('products.update'), controller.update).delete(requireWorkspaceCapability('products.delete'), controller.archive).all(methodNotAllowed);
 router.route('/:productId/details/:childType').get(requireWorkspaceCapability('products.read'), controller.listChild).post(requireWorkspaceCapability('products.update'), controller.createChild).all(methodNotAllowed);
