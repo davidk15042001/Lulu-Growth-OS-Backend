@@ -1,7 +1,7 @@
 export type OmniStatus = 'OPEN'|'ACTIVE'|'WAITING_CUSTOMER'|'WAITING_LULU'|'ESCALATED'|'RESOLVED'|'CLOSED'|'SPAM';
 export type HandlingMode = 'AI_AUTO'|'AI_ASSISTED'|'HUMAN'|'ESCALATED';
 export type MessageStatus = 'QUEUED'|'SENDING'|'SENT'|'DELIVERED'|'READ'|'FAILED'|'RECEIVED';
-export type ChannelType = 'EMAIL'|'WEBSITE_CHAT'|'WHATSAPP'|'FACEBOOK_MESSENGER'|'INSTAGRAM'|'WECHAT'|'SMS'|'OTHER';
+export type ChannelType = 'EMAIL'|'WEBSITE_CHAT'|'WHATSAPP'|'FACEBOOK_MESSENGER'|'INSTAGRAM'|'OTHER';
 
 export type OmniChannel = { id:string; channelType:ChannelType; provider:string; status:string; displayName:string; capabilities:Record<string,boolean>; };
 export type ChannelIdentity = { id:string; channelId:string; workspaceId:string|null; websiteId:string|null; identityType:string; externalIdentityId:string; displayName:string; mode:string; status:string; defaultLanguage:string|null; capabilities:Record<string,boolean>; };

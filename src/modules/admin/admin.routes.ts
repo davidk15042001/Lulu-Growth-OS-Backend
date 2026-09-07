@@ -5,6 +5,7 @@ import * as controller from './admin.controller.js';
 
 import { requireAdminCapabilities } from './admin.authorization.js';
 import * as omni from '../omnichannel/omnichannel.controller.js';
+import { streamAdminOmniEvents } from '../omnichannel/omnichannel.stream.js';
 
 const router = Router();
 
@@ -36,6 +37,7 @@ router.route('/provider-control-plane/:connectionId/access').post(requireAuth, r
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getConversations).all(methodNotAllowed);
 router.route('/omnichannel/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminList).all(methodNotAllowed);
+router.route('/omnichannel/events/stream').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), streamAdminOmniEvents).all(methodNotAllowed);
 router.route('/omnichannel/conversations/:conversationId').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminDetail).all(methodNotAllowed);
 router.route('/omnichannel/routing').get(requireAuth, requireAdminCapabilities('admin.omnichannel.routing.read'), omni.adminRouting).all(methodNotAllowed);
 router.route('/omnichannel/routing/:routingId/resolve').post(requireAuth, requireAdminCapabilities('admin.omnichannel.manage_all'), omni.adminResolve).all(methodNotAllowed);

@@ -17,5 +17,5 @@ export default router;
 
 export const publicOmniRouter=Router();
 publicOmniRouter.post('/website-chat/session',dbRateLimit({keyPrefix:'omni-public-session',windowMs:60*60*1000,limit:30,message:'Chat sessions are temporarily rate limited.'}),c.publicSession);
-publicOmniRouter.get('/website-chat/session/:token',c.publicGet);
+publicOmniRouter.get('/website-chat/session/:token',dbRateLimit({keyPrefix:'omni-public-history',windowMs:60*60*1000,limit:240,message:'Chat history is temporarily rate limited.'}),c.publicGet);
 publicOmniRouter.post('/website-chat/session/:token/messages',dbRateLimit({keyPrefix:'omni-public-message',windowMs:60*60*1000,limit:120,message:'Chat messages are temporarily rate limited.'}),c.publicSend);

@@ -12,8 +12,9 @@ export function hashToken(token:string) { return createHash('sha256').update(tok
 export async function listChannels(workspaceId:string) {
   const {rows}=await query(`SELECT c.id,c.channel_type,c.provider,c.status,c.display_name,c.capabilities,
     COALESCE(jsonb_agg(jsonb_build_object('id',ci.id,'workspaceId',ci.workspace_id,'websiteId',ci.website_id,'identityType',ci.identity_type,'externalIdentityId',ci.external_identity_id,'displayName',ci.display_name,'mode',ci.mode,'status',ci.status,'defaultLanguage',ci.default_language,'capabilities',ci.capabilities)) FILTER (WHERE ci.id IS NOT NULL),'[]'::jsonb) AS identities
-    FROM omni_channels c LEFT JOIN omni_channel_identities ci ON ci.channel_id=c.id AND ${workspaceId==='__ADMIN__'?'TRUE':'(ci.workspace_id=$1 OR ci.workspace_id IS NULL)'}
-    GROUP BY c.id ORDER BY c.display_name`,[workspaceId]);
+    FROM omni_channels c LEFT JOIN omni_channel_identities ci ON ci.channel_id=c.id AND ${workspaceId==='__ADMIN__'?'TRUE':'ci.workspace_id=$1'}
+    WHERE c.channel_type NOT IN ('WECHAT','SMS')
+    GROUP BY c.id ORDER BY c.display_name`,workspaceId==='__ADMIN__'?[]:[workspaceId]);
   const result=rows.map((r:any)=>({id:r.id,channelType:r.channel_type,provider:r.provider,status:r.status,displayName:r.display_name,capabilities:r.capabilities,identities:r.identities}));
   if(workspaceId!=='__ADMIN__') {
     const accounts=await query(`SELECT id,email_address,display_name,status FROM email_accounts WHERE workspace_id=$1 AND status <> 'disconnected' ORDER BY updated_at DESC`,[workspaceId]);
@@ -40,6 +41,45 @@ export async function getConversation(workspaceId:string,id:string) {
   if(!row.rows[0]) return null; const messages=await query(`SELECT * FROM omni_messages WHERE workspace_id=$1 AND conversation_id=$2 ORDER BY created_at ASC LIMIT 500`,[workspaceId,id]);
   const participants=await query(`SELECT * FROM omni_conversation_participants WHERE workspace_id=$1 AND conversation_id=$2 ORDER BY created_at`,[workspaceId,id]);
   return {conversation:mapConversation(row.rows[0]),messages:messages.rows.map(mapMessage),participants:participants.rows};
+}
+
+function mapPublicMessage(r:any) {
+  return {
+    id:r.id,
+    direction:r.direction,
+    senderType:r.sender_type === 'BUYER' ? 'BUYER' : 'LULU',
+    messageType:r.message_type,
+    textContent:r.text_content,
+    status:r.status,
+    sentAt:r.sent_at ?? null,
+    receivedAt:r.received_at ?? null,
+    deliveredAt:r.delivered_at ?? null,
+    readAt:r.read_at ?? null,
+    createdAt:r.created_at,
+  };
+}
+
+/** Public widget DTO: never expose tenant, provider, assignment or internal-note data. */
+export async function getPublicConversation(workspaceId:string,id:string) {
+  const row=await query(`SELECT id,status,language,subject,last_message_at,first_message_at,created_at,updated_at FROM omni_conversations WHERE workspace_id=$1 AND id=$2`,[workspaceId,id]);
+  if(!row.rows[0]) return null;
+  const messages=await query(`SELECT id,direction,sender_type,message_type,text_content,status,sent_at,received_at,delivered_at,read_at,created_at
+    FROM omni_messages
+    WHERE workspace_id=$1 AND conversation_id=$2 AND direction <> 'INTERNAL' AND message_type <> 'INTERNAL_NOTE'
+    ORDER BY created_at ASC LIMIT 500`,[workspaceId,id]);
+  const conversation=row.rows[0];
+  return {
+    conversation:{id:conversation.id,status:conversation.status,language:conversation.language??null,subject:conversation.subject??null,lastMessageAt:conversation.last_message_at??null,firstMessageAt:conversation.first_message_at??null,createdAt:conversation.created_at,updatedAt:conversation.updated_at},
+    messages:messages.rows.map(mapPublicMessage),
+  };
+}
+
+export async function getAdminConversation(id:string) {
+  const row=await query(`SELECT c.*,ch.display_name channel_display_name,ci.display_name identity_display_name,w.name workspace_name FROM omni_conversations c JOIN omni_channels ch ON ch.id=c.channel_id JOIN omni_channel_identities ci ON ci.id=c.channel_identity_id JOIN workspaces w ON w.id=c.workspace_id WHERE c.id=$1`,[id]);
+  if(!row.rows[0]) return null;
+  const messages=await query(`SELECT * FROM omni_messages WHERE conversation_id=$1 ORDER BY created_at ASC LIMIT 500`,[id]);
+  const participants=await query(`SELECT * FROM omni_conversation_participants WHERE conversation_id=$1 ORDER BY created_at`,[id]);
+  return {conversation:{...mapConversation(row.rows[0]),workspaceName:row.rows[0].workspace_name},messages:messages.rows.map(mapMessage),participants:participants.rows};
 }
 
 export async function createConversation(input:{workspaceId:string;channelId:string;channelIdentityId:string;handlingMode?:string;language?:string;subject?:string;metadata?:Record<string,unknown>}, actorId?:string|null) {
@@ -78,7 +118,7 @@ export async function createPublicSession(widgetId:string, origin?:string, visit
   await appendDomainEvent({workspaceId:identity.workspace_id,type:DOMAIN_EVENT_TYPES.WEBSITE_CHAT_SESSION_STARTED,aggregateType:'website_chat_session',aggregateId:conversation.id,payload:{websiteChatIdentityId:identity.id},metadata:{source:'omnichannel.public'}});
   return {sessionToken:token,conversationId:conversation.id,welcomeMessage:identity.welcome_message,defaultLanguage:identity.default_language,supportedLanguages:identity.supported_languages};
 }
-export async function getPublicSession(token:string) { const r=await query(`SELECT s.*,w.welcome_message,w.default_language,w.supported_languages FROM omni_website_chat_sessions s JOIN omni_website_chat_identities w ON w.id=s.website_chat_identity_id WHERE s.token_hash=$1 AND s.expires_at>NOW()`,[hashToken(token)]); return r.rows[0]??null; }
+export async function getPublicSession(token:string) { const r=await query(`SELECT s.*,w.welcome_message,w.default_language,w.supported_languages FROM omni_website_chat_sessions s JOIN omni_website_chat_identities w ON w.id=s.website_chat_identity_id JOIN omni_channel_identities ci ON ci.id=w.channel_identity_id WHERE s.token_hash=$1 AND s.expires_at>NOW() AND w.status='ACTIVE' AND ci.status='ACTIVE'`,[hashToken(token)]); return r.rows[0]??null; }
 export async function listRoutingQueue() { const r=await query(`SELECT q.*,ci.display_name identity_display_name,c.channel_type FROM omni_routing_queue q JOIN omni_channel_identities ci ON ci.id=q.channel_identity_id JOIN omni_channels c ON c.id=ci.channel_id WHERE q.status='UNRESOLVED' ORDER BY q.created_at ASC LIMIT 200`); return r.rows; }
 export async function listAdminConversations(filters:{workspaceId?:string;status?:string;limit?:number;search?:string}) { const params:any[]=[]; const where:string[]=[]; if(filters.workspaceId){params.push(filters.workspaceId);where.push(`c.workspace_id=$${params.length}`);} if(filters.status){params.push(filters.status);where.push(`c.status=$${params.length}`);} if(filters.search){params.push(`%${filters.search}%`);where.push(`(c.subject ILIKE $${params.length} OR w.name ILIKE $${params.length} OR ch.display_name ILIKE $${params.length} OR EXISTS(SELECT 1 FROM omni_messages sm WHERE sm.conversation_id=c.id AND sm.text_content ILIKE $${params.length}))`);} params.push(Math.min(filters.limit??100,200)); const r=await query(`SELECT c.*,ch.display_name channel_display_name,ci.display_name identity_display_name,w.name workspace_name FROM omni_conversations c JOIN omni_channels ch ON ch.id=c.channel_id JOIN omni_channel_identities ci ON ci.id=c.channel_identity_id JOIN workspaces w ON w.id=c.workspace_id ${where.length?`WHERE ${where.join(' AND ')}`:''} ORDER BY c.last_message_at DESC NULLS LAST LIMIT $${params.length}`,params); return r.rows.map(mapConversation).map((v:any,i:number)=>({...v,workspaceName:r.rows[i]!.workspace_name})); }
 export async function adminResolveRouting(id:string,workspaceId:string,adminId:string,reason:string) { const r=await query(`UPDATE omni_routing_queue SET status='ASSIGNED',resolved_workspace_id=$2,resolved_by=$3,resolved_at=NOW() WHERE id=$1 AND status='UNRESOLVED' RETURNING *`,[id,workspaceId,adminId]); if(!r.rows[0]) return null; await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.ROUTING_DECISION_RESOLVED,aggregateType:'routing_queue',aggregateId:id,payload:{reason},metadata:{actorId:adminId,source:'admin'}}); return r.rows[0]; }
