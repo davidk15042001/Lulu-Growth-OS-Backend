@@ -93,7 +93,7 @@ const childTables = {
   packaging: { table:'product_packaging', event:null, columns:['packaging_type','units_per_package','package_length','package_width','package_height','package_weight','dimension_unit','weight_unit','notes'], fields:['packageType','quantity','length','width','height','grossWeight','dimensionUnit','weightUnit','notes'] },
   capacity: { table:'product_capacity', event:null, columns:['variant_id','value','unit','period','notes'], fields:['variantId','value','unit','period','notes'] },
   prices: { table:'product_prices', event:null, columns:['variant_id','market_code','currency','amount','min_quantity','max_quantity','pricing_type','valid_from','valid_until','status'], fields:['variantId','marketCode','currency','unitPrice','minQuantity','maxQuantity','priceType','validFrom','validUntil','status'] },
-  seo: { table:'product_seo_metadata', event:null, columns:['language','seo_title','meta_description','canonical_name','keywords','faq_candidates','buyer_questions','applications','search_intent','source','status'], fields:['language','title','description','slug','keywords','structuredData','keywords','keywords','searchIntent','source','status'] },
+  seo: { table:'product_seo_metadata', event:null, columns:['language','seo_title','meta_description','canonical_name','keywords','faq_candidates','buyer_questions','applications','search_intent','source','status'], fields:['language','title','description','slug','keywords','faqCandidates','buyerQuestions','applications','searchIntent','source','status'] },
 } as const;
 export type ChildKey = keyof typeof childTables;
 
