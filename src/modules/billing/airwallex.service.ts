@@ -46,7 +46,7 @@ const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof
   explorer: { amountMinor: 0, label: 'Explorer (legacy)' },
   viewer: { amountMinor: 0, label: 'Viewer' },
   starter: { amountMinor: 420000, priceEnv: 'AIRWALLEX_STARTER_PRICE_ID', label: 'Starter' },
-  ai: { amountMinor: 1600000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI', commissionRatePercent: 5 },
+  ai: { amountMinor: 1788800, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI', commissionRatePercent: 5 },
   test: { amountMinor: 0, priceEnv: 'AIRWALLEX_TEST_PRICE_ID', label: 'Test' },
 };
 
