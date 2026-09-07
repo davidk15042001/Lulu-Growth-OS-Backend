@@ -999,7 +999,6 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
         metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
       },
       payment_options: {
-        payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
         payment_method_types: ['card'],
       },
       ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
