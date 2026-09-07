@@ -72,7 +72,7 @@ router.route('/settings')
   .all(methodNotAllowed);
 
 router.route('/billing')
-  .get(requireWorkspaceAdmin, controller.billing)
+  .get(requireWorkspaceMember, controller.billing)
   .post(requireWorkspaceAdmin, controller.createBillingCheckout)
   .all(methodNotAllowed);
 
