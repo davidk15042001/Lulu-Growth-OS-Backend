@@ -5,6 +5,10 @@ import { forbiddenError, notFoundError } from '../utils/app-error.js';
 import { findMembership, type WorkspaceRole } from '../modules/workspaces/workspace.repo.js';
 import { getCompletionState } from '../modules/onboarding/onboarding.repo.js';
 import { getWorkspacePlan } from '../modules/agents/agent.repo.js';
+import { assertWorkspaceCapability } from '../modules/workspaces/workspace-authorization.service.js';
+import type { WorkspaceCapability } from '../modules/workspaces/workspace-permissions.js';
+import { hasWorkspaceEntitlement } from '../modules/entitlements/entitlement.service.js';
+import type { EntitlementKey } from '../modules/entitlements/entitlement.types.js';
 
 export type WorkspaceRequest = AuthedRequest & {
   workspaceAccess?: { id: string; role: WorkspaceRole };
@@ -51,6 +55,44 @@ export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
   };
 }
 
+/** Canonical capability middleware for new and migrated workspace routes. */
+export function requireWorkspaceCapability(capability: WorkspaceCapability) {
+  return async function workspaceCapabilityMiddleware(
+    req: WorkspaceRequest,
+    _res: Response,
+    next: NextFunction,
+  ) {
+    try {
+      const userId = req.user?.id;
+      if (!userId) { next(forbiddenError('Authentication is required')); return; }
+      const workspaceId = workspaceIdSchema.parse(req.params.workspaceId);
+      const membership = await findMembership(workspaceId, userId);
+      if (!membership) { next(notFoundError('Workspace not found')); return; }
+      await assertWorkspaceCapability({ workspaceId, userId, capability });
+      const plan = await getWorkspacePlan(workspaceId);
+      if (plan.plan_key === 'viewer' && capability !== 'workspace.read' && capability !== 'members.read') {
+        next(forbiddenError('The Viewer plan is read-only')); return;
+      }
+      req.workspaceAccess = { id: workspaceId, role: membership.role };
+      next();
+    } catch (error) { next(error); }
+  };
+}
+
+/** Backend entitlement guard. Frontend gating remains a convenience only. */
+export function requireWorkspaceEntitlement(entitlementKey: EntitlementKey) {
+  return async function workspaceEntitlementMiddleware(req: WorkspaceRequest, _res: Response, next: NextFunction) {
+    try {
+      const workspaceId = req.workspaceAccess?.id ?? workspaceIdSchema.parse(req.params.workspaceId);
+      if (!(await hasWorkspaceEntitlement(workspaceId, entitlementKey))) {
+        next(forbiddenError(`Workspace entitlement required: ${entitlementKey}`));
+        return;
+      }
+      next();
+    } catch (error) { next(error); }
+  };
+}
+
 export async function requireOnboardingComplete(
   req: WorkspaceRequest,
   _res: Response,
@@ -86,6 +128,6 @@ export async function requireOnboardingComplete(
   }
 }
 
-export const requireWorkspaceMember = requireWorkspaceRole();
-export const requireWorkspaceEditor = requireWorkspaceRole('owner', 'admin', 'member');
-export const requireWorkspaceAdmin = requireWorkspaceRole('owner', 'admin');
+export const requireWorkspaceMember = requireWorkspaceCapability('workspace.read');
+export const requireWorkspaceEditor = requireWorkspaceCapability('workspace.write');
+export const requireWorkspaceAdmin = requireWorkspaceCapability('workspace.manage');

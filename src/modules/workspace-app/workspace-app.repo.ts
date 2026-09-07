@@ -14,6 +14,7 @@ import type {
   UpdateMemberInput,
   UpdateSavedViewInput,
 } from './workspace-app.validator.js';
+import type { WorkspaceRole } from '../workspaces/workspace-permissions.js';
 
 export type WorkspaceSettings = {
   workspaceId: string;
@@ -27,14 +28,14 @@ export type WorkspaceMember = {
   email: string;
   firstName: string | null;
   lastName: string | null;
-  role: 'owner' | 'admin' | 'member' | 'viewer';
+  role: WorkspaceRole;
   joinedAt: string;
 };
 
 export type WorkspaceInvitation = {
   id: string;
   email: string;
-  role: 'admin' | 'member' | 'viewer';
+  role: Exclude<WorkspaceRole, 'owner'>;
   invitedBy: string;
   expiresAt: string;
   createdAt: string;
@@ -199,7 +200,7 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
       id: string;
       workspaceId: string;
       email: string;
-      role: 'admin' | 'member' | 'viewer';
+      role: Exclude<WorkspaceRole, 'owner'>;
     }>(
       `SELECT id, workspace_id AS "workspaceId", email, role
        FROM workspace_invitations
@@ -229,6 +230,14 @@ export async function acceptInvitation(rawToken: string, userId: string, userEma
     );
     return invitation;
   });
+}
+
+export async function getMemberRole(workspaceId: string, memberId: string) {
+  const { rows } = await query<{ role: WorkspaceRole }>(
+    `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 LIMIT 1`,
+    [workspaceId, memberId],
+  );
+  return rows[0]?.role;
 }
 
 export async function updateMember(workspaceId: string, memberId: string, input: UpdateMemberInput) {
@@ -262,6 +271,24 @@ export async function removeMember(workspaceId: string, memberId: string) {
     [workspaceId, memberId]
   );
   return rowCount > 0;
+}
+
+export async function transferOwnership(workspaceId: string, currentOwnerId: string, newOwnerId: string) {
+  return withTransaction(async (client) => {
+    const target = await query<{ role: WorkspaceRole }>(
+      `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR UPDATE`,
+      [workspaceId, newOwnerId], client,
+    );
+    if (!target.rows[0] || target.rows[0].role === 'owner') return false;
+    const current = await query<{ role: WorkspaceRole }>(
+      `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR UPDATE`,
+      [workspaceId, currentOwnerId], client,
+    );
+    if (current.rows[0]?.role !== 'owner') return false;
+    await query(`UPDATE workspace_members SET role='owner' WHERE workspace_id=$1 AND user_id=$2`, [workspaceId, newOwnerId], client);
+    await query(`UPDATE workspace_members SET role='admin' WHERE workspace_id=$1 AND user_id=$2`, [workspaceId, currentOwnerId], client);
+    return true;
+  });
 }
 
 type SavedView = {

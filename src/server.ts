@@ -17,6 +17,7 @@ import { startRateLimitCleanupWorker, stopRateLimitCleanupWorker } from './middl
 import { startContentGenerationWorker, stopContentGenerationWorker } from './modules/content-generation/content-generation.worker.js';
 import { startDomainEventRuntime, stopDomainEventRuntime } from './events/domain-event.runtime.js';
 import { startAdminUserDeletionWorker, stopAdminUserDeletionWorker } from './modules/admin/admin-user-deletion.worker.js';
+import { startProviderControlWorkers, stopProviderControlWorkers } from './modules/provider-control/provider.worker.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -42,6 +43,7 @@ async function bootstrap() {
       startOnboardingFileCleanupWorker();
       startPaygBillingWorker();
       startAdminUserDeletionWorker();
+      startProviderControlWorkers();
     }
   }
 
@@ -57,7 +59,7 @@ async function bootstrap() {
     );
   });
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutting down API');
     if (workersEnabled) {
       stopAutomaticAnalysisWorker();
@@ -73,6 +75,7 @@ async function bootstrap() {
       stopOnboardingFileCleanupWorker();
       stopPaygBillingWorker();
       stopAdminUserDeletionWorker();
+      await stopProviderControlWorkers();
     }
     server.close(async () => {
       if (hasDb) {
@@ -83,8 +86,8 @@ async function bootstrap() {
     });
   };
 
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
-  process.once('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 }
 
 try {

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireWorkspaceEditor, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
+import { requireWorkspaceEditor, requireWorkspaceEntitlement, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './agent.controller.js';
 
@@ -12,7 +12,7 @@ router.route('/health')
   .all(methodNotAllowed);
 router.route('/')
   .get(requireWorkspaceMember, controller.list)
-  .post(requireWorkspaceEditor, controller.create)
+  .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.create)
   .all(methodNotAllowed);
 router.route('/stream')
   .get(requireWorkspaceMember, controller.stream)

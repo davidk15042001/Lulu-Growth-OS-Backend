@@ -22,6 +22,7 @@ import searchIntelligenceRoutes from '../search-intelligence/search-intelligence
 import productImageRoutes from '../product-images/product-image.routes.js';
 import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 import workspaceEventRoutes from '../../events/workspace-event.routes.js';
+import { workspaceProviderRoutes } from '../provider-control/provider.routes.js';
 
 const router = Router();
 
@@ -42,6 +43,7 @@ router.route('/:workspaceId')
   .all(methodNotAllowed);
 
 router.use('/:workspaceId', workspaceAppRoutes);
+router.use('/:workspaceId/providers', workspaceProviderRoutes);
 router.use('/:workspaceId/onboarding', onboardingRoutes);
 router.use('/:workspaceId/records', recordRoutes);
 router.use('/:workspaceId/metrics', metricRoutes);

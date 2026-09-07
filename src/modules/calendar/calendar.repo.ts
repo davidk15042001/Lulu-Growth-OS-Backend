@@ -5,6 +5,7 @@ import type { CalendarAccount, CalendarAccountCredential, CalendarEvent, Calenda
 import type { ListEventsQuery } from './calendar.validator.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { syncLegacyControlStatus, upsertLegacyAccountControlConnection } from '../provider-control/provider.repo.js';
 
 const accountSelect = `
   id, workspace_id AS "workspaceId", provider, external_account_id AS "externalAccountId",
@@ -130,7 +131,9 @@ export async function upsertOAuthAccount(input: {
         [...params, accountId],
         client,
       );
-      return appendCalendarConnectedEvent(client, input, rows[0]!);
+      const account = rows[0]!;
+      await upsertLegacyAccountControlConnection({ workspaceId: input.workspaceId, sourceType: 'calendar_account', sourceId: account.id, provider: input.provider, externalAccountId: account.externalAccountId ?? account.emailAddress, displayName: account.displayName ?? account.emailAddress ?? input.provider, status: account.status, metadata: account.settings, lastSyncedAt: account.lastSyncAt, lastError: account.lastErrorMessage, connectedBy: input.userId, credentialReference: `calendar_accounts:${account.id}` }, client);
+      return appendCalendarConnectedEvent(client, input, account);
     }
     const { rows } = await query<CalendarAccount>(
       `INSERT INTO calendar_accounts (
@@ -143,7 +146,9 @@ export async function upsertOAuthAccount(input: {
       params,
       client,
     );
-    return appendCalendarConnectedEvent(client, input, rows[0]!);
+    const account = rows[0]!;
+    await upsertLegacyAccountControlConnection({ workspaceId: input.workspaceId, sourceType: 'calendar_account', sourceId: account.id, provider: input.provider, externalAccountId: account.externalAccountId ?? account.emailAddress, displayName: account.displayName ?? account.emailAddress ?? input.provider, status: account.status, metadata: account.settings, lastSyncedAt: account.lastSyncAt, lastError: account.lastErrorMessage, connectedBy: input.userId, credentialReference: `calendar_accounts:${account.id}` }, client);
+    return appendCalendarConnectedEvent(client, input, account);
   });
 }
 
@@ -192,7 +197,9 @@ export async function upsertTokenAccount(input: {
         [...params, accountId],
         client,
       );
-      return appendCalendarConnectedEvent(client, input, rows[0]!);
+      const account = rows[0]!;
+      await upsertLegacyAccountControlConnection({ workspaceId: input.workspaceId, sourceType: 'calendar_account', sourceId: account.id, provider: input.provider, externalAccountId: account.externalAccountId ?? account.emailAddress, displayName: account.displayName ?? account.emailAddress ?? input.provider, status: account.status, metadata: account.settings, lastSyncedAt: account.lastSyncAt, lastError: account.lastErrorMessage, connectedBy: input.userId, credentialReference: `calendar_accounts:${account.id}` }, client);
+      return appendCalendarConnectedEvent(client, input, account);
     }
     const { rows } = await query<CalendarAccount>(
       `INSERT INTO calendar_accounts (
@@ -204,7 +211,9 @@ export async function upsertTokenAccount(input: {
       params,
       client,
     );
-    return appendCalendarConnectedEvent(client, input, rows[0]!);
+    const account = rows[0]!;
+    await upsertLegacyAccountControlConnection({ workspaceId: input.workspaceId, sourceType: 'calendar_account', sourceId: account.id, provider: input.provider, externalAccountId: account.externalAccountId ?? account.emailAddress, displayName: account.displayName ?? account.emailAddress ?? input.provider, status: account.status, metadata: account.settings, lastSyncedAt: account.lastSyncAt, lastError: account.lastErrorMessage, connectedBy: input.userId, credentialReference: `calendar_accounts:${account.id}` }, client);
+    return appendCalendarConnectedEvent(client, input, account);
   });
 }
 
@@ -253,6 +262,7 @@ export async function disconnectAccount(workspaceId: string, accountId: string) 
       WHERE workspace_id = $1 AND id = $2`,
     [workspaceId, accountId],
   );
+  if (result.rowCount > 0) await syncLegacyControlStatus({ sourceType: 'calendar_account', sourceId: accountId, status: 'disconnected' });
   return result.rowCount > 0;
 }
 
@@ -265,6 +275,7 @@ export async function setAccountStatus(accountId: string, status: string, errorC
       WHERE id = $1`,
     [accountId, status, errorCode ?? null, errorMessage?.slice(0, 2000) ?? null],
   );
+  await syncLegacyControlStatus({ sourceType: 'calendar_account', sourceId: accountId, status, lastError: errorMessage ?? errorCode ?? null });
 }
 
 export async function completeAccountSync(accountId: string) {
@@ -277,6 +288,7 @@ export async function completeAccountSync(accountId: string) {
       WHERE id = $1`,
     [accountId],
   );
+  await syncLegacyControlStatus({ sourceType: 'calendar_account', sourceId: accountId, status: 'connected', lastSyncedAt: new Date().toISOString() });
 }
 
 export async function saveProviderData(accountId: string, events: ProviderCalendarEvent[]) {

@@ -5,14 +5,15 @@ export type SecurityEventType = 'LOGIN_SUCCESS' | 'LOGIN_FAILURE' | 'EMAIL_VERIF
   | 'EMAIL_VERIFICATION_FAILED' | 'EMAIL_VERIFICATION_ISSUED' | 'EMAIL_VERIFICATION_SENT' | 'EMAIL_DELIVERY_FAILED'
   | 'SESSION_CREATED' | 'SESSION_REVOKED' | 'REFRESH_REUSE_DETECTED' | 'ADMIN_ACTION'
   | 'AUTHORIZATION_DENIED' | 'HIGH_RISK_ACTION_BLOCKED' | 'PROVIDER_CREDENTIAL_CHANGED'
-  | 'DOMAIN_VERIFIED' | 'DOMAIN_VERIFICATION_FAILED' | 'DOMAIN_VERIFICATION_ISSUED';
+  | 'DOMAIN_VERIFIED' | 'DOMAIN_VERIFICATION_FAILED' | 'DOMAIN_VERIFICATION_ISSUED' | 'PROVIDER_ACTION';
+export type ExtendedSecurityEventType = SecurityEventType | 'WORKSPACE_MEMBER_INVITED' | 'WORKSPACE_MEMBER_ACCEPTED' | 'WORKSPACE_MEMBER_ROLE_CHANGED' | 'WORKSPACE_MEMBER_REMOVED' | 'WORKSPACE_OWNERSHIP_TRANSFERRED' | 'ENTITLEMENT_OVERRIDE_ADDED' | 'ENTITLEMENT_OVERRIDE_REMOVED';
 const metadataKeys = new Set(['sessionId','action','reason','outcome','targetId','capability','role','agentId','runId','stepId','recordId','domainId','siteId','provider','keyVersion','approvalId']);
 export function safeSecurityMetadata(value: Record<string, unknown> = {}) {
   return Object.fromEntries(Object.entries(value).filter(([key, item]) => metadataKeys.has(key)
     && (typeof item === 'boolean' || typeof item === 'number' || (typeof item === 'string' && item.length <= 200))));
 }
 export async function recordSecurityEvent(input: {
-  eventType: SecurityEventType; userId?: string | null; workspaceId?: string | null;
+  eventType: ExtendedSecurityEventType; userId?: string | null; workspaceId?: string | null;
   requestId?: string | null; correlationId?: string | null; metadata?: Record<string, unknown>;
 }, client?: PoolClient) {
   await query(`INSERT INTO security_events(workspace_id,user_id,event_type,request_id,correlation_id,metadata)

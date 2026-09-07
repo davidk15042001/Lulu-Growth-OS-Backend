@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireWorkspaceEditor, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
+import { requireWorkspaceEditor, requireWorkspaceEntitlement, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './conversation.controller.js';
 
@@ -9,7 +9,7 @@ router.use(requireWorkspaceMember);
 
 router.route('/conversations')
   .get(controller.list)
-  .post(requireWorkspaceEditor, controller.create)
+  .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.create)
   .all(methodNotAllowed);
 
 router.route('/conversations/:conversationId')
@@ -24,7 +24,7 @@ router.route('/conversations/:conversationId/messages')
   .all(methodNotAllowed);
 
 router.route('/conversations/:conversationId/respond')
-  .post(requireWorkspaceEditor, controller.respond)
+  .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.respond)
   .all(methodNotAllowed);
 
 router.route('/conversations/:conversationId/actions')

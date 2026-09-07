@@ -23,6 +23,8 @@ import {
   updateMemberSchema,
   updateSavedViewSchema,
   updateWorkspaceSettingsSchema,
+  workspaceEntitlementOverrideSchema,
+  entitlementOverrideParamsSchema,
   workspaceAppParamsSchema,
 } from './workspace-app.validator.js';
 
@@ -112,7 +114,7 @@ export async function acceptInvitation(req: WorkspaceRequest, res: Response, nex
 export async function updateMember(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { workspaceId, memberId } = params(req);
-    const member = await service.updateMember(workspaceId, memberId!, updateMemberSchema.parse(req.body));
+    const member = await service.updateMember(workspaceId, req.user!.id, memberId!, updateMemberSchema.parse(req.body));
     return successResponse(res, 'Workspace member updated', member);
   } catch (error) { next(error); }
 }
@@ -120,7 +122,7 @@ export async function updateMember(req: WorkspaceRequest, res: Response, next: N
 export async function removeMember(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { workspaceId, memberId } = params(req);
-    await service.removeMember(workspaceId, memberId!);
+    await service.removeMember(workspaceId, req.user!.id, memberId!);
     return successResponse(res, 'Workspace member removed');
   } catch (error) { next(error); }
 }
@@ -186,6 +188,40 @@ export async function syncBillingCheckout(req: WorkspaceRequest, res: Response, 
     if (!checkoutId) throw new Error('Billing checkout ID is required');
     return successResponse(res, 'Billing checkout status synchronized', await syncCheckoutStatus(workspaceId, checkoutId));
   } catch (error) { next(error); }
+}
+
+export async function transferOwnership(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId, memberId } = params(req);
+    await service.transferOwnership(workspaceId, req.user!.id, memberId!);
+    return successResponse(res, 'Workspace ownership transferred');
+  } catch (error) { next(error); }
+}
+
+export async function entitlements(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId } = params(req); return successResponse(res, 'Workspace entitlements loaded', await service.getEntitlements(workspaceId)); }
+  catch (error) { next(error); }
+}
+
+export async function addEntitlementOverride(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return createdResponse(res, 'Workspace entitlement override added', await service.addWorkspaceEntitlementOverride({ workspaceId, actorId: req.user!.id, ...workspaceEntitlementOverrideSchema.parse(req.body) }));
+  } catch (error) { next(error); }
+}
+
+export async function removeEntitlementOverride(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const { overrideId } = entitlementOverrideParamsSchema.parse(req.params);
+    await service.removeWorkspaceEntitlementOverride(workspaceId, overrideId, req.user!.id);
+    return successResponse(res, 'Workspace entitlement override removed');
+  } catch (error) { next(error); }
+}
+
+export async function businessIdentity(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId } = params(req); return successResponse(res, 'Business identity loaded', await service.getBusinessIdentity(workspaceId)); }
+  catch (error) { next(error); }
 }
 
 export async function createPaygApiUsageCheckout(req: WorkspaceRequest, res: Response, next: NextFunction) {

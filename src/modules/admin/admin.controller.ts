@@ -11,6 +11,8 @@ import { logger } from '../../config/logger.js';
 import { requestAdminUserDeletionWorkerRun } from './admin-user-deletion.worker.js';
 import * as oauthService from '../onboarding/oauth.service.js';
 import * as adminOAuthRepo from './admin-oauth.repo.js';
+import * as providerControlService from '../provider-control/provider.service.js';
+import { connectionParamsSchema, providerAccessSchema } from '../provider-control/provider.validator.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -310,6 +312,34 @@ export async function getOAuthConnections(req: AuthedRequest, res: Response, nex
     const { limit, offset, search } = paginate(req);
     const connections = await repo.listOAuthConnections(limit, offset, search);
     return successResponse(res, 'OAuth connections loaded', { connections, limit, offset });
+  } catch (error) { next(error); }
+}
+
+export async function getProviderControlPlane(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    return successResponse(res, 'Provider control plane loaded', {
+      connections: await providerControlService.listAdminProviders(),
+      catalog: await providerControlService.listProviderCatalog(),
+    });
+  } catch (error) { next(error); }
+}
+
+export async function grantProviderWorkspaceAccess(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const { connectionId } = connectionParamsSchema.parse(req.params);
+    const input = providerAccessSchema.parse(req.body);
+    return successResponse(res, 'Shared provider access granted', await providerControlService.grantSharedProviderAccess({ providerConnectionId: connectionId, workspaceId: input.workspaceId, actorId: req.user!.id, grantedCapabilities: input.grantedCapabilities }));
+  } catch (error) { next(error); }
+}
+
+export async function revokeProviderWorkspaceAccess(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const { connectionId } = connectionParamsSchema.parse(req.params);
+    const input = providerAccessSchema.pick({ workspaceId: true }).parse(req.body);
+    return successResponse(res, 'Shared provider access revoked', await providerControlService.revokeSharedProviderAccess({ providerConnectionId: connectionId, workspaceId: input.workspaceId, actorId: req.user!.id }));
   } catch (error) { next(error); }
 }
 

@@ -5,6 +5,7 @@ import type { EmailAccount, EmailAccountCredential, EmailProvider, ProviderFolde
 import type { CreateDraftInput, CreateRuleInput, ListThreadsQuery, UpdateDraftInput, UpdateRuleInput } from './email.validator.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { syncLegacyControlStatus, upsertLegacyAccountControlConnection } from '../provider-control/provider.repo.js';
 
 const accountSelect = `
   id, workspace_id AS "workspaceId", provider, email_address AS "emailAddress",
@@ -56,7 +57,9 @@ export async function upsertOAuthAccount(input: {
       [input.workspaceId, input.userId, input.provider, input.emailAddress, input.displayName ?? null, input.encryptedAccessToken, input.encryptedRefreshToken ?? null, input.tokenExpiresAt ?? null],
       client,
     );
-    return appendEmailConnectedEvent(client, input, rows[0]!);
+    const account = rows[0]!;
+    await upsertLegacyAccountControlConnection({ workspaceId: input.workspaceId, sourceType: 'email_account', sourceId: account.id, provider: input.provider, externalAccountId: account.emailAddress, displayName: account.displayName ?? account.emailAddress, status: account.status, lastSyncedAt: account.lastSyncAt, lastError: account.lastErrorMessage, connectedBy: input.userId, credentialReference: `email_accounts:${account.id}` }, client);
+    return appendEmailConnectedEvent(client, input, account);
   });
 }
 
@@ -77,7 +80,9 @@ export async function upsertImapAccount(input: {
       [input.workspaceId, input.userId, input.emailAddress, input.displayName ?? null, input.encryptedPassword, input.imapHost, input.imapPort, input.imapSecure, input.smtpHost, input.smtpPort, input.smtpSecure],
       client,
     );
-    return appendEmailConnectedEvent(client, { ...input, provider: 'imap' }, rows[0]!);
+    const account = rows[0]!;
+    await upsertLegacyAccountControlConnection({ workspaceId: input.workspaceId, sourceType: 'email_account', sourceId: account.id, provider: 'imap', externalAccountId: account.emailAddress, displayName: account.displayName ?? account.emailAddress, status: account.status, lastSyncedAt: account.lastSyncAt, lastError: account.lastErrorMessage, connectedBy: input.userId, credentialReference: `email_accounts:${account.id}` }, client);
+    return appendEmailConnectedEvent(client, { ...input, provider: 'imap' }, account);
   });
 }
 
@@ -87,15 +92,18 @@ export async function updateOAuthTokens(accountId: string, encryptedAccessToken:
 
 export async function disconnectAccount(workspaceId: string, accountId: string) {
   const result = await query(`UPDATE email_accounts SET status='disconnected', encrypted_access_token=NULL, encrypted_refresh_token=NULL, encrypted_password=NULL WHERE workspace_id=$1 AND id=$2`, [workspaceId, accountId]);
+  if (result.rowCount > 0) await syncLegacyControlStatus({ sourceType: 'email_account', sourceId: accountId, status: 'disconnected' });
   return result.rowCount > 0;
 }
 
 export async function setAccountStatus(accountId: string, status: string, errorCode?: string | null, errorMessage?: string | null) {
   await query(`UPDATE email_accounts SET status=$2, last_error_code=$3, last_error_message=$4 WHERE id=$1`, [accountId, status, errorCode ?? null, errorMessage?.slice(0, 2000) ?? null]);
+  await syncLegacyControlStatus({ sourceType: 'email_account', sourceId: accountId, status, lastError: errorMessage ?? errorCode ?? null });
 }
 
 export async function completeAccountSync(accountId: string, cursor?: string | null) {
   await query(`UPDATE email_accounts SET status='connected', sync_cursor=COALESCE($2,sync_cursor), last_sync_at=NOW(), last_error_code=NULL, last_error_message=NULL WHERE id=$1`, [accountId, cursor ?? null]);
+  await syncLegacyControlStatus({ sourceType: 'email_account', sourceId: accountId, status: 'connected', lastSyncedAt: new Date().toISOString() });
 }
 
 export async function saveProviderData(accountId: string, folders: ProviderFolder[], messages: ProviderMessage[]) {

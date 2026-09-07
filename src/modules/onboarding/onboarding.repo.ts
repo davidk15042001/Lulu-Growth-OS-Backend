@@ -3,6 +3,7 @@ import { rotateStoredCredentials } from '../security/provider-credential.service
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { syncLegacyControlStatus, upsertLegacyPlatformControlConnection } from '../provider-control/provider.repo.js';
 import type {
   AiPreferencesInput,
   BusinessDescriptionInput,
@@ -839,6 +840,9 @@ export async function createPlatform(workspaceId: string, input: CreatePlatformI
       input.settings ?? {},
     ]
   );
+  if (rows[0] && input.connectionStatus !== undefined) {
+    await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: rows[0].id, status: rows[0].connectionStatus, lastSyncedAt: rows[0].lastSyncedAt, lastError: rows[0].lastError });
+  }
   return rows[0];
 }
 
@@ -876,6 +880,7 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
      WHERE workspace_id = $1 AND id = $2 AND deleted_at IS NULL`,
     [workspaceId, platformId]
   );
+  if (rowCount > 0) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: platformId, status: 'disconnected' });
   return rowCount > 0;
 }
 
@@ -1288,6 +1293,21 @@ export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredenti
       [platformId],
       client,
     );
+    const platform = rows[0];
+    if (!platform) throw new Error('Platform connection insert did not return a row');
+    await upsertLegacyPlatformControlConnection({
+      workspaceId: input.workspaceId,
+      platformId,
+      integrationKey: input.integrationKey,
+      name: input.name,
+      category: input.category,
+      connectionStatus,
+      externalAccountId: input.externalAccountId,
+      grantedScopes: input.grantedScopes,
+      lastSyncedAt: platform.lastSyncedAt,
+      lastError: platform.lastError,
+      credentialReference: `workspace_platform_oauth_credentials:${platformId}`,
+    }, client);
     await appendDomainEvent({
       workspaceId: input.workspaceId,
       type: DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED,
@@ -1301,7 +1321,7 @@ export async function upsertPlatformOAuthCredential(input: PlatformOAuthCredenti
       },
       metadata: { source: 'onboarding.oauth' },
     }, client);
-    return rows[0];
+    return platform;
   });
 }
 
@@ -1356,6 +1376,8 @@ export async function markPlatformConnectionError(workspaceId: string, integrati
      WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
     [workspaceId, integrationKey, message.slice(0, 2_000)]
   );
+  const { rows } = await query<{ id: string }>(`SELECT id FROM workspace_platforms WHERE workspace_id=$1 AND integration_key=$2 AND deleted_at IS NULL`, [workspaceId, integrationKey]);
+  for (const row of rows) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: row.id, status: 'error', lastError: message });
 }
 
 export async function markPlatformConnected(workspaceId: string, integrationKey: string) {
@@ -1365,22 +1387,28 @@ export async function markPlatformConnected(workspaceId: string, integrationKey:
      WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
     [workspaceId, integrationKey]
   );
+  const { rows } = await query<{ id: string }>(`SELECT id FROM workspace_platforms WHERE workspace_id=$1 AND integration_key=$2 AND deleted_at IS NULL`, [workspaceId, integrationKey]);
+  for (const row of rows) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: row.id, status: 'connected', lastError: null });
 }
 
 export async function removePlatformByIntegration(workspaceId: string, integrationKey: string) {
+  const { rows } = await query<{ id: string }>(`SELECT id FROM workspace_platforms WHERE workspace_id=$1 AND integration_key=$2`, [workspaceId, integrationKey]);
   const result = await query(
     `DELETE FROM workspace_platforms
      WHERE workspace_id = $1 AND integration_key = $2`,
     [workspaceId, integrationKey]
   );
+  for (const row of rows) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: row.id, status: 'disconnected' });
   return result.rowCount ?? 0;
 }
 
 export async function archivePlatformByIntegration(workspaceId: string, integrationKey: string, message: string) {
+  const { rows } = await query<{ id: string }>(`SELECT id FROM workspace_platforms WHERE workspace_id=$1 AND integration_key=$2 AND deleted_at IS NULL`, [workspaceId, integrationKey]);
   await query(
     `UPDATE workspace_platforms
      SET connection_status = 'not_connected', last_error = $3, deleted_at = NOW(), updated_at = NOW()
      WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
     [workspaceId, integrationKey, message.slice(0, 2_000)]
   );
+  for (const row of rows) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: row.id, status: 'not_connected', lastError: message });
 }

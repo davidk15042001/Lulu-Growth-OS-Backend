@@ -6,6 +6,8 @@ import { assertAiBillingAccess } from '../billing/payg-billing.repo.js';
 import { createApproval } from '../approvals/approval.repo.js';
 import { getAgentCapabilities, isAgentModule, type SubscriptionPlan } from './agent.capabilities.js';
 import { evaluateAgentActionPolicy } from './agent.autonomy-policy.js';
+import { roleCan } from '../workspaces/workspace-permissions.js';
+import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import type { AgentExecutionCommand } from './agent.execution-command.js';
 import type { WorkspaceRecord } from '../records/record.repo.js';
 
@@ -35,8 +37,10 @@ export async function authorizeAgentIdentity(context:AgentExecutionIdentity,writ
       JOIN workspace_subscriptions p ON p.workspace_id=w.id
       WHERE r.workspace_id=$1 AND r.id=$3 AND s.id=$4 AND COALESCE(r.created_by,w.created_by)=$2
         AND r.status NOT IN ('failed','cancelled')`,[context.workspaceId,context.userId,context.runId,context.stepId])).rows[0];
-  if(!state || !['owner','admin','member'].includes(state.role) || !['planner','analyst','strategist','executor','reviewer'].includes(state.agent_role)) return deny(context,'tenant_or_actor_permission');
+  if(!state || !roleCan(state.role, 'agents.execute') || !['planner','analyst','strategist','executor','reviewer'].includes(state.agent_role)) return deny(context,'tenant_or_actor_permission');
   if(!isAgentModule(state.module) || !['active','trialing'].includes(state.subscription_status)) return deny(context,'inactive_entitlement');
+  const effectiveEntitlements = await resolveWorkspaceEntitlements(context.workspaceId);
+  if (!effectiveEntitlements['ai.enabled'].enabled) return deny(context, 'ai_entitlement_disabled');
   const capabilities=getAgentCapabilities(state.plan_key,state.module);
   if(!capabilities.analyze || (write && !capabilities.act)) return deny(context,'missing_entitlement');
   await assertAiBillingAccess(context.workspaceId,context.userId);

@@ -9,9 +9,10 @@ import {
   decideApprovalSchema,
   listApprovalsQuerySchema,
 } from './approval.validator.js';
+import { roleCan } from '../workspaces/workspace-permissions.js';
 
 function isWorkspaceAdmin(req: WorkspaceRequest) {
-  return req.workspaceAccess?.role === 'owner' || req.workspaceAccess?.role === 'admin';
+  return Boolean(req.workspaceAccess?.role && roleCan(req.workspaceAccess.role, 'agents.manage'));
 }
 
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) {

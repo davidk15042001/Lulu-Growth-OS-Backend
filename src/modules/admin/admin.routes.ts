@@ -30,6 +30,8 @@ router.route('/integrations').get(requireAuth, requireAdminCapabilities('provide
 router.route('/oauth-connections').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getOAuthConnections).all(methodNotAllowed);
 router.route('/oauth-connections/:provider/start').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.startManagedOAuth).all(methodNotAllowed);
 router.route('/oauth-connections/:provider').delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.disconnectManagedOAuth).all(methodNotAllowed);
+router.route('/provider-control-plane').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getProviderControlPlane).all(methodNotAllowed);
+router.route('/provider-control-plane/:connectionId/access').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.grantProviderWorkspaceAccess).delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.revokeProviderWorkspaceAccess).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getConversations).all(methodNotAllowed);
 router.route('/files').get(requireAuth, requireAdminCapabilities('workspaces.read'), controller.getFiles).all(methodNotAllowed);

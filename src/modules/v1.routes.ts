@@ -11,6 +11,7 @@ import adminRoutes from './admin/admin.routes.js';
 import emailOAuthRoutes from './email/email.oauth.routes.js';
 import calendarOAuthRoutes from './calendar/calendar.oauth.routes.js';
 import publicRoutes from './public/public.routes.js';
+import { providerWebhookRoutes } from './provider-control/provider.routes.js';
 
 const router = Router();
 
@@ -57,6 +58,7 @@ router.use('/admin', adminRoutes);
 router.use('/email', emailOAuthRoutes);
 router.use('/calendar', calendarOAuthRoutes);
 router.use('/public', publicRoutes);
+router.use('/provider-webhooks', providerWebhookRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;

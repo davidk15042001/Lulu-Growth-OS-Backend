@@ -1,4 +1,5 @@
 import { query } from '../../db/pool.js';
+import { disconnectLuluManagedControlConnection, upsertLuluManagedControlConnection } from '../provider-control/provider.repo.js';
 
 export const LULU_MANAGED_PROVIDERS = ['google-ads', 'google-analytics', 'meta', 'linkedin', 'tiktok-ads'] as const;
 export type LuluManagedProvider = (typeof LULU_MANAGED_PROVIDERS)[number];
@@ -52,7 +53,21 @@ export async function upsertManagedOAuthConnection(input: {
     JSON.stringify(input.settings),
     input.connectedBy,
   ]);
-  return rows[0];
+  const connection = rows[0];
+  if (connection) {
+    await upsertLuluManagedControlConnection({
+      sourceId: String(connection.id),
+      provider: input.provider,
+      displayName: input.displayName,
+      externalAccountId: input.externalAccountId,
+      grantedScopes: input.grantedScopes,
+      status: 'connected',
+      settings: input.settings,
+      connectedBy: input.connectedBy,
+      credentialReference: `lulu_managed_oauth_connections:${connection.id}`,
+    });
+  }
+  return connection;
 }
 
 export async function getManagedOAuthCredential(provider: LuluManagedProvider) {
@@ -76,9 +91,10 @@ export async function getManagedOAuthCredential(provider: LuluManagedProvider) {
 }
 
 export async function disconnectManagedOAuthConnection(provider: LuluManagedProvider) {
-  const { rowCount } = await query(
-    `DELETE FROM lulu_managed_oauth_connections WHERE provider = $1`,
+  const { rows, rowCount } = await query<{ id: string }>(
+    `DELETE FROM lulu_managed_oauth_connections WHERE provider = $1 RETURNING id`,
     [provider],
   );
+  for (const row of rows) await disconnectLuluManagedControlConnection(String(row.id));
   return Boolean(rowCount);
 }

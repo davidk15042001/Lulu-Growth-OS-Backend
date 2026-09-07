@@ -17,11 +17,11 @@ export const inviteTokenParamsSchema = z.object({ token: z.string().min(32).max(
 
 export const inviteMemberSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
-  role: z.enum(['admin', 'member', 'viewer']).default('member'),
+  role: z.enum(['admin', 'sales_manager', 'sales_user', 'marketing_manager', 'marketing_user', 'finance_manager', 'operations_manager', 'member', 'viewer']).default('member'),
 });
 
 export const updateMemberSchema = z.object({
-  role: z.enum(['admin', 'member', 'viewer']),
+  role: z.enum(['admin', 'sales_manager', 'sales_user', 'marketing_manager', 'marketing_user', 'finance_manager', 'operations_manager', 'member', 'viewer']),
 });
 
 export const listSavedViewsQuerySchema = z.object({
@@ -80,6 +80,16 @@ export const paygQrPaymentParamsSchema = z.object({
   paymentId: z.string().uuid(),
 });
 
+export const workspaceEntitlementOverrideSchema = z.object({
+  entitlementKey: z.string().trim().min(3).max(120),
+  enabled: z.boolean().optional(),
+  limitValue: z.number().finite().min(0).nullable().optional(),
+  reason: z.string().trim().min(1).max(500),
+  expiresAt: z.string().datetime().nullable().optional(),
+}).strict().refine((value) => value.enabled !== undefined || value.limitValue !== undefined, 'An entitlement override needs enabled or limitValue');
+
+export const entitlementOverrideParamsSchema = z.object({ overrideId: z.string().uuid() });
+
 const salesSettingsSchema = z.object({
   moduleName: z.string().trim().max(120).optional(),
   defaultCurrency: z.string().trim().toUpperCase().refine(
@@ -127,3 +137,4 @@ export type UpdateWorkspaceSettingsInput = z.infer<typeof updateWorkspaceSetting
 export type ListGoogleReviewsQuery = z.infer<typeof listGoogleReviewsQuerySchema>;
 export type UpdateGoogleReviewReplyInput = z.infer<typeof updateGoogleReviewReplySchema>;
 export type GoogleBusinessConnectInput = z.infer<typeof googleBusinessConnectSchema>;
+export type WorkspaceEntitlementOverrideInput = z.infer<typeof workspaceEntitlementOverrideSchema>;

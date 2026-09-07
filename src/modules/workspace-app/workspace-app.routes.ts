@@ -66,6 +66,23 @@ router.route('/audit')
   .get(requireWorkspaceAdmin, controller.audit)
   .all(methodNotAllowed);
 
+router.route('/members/:memberId/transfer-ownership')
+  .post(requireWorkspaceAdmin, controller.transferOwnership)
+  .all(methodNotAllowed);
+
+router.route('/entitlements')
+  .get(requireWorkspaceMember, controller.entitlements)
+  .post(requireWorkspaceAdmin, controller.addEntitlementOverride)
+  .all(methodNotAllowed);
+
+router.route('/entitlements/overrides/:overrideId')
+  .delete(requireWorkspaceAdmin, controller.removeEntitlementOverride)
+  .all(methodNotAllowed);
+
+router.route('/business-identity')
+  .get(requireWorkspaceMember, controller.businessIdentity)
+  .all(methodNotAllowed);
+
 router.route('/settings')
   .get(requireWorkspaceMember, controller.settings)
   .patch(requireWorkspaceAdmin, controller.settings)

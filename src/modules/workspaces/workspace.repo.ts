@@ -3,11 +3,14 @@ import { query, withTransaction } from '../../db/pool.js';
 import type { CreateWorkspaceInput, UpdateWorkspaceInput } from './workspace.validator.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-
-export type WorkspaceRole = 'owner' | 'admin' | 'member' | 'viewer';
+import type { WorkspaceRole } from './workspace-permissions.js';
+export type { WorkspaceRole } from './workspace-permissions.js';
+import { ensureWorkspaceBusinessIdentity } from '../business-identity/identity.service.js';
 
 export type Workspace = {
   id: string;
+  organizationId: string | null;
+  factoryId: string | null;
   companyName: string;
   slug: string | null;
   industry: string | null;
@@ -48,6 +51,8 @@ export type Workspace = {
 
 const workspaceSelect = `
   w.id,
+  w.organization_id AS "organizationId",
+  w.factory_id AS "factoryId",
   w.name AS "companyName",
   w.slug,
   w.industry,
@@ -112,6 +117,14 @@ export async function createWorkspace(
     const workspaceId = created.rows[0]?.id;
     if (!workspaceId) throw new Error('Workspace insert did not return an id');
 
+    await ensureWorkspaceBusinessIdentity({
+      workspaceId,
+      name: input.companyName,
+      country: input.countryRegion ?? null,
+      taxIdentifier: input.taxId ?? null,
+      address: input.address ?? null,
+    }, client);
+
     await query(
       `INSERT INTO workspace_members (workspace_id, user_id, role)
        VALUES ($1, $2, 'owner')`,
@@ -175,7 +188,7 @@ export async function findWorkspaceForUser(
 
 export async function findWorkspaceById(workspaceId: string) {
   const { rows } = await query<Workspace>(
-    `SELECT w.id, w.name AS "companyName", w.slug, w.industry, w.company_size AS "companySize",
+    `SELECT w.id, w.organization_id AS "organizationId", w.factory_id AS "factoryId", w.name AS "companyName", w.slug, w.industry, w.company_size AS "companySize",
             w.country_region AS "countryRegion", w.tax_id AS "taxId", w.address,
             w.business_description AS "businessDescription",
             w.value_proposition AS "valueProposition", w.target_market AS "targetMarket",
@@ -253,14 +266,21 @@ export async function updateWorkspace(
       values,
       client,
     );
-    if (rowCount > 0) await appendDomainEvent({
+    if (rowCount > 0) {
+      const current = (await query<{ name: string; countryRegion: string | null; taxId: string | null; legalForm: string | null; address: string | null }>(
+        `SELECT name, country_region AS "countryRegion", tax_id AS "taxId", legal_form AS "legalForm", address FROM workspaces WHERE id=$1`,
+        [workspaceId], client,
+      )).rows[0];
+      if (current) await ensureWorkspaceBusinessIdentity({ workspaceId, name: current.name, country: current.countryRegion, taxIdentifier: current.taxId, legalForm: current.legalForm, address: current.address }, client);
+      await appendDomainEvent({
       workspaceId,
       type: DOMAIN_EVENT_TYPES.WORKSPACE_UPDATED,
       aggregateType: 'workspace',
       aggregateId: workspaceId,
       payload: { workspaceId, changedFields: entries.map(([key]) => key) },
       metadata: { actorId: userId, source: 'workspaces' },
-    }, client);
+      }, client);
+    }
     return findWorkspaceForUser(workspaceId, userId, client);
   });
 }

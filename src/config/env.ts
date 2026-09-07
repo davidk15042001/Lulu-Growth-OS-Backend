@@ -154,6 +154,15 @@ const EnvSchema = z
     AIRWALLEX_WEBHOOK_SECRET: z.string().min(1).optional(),
     AIRWALLEX_LOGIN_AS: z.string().min(1).optional(),
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
+    // JSON map of provider key -> webhook signing secret. Secrets remain
+    // server-side; providers without a configured verifier stay unverified.
+    PROVIDER_WEBHOOK_SECRETS: z.string().optional(),
+    PROVIDER_SYNC_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
+    PROVIDER_SYNC_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(120),
+    PROVIDER_SYNC_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    PROVIDER_WEBHOOK_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
+    PROVIDER_WEBHOOK_LEASE_SECONDS: z.coerce.number().int().min(15).max(900).default(60),
+    PROVIDER_WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV !== 'production') return;
