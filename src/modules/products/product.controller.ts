@@ -1,0 +1,21 @@
+import type { NextFunction, Response } from 'express';
+import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
+import { createdResponse, successResponse } from '../../utils/response.js';
+import * as service from './product.service.js';
+import { productParamsSchema, createProductSchema, updateProductSchema, listProductsQuerySchema, variantSchema, specificationSchema, mediaSchema, certificateSchema, marketSchema, translationSchema, applicationSchema, packagingSchema, capacitySchema, priceSchema, seoSchema, relationshipSchema } from './product.validator.js';
+
+const childSchemas = { variants: variantSchema, specifications: specificationSchema, media: mediaSchema, certificates: certificateSchema, markets: marketSchema, translations: translationSchema, applications: applicationSchema, packaging: packagingSchema, capacity: capacitySchema, prices: priceSchema, seo: seoSchema } as const;
+type ChildKey = keyof typeof childSchemas;
+function userId(req: WorkspaceRequest) { if (!req.user?.id) throw new Error('Authentication is required'); return req.user.id; }
+function params(req: WorkspaceRequest) { return productParamsSchema.parse(req.params); }
+
+export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const {workspaceId}=params(req); return successResponse(res,'Products loaded',await service.listProducts(workspaceId,listProductsQuerySchema.parse(req.query))); } catch(e){next(e);} }
+export async function get(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);return successResponse(res,'Product loaded',await service.getProduct(p.workspaceId,p.productId!));}catch(e){next(e);}}
+export async function create(req: WorkspaceRequest,res:Response,next:NextFunction){try{const {workspaceId}=params(req);return createdResponse(res,'Product created',await service.createProduct(workspaceId,userId(req),createProductSchema.parse(req.body)));}catch(e){next(e);}}
+export async function update(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);return successResponse(res,'Product updated',await service.updateProduct(p.workspaceId,p.productId!,userId(req),updateProductSchema.parse(req.body)));}catch(e){next(e);}}
+export async function archive(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);await service.archiveProduct(p.workspaceId,p.productId!,userId(req));return successResponse(res,'Product archived');}catch(e){next(e);}}
+export async function listChild(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);const key=req.params.childType as ChildKey;if(!(key in childSchemas)) throw new Error('Unknown product detail');return successResponse(res,'Product details loaded',await service.listChildren(p.workspaceId,p.productId!,key));}catch(e){next(e);}}
+export async function createChild(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);const key=req.params.childType as ChildKey;const schema=childSchemas[key];if(!schema) throw new Error('Unknown product detail');const parsed=schema.parse(req.body);return createdResponse(res,'Product detail created',await service.createChild(p.workspaceId,p.productId!,userId(req),key,parsed as Record<string,unknown>));}catch(e){next(e);}}
+export async function deleteChild(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);const key=req.params.childType as ChildKey;if(!(key in childSchemas)) throw new Error('Unknown product detail');await service.deleteChild(p.workspaceId,p.productId!,key,p.childId!);return successResponse(res,'Product detail deleted');}catch(e){next(e);}}
+export async function createRelationship(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);return createdResponse(res,'Product relationship created',await service.createRelationship(p.workspaceId,p.productId!,userId(req),relationshipSchema.parse(req.body)));}catch(e){next(e);}}
+export async function deleteRelationship(req: WorkspaceRequest,res:Response,next:NextFunction){try{const p=params(req);await service.deleteRelationship(p.workspaceId,p.productId!,p.childId!);return successResponse(res,'Product relationship deleted');}catch(e){next(e);}}

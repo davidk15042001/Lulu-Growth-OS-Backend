@@ -64,6 +64,21 @@ async function main() {
       'audit_log',
       'domain_events',
       'domain_event_receipts',
+      'product_categories',
+      'products',
+      'product_variants',
+      'product_specifications',
+      'product_media',
+      'product_certificates',
+      'product_packaging',
+      'product_capacity',
+      'product_prices',
+      'product_market_data',
+      'product_translations',
+      'product_seo_metadata',
+      'product_applications',
+      'product_relationships',
+      'product_legacy_mappings',
     ];
     for (const table of expectedTables) {
       assert.ok(actualTables.includes(table), `Expected migration table ${table}`);
@@ -137,6 +152,35 @@ async function main() {
        VALUES ($1)`,
       [workspaceId]
     );
+    const canonicalProduct = await database.query<{ id: string }>(
+      `INSERT INTO products (workspace_id, name, product_type, status, default_currency)
+       VALUES ($1, 'Canonical migration product', 'PHYSICAL_PRODUCT', 'DRAFT', 'CNY')
+       RETURNING id`,
+      [workspaceId],
+    );
+    assert.ok(canonicalProduct.rows[0]?.id);
+    const variant = await database.query<{ id: string }>(
+      `INSERT INTO product_variants (workspace_id, product_id, name)
+       VALUES ($1, $2, 'Standard') RETURNING id`,
+      [workspaceId, canonicalProduct.rows[0]?.id],
+    );
+    assert.ok(variant.rows[0]?.id);
+    const secondWorkspace = await database.query<{ id: string }>(
+      `INSERT INTO workspaces (name, slug, created_by) VALUES ('Other Workspace', 'other-workspace', $1) RETURNING id`,
+      [userId],
+    );
+    const otherProduct = await database.query<{ id: string }>(
+      `INSERT INTO products (workspace_id, name) VALUES ($1, 'Other product') RETURNING id`,
+      [secondWorkspace.rows[0]?.id],
+    );
+    await assert.rejects(
+      database.query(
+        `INSERT INTO product_specifications (workspace_id, product_id, variant_id, name, value)
+         VALUES ($1, $2, $3, 'Cross tenant', 'must fail')`,
+        [workspaceId, canonicalProduct.rows[0]?.id, otherProduct.rows[0]?.id],
+      ),
+    );
+    assert.ok(otherProduct.rows[0]?.id);
     await database.query(
       `INSERT INTO workspace_payg_profiles (
          workspace_id, current_period_start, current_period_end

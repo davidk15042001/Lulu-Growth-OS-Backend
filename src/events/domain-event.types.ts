@@ -47,6 +47,18 @@ export const DOMAIN_EVENT_TYPES = {
   PROVIDER_SYNC_COMPLETED: 'provider.sync.completed',
   PROVIDER_SYNC_FAILED: 'provider.sync.failed',
   PROVIDER_WEBHOOK_RECEIVED: 'provider.webhook.received',
+  PRODUCT_CREATED: 'product.created',
+  PRODUCT_UPDATED: 'product.updated',
+  PRODUCT_ACTIVATED: 'product.activated',
+  PRODUCT_ARCHIVED: 'product.archived',
+  PRODUCT_VARIANT_CREATED: 'product.variant.created',
+  PRODUCT_VARIANT_UPDATED: 'product.variant.updated',
+  PRODUCT_MEDIA_ADDED: 'product.media.added',
+  PRODUCT_CERTIFICATE_ADDED: 'product.certificate.added',
+  PRODUCT_TRANSLATION_CREATED: 'product.translation.created',
+  PRODUCT_TRANSLATION_UPDATED: 'product.translation.updated',
+  PRODUCT_MARKET_ENABLED: 'product.market.enabled',
+  PRODUCT_MARKET_DISABLED: 'product.market.disabled',
   NOTIFICATION_CREATED: 'notification.created',
 } as const;
 

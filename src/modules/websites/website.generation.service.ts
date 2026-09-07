@@ -5,6 +5,7 @@ import * as agentRepo from '../agents/agent.repo.js';
 import { getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceForUser } from '../workspaces/workspace.repo.js';
+import { listCanonicalProductsForWebsite } from '../products/product.repo.js';
 import type { WebsiteGenerationActivity } from './website.activity.js';
 
 export type GeneratedSection = {
@@ -715,10 +716,12 @@ export function isCompleteWebsitePlan(value: unknown): value is WebsitePlan {
 async function loadWebsiteContext(workspaceId: string, userId: string): Promise<WebsiteContext> {
   const workspace = await findWorkspaceForUser(workspaceId, userId);
   if (!workspace) throw new AppError(404, 'WEBSITE_WORKSPACE_NOT_FOUND', 'The workspace context was not found');
-  const [offerings, platforms, initialAnalysis] = await Promise.all([listOfferings(workspaceId), listPlatforms(workspaceId), agentRepo.getLatestCompletedInitialAnalysis(workspaceId)]);
+  const [offerings, platforms, initialAnalysis, canonicalProducts] = await Promise.all([listOfferings(workspaceId), listPlatforms(workspaceId), agentRepo.getLatestCompletedInitialAnalysis(workspaceId), listCanonicalProductsForWebsite(workspaceId)]);
   return {
     workspace: { companyName: workspace.companyName, industry: workspace.industry, companySize: workspace.companySize, countryRegion: workspace.countryRegion, businessDescription: workspace.businessDescription, valueProposition: workspace.valueProposition, targetMarket: workspace.targetMarket, shortBrandDescription: workspace.shortBrandDescription, positioningTags: workspace.positioningTags ?? [] },
-    offerings: offerings.filter((offering) => offering.status === 'active' || offering.status === 'draft').slice(0, 24).map((offering) => ({ name: offering.name, type: offering.offeringType, category: offering.category, description: offering.description, targetCustomer: offering.targetCustomer, valueProposition: offering.valueProposition, status: offering.status })),
+    offerings: (canonicalProducts.length > 0
+      ? canonicalProducts.slice(0, 24).map((product) => ({ name: product.name, type: String(product.productType ?? 'product'), category: null, description: (product.longDescription ?? product.shortDescription ?? null) as string | null, targetCustomer: null, valueProposition: null, status: String(product.status ?? 'active') }))
+      : offerings.filter((offering) => offering.status === 'active' || offering.status === 'draft').slice(0, 24).map((offering) => ({ name: offering.name, type: offering.offeringType, category: offering.category, description: offering.description, targetCustomer: offering.targetCustomer, valueProposition: offering.valueProposition, status: offering.status }))),
     connectedPlatforms: platforms.filter((platform) => platform.connectionStatus === 'connected' || platform.connectionStatus === 'active').slice(0, 20).map((platform) => ({ name: platform.name, category: platform.category, status: platform.connectionStatus })),
     initialAnalysis: compactValue(initialAnalysis?.result ?? null),
   };

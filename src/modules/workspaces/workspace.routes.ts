@@ -23,6 +23,7 @@ import productImageRoutes from '../product-images/product-image.routes.js';
 import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 import workspaceEventRoutes from '../../events/workspace-event.routes.js';
 import { workspaceProviderRoutes } from '../provider-control/provider.routes.js';
+import productRoutes from '../products/product.routes.js';
 
 const router = Router();
 
@@ -44,6 +45,7 @@ router.route('/:workspaceId')
 
 router.use('/:workspaceId', workspaceAppRoutes);
 router.use('/:workspaceId/providers', workspaceProviderRoutes);
+router.use('/:workspaceId/products', productRoutes);
 router.use('/:workspaceId/onboarding', onboardingRoutes);
 router.use('/:workspaceId/records', recordRoutes);
 router.use('/:workspaceId/metrics', metricRoutes);
