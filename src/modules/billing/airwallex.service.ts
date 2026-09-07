@@ -42,11 +42,11 @@ export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
 type AirwallexObject = Record<string, any>;
 
-const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof typeof env; label: string }> = {
+const planConfig: Record<BillingPlanKey, { amountMinor: number; priceEnv?: keyof typeof env; label: string; commissionRatePercent?: number }> = {
   explorer: { amountMinor: 0, label: 'Explorer (legacy)' },
   viewer: { amountMinor: 0, label: 'Viewer' },
   starter: { amountMinor: 420000, priceEnv: 'AIRWALLEX_STARTER_PRICE_ID', label: 'Starter' },
-  ai: { amountMinor: 3000000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI' },
+  ai: { amountMinor: 1600000, priceEnv: 'AIRWALLEX_AI_PRICE_ID', label: 'AI', commissionRatePercent: 5 },
   test: { amountMinor: 0, priceEnv: 'AIRWALLEX_TEST_PRICE_ID', label: 'Test' },
 };
 
@@ -990,7 +990,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       subscription_data: {
         duration: { period: 1, period_unit: 'YEAR' },
         default_invoice_template: { invoice_memo: `Lulu AI ${config.label} annual subscription` },
-        metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
+        metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
       },
       payment_options: {
         payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
@@ -998,7 +998,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       },
       ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
       ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
-      metadata: { workspace_id: input.workspaceId, plan_key: input.planKey },
+      metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
       success_url: input.successUrl,
       back_url: input.backUrl,
       hosted_completion_page: { display: true },
@@ -1274,4 +1274,4 @@ registerDomainEventHandler({
 // existing workspaces, but they are no longer offered as payable packages.
 export const billingPlans = Object.entries(planConfig)
   .filter(([key]) => key === 'ai')
-  .map(([key, value]) => ({ key, label: value.label, amountMinor: value.amountMinor, currency: 'CNY', interval: 'year' }));
+  .map(([key, value]) => ({ key, label: value.label, amountMinor: value.amountMinor, currency: 'CNY', interval: 'year', ...(value.commissionRatePercent === undefined ? {} : { commissionRatePercent: value.commissionRatePercent }) }));
