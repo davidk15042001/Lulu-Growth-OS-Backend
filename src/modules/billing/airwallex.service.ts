@@ -257,7 +257,13 @@ export async function createPaygBillingCustomer(input: {
   }, deterministicBillingRequestId(`payg-customer:${input.workspaceId}`), 'PAYG_CUSTOMER_CREATE');
 }
 
-async function ensurePaygBillingCustomer(workspaceId: string) {
+/**
+ * Ensure the workspace has an Airwallex Billing Customer before any payment
+ * is attempted. Creating the customer is free and does not charge the user;
+ * the deterministic request id plus the stored provider_customer_id make this
+ * safe to call from onboarding and later billing flows.
+ */
+export async function ensurePaygBillingCustomer(workspaceId: string) {
   const existing = await query<{
     providerCustomerId: string | null;
     workspaceName: string;

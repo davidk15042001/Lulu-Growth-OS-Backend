@@ -376,6 +376,11 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
 }
 
 export async function continueFromExistingPlatforms(workspaceId: string, userId: string) {
+  // Provision the billing customer before moving to Billing. This creates no
+  // charge and is idempotent, while allowing every later subscription or
+  // usage payment flow to reuse the same Airwallex customer.
+  const { ensurePaygBillingCustomer } = await import('../billing/airwallex.service.js');
+  await ensurePaygBillingCustomer(workspaceId);
   await repo.setOnboardingStep(workspaceId, 'billing');
   return workspaceService.getWorkspace(workspaceId, userId);
 }
