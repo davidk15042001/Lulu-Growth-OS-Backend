@@ -3,8 +3,9 @@ import { env } from '../../config/env.js';
 import { decryptSecret, encryptSecret } from '../../utils/secret-box.js';
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './onboarding.repo.js';
+import * as adminOAuthRepo from '../admin/admin-oauth.repo.js';
 
-export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'google-analytics' | 'google-business' | 'meta' | 'linkedin' | 'webflow' | 'wordpress' | 'shopify';
+export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'google-analytics' | 'google-business' | 'meta' | 'linkedin' | 'tiktok-ads' | 'webflow' | 'wordpress' | 'shopify';
 
 type ProviderConfig = {
   clientId: string;
@@ -18,10 +19,11 @@ type ProviderConfig = {
 
 type OAuthState = {
   provider: OAuthProvider;
-  workspaceId: string;
   userId: string;
   nonce: string;
   exp: number;
+  scope: 'workspace' | 'admin';
+  workspaceId?: string;
   shop?: string;
   returnTo?: string;
 };
@@ -35,6 +37,7 @@ const providerNames: Record<OAuthProvider, string> = {
   'google-business': 'Google Business',
   meta: 'Meta Marketing',
   linkedin: 'LinkedIn Ads',
+  'tiktok-ads': 'TikTok Ads',
   webflow: 'Webflow',
   wordpress: 'WordPress',
   shopify: 'Shopify',
@@ -49,6 +52,7 @@ const providerCategories: Record<OAuthProvider, string> = {
   'google-business': 'digital-appearance',
   meta: 'marketing',
   linkedin: 'marketing',
+  'tiktok-ads': 'marketing',
   webflow: 'digital-appearance',
   wordpress: 'digital-appearance',
   shopify: 'digital-appearance',
@@ -67,6 +71,7 @@ const providerScopes: Record<OAuthProvider, string[]> = {
   'google-business': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/business.manage'],
   meta: ['ads_read', 'ads_management', 'business_management'],
   linkedin: ['openid', 'profile', 'email', 'r_ads_reporting'],
+  'tiktok-ads': ['user.info.basic', 'advertiser.read', 'ad.read', 'ad.write'],
   webflow: ['sites:read', 'sites:write', 'cms:read', 'cms:write'],
   wordpress: ['global'],
   shopify: ['read_products', 'read_content'],
@@ -104,6 +109,9 @@ function providerConfig(provider: OAuthProvider): ProviderConfig {
     case 'linkedin':
       if (!env.LINKEDIN_CLIENT_ID || !env.LINKEDIN_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'LinkedIn OAuth credentials are missing on the server', { requiredEnv: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET'] }, 500);
       return { ...common, clientId: env.LINKEDIN_CLIENT_ID, clientSecret: env.LINKEDIN_CLIENT_SECRET, authorizationUrl: 'https://www.linkedin.com/oauth/v2/authorization', tokenUrl: 'https://www.linkedin.com/oauth/v2/accessToken' };
+    case 'tiktok-ads':
+      if (!env.TIKTOK_ADS_CLIENT_ID || !env.TIKTOK_ADS_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'TikTok Ads OAuth credentials are missing on the server', { requiredEnv: ['TIKTOK_ADS_CLIENT_ID', 'TIKTOK_ADS_CLIENT_SECRET'] }, 500);
+      return { ...common, scopes: env.TIKTOK_ADS_SCOPES.split(',').map((scope) => scope.trim()).filter(Boolean), clientId: env.TIKTOK_ADS_CLIENT_ID, clientSecret: env.TIKTOK_ADS_CLIENT_SECRET, authorizationUrl: env.TIKTOK_ADS_AUTH_URL, tokenUrl: env.TIKTOK_ADS_TOKEN_URL };
     case 'webflow':
       if (!env.WEBFLOW_CLIENT_ID || !env.WEBFLOW_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Webflow OAuth credentials are missing on the server', { requiredEnv: ['WEBFLOW_CLIENT_ID', 'WEBFLOW_CLIENT_SECRET'] }, 500);
       return { ...common, clientId: env.WEBFLOW_CLIENT_ID, clientSecret: env.WEBFLOW_CLIENT_SECRET, authorizationUrl: 'https://webflow.com/oauth/authorize', tokenUrl: 'https://api.webflow.com/oauth/access_token' };
@@ -135,7 +143,10 @@ function parseState(value: string): OAuthState {
   const expected = sign(payload);
   if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw oauthError('salesforce', 'OAUTH_STATE_SIGNATURE_INVALID', 'OAuth state signature is invalid or expired', undefined, 400);
   const state = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as OAuthState;
-  if (!state.provider || !state.workspaceId || !state.userId || !state.nonce || state.exp < Date.now()) throw oauthError(state.provider ?? 'salesforce', 'OAUTH_STATE_EXPIRED', 'OAuth state is expired or incomplete', undefined, 400);
+  // `scope` was added after the original workspace-only flow. Treat an old
+  // signed state without it as a workspace state for in-flight callbacks.
+  state.scope = state.scope === 'admin' ? 'admin' : 'workspace';
+  if (!state.provider || !state.userId || !state.nonce || state.exp < Date.now() || (state.scope === 'workspace' && !state.workspaceId)) throw oauthError(state.provider ?? 'salesforce', 'OAUTH_STATE_EXPIRED', 'OAuth state is expired or incomplete', undefined, 400);
   return state;
 }
 
@@ -157,19 +168,20 @@ export function getSafeStateContext(stateValue?: string) {
   if (!stateValue) return undefined;
   try {
     const state = parseState(stateValue);
-    return { workspaceId: state.workspaceId, userId: state.userId, provider: state.provider };
+    return { workspaceId: state.workspaceId, userId: state.userId, provider: state.provider, scope: state.scope };
   } catch {
     return undefined;
   }
 }
 
 export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: string, userId: string, shop?: string, returnTo?: string) {
+  assertWorkspaceOAuthProviderAllowed(provider);
   const config = providerConfig(provider);
   if (provider === 'shopify' && (!shop || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop))) throw oauthError(provider, 'SHOPIFY_SHOP_DOMAIN_INVALID', 'Shopify shop domain must use the format example.myshopify.com', { expectedFormat: 'example.myshopify.com' }, 400);
   const safeDestination = safeReturnTo(returnTo);
-  const state = createState({ provider, workspaceId, userId, nonce: crypto.randomBytes(24).toString('base64url'), exp: Date.now() + 10 * 60 * 1_000, ...(shop ? { shop } : {}), ...(safeDestination ? { returnTo: safeDestination } : {}) });
+  const state = createState({ provider, workspaceId, userId, scope: 'workspace', nonce: crypto.randomBytes(24).toString('base64url'), exp: Date.now() + 10 * 60 * 1_000, ...(shop ? { shop } : {}), ...(safeDestination ? { returnTo: safeDestination } : {}) });
   const url = provider === 'shopify' ? new URL(`https://${shop}/admin/oauth/authorize`) : new URL(config.authorizationUrl);
-  url.searchParams.set('client_id', config.clientId);
+  url.searchParams.set(provider === 'tiktok-ads' ? 'app_id' : 'client_id', config.clientId);
   url.searchParams.set('redirect_uri', callbackUrl(provider));
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', state);
@@ -179,9 +191,37 @@ export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: stri
   return url.toString();
 }
 
+export function buildAdminAuthorizationUrl(provider: OAuthProvider, userId: string, returnTo?: string) {
+  assertAdminOAuthProvider(provider);
+  const config = providerConfig(provider);
+  const safeDestination = safeReturnTo(returnTo);
+  const state = createState({ provider, userId, scope: 'admin', nonce: crypto.randomBytes(24).toString('base64url'), exp: Date.now() + 10 * 60 * 1_000, ...(safeDestination ? { returnTo: safeDestination } : {}) });
+  const url = new URL(config.authorizationUrl);
+  url.searchParams.set(provider === 'tiktok-ads' ? 'app_id' : 'client_id', config.clientId);
+  url.searchParams.set('redirect_uri', callbackUrl(provider));
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('state', state);
+  url.searchParams.set('scope', config.scopes.join(' '));
+  if (provider === 'google-ads' || provider === 'google-analytics') {
+    url.searchParams.set('access_type', 'offline');
+    url.searchParams.set('prompt', 'consent');
+  }
+  return url.toString();
+}
+
 async function exchangeCode(provider: OAuthProvider, code: string, state: OAuthState) {
   const config = providerConfig(provider);
   const tokenUrl = provider === 'shopify' && state.shop ? `https://${state.shop}/admin/oauth/access_token` : config.tokenUrl;
+  if (provider === 'tiktok-ads') {
+    const response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ app_id: config.clientId, secret: config.clientSecret, auth_code: code, redirect_uri: callbackUrl(provider) }),
+    });
+    const data = await response.json() as Record<string, unknown>;
+    if (!response.ok) throw oauthError(provider, 'OAUTH_TOKEN_EXCHANGE_FAILED', 'Provider rejected the authorization code', { providerHttpStatus: response.status }, 502);
+    return data;
+  }
   const body = new URLSearchParams({ grant_type: 'authorization_code', code, redirect_uri: callbackUrl(provider), client_id: config.clientId, client_secret: config.clientSecret });
   const authorization = provider === 'pipedrive' ? `Basic ${Buffer.from(`${config.clientId}:${config.clientSecret}`).toString('base64')}` : undefined;
   const response = await fetch(tokenUrl, { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...(authorization ? { Authorization: authorization } : {}) }, body });
@@ -203,6 +243,11 @@ async function exchangeRefreshToken(provider: OAuthProvider, refreshToken: strin
 async function accountIdentity(provider: OAuthProvider, accessToken: string, tokenData: Record<string, unknown>, shop?: string) {
   if (provider === 'salesforce') return { id: typeof tokenData.id === 'string' ? tokenData.id : null, settings: { instanceUrl: tokenData.instance_url ?? null } };
   if (provider === 'pipedrive') return { id: tokenData.company_id ? String(tokenData.company_id) : tokenData.user_id ? String(tokenData.user_id) : null, settings: { apiDomain: tokenData.api_domain ?? null } };
+  if (provider === 'tiktok-ads') {
+    const advertiserIds = Array.isArray(tokenData.advertiser_ids) ? tokenData.advertiser_ids.map((value) => String(value)).filter(Boolean) : [];
+    const id = String(advertiserIds[0] ?? tokenData.open_id ?? tokenData.advertiser_id ?? '').trim() || null;
+    return { id, settings: { advertiserIds, accountName: tokenData.display_name ?? null } };
+  }
   const endpoint = provider === 'hubspot'
     ? `https://api.hubapi.com/oauth/v1/access-tokens/${encodeURIComponent(accessToken)}`
     : provider === 'google-ads'
@@ -231,8 +276,13 @@ async function accountIdentity(provider: OAuthProvider, accessToken: string, tok
 export async function completeOAuthCallback(provider: OAuthProvider, code: string, stateValue: string) {
   const state = parseState(stateValue);
   if (state.provider !== provider) throw new Error('OAuth provider mismatch');
+  if (state.scope === 'workspace') assertWorkspaceOAuthProviderAllowed(provider);
+  else assertAdminOAuthProvider(provider);
   const config = providerConfig(provider);
-  const tokenData = await exchangeCode(provider, code, state);
+  const exchangedTokenData = await exchangeCode(provider, code, state);
+  const tokenData = provider === 'tiktok-ads' && exchangedTokenData.data && typeof exchangedTokenData.data === 'object'
+    ? { ...exchangedTokenData, ...(exchangedTokenData.data as Record<string, unknown>) }
+    : exchangedTokenData;
   const accessToken = String(tokenData.access_token ?? '');
   if (!accessToken) throw oauthError(provider, 'OAUTH_ACCESS_TOKEN_MISSING', 'Provider response did not contain an access token', undefined, 502);
   const identity = await accountIdentity(provider, accessToken, tokenData, state.shop);
@@ -240,8 +290,22 @@ export async function completeOAuthCallback(provider: OAuthProvider, code: strin
   const expiresIn = Number(tokenData.expires_in ?? 0);
   const tokenExpiresAt = expiresIn > 0 ? new Date(Date.now() + expiresIn * 1_000).toISOString() : null;
   const scopes = typeof tokenData.scope === 'string' ? tokenData.scope.split(/[ ,]+/).filter(Boolean) : config.scopes;
+  if (state.scope === 'admin') {
+    const connection = await adminOAuthRepo.upsertManagedOAuthConnection({
+      provider: provider as adminOAuthRepo.LuluManagedProvider,
+      displayName: config.name,
+      externalAccountId: identity.id,
+      grantedScopes: scopes,
+      encryptedAccessToken: encryptSecret(accessToken),
+      encryptedRefreshToken: refreshToken ? encryptSecret(refreshToken) : null,
+      tokenExpiresAt,
+      settings: identity.settings,
+      connectedBy: state.userId,
+    });
+    return { connection, provider, scope: 'admin' as const };
+  }
   const platform = await repo.upsertPlatformOAuthCredential({
-    workspaceId: state.workspaceId,
+    workspaceId: state.workspaceId!,
     integrationKey: provider,
     name: config.name,
     category: config.category,
@@ -252,8 +316,8 @@ export async function completeOAuthCallback(provider: OAuthProvider, code: strin
     tokenExpiresAt,
     settings: identity.settings,
   });
-  await repo.setOnboardingStep(state.workspaceId, 'ai_preferences');
-  return { platform, workspaceId: state.workspaceId };
+  await repo.setOnboardingStep(state.workspaceId!, 'ai_preferences');
+  return { platform, workspaceId: state.workspaceId! };
 }
 
 export async function refreshStoredOAuthCredential(input: {
@@ -261,6 +325,7 @@ export async function refreshStoredOAuthCredential(input: {
   provider: OAuthProvider;
   encryptedRefreshToken: string | null;
 }) {
+  assertWorkspaceOAuthProviderAllowed(input.provider);
   if (!input.encryptedRefreshToken) {
     throw oauthError(input.provider, 'OAUTH_REFRESH_TOKEN_MISSING', 'Provider connection must be re-authorized because no refresh token is stored', undefined, 401);
   }
@@ -282,5 +347,17 @@ export async function refreshStoredOAuthCredential(input: {
 }
 
 export function isSupportedProvider(value: string): value is OAuthProvider {
-  return ['salesforce', 'pipedrive', 'hubspot', 'google-ads', 'google-analytics', 'google-business', 'meta', 'linkedin', 'webflow', 'wordpress', 'shopify'].includes(value);
+  return ['salesforce', 'pipedrive', 'hubspot', 'google-ads', 'google-analytics', 'google-business', 'meta', 'linkedin', 'tiktok-ads', 'webflow', 'wordpress', 'shopify'].includes(value);
+}
+
+export function isLuluManagedOAuthProvider(provider: OAuthProvider) {
+  return adminOAuthRepo.isLuluManagedProvider(provider);
+}
+
+export function assertAdminOAuthProvider(provider: OAuthProvider) {
+  if (!isLuluManagedOAuthProvider(provider)) throw oauthError(provider, 'OAUTH_PROVIDER_NOT_ADMIN_MANAGED', 'This provider is not configured as a Lulu-managed administrator connection', undefined, 403);
+}
+
+export function assertWorkspaceOAuthProviderAllowed(provider: OAuthProvider) {
+  if (isLuluManagedOAuthProvider(provider)) throw oauthError(provider, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu and cannot be connected inside a workspace', { management: 'lulu_managed' }, 403);
 }

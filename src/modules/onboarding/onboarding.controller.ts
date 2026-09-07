@@ -383,9 +383,14 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
       res.status(404).json({ success: false, error: { code: 'OAUTH_PROVIDER_NOT_SUPPORTED', message: 'This provider is not supported yet' } });
       return;
     }
+    const providerValue = provider as oauthService.OAuthProvider;
+    // Advertising, analytics and social-ad credentials are owned by Lulu.
+    // Workspace users may still connect Google Business, CRM, website and
+    // other user-managed integrations through this route.
+    oauthService.assertWorkspaceOAuthProviderAllowed(providerValue);
     const shop = typeof req.query.shop === 'string' ? req.query.shop.trim().toLowerCase() : undefined;
     const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined;
-    const url = oauthService.buildAuthorizationUrl(provider, workspaceId(req), req.user!.id, shop, returnTo);
+    const url = oauthService.buildAuthorizationUrl(providerValue, workspaceId(req), req.user!.id, shop, returnTo);
     return successResponse(res, 'OAuth authorization URL created', { provider, authorizationUrl: url });
   } catch (error) {
     next(error);
@@ -407,7 +412,10 @@ export async function oauthCallback(req: Request, res: Response) {
     }
     const frontend = envFrontendBaseUrl();
     const requestId = String(req.id || 'request-id-unavailable');
-    const providerReturnTo = provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
+    const stateContext = oauthService.getSafeStateContext(typeof req.query.state === 'string' ? req.query.state : undefined);
+    const providerReturnTo = stateContext?.scope === 'admin'
+      ? '/app/admin-billing-overview-9901?page=oauth-connections'
+      : provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
     const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? providerReturnTo;
     const errorRedirect = (code: string, message: string) => res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
     if (typeof req.query.error === 'string') return errorRedirect('OAUTH_PROVIDER_DENIED', `Provider denied access (${provider}; provider_error=${req.query.error})`);
@@ -420,10 +428,12 @@ export async function oauthCallback(req: Request, res: Response) {
     const requestId = String(req.id || 'request-id-unavailable');
     const frontend = envFrontendBaseUrl();
     const provider = String(req.params.provider);
-    const providerReturnTo = provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
     const stateContext = oauthService.getSafeStateContext(typeof req.query.state === 'string' ? req.query.state : undefined);
+    const providerReturnTo = stateContext?.scope === 'admin'
+      ? '/app/admin-billing-overview-9901?page=oauth-connections'
+      : provider === 'wordpress' ? '/app/website?section=wordpress-jetpack-9013' : provider === 'webflow' ? '/app/website?section=webflow-9014' : '/onboarding/existing-platforms';
     const returnTo = oauthService.getSafeReturnTo(typeof req.query.state === 'string' ? req.query.state : undefined) ?? providerReturnTo;
-    if ((provider === 'wordpress' || provider === 'webflow') && stateContext?.workspaceId) await resetWebsiteProviderState(stateContext.workspaceId, provider).catch(() => undefined);
+    if (stateContext?.scope !== 'admin' && (provider === 'wordpress' || provider === 'webflow') && stateContext?.workspaceId) await resetWebsiteProviderState(stateContext.workspaceId, provider).catch(() => undefined);
     return res.redirect(`${frontend}${appendQuery(returnTo, { oauthCode: code, oauthError: message.slice(0, 240), oauthRequestId: requestId })}`);
   }
 }

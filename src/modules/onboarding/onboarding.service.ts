@@ -7,6 +7,7 @@ import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import * as repo from './onboarding.repo.js';
+import * as oauthService from './oauth.service.js';
 import type {
   AiPreferencesInput,
   BusinessDescriptionInput,
@@ -339,6 +340,9 @@ export function listPlatforms(workspaceId: string) {
 }
 
 export async function createPlatform(workspaceId: string, input: CreatePlatformInput) {
+  if (input.integrationKey && oauthService.isSupportedProvider(input.integrationKey) && oauthService.isLuluManagedOAuthProvider(input.integrationKey)) {
+    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'Advertising and analytics providers are managed centrally by Lulu and cannot be added to a workspace.', { provider: input.integrationKey, management: 'lulu_managed' });
+  }
   const platform = await repo.createPlatform(workspaceId, input);
   await repo.setOnboardingStep(workspaceId, 'billing');
   return platform;
@@ -349,12 +353,23 @@ export async function updatePlatform(
   platformId: string,
   input: UpdatePlatformInput
 ) {
+  const current = (await repo.listPlatforms(workspaceId)).find((item) => item.id === platformId);
+  if (current?.integrationKey && oauthService.isSupportedProvider(current.integrationKey) && oauthService.isLuluManagedOAuthProvider(current.integrationKey)) {
+    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu and cannot be changed inside a workspace.', { provider: current.integrationKey, management: 'lulu_managed' });
+  }
+  if (input.integrationKey && oauthService.isSupportedProvider(input.integrationKey) && oauthService.isLuluManagedOAuthProvider(input.integrationKey)) {
+    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'Advertising and analytics providers are managed centrally by Lulu and cannot be added to a workspace.', { provider: input.integrationKey, management: 'lulu_managed' });
+  }
   const platform = await repo.updatePlatform(workspaceId, platformId, input);
   if (!platform) throw notFoundError('Platform not found');
   return platform;
 }
 
 export async function archivePlatform(workspaceId: string, platformId: string) {
+  const current = (await repo.listPlatforms(workspaceId)).find((item) => item.id === platformId);
+  if (current?.integrationKey && oauthService.isSupportedProvider(current.integrationKey) && oauthService.isLuluManagedOAuthProvider(current.integrationKey)) {
+    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu and cannot be changed inside a workspace.', { provider: current.integrationKey, management: 'lulu_managed' });
+  }
   if (!(await repo.archivePlatform(workspaceId, platformId))) {
     throw notFoundError('Platform not found');
   }

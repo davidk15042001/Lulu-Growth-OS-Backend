@@ -1077,13 +1077,36 @@ export async function listIntegrations(limit = 100, offset = 0) {
 
 /**
  * Return every persisted external OAuth connection without exposing secrets.
- * OAuth is currently stored in three domain-specific tables, so this view
- * deliberately normalizes their operational metadata for the admin console.
+ * OAuth is stored in the central Lulu-managed table plus workspace-scoped
+ * platform, email and calendar tables. This view deliberately normalizes
+ * operational metadata for the admin console without exposing secrets.
  */
 export async function listOAuthConnections(limit = 100, offset = 0, search?: string) {
   const searchPattern = search?.trim() ? `%${search.trim()}%` : null;
   const { rows } = await query(`
     WITH oauth_connections AS (
+      SELECT
+        a.id,
+        'admin'::text AS "connectionType",
+        a.provider,
+        a.display_name AS "displayName",
+        NULL::uuid AS "workspaceId",
+        NULL::text AS "workspaceName",
+        'lulu_managed'::text AS management,
+        a.status AS "sourceStatus",
+        a.status AS status,
+        TRUE AS "hasCredentials",
+        a.external_account_id AS "accountIdentifier",
+        a.granted_scopes AS scopes,
+        a.token_expires_at AS "tokenExpiresAt",
+        a.last_synced_at AS "lastSyncedAt",
+        a.last_error AS "lastError",
+        a.created_at AS "connectedAt",
+        a.updated_at AS "updatedAt"
+      FROM lulu_managed_oauth_connections a
+
+      UNION ALL
+
       SELECT
         p.id,
         'platform'::text AS "connectionType",
@@ -1091,6 +1114,7 @@ export async function listOAuthConnections(limit = 100, offset = 0, search?: str
         p.name AS "displayName",
         p.workspace_id AS "workspaceId",
         w.name AS "workspaceName",
+        CASE WHEN p.integration_key IN ('google-ads', 'google-analytics', 'meta', 'linkedin', 'tiktok-ads') THEN 'lulu_managed' ELSE 'workspace' END::text AS management,
         p.connection_status AS "sourceStatus",
         CASE WHEN c.platform_id IS NULL THEN 'missing_credentials' ELSE p.connection_status END AS status,
         (c.platform_id IS NOT NULL) AS "hasCredentials",
@@ -1124,6 +1148,7 @@ export async function listOAuthConnections(limit = 100, offset = 0, search?: str
         COALESCE(NULLIF(a.display_name, ''), a.email_address) AS "displayName",
         a.workspace_id AS "workspaceId",
         w.name AS "workspaceName",
+        'workspace'::text AS management,
         a.status AS "sourceStatus",
         CASE
           WHEN a.encrypted_access_token IS NULL AND a.encrypted_refresh_token IS NULL THEN 'missing_credentials'
@@ -1151,6 +1176,7 @@ export async function listOAuthConnections(limit = 100, offset = 0, search?: str
         COALESCE(NULLIF(a.display_name, ''), a.email_address, a.external_account_id, a.provider) AS "displayName",
         a.workspace_id AS "workspaceId",
         w.name AS "workspaceName",
+        'workspace'::text AS management,
         a.status AS "sourceStatus",
         CASE
           WHEN a.encrypted_access_token IS NULL AND a.encrypted_refresh_token IS NULL THEN 'missing_credentials'
@@ -1170,7 +1196,7 @@ export async function listOAuthConnections(limit = 100, offset = 0, search?: str
         AND a.provider IN ('google', 'microsoft')
     )
     SELECT
-      id, "connectionType", provider, "displayName", "workspaceId", "workspaceName",
+      id, "connectionType", provider, "displayName", "workspaceId", "workspaceName", management,
       "sourceStatus", status, "hasCredentials", "accountIdentifier", scopes,
       "tokenExpiresAt", "lastSyncedAt", "lastError", "connectedAt", "updatedAt"
     FROM oauth_connections

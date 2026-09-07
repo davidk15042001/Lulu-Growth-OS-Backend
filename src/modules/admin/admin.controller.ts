@@ -9,6 +9,8 @@ import { assertAdminCapability } from './admin.authorization.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
 import { requestAdminUserDeletionWorkerRun } from './admin-user-deletion.worker.js';
+import * as oauthService from '../onboarding/oauth.service.js';
+import * as adminOAuthRepo from './admin-oauth.repo.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -308,6 +310,31 @@ export async function getOAuthConnections(req: AuthedRequest, res: Response, nex
     const { limit, offset, search } = paginate(req);
     const connections = await repo.listOAuthConnections(limit, offset, search);
     return successResponse(res, 'OAuth connections loaded', { connections, limit, offset });
+  } catch (error) { next(error); }
+}
+
+export async function startManagedOAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const provider = String(req.params.provider);
+    if (!oauthService.isSupportedProvider(provider) || !oauthService.isLuluManagedOAuthProvider(provider)) {
+      return res.status(404).json({ success: false, error: { code: 'OAUTH_PROVIDER_NOT_ADMIN_MANAGED', message: 'This provider is not configured as a Lulu-managed connection' } });
+    }
+    const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : '/app/admin-billing-overview-9901?page=oauth-connections';
+    const authorizationUrl = oauthService.buildAdminAuthorizationUrl(provider, req.user!.id, returnTo);
+    return successResponse(res, 'Managed OAuth authorization URL created', { provider, authorizationUrl, management: 'lulu_managed' });
+  } catch (error) { next(error); }
+}
+
+export async function disconnectManagedOAuth(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const provider = String(req.params.provider);
+    if (!oauthService.isSupportedProvider(provider) || !oauthService.isLuluManagedOAuthProvider(provider)) {
+      return res.status(404).json({ success: false, error: { code: 'OAUTH_PROVIDER_NOT_ADMIN_MANAGED', message: 'This provider is not configured as a Lulu-managed connection' } });
+    }
+    const disconnected = await adminOAuthRepo.disconnectManagedOAuthConnection(provider);
+    return successResponse(res, disconnected ? 'Managed OAuth connection disconnected' : 'Managed OAuth connection was already disconnected', { provider, disconnected, management: 'lulu_managed' });
   } catch (error) { next(error); }
 }
 

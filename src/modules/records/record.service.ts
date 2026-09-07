@@ -1,6 +1,7 @@
-import { conflictError, notFoundError } from '../../utils/app-error.js';
+import { AppError, conflictError, notFoundError } from '../../utils/app-error.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as repo from './record.repo.js';
+import * as adminOAuthRepo from '../admin/admin-oauth.repo.js';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describeImage } from '../ai/openai.service.js';
 import type {
@@ -32,6 +33,21 @@ export function createRecord(
   userId: string,
   input: CreateRecordInput
 ) {
+  if (resourceType.startsWith('ad_')) {
+    const requestedProvider = typeof input.data?.provider === 'string' ? input.data.provider.trim() : '';
+    if (!adminOAuthRepo.isLuluManagedProvider(requestedProvider)) {
+      throw new AppError(409, 'ADVERTISING_PROVIDER_ADMIN_MANAGED', 'Advertising records must specify a Lulu-managed provider (Google Ads, Meta, LinkedIn or TikTok Ads).', { management: 'lulu_managed' });
+    }
+    return adminOAuthRepo.getManagedOAuthCredential(requestedProvider).then((connection) => {
+      if (!connection || connection.status !== 'connected') {
+        throw new AppError(409, 'ADVERTISING_PROVIDER_NOT_CONNECTED', 'The selected advertising provider is not connected in the Lulu Admin Panel.', { provider: requestedProvider, management: 'lulu_managed' });
+      }
+      return repo.createRecord(workspaceId, resourceType, userId, {
+        ...input,
+        data: { ...(input.data ?? {}), provider: requestedProvider, management: 'lulu_managed' },
+      });
+    });
+  }
   return repo.createRecord(workspaceId, resourceType, userId, input);
 }
 
@@ -105,6 +121,20 @@ export async function updateRecord(
   userId: string,
   input: UpdateRecordInput
 ) {
+  if (resourceType.startsWith('ad_')) {
+    const existing = await repo.findRecord(workspaceId, resourceType, recordId);
+    if (!existing) throw notFoundError('Record not found');
+    const mergedData = { ...(existing.data ?? {}), ...(input.data ?? {}) };
+    const requestedProvider = typeof mergedData.provider === 'string' ? mergedData.provider.trim() : '';
+    if (!adminOAuthRepo.isLuluManagedProvider(requestedProvider)) {
+      throw new AppError(409, 'ADVERTISING_PROVIDER_ADMIN_MANAGED', 'Advertising records must remain assigned to a Lulu-managed provider.', { management: 'lulu_managed' });
+    }
+    const connection = await adminOAuthRepo.getManagedOAuthCredential(requestedProvider);
+    if (!connection || connection.status !== 'connected') {
+      throw new AppError(409, 'ADVERTISING_PROVIDER_NOT_CONNECTED', 'The selected advertising provider is not connected in the Lulu Admin Panel.', { provider: requestedProvider, management: 'lulu_managed' });
+    }
+    input = { ...input, data: { ...mergedData, provider: requestedProvider, management: 'lulu_managed' } };
+  }
   const result = await repo.updateRecord(workspaceId, resourceType, recordId, userId, input);
   if (result.status === 'not_found') throw notFoundError('Record not found');
   if (result.status === 'version_conflict') {
