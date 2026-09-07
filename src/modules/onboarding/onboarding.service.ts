@@ -381,7 +381,10 @@ export async function continueFromExistingPlatforms(workspaceId: string, userId:
   // usage payment flow to reuse the same Airwallex customer.
   const { ensurePaygBillingCustomer } = await import('../billing/airwallex.service.js');
   await ensurePaygBillingCustomer(workspaceId);
-  await repo.setOnboardingStep(workspaceId, 'billing');
+  // Billing is an optional activation step. Mark the workspace as ready after
+  // the operational onboarding data is complete so unpaid/trial workspaces can
+  // enter Lulu and activate a plan later from the billing area.
+  await repo.completeOnboarding(workspaceId);
   return workspaceService.getWorkspace(workspaceId, userId);
 }
 
@@ -402,8 +405,6 @@ export async function completeOnboarding(workspaceId: string) {
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
   if (!state.hasBusinessDescription) missing.push('businessDescription');
-  if (!state.hasBillingConfirmation) missing.push('billing');
-
   if (missing.length > 0) {
     throw badRequest('Onboarding is incomplete', { missing });
   }
