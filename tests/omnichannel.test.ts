@@ -7,6 +7,7 @@ import { PGlite } from '@electric-sql/pglite';
 process.env.NODE_ENV='test'; process.env.DATABASE_URL='postgres://test:test@127.0.0.1:1/omni_tests'; process.env.JWT_SECRET='omnichannel-tests-secret-0123456789';
 const { pool }=await import('../src/db/pool.js');
 const repo=await import('../src/modules/omnichannel/omnichannel.repo.js');
+const service=await import('../src/modules/omnichannel/omnichannel.service.js');
 const db=new PGlite();
 before(async()=>{for(const file of (await readdir('src/database/migrations')).filter(name=>name.endsWith('.sql')).sort()) await db.exec(await readFile(`src/database/migrations/${file}`,'utf8')); const execute=async(sql:string,values:unknown[]=[])=>{const result=await db.query(sql,values);return {rows:result.rows,rowCount:result.affectedRows??result.rows.length};}; mock.method(pool,'query',execute as never); mock.method(pool,'connect',(async()=>({query:execute,release(){}})) as never);});
 after(async()=>{mock.restoreAll();await pool.end();await db.close();});
@@ -16,4 +17,5 @@ async function fixture(){const suffix=crypto.randomUUID(); const aUser=(await db
 describe('OmniChannel tenant and idempotency guarantees',()=>{
  it('lists and opens only the requested workspace',async()=>{const f=await fixture();assert.equal((await repo.listConversations(f.a,{page:1,limit:50})).items.length,1);assert.equal(await repo.getConversation(f.a,f.cb.id),null);});
  it('keeps inbound retries idempotent and internal notes non-external',async()=>{const f=await fixture();const first=await repo.createMessage({workspaceId:f.a,conversationId:f.ca.id,channelId:f.ca.channelId,channelIdentityId:f.ca.channelIdentityId,direction:'INBOUND',senderType:'BUYER',messageType:'TEXT',text:'hello',clientMessageId:'browser-1'});const second=await repo.createMessage({workspaceId:f.a,conversationId:f.ca.id,channelId:f.ca.channelId,channelIdentityId:f.ca.channelIdentityId,direction:'INBOUND',senderType:'BUYER',messageType:'TEXT',text:'hello',clientMessageId:'browser-1'});assert.equal(first.id,second.id);const note=await repo.createMessage({workspaceId:f.a,conversationId:f.ca.id,channelId:f.ca.channelId,channelIdentityId:f.ca.channelIdentityId,direction:'INTERNAL',senderType:'USER',messageType:'INTERNAL_NOTE',text:'private'});assert.equal(note.messageType,'INTERNAL_NOTE');assert.equal(note.direction,'INTERNAL');});
+ it('blocks unknown public website-chat widgets instead of creating a session',async()=>{await assert.rejects(()=>service.publicSession({widgetId:'unknown-widget-id'}),(error:any)=>error?.code==='NOT_FOUND'&&error?.status===404);});
 });
