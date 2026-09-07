@@ -11,8 +11,9 @@ const optionalStringList = (maximumItems: number, maximumLength = 120) =>
 export const companyInformationSchema = z.object({
   companyName: z.string().trim().min(1).max(200),
   industry: nullableText(200),
-  companySize: nullableText(100),
   countryRegion: nullableText(200),
+  taxId: nullableText(100),
+  address: nullableText(500),
 });
 
 export const businessDescriptionSchema = z.object({

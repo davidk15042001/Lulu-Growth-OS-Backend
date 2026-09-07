@@ -14,6 +14,8 @@ export const createWorkspaceSchema = z.object({
   industry: optionalText(200),
   companySize: optionalText(100),
   countryRegion: optionalText(200),
+  taxId: optionalText(100),
+  address: optionalText(500),
 });
 
 export const updateWorkspaceSchema = z
@@ -23,6 +25,8 @@ export const updateWorkspaceSchema = z
     industry: optionalText(200),
     companySize: optionalText(100),
     countryRegion: optionalText(200),
+    taxId: optionalText(100),
+    address: optionalText(500),
     businessDescription: optionalText(10_000),
     valueProposition: optionalText(5_000),
     targetMarket: optionalText(2_000),

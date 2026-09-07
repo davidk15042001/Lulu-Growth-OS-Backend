@@ -13,6 +13,8 @@ export type Workspace = {
   industry: string | null;
   companySize: string | null;
   countryRegion: string | null;
+  taxId: string | null;
+  address: string | null;
   businessDescription: string | null;
   valueProposition: string | null;
   targetMarket: string | null;
@@ -51,6 +53,8 @@ const workspaceSelect = `
   w.industry,
   w.company_size AS "companySize",
   w.country_region AS "countryRegion",
+  w.tax_id AS "taxId",
+  w.address,
   w.business_description AS "businessDescription",
   w.value_proposition AS "valueProposition",
   w.target_market AS "targetMarket",
@@ -89,8 +93,8 @@ export async function createWorkspace(
 ): Promise<Workspace> {
   return withTransaction(async (client) => {
     const created = await query<{ id: string }>(
-      `INSERT INTO workspaces (name, slug, industry, company_size, country_region, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO workspaces (name, slug, industry, company_size, country_region, tax_id, address, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
        RETURNING id`,
       [
         input.companyName,
@@ -98,6 +102,8 @@ export async function createWorkspace(
         input.industry ?? null,
         input.companySize ?? null,
         input.countryRegion ?? null,
+        input.taxId ?? null,
+        input.address ?? null,
         userId,
       ],
       client
@@ -170,7 +176,8 @@ export async function findWorkspaceForUser(
 export async function findWorkspaceById(workspaceId: string) {
   const { rows } = await query<Workspace>(
     `SELECT w.id, w.name AS "companyName", w.slug, w.industry, w.company_size AS "companySize",
-            w.country_region AS "countryRegion", w.business_description AS "businessDescription",
+            w.country_region AS "countryRegion", w.tax_id AS "taxId", w.address,
+            w.business_description AS "businessDescription",
             w.value_proposition AS "valueProposition", w.target_market AS "targetMarket",
             w.short_brand_description AS "shortBrandDescription", w.positioning_tags AS "positioningTags",
             w.legal_form AS "legalForm", w.founding_year AS "foundingYear",
@@ -200,6 +207,8 @@ const updateColumnMap: Record<keyof UpdateWorkspaceInput, string> = {
   industry: 'industry',
   companySize: 'company_size',
   countryRegion: 'country_region',
+  taxId: 'tax_id',
+  address: 'address',
   businessDescription: 'business_description',
   valueProposition: 'value_proposition',
   targetMarket: 'target_market',

@@ -248,11 +248,12 @@ export async function saveCompanyInformation(workspaceId: string, input: Company
     `UPDATE workspaces
      SET name = $2,
          industry = $3,
-         company_size = $4,
-         country_region = $5,
+         country_region = $4,
+         tax_id = $5,
+         address = $6,
          onboarding_step = 'business_description'
      WHERE id = $1 AND deleted_at IS NULL`,
-    [workspaceId, input.companyName, input.industry, input.companySize, input.countryRegion]
+    [workspaceId, input.companyName, input.industry, input.countryRegion, input.taxId, input.address]
   );
 }
 
