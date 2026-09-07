@@ -7,14 +7,15 @@ import { recordSecurityEvent } from '../security/security-event.service.js';
 
 export const ADMIN_CAPABILITIES = ['users.read','users.manage','users.impersonate','workspaces.read','workspaces.manage',
   'billing.read','billing.manage','billing.bypass','security.read','security.manage','providers.read','providers.manage',
-  'agents.read','agents.manage','audit.read'] as const;
+  'agents.read','agents.manage','audit.read','admin.omnichannel.read_all','admin.omnichannel.manage_all',
+  'admin.omnichannel.send_as_workspace','admin.omnichannel.routing.read'] as const;
 export type AdminCapability = typeof ADMIN_CAPABILITIES[number];
 export const ADMIN_ROLE_CAPABILITIES: Record<string, readonly AdminCapability[]> = {
   SUPER_ADMIN: ADMIN_CAPABILITIES,
-  SUPPORT_ADMIN: ['users.read','workspaces.read','providers.read','agents.read'],
+  SUPPORT_ADMIN: ['users.read','workspaces.read','providers.read','agents.read','admin.omnichannel.read_all','admin.omnichannel.routing.read'],
   FINANCE_ADMIN: ['billing.read','billing.manage'],
   SECURITY_ADMIN: ['users.read','security.read','security.manage','audit.read'],
-  OPERATIONS_ADMIN: ['workspaces.read','providers.read','providers.manage','agents.read','agents.manage'],
+  OPERATIONS_ADMIN: ['workspaces.read','providers.read','providers.manage','agents.read','agents.manage','admin.omnichannel.read_all','admin.omnichannel.manage_all','admin.omnichannel.routing.read'],
   READ_ONLY_ADMIN: ['users.read','workspaces.read','billing.read','security.read','providers.read','agents.read','audit.read'],
 };
 export function capabilitiesForRoles(roles: readonly string[]): AdminCapability[] {

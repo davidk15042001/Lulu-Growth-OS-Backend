@@ -24,6 +24,7 @@ import { acceptInvitation } from '../workspace-app/workspace-app.controller.js';
 import workspaceEventRoutes from '../../events/workspace-event.routes.js';
 import { workspaceProviderRoutes } from '../provider-control/provider.routes.js';
 import productRoutes from '../products/product.routes.js';
+import omnichannelRoutes from '../omnichannel/omnichannel.routes.js';
 
 const router = Router();
 
@@ -60,5 +61,6 @@ router.use('/:workspaceId/usage', usageRoutes);
 router.use('/:workspaceId/email', emailRoutes);
 router.use('/:workspaceId/calendar', calendarRoutes);
 router.use('/:workspaceId/events', workspaceEventRoutes);
+router.use('/:workspaceId/omnichannel', omnichannelRoutes);
 
 export default router;

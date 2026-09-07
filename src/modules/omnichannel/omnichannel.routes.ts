@@ -1,0 +1,21 @@
+import { Router } from 'express';
+import { requireWorkspaceCapability } from '../../middlewares/workspace.middleware.js';
+import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
+import { dbRateLimit } from '../../middlewares/rateLimit.middleware.js';
+import * as c from './omnichannel.controller.js';
+const router=Router({mergeParams:true});
+router.route('/conversations').get(requireWorkspaceCapability('omnichannel.read'),c.list).all(methodNotAllowed);
+router.route('/conversations/:conversationId').get(requireWorkspaceCapability('omnichannel.read'),c.detail).patch(requireWorkspaceCapability('omnichannel.manage'),c.update).all(methodNotAllowed);
+router.route('/conversations/:conversationId/messages').post(requireWorkspaceCapability('omnichannel.reply'),c.send).all(methodNotAllowed);
+router.route('/conversations/:conversationId/notes').post(requireWorkspaceCapability('omnichannel.reply'),c.note).all(methodNotAllowed);
+router.route('/conversations/:conversationId/take-over').post(requireWorkspaceCapability('omnichannel.manage'),c.takeOver).all(methodNotAllowed);
+router.route('/conversations/:conversationId/return-to-ai').post(requireWorkspaceCapability('omnichannel.manage'),c.returnToAi).all(methodNotAllowed);
+router.route('/channels').get(requireWorkspaceCapability('omnichannel.read'),c.channels).all(methodNotAllowed);
+router.route('/channels/website-chat').post(requireWorkspaceCapability('omnichannel.manage'),c.createWebsite).all(methodNotAllowed);
+router.route('/analytics').get(requireWorkspaceCapability('omnichannel.read'),c.analytics).all(methodNotAllowed);
+export default router;
+
+export const publicOmniRouter=Router();
+publicOmniRouter.post('/website-chat/session',dbRateLimit({keyPrefix:'omni-public-session',windowMs:60*60*1000,limit:30,message:'Chat sessions are temporarily rate limited.'}),c.publicSession);
+publicOmniRouter.get('/website-chat/session/:token',c.publicGet);
+publicOmniRouter.post('/website-chat/session/:token/messages',dbRateLimit({keyPrefix:'omni-public-message',windowMs:60*60*1000,limit:120,message:'Chat messages are temporarily rate limited.'}),c.publicSend);

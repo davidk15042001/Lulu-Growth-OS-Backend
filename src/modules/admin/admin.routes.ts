@@ -4,6 +4,7 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './admin.controller.js';
 
 import { requireAdminCapabilities } from './admin.authorization.js';
+import * as omni from '../omnichannel/omnichannel.controller.js';
 
 const router = Router();
 
@@ -34,6 +35,12 @@ router.route('/provider-control-plane').get(requireAuth, requireAdminCapabilitie
 router.route('/provider-control-plane/:connectionId/access').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.grantProviderWorkspaceAccess).delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.revokeProviderWorkspaceAccess).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getConversations).all(methodNotAllowed);
+router.route('/omnichannel/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminList).all(methodNotAllowed);
+router.route('/omnichannel/conversations/:conversationId').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminDetail).all(methodNotAllowed);
+router.route('/omnichannel/routing').get(requireAuth, requireAdminCapabilities('admin.omnichannel.routing.read'), omni.adminRouting).all(methodNotAllowed);
+router.route('/omnichannel/routing/:routingId/resolve').post(requireAuth, requireAdminCapabilities('admin.omnichannel.manage_all'), omni.adminResolve).all(methodNotAllowed);
+router.route('/omnichannel/channels').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminChannels).all(methodNotAllowed);
+router.route('/omnichannel/analytics').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminAnalytics).all(methodNotAllowed);
 router.route('/files').get(requireAuth, requireAdminCapabilities('workspaces.read'), controller.getFiles).all(methodNotAllowed);
 router.route('/support').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getSupport).all(methodNotAllowed);
 

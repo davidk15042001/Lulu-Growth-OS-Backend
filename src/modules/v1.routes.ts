@@ -12,6 +12,7 @@ import emailOAuthRoutes from './email/email.oauth.routes.js';
 import calendarOAuthRoutes from './calendar/calendar.oauth.routes.js';
 import publicRoutes from './public/public.routes.js';
 import { providerWebhookRoutes } from './provider-control/provider.routes.js';
+import { publicOmniRouter } from './omnichannel/omnichannel.routes.js';
 
 const router = Router();
 
@@ -59,6 +60,7 @@ router.use('/email', emailOAuthRoutes);
 router.use('/calendar', calendarOAuthRoutes);
 router.use('/public', publicRoutes);
 router.use('/provider-webhooks', providerWebhookRoutes);
+router.use('/public/omnichannel', publicOmniRouter);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;
