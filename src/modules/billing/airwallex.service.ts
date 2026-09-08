@@ -1015,14 +1015,18 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
   // entitlements but does not send an invalid zero-value subscription to
   // Airwallex. The admin audit entry remains the source of truth for why it is
   // free.
-  const overrideResult = await query<{ customPriceMinor: string | null }>(
-    `SELECT custom_price_minor AS "customPriceMinor"
+  const overrideResult = await query<{ customPriceMinor: string | null; providerSubscriptionId: string | null }>(
+    `SELECT custom_price_minor AS "customPriceMinor",
+            provider_subscription_id AS "providerSubscriptionId"
      FROM workspace_subscriptions
      WHERE workspace_id = $1`,
     [input.workspaceId],
   );
   if (overrideResult.rows[0]?.customPriceMinor !== null && overrideResult.rows[0]?.customPriceMinor !== undefined
     && Number(overrideResult.rows[0].customPriceMinor) === 0) {
+    if (overrideResult.rows[0].providerSubscriptionId) {
+      throw new AppError(409, 'FREE_PRICE_ACTIVE_SUBSCRIPTION', 'This workspace still has an active Airwallex subscription. Cancel it before activating a zero-price override.');
+    }
     await activateInternalPlan(input.workspaceId, input.planKey, {
       source: 'admin-price-override',
       activatedAt: new Date().toISOString(),
