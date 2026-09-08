@@ -26,6 +26,15 @@ const activeRuns = new Set<string>();
 const MAX_RUN_DURATION_MS = 10 * 60 * 1000;
 const TOOL_TIMEOUT_MS = env.AI_REQUEST_TIMEOUT_MS;
 
+function isBudgetProtectedToolInput(input: unknown) {
+  if (!input || typeof input !== 'object') return false;
+  const value = input as Record<string, unknown>;
+  if (value.budgetProtected === true) return true;
+  if (Array.isArray(value.approvalGates) && value.approvalGates.some((gate) => typeof gate === 'string' && /\bbudget\b/i.test(gate))) return true;
+  if (Array.isArray(value.resourceTypes) && value.resourceTypes.some((type) => typeof type === 'string' && type.toLowerCase().includes('budget'))) return true;
+  return typeof value.actionResourceType === 'string' && value.actionResourceType.toLowerCase().includes('budget');
+}
+
 registerAgentTools(tools);
 
 function buildPipeline(
@@ -354,7 +363,15 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
   if (step.toolName && !tool) throw new AppError(500, 'AGENT_TOOL_NOT_REGISTERED', `Tool ${step.toolName} is not registered`);
   const toolInput = step.toolInput ?? {};
   const identity = { runId, workspaceId, userId, stepId: step.id };
-  const policyDecision = (await authorizeAgentTool(identity, step.toolName)).decision;
+  const toolAuthorization = await authorizeAgentTool(identity, step.toolName);
+  // Autonomous workspace runs execute every registered non-budget action. The
+  // only exception is a budget change, which always remains behind the
+  // existing approval flow. Prohibited tools still fail closed in the shared
+  // authorization service.
+  const budgetProtected = isBudgetProtectedToolInput(toolInput);
+  const policyDecision = autonomous && !budgetProtected && toolAuthorization.decision === 'require_approval'
+    ? 'allow' as const
+    : toolAuthorization.decision;
   const effectiveToolInput = {
     ...toolInput,
     policyDecision,
@@ -413,7 +430,17 @@ async function executeRun(
         if (step.result) outputs.push({ stepId: step.id, output: step.result });
         continue;
       }
-      if (step.status === 'waiting_approval') return;
+      if (step.status === 'waiting_approval') {
+        // Runs created before the autonomous policy was enabled may still be
+        // paused on a non-budget approval. Resume those runs in-place; a
+        // budget change remains explicitly blocked behind human approval.
+        if (executionMode === 'autonomous' && !isBudgetProtectedToolInput(step.toolInput)) {
+          await repo.updateStep(step.id, { status: 'pending', approval_id: null });
+          await repo.updateRun(runId, { status: 'running', error_code: null, error_message: null });
+        } else {
+          return;
+        }
+      }
       const result = await executeStep(runId, workspaceId, userId, step, executionMode === 'autonomous');
       if (result.waiting) return;
       outputs.push({ stepId: step.id, output: result.output });
@@ -465,7 +492,12 @@ async function executeRun(
 }
 
 export async function executePersistedAgentRun(run: AgentRun) {
-  if (['completed', 'failed', 'cancelled', 'waiting_approval'].includes(run.status)) return;
+  const autonomousPlan = run.plan?.executionMode === 'autonomous';
+  // Older autonomous runs may have been paused by the previous approval
+  // policy. The worker reclaims only non-budget waiting runs so they can be
+  // resumed; analysis-only and budget-gated runs remain paused.
+  if (['completed', 'failed', 'cancelled'].includes(run.status)) return;
+  if (run.status === 'waiting_approval' && !autonomousPlan) return;
   const subscription = await repo.getWorkspacePlan(run.workspaceId);
   const module = isAgentModule(run.plan?.module) ? run.plan.module : 'general';
   const capabilities = getAgentCapabilities(subscription.plan_key, module);

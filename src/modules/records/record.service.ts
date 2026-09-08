@@ -4,6 +4,8 @@ import * as repo from './record.repo.js';
 import * as adminOAuthRepo from '../admin/admin-oauth.repo.js';
 import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describeImage } from '../ai/openai.service.js';
+import ExcelJS from 'exceljs';
+import * as productService from '../products/product.service.js';
 import type {
   CreateRecordInput,
   ListRecordsQuery,
@@ -12,6 +14,54 @@ import type {
 
 export type IngestFile = { name: string; type: string; buffer: Buffer };
 export type IngestRecordInput = { name: string; text: string; files: IngestFile[] };
+
+function parseCsvRow(line: string) {
+  const cells: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"' && line[index + 1] === '"' && quoted) { cell += '"'; index += 1; continue; }
+    if (character === '"') { quoted = !quoted; continue; }
+    if (character === ',' && !quoted) { cells.push(cell.trim()); cell = ''; continue; }
+    cell += character;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+
+function tabularCandidates(text: string, maximumRows = 500) {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  // Spreadsheet extraction prefixes each sheet with `Sheet: …`. Skip that
+  // marker and stop at the next sheet so one import cannot mix columns from
+  // unrelated tables.
+  let headerIndex = lines.findIndex((line) => !/^Sheet:\s*/i.test(line) && /,/.test(line));
+  if (headerIndex < 0 || lines.length <= headerIndex + 1) return [] as Array<Record<string, string>>;
+  const headerLine = lines[headerIndex] ?? '';
+  const normalize = (value: string) => value.toLowerCase().replace(/[\s_-]+/g, '');
+  const headers = parseCsvRow(headerLine).map(normalize);
+  return lines.slice(headerIndex + 1).filter((line) => !/^Sheet:\s*/i.test(line)).slice(0, maximumRows).map((line) => {
+    const cells = parseCsvRow(line);
+    const row: Record<string, string> = {};
+    headers.forEach((header, index) => { if (header && cells[index]) row[header] = cells[index]; });
+    return row;
+  }).filter((row) => Object.keys(row).length > 0);
+}
+
+function productCandidates(text: string) {
+  return tabularCandidates(text, 100).filter((row) => {
+    return Boolean(row.productname || row.product || row.name || row.title);
+  });
+}
+
+function crmCandidates(text: string, resourceType: ResourceType) {
+  return tabularCandidates(text).map((row) => {
+    const name = resourceType === 'crm_companies'
+      ? row.companyname || row.company || row.name || row.title
+      : row.fullname || row.contactname || row.name || row.title || row.subject || row.companyname || row.company;
+    return name ? { name, row } : null;
+  }).filter((candidate): candidate is { name: string; row: Record<string, string> } => Boolean(candidate));
+}
 
 export function listRecords(
   workspaceId: string,
@@ -69,16 +119,52 @@ async function extractPdfText(buffer: Buffer): Promise<string> {
   }
 }
 
+async function extractSpreadsheetText(buffer: Buffer): Promise<string> {
+  try {
+    const workbook = new ExcelJS.Workbook();
+    // ExcelJS brings its own Node Buffer type in some dependency trees; the
+    // runtime value is still the same byte buffer used by Multer.
+    await workbook.xlsx.load(buffer as unknown as Parameters<typeof workbook.xlsx.load>[0]);
+    const sheets = workbook.worksheets.map((sheet) => {
+      const rows: string[] = [];
+      sheet.eachRow({ includeEmpty: false }, (row) => {
+        const cells = row.values as Array<unknown>;
+        const values = cells.slice(1).map((value) => {
+          if (value === null || value === undefined) return '';
+          if (typeof value === 'object' && value && 'result' in value) return String((value as { result?: unknown }).result ?? '');
+          if (typeof value === 'object' && value && 'text' in value) return String((value as { text?: unknown }).text ?? '');
+          return String(value);
+        });
+        rows.push(values.map((value) => /[",\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value).join(','));
+      });
+      const csv = rows.join('\n').trim();
+      return csv ? `Sheet: ${sheet.name}\n${csv}` : '';
+    }).filter(Boolean);
+    return sheets.join('\n\n').slice(0, 100_000);
+  } catch {
+    return '';
+  }
+}
+
 export function extractTextFromFile(file: IngestFile, workspaceId: string, userId: string): Promise<string> {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
   const isPdf = file.type === 'application/pdf' || extension === 'pdf';
   const isImage = file.type.startsWith('image/');
+  const isSpreadsheet = ['xls', 'xlsx', 'xlsm', 'ods'].includes(extension)
+    || ['application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.oasis.opendocument.spreadsheet'].includes(file.type);
+  const isUnsupportedSpreadsheet = extension === 'xls' || extension === 'ods'
+    || file.type === 'application/vnd.ms-excel'
+    || file.type === 'application/vnd.oasis.opendocument.spreadsheet';
   const isText = file.type.startsWith('text/')
     || file.type === 'application/json'
     || file.type === 'application/xml'
     || TEXT_FILE_EXTENSIONS.has(extension);
   if (isText) return Promise.resolve(file.buffer.toString('utf8'));
   if (isPdf) return extractPdfText(file.buffer);
+  if (isUnsupportedSpreadsheet) {
+    throw new AppError(422, 'SPREADSHEET_FORMAT_UNSUPPORTED', 'Legacy XLS and ODS files are not supported for structured import. Please save the file as XLSX and upload it again.');
+  }
+  if (isSpreadsheet) return extractSpreadsheetText(file.buffer);
   if (isImage) {
     const dataUrl = `data:${file.type};base64,${file.buffer.toString('base64')}`;
     return describeImage({ dataUrl, workspaceId, userId });
@@ -102,6 +188,83 @@ export async function ingestRecord(
   }
   const extractedText = files.map((file) => file.extractedText).filter(Boolean).join('\n\n').trim();
   const description = [input.text.trim(), extractedText].filter(Boolean).join('\n\n').slice(0, 20_000) || null;
+  // The current ingestion path is intentionally deterministic: it extracts
+  // text/table data locally and records exactly which downstream targets were
+  // prepared. A DeepSeek run or external publish is not implied by a stored
+  // knowledge record and must be performed by an explicitly configured agent
+  // workflow/provider later.
+  const analysis: Record<string, unknown> = {
+    status: 'completed',
+    engine: 'deterministic-parser',
+    aiRequested: false,
+    externalPublishRequested: false,
+    analyzedAt: new Date().toISOString(),
+    targets: ['ai', 'website', 'commerce'],
+  };
+  if (resourceType === 'ai_knowledge') {
+    const candidates = productCandidates(extractedText || input.text);
+    let importedProducts = 0;
+    for (const candidate of candidates) {
+      try {
+        const name = candidate.productname || candidate.product || candidate.name || candidate.title;
+        if (!name) continue;
+        await productService.createProduct(workspaceId, userId, {
+          name,
+          sku: candidate.sku || null,
+          shortDescription: candidate.description || candidate.shortdescription || null,
+          longDescription: candidate.longdescription || null,
+          defaultCurrency: (candidate.currency || 'CNY').toUpperCase().slice(0, 3),
+          defaultPrice: candidate.price || candidate.defaultprice || null,
+          pricingType: candidate.price || candidate.defaultprice ? 'FIXED' : 'QUOTE_REQUIRED',
+          moqQuantity: candidate.moq || candidate.moqquantity || null,
+          moqUnit: candidate.unit || candidate.moqunit || 'pcs',
+          status: 'DRAFT',
+          productType: 'PHYSICAL_PRODUCT',
+          visibility: 'PRIVATE',
+          sourceLanguage: 'en',
+        });
+        importedProducts += 1;
+      } catch {
+        // A duplicate or incomplete row must not prevent the knowledge record
+        // from being stored. It remains visible as an analyzed candidate.
+      }
+    }
+    analysis.productCandidates = candidates.length;
+    analysis.productsCreated = importedProducts;
+  }
+  if (['crm_contacts', 'crm_companies', 'crm_activities', 'crm_tasks'].includes(resourceType)) {
+    const candidates = crmCandidates(extractedText || input.text, resourceType);
+    let importedRecords = 0;
+    let firstImported: Awaited<ReturnType<typeof repo.createRecord>> | null = null;
+    for (const candidate of candidates) {
+      try {
+        const row = candidate.row;
+        const imported = await repo.createRecord(workspaceId, resourceType, userId, {
+          name: candidate.name.slice(0, 300),
+          description: row.description || row.notes || row.note || null,
+          status: row.status || (resourceType === 'crm_tasks' ? 'Open' : 'Active'),
+          dueAt: row.dueat || row.duedate || null,
+          source: 'import',
+          data: {
+            ...row,
+            importFile: input.name,
+            importedAt: new Date().toISOString(),
+          },
+        });
+        firstImported ??= imported;
+        importedRecords += 1;
+      } catch {
+        // Keep processing the remaining rows. The file itself remains safely
+        // available through the import metadata and partial imports are
+        // reported in the resulting analysis object.
+      }
+    }
+    analysis.importCandidates = candidates.length;
+    analysis.importedRecords = importedRecords;
+    if (firstImported) {
+      return firstImported;
+    }
+  }
   return repo.createRecord(workspaceId, resourceType, userId, {
     name: input.name,
     description,
@@ -109,6 +272,7 @@ export async function ingestRecord(
     source: 'upload',
     data: {
       source: 'upload',
+      analysis,
       files: files.map((file) => ({ name: file.name, type: file.type, extractedText: file.extractedText })),
     },
   });

@@ -135,9 +135,23 @@ export async function claimNextRunnableRun(workerId: string, leaseSeconds: numbe
     }
     const { rows } = await query<AgentRun>(
       `WITH candidate AS (
-         SELECT id AS candidate_id
+       SELECT id AS candidate_id
          FROM agent_runs
-         WHERE status IN ('queued','planning','running')
+         WHERE (
+           status IN ('queued','planning','running')
+           OR (
+             status='waiting_approval'
+             AND plan->>'executionMode'='autonomous'
+             AND EXISTS (
+               SELECT 1
+               FROM agent_run_steps waiting_step
+               WHERE waiting_step.run_id=agent_runs.id
+                 AND waiting_step.workspace_id=agent_runs.workspace_id
+                 AND waiting_step.status='waiting_approval'
+                 AND COALESCE(waiting_step.tool_input, '{}'::jsonb)::text NOT ILIKE '%budget%'
+             )
+           )
+         )
            AND attempt_count < $3
            AND (
              worker_id IS NULL

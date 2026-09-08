@@ -3163,30 +3163,6 @@ export const canonicalAgentPageProfiles: readonly CanonicalAgentPageProfile[] = 
   },
   {
     "sectionLabel": "Settings",
-    "pageId": "nicely-land-1864",
-    "pageLabel": "Settings",
-    "agentName": "Workspace Admin Agent",
-    "autonomy": "A2",
-    "objective": "Hold workspace-wide defaults and operating rules.",
-    "integrations": [
-      "Workspace profile",
-      "permissions",
-      "automation settings"
-    ],
-    "jobs": [
-      "audit config",
-      "suggest defaults"
-    ],
-    "successMetrics": [
-      "config quality",
-      "policy consistency"
-    ],
-    "approvalGates": [
-      "changing settings"
-    ]
-  },
-  {
-    "sectionLabel": "Settings",
     "pageId": "pure-minute-5446",
     "pageLabel": "Billing",
     "agentName": "Billing Agent",
