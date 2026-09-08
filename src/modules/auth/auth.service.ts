@@ -242,3 +242,29 @@ export async function updateCurrentUser(
 ) {
   return repo.updateUserProfile(userId, input);
 }
+
+export type ChangePasswordResult =
+  | { ok: true }
+  | { notFound: true }
+  | { invalidCurrentPassword: true }
+  | { samePassword: true };
+
+export async function changeCurrentUserPassword(
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<ChangePasswordResult> {
+  const user = await repo.getUserById(userId);
+  if (!user) return { notFound: true };
+  if (!await bcrypt.compare(currentPassword, user.password_hash)) {
+    return { invalidCurrentPassword: true };
+  }
+  if (await bcrypt.compare(newPassword, user.password_hash)) {
+    return { samePassword: true };
+  }
+  const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
+  const changed = await repo.changeUserPassword(userId, passwordHash);
+  if (!changed) return { notFound: true };
+  await recordSecurityEvent({ eventType: 'PASSWORD_CHANGED', userId });
+  return { ok: true };
+}

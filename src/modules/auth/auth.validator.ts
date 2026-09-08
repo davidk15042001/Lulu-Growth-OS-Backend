@@ -52,3 +52,8 @@ export const updateProfileSchema = z
     lastName: z.string().trim().min(1).max(100).optional(),
   })
   .refine((value) => Object.keys(value).length > 0, 'At least one field must be provided');
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(128),
+  newPassword: strongPassword(12),
+});

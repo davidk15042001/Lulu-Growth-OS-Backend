@@ -16,6 +16,7 @@ import {
   resetPasswordSchema,
   resendOtpSchema,
   updateProfileSchema,
+  changePasswordSchema,
 } from './auth.validator.js';
 
 const RT_COOKIE_NAME = 'rt';
@@ -243,6 +244,23 @@ export async function stopImpersonation(req: AuthedRequest, res: Response, next:
         user: result.user,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function changePassword(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (req.impersonator) return jsonError(res, 403, 'FORBIDDEN', 'End impersonation to change the password');
+    const userId = req.user?.id;
+    if (!userId) return jsonError(res, 401, 'UNAUTHORIZED', 'Please sign in');
+    const input = changePasswordSchema.parse(req.body);
+    const result = await service.changeCurrentUserPassword(userId, input.currentPassword, input.newPassword);
+    if ('notFound' in result) return jsonError(res, 404, 'NOT_FOUND', 'User not found');
+    if ('invalidCurrentPassword' in result) return jsonError(res, 400, 'CURRENT_PASSWORD_INVALID', 'The current password is incorrect');
+    if ('samePassword' in result) return jsonError(res, 400, 'PASSWORD_UNCHANGED', 'Choose a different new password');
+    res.clearCookie(RT_COOKIE_NAME, RT_COOKIE_OPTS);
+    return res.json({ success: true, message: 'Password updated. Please sign in again.', data: { requiresReauthentication: true } });
   } catch (error) {
     next(error);
   }

@@ -21,6 +21,25 @@ export async function updateUserProfile(id: string, input: { firstName?: string 
   await query('UPDATE users SET first_name=COALESCE($2,first_name),last_name=COALESCE($3,last_name) WHERE id=$1 AND deleted_at IS NULL',[id,input.firstName ?? null,input.lastName ?? null]);
   return getUserById(id);
 }
+
+export async function changeUserPassword(id: string, passwordHash: string) {
+  return withTransaction(async (client) => {
+    const updated = await query<{ id: string }>(
+      `UPDATE users
+          SET password_hash = $2,
+              token_version = token_version + 1,
+              updated_at = NOW()
+        WHERE id = $1 AND deleted_at IS NULL
+      RETURNING id`,
+      [id, passwordHash],
+      client,
+    );
+    if (!updated.rowCount) return false;
+    // A password change invalidates every existing browser/device session.
+    await revokeSessionsInTransaction(id, null, 'password_changed', client);
+    return true;
+  });
+}
 async function insertOtp(userId: string, purpose: string, client: PoolClient) {
   const code=generateOtp();
   const hash=await bcrypt.hash(code,env.BCRYPT_ROUNDS);

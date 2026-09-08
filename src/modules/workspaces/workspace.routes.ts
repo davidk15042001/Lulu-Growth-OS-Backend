@@ -46,6 +46,11 @@ router.route('/:workspaceId')
   .patch(requireWorkspaceAdmin, controller.update)
   .all(methodNotAllowed);
 
+router.route('/:workspaceId/profile')
+  .get(requireWorkspaceAdmin, controller.getProfile)
+  .patch(requireWorkspaceAdmin, controller.updateProfile)
+  .all(methodNotAllowed);
+
 router.use('/:workspaceId', workspaceAppRoutes);
 router.use('/:workspaceId/support', supportRoutes);
 router.use('/:workspaceId/providers', workspaceProviderRoutes);

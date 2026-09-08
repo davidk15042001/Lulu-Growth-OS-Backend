@@ -1,6 +1,7 @@
+import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
-import type { CreateWorkspaceInput, UpdateWorkspaceInput } from './workspace.validator.js';
+import type { CreateWorkspaceInput, UpdateWorkspaceInput, WorkspaceProfileUpdateInput } from './workspace.validator.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type { WorkspaceRole } from './workspace-permissions.js';
@@ -49,6 +50,22 @@ export type Workspace = {
   planKey: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 };
 
+export type WorkspaceProfile = {
+  workspaceId: string;
+  companyName: string;
+  industry: string | null;
+  countryRegion: string | null;
+  taxId: string | null;
+  address: string | null;
+  legalForm: string | null;
+  legalRepresentative: string | null;
+  phoneNumber: string | null;
+  bankAccountNumber: string | null;
+  bankOpeningBank: string | null;
+  bankBranch: string | null;
+  bankCode: string | null;
+};
+
 const workspaceSelect = `
   w.id,
   w.organization_id AS "organizationId",
@@ -89,6 +106,22 @@ const workspaceSelect = `
   w.updated_at AS "updatedAt",
   wm.role,
   COALESCE((SELECT plan_key FROM workspace_subscriptions ws2 WHERE ws2.workspace_id = w.id ORDER BY ws2.updated_at DESC LIMIT 1), 'starter') AS "planKey"
+`;
+
+const workspaceProfileSelect = `
+  w.id AS "workspaceId",
+  w.name AS "companyName",
+  w.industry,
+  w.country_region AS "countryRegion",
+  w.tax_id AS "taxId",
+  w.address,
+  w.legal_form AS "legalForm",
+  w.legal_representative AS "legalRepresentative",
+  w.phone_number AS "phoneNumber",
+  w.bank_account_number AS "bankAccountNumber",
+  w.bank_opening_bank AS "bankOpeningBank",
+  w.bank_branch AS "bankBranch",
+  w.bank_code AS "bankCode"
 `;
 
 export async function createWorkspace(
@@ -295,4 +328,98 @@ export async function findMembership(workspaceId: string, userId: string) {
     [workspaceId, userId]
   );
   return rows[0];
+}
+
+export async function findWorkspaceProfileForAdmin(workspaceId: string, userId: string) {
+  const { rows } = await query<WorkspaceProfile>(
+    `SELECT ${workspaceProfileSelect}
+       FROM workspaces w
+       JOIN workspace_members wm ON wm.workspace_id = w.id
+      WHERE w.id = $1
+        AND wm.user_id = $2
+        AND wm.role IN ('owner', 'admin')
+        AND w.deleted_at IS NULL
+      LIMIT 1`,
+    [workspaceId, userId],
+  );
+  return rows[0];
+}
+
+const profileColumnMap: Record<keyof WorkspaceProfileUpdateInput, string> = {
+  companyName: 'name',
+  industry: 'industry',
+  countryRegion: 'country_region',
+  taxId: 'tax_id',
+  address: 'address',
+  legalForm: 'legal_form',
+  legalRepresentative: 'legal_representative',
+  phoneNumber: 'phone_number',
+  bankAccountNumber: 'bank_account_number',
+  bankOpeningBank: 'bank_opening_bank',
+  bankBranch: 'bank_branch',
+  bankCode: 'bank_code',
+};
+
+export async function updateWorkspaceProfile(
+  workspaceId: string,
+  userId: string,
+  input: WorkspaceProfileUpdateInput,
+) {
+  const entries = Object.entries(input).filter((entry) => entry[1] !== undefined) as Array<
+    [keyof WorkspaceProfileUpdateInput, unknown]
+  >;
+  const values: unknown[] = [workspaceId, userId];
+  const assignments = entries.map(([key, value], index) => {
+    values.push(value);
+    return `${profileColumnMap[key]} = $${index + 3}`;
+  });
+
+  return withTransaction(async (client) => {
+    const updated = await query(
+      `UPDATE workspaces w
+          SET ${assignments.join(', ')}
+        WHERE w.id = $1
+          AND w.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM workspace_members wm
+             WHERE wm.workspace_id = w.id
+               AND wm.user_id = $2
+               AND wm.role IN ('owner', 'admin')
+          )`,
+      values,
+      client,
+    );
+    if (!updated.rowCount) return undefined;
+
+    const current = (await query<{ name: string; country: string | null; taxId: string | null; legalForm: string | null; address: string | null }>(
+      `SELECT name, country_region AS country, tax_id AS "taxId", legal_form AS "legalForm", address
+         FROM workspaces WHERE id = $1`,
+      [workspaceId],
+      client,
+    )).rows[0];
+    if (current) {
+      await ensureWorkspaceBusinessIdentity({
+        workspaceId,
+        name: current.name,
+        country: current.country,
+        taxIdentifier: current.taxId,
+        legalForm: current.legalForm,
+        address: current.address,
+      }, client);
+    }
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.WORKSPACE_UPDATED,
+      aggregateType: 'workspace',
+      aggregateId: workspaceId,
+      payload: { workspaceId, changedFields: entries.map(([key]) => key), source: 'profile' },
+      metadata: { actorId: userId, source: 'workspace-profile' },
+      idempotencyKey: `workspace:${workspaceId}:profile:${Date.now()}:${crypto.randomUUID()}`,
+    }, client);
+    return (await query<WorkspaceProfile>(
+      `SELECT ${workspaceProfileSelect} FROM workspaces w WHERE w.id = $1 AND w.deleted_at IS NULL`,
+      [workspaceId],
+      client,
+    )).rows[0];
+  });
 }

@@ -50,5 +50,24 @@ export const updateWorkspaceSchema = z
   })
   .refine((value) => Object.keys(value).length > 0, 'At least one field must be provided');
 
+/** Sensitive company profile fields are exposed through the admin-only profile route. */
+export const workspaceProfileUpdateSchema = z
+  .object({
+    companyName: z.string().trim().min(1).max(200).optional(),
+    industry: optionalText(200),
+    countryRegion: optionalText(200),
+    taxId: optionalText(100),
+    address: optionalText(500),
+    legalForm: optionalText(120),
+    legalRepresentative: optionalText(200),
+    phoneNumber: optionalText(60),
+    bankAccountNumber: optionalText(100),
+    bankOpeningBank: optionalText(200),
+    bankBranch: optionalText(200),
+    bankCode: optionalText(100),
+  })
+  .refine((value) => Object.keys(value).length > 0, 'At least one field must be provided');
+
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
 export type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceSchema>;
+export type WorkspaceProfileUpdateInput = z.infer<typeof workspaceProfileUpdateSchema>;

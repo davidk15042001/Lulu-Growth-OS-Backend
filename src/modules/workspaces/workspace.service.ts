@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { conflictError, notFoundError } from '../../utils/app-error.js';
 import * as repo from './workspace.repo.js';
-import type { CreateWorkspaceInput, UpdateWorkspaceInput } from './workspace.validator.js';
+import type { CreateWorkspaceInput, UpdateWorkspaceInput, WorkspaceProfileUpdateInput } from './workspace.validator.js';
 
 function slugify(value: string) {
   return value
@@ -52,4 +52,20 @@ export async function updateWorkspace(
     }
     throw error;
   }
+}
+
+export async function getWorkspaceProfile(workspaceId: string, userId: string) {
+  const profile = await repo.findWorkspaceProfileForAdmin(workspaceId, userId);
+  if (!profile) throw notFoundError('Workspace profile not found');
+  return profile;
+}
+
+export async function updateWorkspaceProfile(
+  workspaceId: string,
+  userId: string,
+  input: WorkspaceProfileUpdateInput,
+) {
+  const profile = await repo.updateWorkspaceProfile(workspaceId, userId, input);
+  if (!profile) throw notFoundError('Workspace profile not found');
+  return profile;
 }

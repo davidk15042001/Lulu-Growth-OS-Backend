@@ -70,6 +70,10 @@ router.route('/impersonation/stop')
   .post(requireAuth, controller.stopImpersonation)
   .all(methodNotAllowed);
 
+router.route('/change-password')
+  .post(requireAuth, controller.changePassword)
+  .all(methodNotAllowed);
+
 router.route('/sessions').get(requireAuth,controller.sessions).all(methodNotAllowed);
 router.route('/sessions/revoke-others').post(requireAuth,controller.revokeOtherSessions).all(methodNotAllowed);
 router.route('/sessions/:sessionId').delete(requireAuth,controller.revokeSession).all(methodNotAllowed);

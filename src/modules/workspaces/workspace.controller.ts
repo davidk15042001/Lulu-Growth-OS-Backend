@@ -6,6 +6,7 @@ import * as service from './workspace.service.js';
 import {
   createWorkspaceSchema,
   updateWorkspaceSchema,
+  workspaceProfileUpdateSchema,
   workspaceIdParamsSchema,
 } from './workspace.validator.js';
 
@@ -44,6 +45,27 @@ export async function update(req: WorkspaceRequest, res: Response, next: NextFun
     const input = updateWorkspaceSchema.parse(req.body);
     const workspace = await service.updateWorkspace(workspaceId, req.user!.id, input);
     return successResponse(res, 'Workspace updated', workspace);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function getProfile(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = workspaceIdParamsSchema.parse(req.params);
+    const profile = await service.getWorkspaceProfile(workspaceId, req.user!.id);
+    return successResponse(res, 'Workspace profile loaded', profile);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function updateProfile(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = workspaceIdParamsSchema.parse(req.params);
+    const input = workspaceProfileUpdateSchema.parse(req.body);
+    const profile = await service.updateWorkspaceProfile(workspaceId, req.user!.id, input);
+    return successResponse(res, 'Workspace profile updated', profile);
   } catch (error) {
     next(error);
   }
