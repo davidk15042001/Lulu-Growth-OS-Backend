@@ -19,10 +19,25 @@ before(async()=>{
   mock.method(pool,'connect',(async()=>({query:execute,release(){}})) as never);
   userId=(await db.query<{id:string}>(`INSERT INTO users(email,password_hash) VALUES('ops@test.local','hash') RETURNING id`)).rows[0]!.id;
   workspaceId=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Operations',$1) RETURNING id`,[userId])).rows[0]!.id;
+  await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,[workspaceId,userId]);
 });
 after(async()=>{mock.restoreAll();await pool.end();await db.close();});
 it('executes every admin operational query against the actual migrated schema',async()=>{
   for(const load of [repo.listWebsites,repo.listAgents,repo.listIntegrations,repo.listApprovals,repo.listErrorEvents,repo.listAuditLogs,repo.listConversations,repo.listFiles,repo.listJobs]) assert.ok(Array.isArray(await load()));
+});
+it('shows API and server customer costs for verified or unpaid workspaces',async()=>{
+  const now=new Date();
+  const start=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1)).toISOString().slice(0,10);
+  const end=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,0)).toISOString().slice(0,10);
+  await db.query(`INSERT INTO ai_usage_ledger(workspace_id,user_id,provider,model,input_tokens,output_tokens,customer_cost_usd)
+    VALUES($1,$2,'deepseek','deepseek-v4-pro',1,1,12.34)`,[workspaceId,userId]);
+  await db.query(`INSERT INTO workspace_server_usage_ledger(workspace_id,usage_date,provider_cost_usd,customer_cost_usd)
+    VALUES($1,CURRENT_DATE,2.835,5.67)`,[workspaceId]);
+  const customer=(await repo.listCustomerBillingOverview(start,end)).find((row:any)=>row.id===workspaceId);
+  assert.ok(customer);
+  assert.equal(Number(customer.apiCostUsd),12.34);
+  assert.equal(Number(customer.serverCostUsd),5.67);
+  assert.equal(Number(customer.apiCostMinor),0);
 });
 it('shows real sites, runs, approvals, jobs and audit entries',async()=>{
   await db.query(`INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name) VALUES($1,'managed','managed','Customer site')`,[workspaceId]);

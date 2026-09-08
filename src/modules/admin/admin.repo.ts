@@ -5,6 +5,29 @@ import { AppError } from '../../utils/app-error.js';
 
 export async function listCustomerBillingOverview(periodStart: string, periodEnd: string) {
   const { rows } = await query(`
+    WITH api_usage AS (
+      SELECT workspace_id, SUM(customer_cost_usd)::numeric AS "apiCostUsd"
+      FROM ai_usage_ledger
+      WHERE created_at >= $1::date
+        AND created_at < ($2::date + INTERVAL '1 day')
+      GROUP BY workspace_id
+    ), server_usage AS (
+      SELECT workspace_id, SUM(customer_cost_usd)::numeric AS "serverCostUsd"
+      FROM workspace_server_usage_ledger
+      WHERE created_at >= $1::date
+        AND created_at < ($2::date + INTERVAL '1 day')
+      GROUP BY workspace_id
+    ), uploaded_bytes AS (
+      SELECT workspace_id, SUM(size_bytes)::numeric AS "storageBytes"
+      FROM (
+        SELECT workspace_id, size_bytes FROM onboarding_documents
+        UNION ALL
+        SELECT workspace_id, size_bytes FROM record_attachments
+        UNION ALL
+        SELECT workspace_id, size_bytes FROM omni_message_attachments
+      ) uploads
+      GROUP BY workspace_id
+    )
     SELECT
       w.id,
       u.first_name AS "firstName",
@@ -15,21 +38,33 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
       COALESCE(ws.status, 'inactive') AS "subscriptionStatus",
       COALESCE(ws.current_period_starts_at, ws.created_at, w.created_at) AS "startDate",
       COALESCE(ws.current_period_ends_at, ws.trial_ends_at) AS "expiryDate",
-      COALESCE(SUM(CASE WHEN uc.metric_key IN ('api_cost_minor', 'api_cost_cny_minor') THEN uc.quantity ELSE 0 END), 0)::numeric AS "apiCostMinor",
-      COALESCE(SUM(CASE WHEN uc.metric_key IN ('storage_cost_minor', 'server_storage_cost_minor') THEN uc.quantity ELSE 0 END), 0)::numeric AS "storageCostMinor",
-      COALESCE(SUM(CASE WHEN uc.metric_key IN ('storage_bytes', 'server_storage_bytes') THEN uc.quantity ELSE 0 END), 0)::numeric AS "storageBytes"
+      COALESCE(api_usage."apiCostUsd", 0)::numeric AS "apiCostUsd",
+      COALESCE(server_usage."serverCostUsd", 0)::numeric AS "serverCostUsd",
+      COALESCE(uploaded_bytes."storageBytes", 0)::numeric AS "storageBytes",
+      -- Kept for backwards-compatible API clients. New clients must use the
+      -- explicit USD fields above; these legacy counters are not authoritative.
+      COALESCE(uc."apiCostMinor", 0)::numeric AS "apiCostMinor",
+      COALESCE(uc."storageCostMinor", 0)::numeric AS "storageCostMinor"
     FROM workspaces w
     JOIN workspace_members wm ON wm.workspace_id = w.id AND wm.role = 'owner'
     JOIN users u ON u.id = wm.user_id AND u.deleted_at IS NULL
     LEFT JOIN workspace_subscriptions ws ON ws.workspace_id = w.id
-    LEFT JOIN workspace_usage_counters uc
-      ON uc.workspace_id = w.id
-     AND uc.period_start >= $1::date
-     AND uc.period_end <= $2::date
+    LEFT JOIN api_usage ON api_usage.workspace_id = w.id
+    LEFT JOIN server_usage ON server_usage.workspace_id = w.id
+    LEFT JOIN uploaded_bytes ON uploaded_bytes.workspace_id = w.id
+    LEFT JOIN LATERAL (
+      SELECT
+        SUM(quantity) FILTER (WHERE metric_key IN ('api_cost_minor','api_cost_cny_minor')) AS "apiCostMinor",
+        SUM(quantity) FILTER (WHERE metric_key IN ('storage_cost_minor','server_storage_cost_minor')) AS "storageCostMinor"
+      FROM workspace_usage_counters
+      WHERE workspace_id=w.id AND period_start >= $1::date AND period_end <= $2::date
+    ) uc ON TRUE
     WHERE w.deleted_at IS NULL
     GROUP BY w.id, u.first_name, u.last_name, u.email, w.name,
              ws.plan_key, ws.status, ws.current_period_starts_at,
-             ws.current_period_ends_at, ws.trial_ends_at, ws.created_at, w.created_at
+             ws.current_period_ends_at, ws.trial_ends_at, ws.created_at, w.created_at,
+             api_usage."apiCostUsd", server_usage."serverCostUsd", uploaded_bytes."storageBytes",
+             uc."apiCostMinor", uc."storageCostMinor"
     ORDER BY w.created_at DESC
   `, [periodStart, periodEnd]);
   return rows;
