@@ -36,7 +36,7 @@ export type PaygPeriod = {
   apiCostUsd: string;
   serverCostUsd: string;
   totalCostUsd: string;
-  providerCustomerId: string;
+  providerCustomerId: string | null;
   paymentSourceId: string | null;
   preferredPaymentMethod: PaygDirectPaymentMethod | null;
   providerInvoiceId: string | null;
@@ -321,7 +321,11 @@ export async function allocateDailyServerUsage(providerCostUsd: number, customer
  * Server/storage entries deliberately remain unassigned, so their weekly
  * charge continues without being reset by an API payment.
  */
-export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygApiCheckoutReservation> {
+export async function reservePaygApiCheckout(
+  workspaceId: string,
+  options: { requireBillingCustomer?: boolean } = {},
+): Promise<PaygApiCheckoutReservation> {
+  const requireBillingCustomer = options.requireBillingCustomer ?? true;
   return withTransaction(async (client) => {
     await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`payg-api-checkout:${workspaceId}`], client);
 
@@ -349,7 +353,13 @@ export async function reservePaygApiCheckout(workspaceId: string): Promise<PaygA
       client,
     );
     const profile = profileResult.rows[0];
-    if (!profile?.providerCustomerId) {
+    // A hosted invoice needs an Airwallex Billing Customer. Direct QR
+    // payments use a PaymentIntent instead and intentionally do not require
+    // one, so they can still be created when customer provisioning is pending.
+    if (!profile) {
+      throw new AppError(409, 'PAYG_SUBSCRIPTION_REQUIRED', 'An active AI billing subscription is required before API usage can be paid.');
+    }
+    if (requireBillingCustomer && !profile.providerCustomerId) {
       throw new AppError(409, 'PAYG_BILLING_CUSTOMER_REQUIRED', 'A confirmed billing customer is required before API usage can be paid.');
     }
 
@@ -696,7 +706,7 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
       periodStart: string;
       periodEnd: string;
       currency: 'USD';
-      providerCustomerId: string;
+      providerCustomerId: string | null;
       paymentSourceId: string | null;
       preferredPaymentMethod: PaygDirectPaymentMethod | null;
     }>(
@@ -714,7 +724,8 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
          AND s.provider='airwallex'
          AND s.status='active'
          AND s.plan_key IN ('starter', 'ai')
-         AND s.provider_customer_id IS NOT NULL
+         AND (s.provider_customer_id IS NOT NULL
+              OR p.preferred_payment_method IN ('wechatpay', 'alipaycn'))
          AND NOT EXISTS (
            SELECT 1 FROM workspace_payg_periods active
            WHERE active.workspace_id=p.workspace_id

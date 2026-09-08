@@ -68,6 +68,10 @@ async function issuePeriodInvoice(period: PaygPeriod) {
     return;
   }
 
+  if (!period.providerCustomerId) {
+    throw new AppError(409, 'PAYG_BILLING_CUSTOMER_REQUIRED', 'A confirmed billing customer is required before creating the weekly usage invoice.');
+  }
+
   let invoiceId = period.providerInvoiceId;
   let currentInvoice: Record<string, any> | null = null;
   if (invoiceId) {

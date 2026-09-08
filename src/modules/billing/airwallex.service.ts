@@ -332,12 +332,10 @@ export async function configurePaygPaymentMethod(input: {
   }
 
   if (input.paymentMethod !== 'card') {
-    // QR payments are still tied to an Airwallex Billing Customer. Provision it
-    // when the wallet is selected so the first QR payment can be created
-    // immediately. This is intentionally separate from wallet credentials:
-    // Lulu never stores a WeChat Pay or Alipay payment source.
+    // WeChat Pay and Alipay QR payments are one-time PaymentIntents and do not
+    // save a reusable payment source or require a Billing Customer. Keep the
+    // method selection available even while customer provisioning is pending.
     await ensurePaygProfile(input.workspaceId);
-    await ensurePaygBillingCustomer(input.workspaceId);
     await configurePaygDirectPaymentMethod(input.workspaceId, input.userId, input.paymentMethod);
     return {
       mode: 'manual_invoice' as const,
@@ -523,6 +521,10 @@ async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey
 }
 
 export async function createPaygApiUsageCheckout(workspaceId: string) {
+  // Hosted invoice checkout requires a confirmed Airwallex Billing Customer.
+  // Provision it before reserving API usage so a prior QR-only payment cannot
+  // leave the invoice flow without the customer reference it needs.
+  await ensurePaygBillingCustomer(workspaceId);
   const period = await reservePaygApiCheckout(workspaceId);
   if (period.providerInvoiceId && period.finalizedAt) {
     return {
@@ -534,6 +536,9 @@ export async function createPaygApiUsageCheckout(workspaceId: string) {
   }
   if (period.reused && period.status === 'processing' && !period.providerInvoiceId) {
     throw new AppError(409, 'PAYG_API_CHECKOUT_IN_PROGRESS', 'An API usage payment is already being prepared. Please try again shortly.');
+  }
+  if (!period.providerCustomerId) {
+    throw new AppError(409, 'PAYG_BILLING_CUSTOMER_REQUIRED', 'A confirmed billing customer is required before API usage can be paid.');
   }
 
   try {
@@ -639,14 +644,9 @@ export async function createPaygApiUsageQrPayment(input: {
     throw new AppError(422, 'PAYG_PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not enabled for the Lulu billing account.');
   }
   assertPaygReturnUrl(input.returnUrl);
-  // Workspaces that chose WeChat Pay or Alipay before Billing Customer
-  // provisioning was introduced must remain payable. Provisioning here makes
-  // QR creation self-healing without requiring the customer to reconfigure the
-  // payment method.
-  await ensurePaygBillingCustomer(input.workspaceId);
   const period = input.periodId
     ? await getPaygQrEligiblePeriod(input.workspaceId, input.periodId)
-    : await reservePaygApiCheckout(input.workspaceId);
+    : await reservePaygApiCheckout(input.workspaceId, { requireBillingCustomer: false });
   if (!period) throw new AppError(404, 'PAYG_QR_PAYMENT_PERIOD_NOT_FOUND', 'The usage payment period does not belong to this workspace or is no longer payable.');
   if (period.providerInvoiceId) {
     throw new AppError(409, 'PAYG_QR_PAYMENT_INVOICE_EXISTS', 'This usage payment already has an invoice. Open the invoice to complete payment instead of creating a second charge.');
