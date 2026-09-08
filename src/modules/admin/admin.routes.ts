@@ -6,6 +6,7 @@ import * as controller from './admin.controller.js';
 import { requireAdminCapabilities } from './admin.authorization.js';
 import * as omni from '../omnichannel/omnichannel.controller.js';
 import { streamAdminOmniEvents } from '../omnichannel/omnichannel.stream.js';
+import * as commercialDocuments from '../commercial-documents/commercial-documents.controller.js';
 
 const router = Router();
 
@@ -43,6 +44,8 @@ router.route('/omnichannel/routing').get(requireAuth, requireAdminCapabilities('
 router.route('/omnichannel/routing/:routingId/resolve').post(requireAuth, requireAdminCapabilities('admin.omnichannel.manage_all'), omni.adminResolve).all(methodNotAllowed);
 router.route('/omnichannel/channels').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminChannels).all(methodNotAllowed);
 router.route('/omnichannel/analytics').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminAnalytics).all(methodNotAllowed);
+router.route('/quotes').get(requireAuth, requireAdminCapabilities('admin.quotes.read_all'), commercialDocuments.adminQuotes).all(methodNotAllowed);
+router.route('/invoices').get(requireAuth, requireAdminCapabilities('admin.invoices.read_all'), commercialDocuments.adminInvoices).all(methodNotAllowed);
 router.route('/files').get(requireAuth, requireAdminCapabilities('workspaces.read'), controller.getFiles).all(methodNotAllowed);
 router.route('/support').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getSupport).all(methodNotAllowed);
 

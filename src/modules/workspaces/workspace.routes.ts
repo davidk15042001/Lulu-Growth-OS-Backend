@@ -25,6 +25,7 @@ import workspaceEventRoutes from '../../events/workspace-event.routes.js';
 import { workspaceProviderRoutes } from '../provider-control/provider.routes.js';
 import productRoutes from '../products/product.routes.js';
 import omnichannelRoutes from '../omnichannel/omnichannel.routes.js';
+import commercialDocumentRoutes from '../commercial-documents/commercial-documents.routes.js';
 
 const router = Router();
 
@@ -62,5 +63,6 @@ router.use('/:workspaceId/email', emailRoutes);
 router.use('/:workspaceId/calendar', calendarRoutes);
 router.use('/:workspaceId/events', workspaceEventRoutes);
 router.use('/:workspaceId/omnichannel', omnichannelRoutes);
+router.use('/:workspaceId/commercial-documents', commercialDocumentRoutes);
 
 export default router;

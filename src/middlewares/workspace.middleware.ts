@@ -21,8 +21,8 @@ const workspaceIdSchema = z.string().uuid();
 const WRITE_CAPABILITIES = new Set<WorkspaceCapability>([
   'workspace.write', 'workspace.manage', 'members.invite', 'members.manage',
   'members.remove', 'products.create', 'products.update', 'products.delete',
-  'crm.manage', 'leads.manage', 'opportunities.manage', 'quotes.create',
-  'quotes.send', 'quotes.approve', 'orders.manage', 'website.manage',
+  'crm.manage', 'leads.manage', 'opportunities.manage', 'quotes.create', 'quotes.update',
+  'quotes.send', 'quotes.approve', 'invoices.create', 'invoices.issue', 'invoices.send', 'invoices.cancel', 'commercial_policy.manage', 'orders.manage', 'website.manage',
   'website.publish', 'omnichannel.reply', 'omnichannel.manage',
   'advertising.manage', 'advertising.budget_authorize', 'finance.manage',
   'payouts.request', 'payouts.manage', 'providers.connect', 'providers.manage',

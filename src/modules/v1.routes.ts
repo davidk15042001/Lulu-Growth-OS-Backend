@@ -13,6 +13,7 @@ import calendarOAuthRoutes from './calendar/calendar.oauth.routes.js';
 import publicRoutes from './public/public.routes.js';
 import { providerWebhookRoutes } from './provider-control/provider.routes.js';
 import { publicOmniRouter } from './omnichannel/omnichannel.routes.js';
+import { publicCommercialDocumentRoutes } from './commercial-documents/commercial-documents.routes.js';
 
 const router = Router();
 
@@ -61,6 +62,7 @@ router.use('/calendar', calendarOAuthRoutes);
 router.use('/public', publicRoutes);
 router.use('/provider-webhooks', providerWebhookRoutes);
 router.use('/public/omnichannel', publicOmniRouter);
+router.use('/public/commercial-documents', publicCommercialDocumentRoutes);
 router.use('/workspaces', workspaceRoutes);
 
 export default router;
