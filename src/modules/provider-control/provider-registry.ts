@@ -9,6 +9,7 @@ import type {
   ProviderHealthStatus,
   ProviderVerificationResult,
 } from './provider.types.js';
+import { UnifyPortAdapter } from './unifyport.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -25,6 +26,8 @@ const providerAliases: Record<string, string> = {
   'cal-com': 'cal_com',
   'imap/smtp': 'imap_smtp',
   'imap-smtp': 'imap_smtp',
+  'unify-port': 'unifyport',
+  unify_port: 'unifyport',
 };
 
 export function canonicalProviderKey(value: string) {
@@ -49,6 +52,13 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'facebook_messenger', displayName: 'Facebook Messenger', category: 'MESSAGING', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
   { providerKey: 'instagram', displayName: 'Instagram', category: 'MESSAGING', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
   { providerKey: 'whatsapp', displayName: 'WhatsApp', category: 'MESSAGING', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'whatsapp.messages.send', displayName: 'Send WhatsApp messages', requiredScopes: [], defaultStatus: 'UNAVAILABLE' as ProviderCapabilityStatus }] },
+  { providerKey: 'unifyport', displayName: 'UnifyPort', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [
+    { capabilityKey: 'unifyport.workspace.read', displayName: 'Read UnifyPort workspace', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
+    { capabilityKey: 'unifyport.accounts.read', displayName: 'Read channel accounts', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
+    { capabilityKey: 'unifyport.accounts.manage', displayName: 'Manage channel accounts', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
+    { capabilityKey: 'unifyport.messages.send', displayName: 'Send channel messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
+    { capabilityKey: 'unifyport.messages.read', displayName: 'Receive channel messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
+  ] },
   { providerKey: 'lulu_managed_website', displayName: 'Lulu Managed Website', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'website.site.read', displayName: 'Read managed website', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
   { providerKey: 'wordpress', displayName: 'WordPress', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'HYBRID', capabilities: [{ capabilityKey: 'wordpress.site.read', displayName: 'Read website', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'wordpress.site.publish', displayName: 'Publish website content', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'wordpress.media.upload', displayName: 'Upload media', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'webflow', displayName: 'Webflow', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'webflow.site.read', displayName: 'Read Webflow sites', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'webflow.cms.write', displayName: 'Write CMS content', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
@@ -90,6 +100,7 @@ class ConservativeLegacyAdapter implements ProviderAdapter {
 }
 
 const adapters = new Map<string, ProviderAdapter>(PROVIDER_CATALOG.map((entry) => [entry.providerKey, new ConservativeLegacyAdapter(entry.providerKey)]));
+adapters.set('unifyport', new UnifyPortAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));

@@ -8,6 +8,7 @@ import * as omni from '../omnichannel/omnichannel.controller.js';
 import { streamAdminOmniEvents } from '../omnichannel/omnichannel.stream.js';
 import * as commercialDocuments from '../commercial-documents/commercial-documents.controller.js';
 import { adminSupportRoutes } from '../support/support.routes.js';
+import * as providerController from '../provider-control/provider.controller.js';
 
 const router = Router();
 
@@ -36,6 +37,11 @@ router.route('/oauth-connections/:provider/start').post(requireAuth, requireAdmi
 router.route('/oauth-connections/:provider').delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.disconnectManagedOAuth).all(methodNotAllowed);
 router.route('/provider-control-plane').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getProviderControlPlane).all(methodNotAllowed);
 router.route('/provider-control-plane/:connectionId/access').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.grantProviderWorkspaceAccess).delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.revokeProviderWorkspaceAccess).all(methodNotAllowed);
+router.route('/unifyport/status').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortStatus).all(methodNotAllowed);
+router.route('/unifyport/accounts').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortAccounts).post(requireAuth, requireAdminCapabilities('providers.manage'), providerController.unifyPortCreateAccount).all(methodNotAllowed);
+router.route('/unifyport/accounts/:accountId').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortAccount).all(methodNotAllowed);
+router.route('/unifyport/accounts/:accountId/auth').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortAuth).all(methodNotAllowed);
+router.route('/unifyport/accounts/:accountId/auth/qr').post(requireAuth, requireAdminCapabilities('providers.manage'), providerController.unifyPortStartQr).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), controller.getConversations).all(methodNotAllowed);
 router.route('/omnichannel/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminList).all(methodNotAllowed);

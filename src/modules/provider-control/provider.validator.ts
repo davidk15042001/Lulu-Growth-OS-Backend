@@ -17,4 +17,13 @@ export const providerMappingSchema = z.object({
   sourceOfTruth: z.enum(['LULU_MASTER', 'PROVIDER_MASTER', 'BIDIRECTIONAL', 'READ_ONLY', 'LULU_TO_PROVIDER']).default('LULU_MASTER'),
 }).strict();
 
+export const unifyPortAccountSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  provider: z.string().trim().min(1).max(80),
+  region: z.string().trim().min(1).max(80),
+  status: z.string().trim().min(1).max(40).optional(),
+  auth_mode: z.string().trim().min(1).max(40).optional(),
+  provider_data: z.record(z.string(), z.unknown()).optional(),
+}).strict();
+
 export type ProviderMappingInput = z.infer<typeof providerMappingSchema>;

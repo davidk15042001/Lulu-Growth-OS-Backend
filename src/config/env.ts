@@ -154,6 +154,11 @@ const EnvSchema = z
     AIRWALLEX_WEBHOOK_SECRET: z.string().min(1).optional(),
     AIRWALLEX_LOGIN_AS: z.string().min(1).optional(),
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
+    // Platform-scoped UnifyPort messaging transport. The API key is never
+    // returned to clients or persisted in provider metadata.
+    UNIFYPORT_API_KEY: optionalNonEmptyString,
+    UNIFYPORT_BASE_URL: z.string().url().default('https://api.unifyport.ai'),
+    UNIFYPORT_WEBHOOK_SIGNING_SECRET: optionalNonEmptyString,
     // JSON map of provider key -> webhook signing secret. Secrets remain
     // server-side; providers without a configured verifier stay unverified.
     PROVIDER_WEBHOOK_SECRETS: z.string().optional(),

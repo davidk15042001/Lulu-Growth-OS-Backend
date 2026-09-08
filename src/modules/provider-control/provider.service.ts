@@ -6,6 +6,7 @@ import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.servic
 import * as repo from './provider.repo.js';
 import { canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, isProviderRegistered, providerError } from './provider-registry.js';
 import type { ProviderCapabilityStatus, ProviderConnectionStatus, ProviderHealthStatus, ProviderMode } from './provider.types.js';
+import { verifyWebhookSignature as verifyUnifyPortWebhookSignature } from './unifyport.client.js';
 
 export function listProviderCatalog() {
   return repo.listProviderCatalog();
@@ -217,7 +218,10 @@ function eventIdFromPayload(payload: Record<string, unknown>, header?: string) {
 }
 
 export async function ingestProviderWebhook(input: { provider: string; rawBody: string; payload: Record<string, unknown>; signature?: string; timestamp?: string; nonce?: string; connectionId?: string; accountId?: string; correlationId?: string; eventId?: string }) {
-  const verified = verifyProviderWebhookSignature(input.provider, input.rawBody, { ...(input.signature ? { signature: input.signature } : {}), ...(input.timestamp ? { timestamp: input.timestamp } : {}), ...(input.nonce ? { nonce: input.nonce } : {}) });
+  const providerKey = canonicalProviderKey(input.provider);
+  const verified = providerKey === 'unifyport'
+    ? verifyUnifyPortWebhookSignature(input.rawBody, { ...(input.signature ? { signature: input.signature } : {}), ...(input.timestamp ? { timestamp: input.timestamp } : {}) })
+    : verifyProviderWebhookSignature(input.provider, input.rawBody, { ...(input.signature ? { signature: input.signature } : {}), ...(input.timestamp ? { timestamp: input.timestamp } : {}), ...(input.nonce ? { nonce: input.nonce } : {}) });
   const externalEventId = eventIdFromPayload(input.payload, input.eventId);
   if (!externalEventId) throw providerError('PROVIDER_WEBHOOK_EVENT_ID_MISSING', 'Provider webhook event ID is required', undefined, 400);
   const eventType = typeof input.payload.type === 'string' ? input.payload.type : typeof input.payload.event_type === 'string' ? input.payload.event_type : 'provider.event';
@@ -231,7 +235,7 @@ export function providerStatusMatrix() {
 }
 
 const PROVIDER_MATRIX = [
-  ['google_ads', 'PARTIAL'], ['google_analytics', 'PARTIAL'], ['google_business', 'IMPLEMENTED'], ['google_calendar', 'IMPLEMENTED'], ['microsoft_calendar', 'IMPLEMENTED'], ['meta', 'PARTIAL'], ['facebook_messenger', 'NOT_IMPLEMENTED'], ['instagram', 'NOT_IMPLEMENTED'], ['linkedin', 'PARTIAL'], ['tiktok_ads', 'PARTIAL'], ['lulu_managed_website', 'PARTIAL'], ['wordpress', 'PARTIAL'], ['webflow', 'PARTIAL'], ['shopify', 'PARTIAL'], ['gmail', 'IMPLEMENTED'], ['microsoft_email', 'IMPLEMENTED'], ['imap_smtp', 'IMPLEMENTED'], ['airwallex', 'IMPLEMENTED'], ['calendly', 'PARTIAL'], ['cal_com', 'PARTIAL'], ['salesforce', 'PARTIAL'], ['hubspot', 'PARTIAL'], ['pipedrive', 'PARTIAL'], ['whatsapp', 'NOT_IMPLEMENTED'], ['custom', 'NOT_IMPLEMENTED'],
+  ['google_ads', 'PARTIAL'], ['google_analytics', 'PARTIAL'], ['google_business', 'IMPLEMENTED'], ['google_calendar', 'IMPLEMENTED'], ['microsoft_calendar', 'IMPLEMENTED'], ['meta', 'PARTIAL'], ['facebook_messenger', 'NOT_IMPLEMENTED'], ['instagram', 'NOT_IMPLEMENTED'], ['linkedin', 'PARTIAL'], ['tiktok_ads', 'PARTIAL'], ['lulu_managed_website', 'PARTIAL'], ['wordpress', 'PARTIAL'], ['webflow', 'PARTIAL'], ['shopify', 'PARTIAL'], ['gmail', 'IMPLEMENTED'], ['microsoft_email', 'IMPLEMENTED'], ['imap_smtp', 'IMPLEMENTED'], ['airwallex', 'IMPLEMENTED'], ['calendly', 'PARTIAL'], ['cal_com', 'PARTIAL'], ['salesforce', 'PARTIAL'], ['hubspot', 'PARTIAL'], ['pipedrive', 'PARTIAL'], ['whatsapp', 'NOT_IMPLEMENTED'], ['unifyport', 'PARTIAL'], ['custom', 'NOT_IMPLEMENTED'],
 ] as const;
 
 export function isProviderMode(value: string): value is ProviderMode {
