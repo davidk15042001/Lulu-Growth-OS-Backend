@@ -496,6 +496,97 @@ function planPriceId(planKey: BillingPlanKey) {
   return priceId;
 }
 
+type SubscriptionPriceResolution = {
+  priceId: string;
+  amountMinor: number;
+  custom: boolean;
+};
+
+/**
+ * Resolve the price used by a subscription checkout. Airwallex accepts a
+ * price_id for SUBSCRIPTION checkouts; inline one-time prices are explicitly
+ * rejected in that mode. When an administrator has set a workspace override,
+ * create one recurring Price against the same Airwallex product and cache its
+ * id on the subscription row. The amount is stored in minor CNY units locally
+ * and converted to Airwallex's major-unit representation only at the provider
+ * boundary.
+ */
+async function resolveSubscriptionPrice(
+  workspaceId: string,
+  planKey: BillingPlanKey,
+  config: { amountMinor: number; priceEnv?: keyof typeof env; label: string },
+  client: import('pg').PoolClient,
+): Promise<SubscriptionPriceResolution> {
+  const overrideResult = await query<{
+    customPriceMinor: string | null;
+    customPriceCurrency: string;
+    customPriceProviderPriceId: string | null;
+  }>(
+    `SELECT custom_price_minor AS "customPriceMinor",
+            custom_price_currency AS "customPriceCurrency",
+            custom_price_provider_price_id AS "customPriceProviderPriceId"
+     FROM workspace_subscriptions
+     WHERE workspace_id = $1
+     FOR UPDATE`,
+    [workspaceId],
+    client,
+  );
+  const override = overrideResult.rows[0];
+  const customPriceMinor = override?.customPriceMinor === null || override?.customPriceMinor === undefined
+    ? null
+    : Number(override.customPriceMinor);
+  if (customPriceMinor === null) {
+    const priceId = planPriceId(planKey);
+    if (!priceId) throw providerError('AIRWALLEX_PRICE_NOT_CONFIGURED', `${config.label} Airwallex recurring Price ID is missing on the server`, { planKey }, 500);
+    return { priceId, amountMinor: config.amountMinor, custom: false };
+  }
+  if (!override) throw new AppError(409, 'SUBSCRIPTION_NOT_FOUND', 'Workspace subscription not found.');
+  if (!Number.isSafeInteger(customPriceMinor) || customPriceMinor < 0) {
+    throw new AppError(409, 'INVALID_SUBSCRIPTION_PRICE_OVERRIDE', 'The workspace subscription price override is invalid.');
+  }
+  if (customPriceMinor === 0) {
+    throw new AppError(409, 'FREE_SUBSCRIPTION_REQUIRES_INTERNAL_ACTIVATION', 'A zero-price subscription must be activated as an internal plan.');
+  }
+  if (override.customPriceCurrency !== 'CNY') {
+    throw new AppError(409, 'UNSUPPORTED_SUBSCRIPTION_PRICE_CURRENCY', 'Only CNY subscription price overrides are supported.');
+  }
+  if (override.customPriceProviderPriceId) {
+    return { priceId: override.customPriceProviderPriceId, amountMinor: customPriceMinor, custom: true };
+  }
+
+  const basePriceId = planPriceId(planKey);
+  if (!basePriceId) throw providerError('AIRWALLEX_PRICE_NOT_CONFIGURED', `${config.label} Airwallex recurring Price ID is missing on the server`, { planKey }, 500);
+  const basePrice = await airwallexGet(`/api/v1/billing/prices/${encodeURIComponent(basePriceId)}`, 'PRICE_RETRIEVE');
+  const productId = typeof basePrice.product_id === 'string'
+    ? basePrice.product_id
+    : typeof basePrice.product?.id === 'string' ? basePrice.product.id : null;
+  if (!productId) {
+    throw providerError('AIRWALLEX_CUSTOM_PRICE_PRODUCT_MISSING', 'The catalog price does not expose an Airwallex product for the custom subscription price.', { basePriceId });
+  }
+
+  const customPrice = await airwallexRequest('/api/v1/billing/prices/create', {
+    active: true,
+    billing_type: 'IN_ADVANCE',
+    currency: 'CNY',
+    pricing_model: 'FLAT',
+    flat_amount: customPriceMinor / 100,
+    recurring: { period: 1, period_unit: 'YEAR' },
+    product_id: productId,
+    description: `Lulu AI ${config.label} workspace price override`,
+    metadata: { workspace_id: workspaceId, plan_key: planKey, source: 'admin_price_override' },
+  }, crypto.randomUUID(), 'CUSTOM_PRICE_CREATE');
+  const priceId = typeof customPrice.id === 'string' ? customPrice.id : '';
+  if (!priceId) throw providerError('AIRWALLEX_CUSTOM_PRICE_ID_MISSING', 'Airwallex did not return the custom subscription price ID.');
+  await query(
+    `UPDATE workspace_subscriptions
+     SET custom_price_provider_price_id = $2, updated_at = NOW()
+     WHERE workspace_id = $1`,
+    [workspaceId, priceId],
+    client,
+  );
+  return { priceId, amountMinor: customPriceMinor, custom: true };
+}
+
 async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey, metadata: Record<string, unknown>, automationTrigger?: string) {
   await withTransaction(async (client) => {
     await query(
@@ -920,6 +1011,27 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     return { planKey: 'test' as const, free: true as const, status: 'active' as const };
   }
 
+  // A zero-value override is an intentional goodwill grant. It keeps the AI
+  // entitlements but does not send an invalid zero-value subscription to
+  // Airwallex. The admin audit entry remains the source of truth for why it is
+  // free.
+  const overrideResult = await query<{ customPriceMinor: string | null }>(
+    `SELECT custom_price_minor AS "customPriceMinor"
+     FROM workspace_subscriptions
+     WHERE workspace_id = $1`,
+    [input.workspaceId],
+  );
+  if (overrideResult.rows[0]?.customPriceMinor !== null && overrideResult.rows[0]?.customPriceMinor !== undefined
+    && Number(overrideResult.rows[0].customPriceMinor) === 0) {
+    await activateInternalPlan(input.workspaceId, input.planKey, {
+      source: 'admin-price-override',
+      activatedAt: new Date().toISOString(),
+      billingExempt: true,
+      customPriceMinor: 0,
+    }, 'subscription_price_override');
+    return { planKey: input.planKey, free: true as const, status: 'active' as const, priceOverride: true as const };
+  }
+
   if (!env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID) {
     throw providerError(
       'AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID_MISSING',
@@ -939,8 +1051,10 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       checkoutId: string;
       checkoutUrl: string;
       status: string;
+      amountMinor: string | number | null;
     }>(
-      `SELECT plan_key AS "planKey", provider_checkout_id AS "checkoutId", checkout_url AS "checkoutUrl", status
+      `SELECT plan_key AS "planKey", provider_checkout_id AS "checkoutId", checkout_url AS "checkoutUrl", status,
+              amount_minor AS "amountMinor"
        FROM workspace_billing_checkouts
        WHERE workspace_id=$1
          AND checkout_url IS NOT NULL
@@ -951,6 +1065,17 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       client,
     );
     const existing = existingResult.rows[0];
+    const requestedOverride = await query<{ customPriceMinor: string | null }>(
+      `SELECT custom_price_minor AS "customPriceMinor"
+       FROM workspace_subscriptions
+       WHERE workspace_id = $1
+       FOR UPDATE`,
+      [input.workspaceId],
+      client,
+    );
+    const requestedAmountMinor = requestedOverride.rows[0]?.customPriceMinor === null || requestedOverride.rows[0]?.customPriceMinor === undefined
+      ? config.amountMinor
+      : Number(requestedOverride.rows[0].customPriceMinor);
     if (existing) {
       try {
         const providerCheckout = await airwallexGet(`/api/v1/billing/billing_checkouts/${encodeURIComponent(existing.checkoutId)}`);
@@ -962,7 +1087,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
             [input.workspaceId, existing.checkoutId, providerStatus, JSON.stringify(providerCheckout)],
             client,
           );
-        } else if (existing.planKey === input.planKey) {
+        } else if (existing.planKey === input.planKey && Number(existing.amountMinor ?? config.amountMinor) === requestedAmountMinor) {
           return { planKey: input.planKey, free: false as const, checkoutId: existing.checkoutId, checkoutUrl: existing.checkoutUrl, status: providerStatus, reused: true as const };
         } else {
           throw new AppError(409, 'BILLING_CHECKOUT_ALREADY_ACTIVE', 'Another billing checkout is already active for this workspace.', { planKey: existing.planKey });
@@ -970,7 +1095,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       } catch (error) {
         if (error instanceof AppError && error.code === 'BILLING_CHECKOUT_ALREADY_ACTIVE') throw error;
         logger.warn({ error, workspaceId: input.workspaceId, checkoutId: existing.checkoutId }, 'Existing billing checkout could not be refreshed; reusing its stored URL');
-        if (existing.planKey === input.planKey) {
+        if (existing.planKey === input.planKey && Number(existing.amountMinor ?? config.amountMinor) === requestedAmountMinor) {
           return { planKey: input.planKey, free: false as const, checkoutId: existing.checkoutId, checkoutUrl: existing.checkoutUrl, status: existing.status, reused: true as const };
         }
         throw new AppError(409, 'BILLING_CHECKOUT_ALREADY_ACTIVE', 'Another billing checkout is already active for this workspace.', { planKey: existing.planKey });
@@ -985,6 +1110,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       client,
     );
     const billingCustomerId = existingCustomer.rows[0]?.providerCustomerId ?? null;
+    const checkoutPrice = await resolveSubscriptionPrice(input.workspaceId, input.planKey, config, client);
     const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
       mode: 'SUBSCRIPTION',
       ui_mode: 'HOSTED',
@@ -992,18 +1118,18 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       ...(billingCustomerId
         ? { billing_customer_id: billingCustomerId }
         : { customer_data: { name: 'Lulu AI workspace', type: 'BUSINESS', ...(input.customerEmail ? { email: input.customerEmail } : {}) } }),
-      line_items: [{ price_id: planPriceId(input.planKey), quantity: 1 }],
+      line_items: [{ price_id: checkoutPrice.priceId, quantity: 1 }],
       subscription_data: {
         duration: { period: 1, period_unit: 'YEAR' },
         default_invoice_template: { invoice_memo: `Lulu AI ${config.label} annual subscription` },
-        metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
+        metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(checkoutPrice.custom ? { custom_price_override: true, custom_price_minor: checkoutPrice.amountMinor } : {}), ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
       },
       payment_options: {
         payment_method_types: ['card'],
       },
       ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
       ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
-      metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
+      metadata: { workspace_id: input.workspaceId, plan_key: input.planKey, ...(checkoutPrice.custom ? { custom_price_override: true, custom_price_minor: checkoutPrice.amountMinor } : {}), ...(config.commissionRatePercent === undefined ? {} : { commission_rate_percent: config.commissionRatePercent }) },
       success_url: input.successUrl,
       back_url: input.backUrl,
       hosted_completion_page: { display: true },
@@ -1017,7 +1143,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
     await query(
       `INSERT INTO workspace_billing_checkouts (workspace_id, plan_key, provider_checkout_id, provider_customer_id, provider_subscription_id, provider_invoice_id, customer_email, status, checkout_url, amount_minor, currency, raw_response)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'CNY', $11::jsonb)`,
-      [input.workspaceId, input.planKey, checkoutId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, checkout.invoice_id ?? null, input.customerEmail ?? null, checkout.status ?? 'ACTIVE', checkoutUrl, config.amountMinor, JSON.stringify(checkout)],
+      [input.workspaceId, input.planKey, checkoutId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, checkout.invoice_id ?? null, input.customerEmail ?? null, checkout.status ?? 'ACTIVE', checkoutUrl, checkoutPrice.amountMinor, JSON.stringify(checkout)],
       client,
     );
 
@@ -1025,7 +1151,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
       `INSERT INTO workspace_subscriptions (workspace_id, provider, provider_customer_id, provider_subscription_id, plan_key, status, current_period_starts_at, current_period_ends_at, metadata)
        VALUES ($1, 'airwallex', $2, $3, $4, 'trialing', NOW(), NOW() + INTERVAL '1 year', $5::jsonb)
        ON CONFLICT (workspace_id) DO UPDATE SET provider='airwallex', provider_customer_id=COALESCE(EXCLUDED.provider_customer_id, workspace_subscriptions.provider_customer_id), provider_subscription_id=COALESCE(EXCLUDED.provider_subscription_id, workspace_subscriptions.provider_subscription_id), plan_key=EXCLUDED.plan_key, status='trialing', metadata=workspace_subscriptions.metadata || EXCLUDED.metadata, updated_at=NOW()` ,
-      [input.workspaceId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, input.planKey, JSON.stringify({ checkoutId, amountMinor: config.amountMinor, checkoutUrl })],
+      [input.workspaceId, checkout.billing_customer_id ?? null, checkout.subscription_id ?? null, input.planKey, JSON.stringify({ checkoutId, amountMinor: checkoutPrice.amountMinor, checkoutUrl, customPriceOverride: checkoutPrice.custom })],
       client,
     );
 

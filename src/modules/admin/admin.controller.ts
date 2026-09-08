@@ -64,6 +64,36 @@ export async function changePlan(req: AuthedRequest, res: Response, next: NextFu
   } catch (error) { next(error); }
 }
 
+export async function setWorkspaceSubscriptionPrice(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+
+    const rawAmount = req.body?.amountCny;
+    // null is an explicit request to restore the catalog price. Undefined is
+    // rejected so a malformed request can never accidentally clear pricing.
+    if (rawAmount === undefined) {
+      return res.status(422).json({ success: false, error: { code: 'SUBSCRIPTION_PRICE_REQUIRED', message: 'amountCny is required; use null to restore the catalog price' } });
+    }
+    let amountMinor: number | null = null;
+    if (rawAmount !== null) {
+      const amount = typeof rawAmount === 'number' ? rawAmount : Number(rawAmount);
+      if (!Number.isFinite(amount) || amount < 0 || amount > 10_000_000 || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6) {
+        return res.status(422).json({ success: false, error: { code: 'INVALID_SUBSCRIPTION_PRICE', message: 'Subscription price must be between 0 and 10,000,000 CNY with at most two decimal places' } });
+      }
+      amountMinor = Math.round(amount * 100);
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+    if (!reason) {
+      return res.status(422).json({ success: false, error: { code: 'SUBSCRIPTION_PRICE_REASON_REQUIRED', message: 'A reason is required for every subscription price change' } });
+    }
+
+    const result = await repo.setWorkspaceSubscriptionPrice(workspaceId, amountMinor, reason, req.user!.id);
+    return successResponse(res, amountMinor === null ? 'Catalog subscription price restored' : 'Subscription price override saved', result);
+  } catch (error) { next(error); }
+}
+
 export async function dashboard(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     if (!requireAdmin(req, res)) return;

@@ -36,6 +36,8 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
       w.name AS "companyName",
       COALESCE(ws.plan_key, 'starter') AS "planKey",
       COALESCE(ws.status, 'inactive') AS "subscriptionStatus",
+      ws.custom_price_minor AS "customPriceMinor",
+      ws.custom_price_currency AS "customPriceCurrency",
       COALESCE(ws.current_period_starts_at, ws.created_at, w.created_at) AS "startDate",
       COALESCE(ws.current_period_ends_at, ws.trial_ends_at) AS "expiryDate",
       COALESCE(api_usage."apiCostUsd", 0)::numeric AS "apiCostUsd",
@@ -62,7 +64,8 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
     WHERE w.deleted_at IS NULL
     GROUP BY w.id, u.first_name, u.last_name, u.email, w.name,
              ws.plan_key, ws.status, ws.current_period_starts_at,
-             ws.current_period_ends_at, ws.trial_ends_at, ws.created_at, w.created_at,
+             ws.current_period_ends_at, ws.trial_ends_at, ws.created_at,
+             ws.custom_price_minor, ws.custom_price_currency, w.created_at,
              api_usage."apiCostUsd", server_usage."serverCostUsd", uploaded_bytes."storageBytes",
              uc."apiCostMinor", uc."storageCostMinor"
     ORDER BY w.created_at DESC
@@ -946,6 +949,11 @@ export async function getWorkspaceDetail(workspaceId: string) {
       w.created_at AS "createdAt", w.updated_at AS "updatedAt",
       COALESCE(ws.plan_key, 'starter') AS "planKey",
       COALESCE(ws.status, 'inactive') AS "subscriptionStatus",
+      ws.custom_price_minor AS "customPriceMinor",
+      ws.custom_price_currency AS "customPriceCurrency",
+      ws.custom_price_reason AS "customPriceReason",
+      ws.custom_price_set_by AS "customPriceSetBy",
+      ws.custom_price_set_at AS "customPriceSetAt",
       ws.trial_ends_at AS "trialEndsAt",
       ws.current_period_starts_at AS "periodStartsAt",
       ws.current_period_ends_at AS "periodEndsAt",
@@ -1003,6 +1011,93 @@ export async function getWorkspaceDetail(workspaceId: string) {
     paygUsage,
     usageAdjustments,
   };
+}
+
+export async function setWorkspaceSubscriptionPrice(
+  workspaceId: string,
+  customPriceMinor: number | null,
+  reason: string,
+  adminUserId: string,
+) {
+  return withTransaction(async (client) => {
+    const current = await query<{
+      customPriceMinor: string | null;
+      customPriceCurrency: string;
+      customPriceReason: string | null;
+      customPriceSetBy: string | null;
+      customPriceSetAt: string | null;
+    }>(
+      `SELECT custom_price_minor AS "customPriceMinor",
+              custom_price_currency AS "customPriceCurrency",
+              custom_price_reason AS "customPriceReason",
+              custom_price_set_by AS "customPriceSetBy",
+              custom_price_set_at AS "customPriceSetAt"
+       FROM workspace_subscriptions
+       WHERE workspace_id = $1
+       FOR UPDATE`,
+      [workspaceId],
+      client,
+    );
+    if (!current.rows[0]) throw new AppError(404, 'WORKSPACE_SUBSCRIPTION_NOT_FOUND', 'Workspace subscription not found');
+
+    const updated = await query<{
+      workspaceId: string;
+      customPriceMinor: string | null;
+      customPriceCurrency: string;
+      customPriceReason: string | null;
+      customPriceSetBy: string | null;
+      customPriceSetAt: string | null;
+    }>(
+      `UPDATE workspace_subscriptions
+       SET custom_price_minor = $2,
+           custom_price_currency = 'CNY',
+           custom_price_reason = $3,
+           custom_price_set_by = $4,
+           custom_price_set_at = NOW(),
+           custom_price_provider_price_id = NULL,
+           updated_at = NOW()
+       WHERE workspace_id = $1
+       RETURNING workspace_id AS "workspaceId",
+                 custom_price_minor AS "customPriceMinor",
+                 custom_price_currency AS "customPriceCurrency",
+                 custom_price_reason AS "customPriceReason",
+                 custom_price_set_by AS "customPriceSetBy",
+                 custom_price_set_at AS "customPriceSetAt"`,
+      [workspaceId, customPriceMinor, reason, adminUserId],
+      client,
+    );
+    const result = updated.rows[0];
+    if (!result) throw new AppError(500, 'SUBSCRIPTION_PRICE_NOT_UPDATED', 'Subscription price could not be updated');
+
+    await query(
+      `INSERT INTO audit_log (
+         workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data
+       ) VALUES ($1, $2, 'subscription.price_override_changed', 'workspace_subscription', $1, $3::jsonb, $4::jsonb)`,
+      [
+        workspaceId,
+        adminUserId,
+        JSON.stringify({
+          customPriceMinor: current.rows[0].customPriceMinor,
+          customPriceCurrency: current.rows[0].customPriceCurrency,
+          customPriceReason: current.rows[0].customPriceReason,
+          customPriceSetBy: current.rows[0].customPriceSetBy,
+          customPriceSetAt: current.rows[0].customPriceSetAt,
+        }),
+        JSON.stringify({
+          customPriceMinor,
+          customPriceCurrency: 'CNY',
+          customPriceReason: reason,
+          customPriceSetBy: adminUserId,
+        }),
+      ],
+      client,
+    );
+
+    return {
+      ...result,
+      customPriceMinor: result.customPriceMinor === null ? null : Number(result.customPriceMinor),
+    };
+  });
 }
 
 export async function heartbeatUserDeletionJob(jobId: string, workerId: string) {
