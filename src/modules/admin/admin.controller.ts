@@ -256,8 +256,8 @@ export async function addWorkspaceUsageAdjustment(req: AuthedRequest, res: Respo
     const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
     if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
     const metric = req.body?.metric;
-    if (metric !== 'api' && metric !== 'server') {
-      return res.status(422).json({ success: false, error: { code: 'INVALID_USAGE_METRIC', message: 'Metric must be api or server' } });
+    if (metric !== 'api' && metric !== 'server' && metric !== 'storage') {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_USAGE_METRIC', message: 'Metric must be api, server or storage' } });
     }
     const amountUsd = Number(req.body?.amountUsd);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0 || amountUsd > 1_000_000) {

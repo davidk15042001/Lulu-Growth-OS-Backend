@@ -128,7 +128,12 @@ export async function addWorkspaceCredits(workspaceId: string, amount: number, g
   });
 }
 
-export type UsageAdjustmentMetric = 'api' | 'server';
+/**
+ * Audited credits granted by an administrator. AI requests are recorded in
+ * the API usage ledger, so the `api` metric intentionally covers API + AI
+ * costs. Storage is settled alongside the server/infrastructure charge.
+ */
+export type UsageAdjustmentMetric = 'api' | 'server' | 'storage';
 
 export async function listWorkspaceUsageAdjustments(workspaceId: string) {
   const { rows } = await query(`
@@ -188,8 +193,17 @@ export async function getWorkspacePaygUsage(workspaceId: string) {
                AND a.payg_period_id IS NULL
                AND a.period_start = p.current_period_start
                AND a.period_end = p.current_period_end
-               AND a.metric = 'server'
-           ), 0)::numeric AS "serverCreditUsd"
+               AND a.metric IN ('server', 'storage')
+           ), 0)::numeric AS "serverCreditUsd",
+           COALESCE((
+             SELECT SUM(a.amount_usd)
+             FROM workspace_usage_adjustments a
+             WHERE a.workspace_id = p.workspace_id
+               AND a.payg_period_id IS NULL
+               AND a.period_start = p.current_period_start
+               AND a.period_end = p.current_period_end
+               AND a.metric = 'storage'
+           ), 0)::numeric AS "storageCreditUsd"
     FROM workspace_payg_profiles p
     WHERE p.workspace_id = $1
   `, [workspaceId]);
@@ -199,6 +213,7 @@ export async function getWorkspacePaygUsage(workspaceId: string) {
   const serverCostUsd = Number(row.serverCostUsd ?? 0);
   const apiCreditUsd = Number(row.apiCreditUsd ?? 0);
   const serverCreditUsd = Number(row.serverCreditUsd ?? 0);
+  const storageCreditUsd = Number(row.storageCreditUsd ?? 0);
   return {
     periodStart: row.periodStart,
     periodEnd: row.periodEnd,
@@ -206,6 +221,7 @@ export async function getWorkspacePaygUsage(workspaceId: string) {
     serverCostUsd,
     apiCreditUsd,
     serverCreditUsd,
+    storageCreditUsd,
     apiBillableUsd: Math.max(0, apiCostUsd - apiCreditUsd),
     serverBillableUsd: Math.max(0, serverCostUsd - serverCreditUsd),
     totalBillableUsd: Math.max(0, apiCostUsd - apiCreditUsd) + Math.max(0, serverCostUsd - serverCreditUsd),

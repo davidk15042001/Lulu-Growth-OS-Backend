@@ -410,13 +410,24 @@ export async function reservePaygApiCheckout(
     if (!cutoff) throw new AppError(500, 'PAYG_API_CHECKOUT_CUTOFF_MISSING', 'Could not establish the API usage payment cutoff.');
 
     const totalsResult = await query<{ apiCostUsd: string }>(
-      `SELECT COALESCE(SUM(customer_cost_usd), 0)::numeric AS "apiCostUsd"
+      `SELECT GREATEST(0::numeric,
+              COALESCE(SUM(customer_cost_usd), 0)
+              - COALESCE((
+                  SELECT SUM(amount_usd)
+                  FROM workspace_usage_adjustments
+                  WHERE workspace_id=$1
+                    AND payg_period_id IS NULL
+                    AND metric='api'
+                    AND period_start=$2::timestamptz
+                    AND period_end=$4::timestamptz
+                ), 0)
+            )::numeric AS "apiCostUsd"
        FROM ai_usage_ledger
        WHERE workspace_id=$1
          AND payg_period_id IS NULL
          AND created_at >= $2::timestamptz
          AND created_at < $3::timestamptz`,
-      [workspaceId, profile.periodStart, cutoff],
+      [workspaceId, profile.periodStart, cutoff, profile.periodEnd],
       client,
     );
     const apiCostUsd = totalsResult.rows[0]?.apiCostUsd ?? '0';
@@ -452,6 +463,20 @@ export async function reservePaygApiCheckout(
     );
     const period = periodResult.rows[0];
     if (!period) throw new AppError(500, 'PAYG_API_CHECKOUT_RESERVATION_FAILED', 'Could not reserve API usage for payment.');
+
+    // Apply API/AI credits to the exact usage slice now being paid. Server and
+    // storage credits remain available for the weekly infrastructure invoice.
+    await query(
+      `UPDATE workspace_usage_adjustments
+       SET payg_period_id=$1, applied_at=NOW()
+       WHERE workspace_id=$2
+         AND payg_period_id IS NULL
+         AND metric='api'
+         AND period_start=$3::timestamptz
+         AND period_end=$4::timestamptz`,
+      [period.id, workspaceId, profile.periodStart, profile.periodEnd],
+      client,
+    );
 
     await query(
       `UPDATE ai_usage_ledger
@@ -807,7 +832,7 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
          )::numeric AS "apiCostUsd",
          GREATEST(0::numeric,
            COALESCE((SELECT SUM(customer_cost_usd) FROM workspace_server_usage_ledger WHERE payg_period_id=$1), 0)
-           - COALESCE((SELECT SUM(amount_usd) FROM workspace_usage_adjustments WHERE payg_period_id=$1 AND metric='server'), 0)
+           - COALESCE((SELECT SUM(amount_usd) FROM workspace_usage_adjustments WHERE payg_period_id=$1 AND metric IN ('server', 'storage')), 0)
          )::numeric AS "serverCostUsd"`,
       [claimed.id],
       client,

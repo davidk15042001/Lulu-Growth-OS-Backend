@@ -505,7 +505,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
               p.blocked_period_id AS "blockedPeriodId",
               blocked.hosted_invoice_url AS "paymentLink",
               GREATEST(0::numeric, COALESCE(api.customer_cost_usd, 0) - COALESCE(adjustments.api_credit_usd, 0))::numeric AS "apiCostUsd",
-              GREATEST(0::numeric, COALESCE(server.customer_cost_usd, 0) - COALESCE(adjustments.server_credit_usd, 0))::numeric AS "serverCostUsd",
+              GREATEST(0::numeric, COALESCE(server.customer_cost_usd, 0) - COALESCE(adjustments.server_credit_usd, 0) - COALESCE(adjustments.storage_credit_usd, 0))::numeric AS "serverCostUsd",
               COALESCE(api.input_tokens, 0)::bigint AS "inputTokens",
               COALESCE(api.output_tokens, 0)::bigint AS "outputTokens",
               COALESCE(api.event_count, 0)::int AS "apiEvents",
@@ -535,7 +535,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
        LEFT JOIN LATERAL (
          SELECT
            COALESCE(SUM(amount_usd) FILTER (WHERE metric='api'), 0) AS api_credit_usd,
-           COALESCE(SUM(amount_usd) FILTER (WHERE metric='server'), 0) AS server_credit_usd
+           COALESCE(SUM(amount_usd) FILTER (WHERE metric='server'), 0) AS server_credit_usd,
+           COALESCE(SUM(amount_usd) FILTER (WHERE metric='storage'), 0) AS storage_credit_usd
          FROM workspace_usage_adjustments
          WHERE workspace_id=p.workspace_id
            AND payg_period_id IS NULL
