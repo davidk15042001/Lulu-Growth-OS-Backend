@@ -262,11 +262,11 @@ export async function getDashboardStats() {
     query(`SELECT
       COUNT(*)::int AS "total",
       COUNT(*) FILTER (WHERE status = 'published')::int AS "published",
-      COUNT(*) FILTER (WHERE platform = 'wordpress')::int AS "wordpress",
-      COUNT(*) FILTER (WHERE platform = 'shopify')::int AS "shopify",
-      COUNT(*) FILTER (WHERE platform = 'webflow')::int AS "webflow",
-      COUNT(*) FILTER (WHERE platform = 'woocommerce')::int AS "woocommerce"
-    FROM websites WHERE deleted_at IS NULL`).catch(() => ({ rows: [{ total: 0, published: 0, wordpress: 0, shopify: 0, webflow: 0, woocommerce: 0 }] })),
+      COUNT(*) FILTER (WHERE provider = 'wordpress')::int AS "wordpress",
+      (SELECT COUNT(*)::int FROM provider_accounts WHERE provider_key='shopify') AS "shopify",
+      COUNT(*) FILTER (WHERE provider = 'webflow')::int AS "webflow",
+      NULL::int AS "woocommerce"
+    FROM workspace_sites`),
     query(`SELECT
       COUNT(*)::int AS "totalLast24h",
       COUNT(*) FILTER (WHERE level = 'error')::int AS "errorsLast24h",
@@ -1030,25 +1030,32 @@ export async function listCrmRecords(limit = 100, offset = 0, search?: string, r
 
 export async function listWebsites(limit = 100, offset = 0, search?: string) {
   const values: unknown[] = [limit, offset];
-  let where = 'ws.deleted_at IS NULL';
+  let where = 'w.deleted_at IS NULL';
   if (search) {
     values.push(`%${search}%`);
-    where += ` AND (ws.title ILIKE $${values.length} OR ws.domain ILIKE $${values.length})`;
+    where += ` AND (ws.name ILIKE $${values.length} OR ws.external_site_url ILIKE $${values.length})`;
   }
   const { rows } = await query(`
     SELECT
       ws.id, ws.workspace_id AS "workspaceId", w.name AS "workspaceName",
-      ws.title, ws.platform, ws.status, ws.domain,
-      ws.template_id AS "templateId", ws.version,
-      ws.last_synced_at AS "lastSyncedAt", ws.published_at AS "publishedAt",
-      ws.last_generated_at AS "lastGeneratedAt",
+      ws.name AS title, ws.provider AS platform, ws.status, ws.external_site_url AS domain,
+      NULL AS "templateId", NULL AS version,
+      NULL AS "lastSyncedAt", NULL AS "publishedAt",
+      (SELECT MAX(j.updated_at) FROM website_generation_jobs j WHERE j.site_id=ws.id AND j.status IN ('generated','preview','published')) AS "lastGeneratedAt",
       ws.created_at AS "createdAt", ws.updated_at AS "updatedAt"
-    FROM websites ws
+    FROM (
+      SELECT id,workspace_id,name,provider,status,external_site_url,created_at,updated_at FROM workspace_sites
+      UNION ALL
+      SELECT a.id,c.workspace_id,COALESCE(a.name,a.external_account_id),a.provider_key,a.status,
+        NULL::text,a.created_at,a.updated_at
+      FROM provider_accounts a JOIN provider_connections c ON c.id=a.provider_connection_id
+      WHERE a.provider_key='shopify' AND c.workspace_id IS NOT NULL
+    ) ws
     JOIN workspaces w ON w.id = ws.workspace_id
     WHERE ${where}
     ORDER BY ws.updated_at DESC
     LIMIT $1 OFFSET $2
-  `, values).catch(() => ({ rows: [] as any[], rowCount: 0 }));
+  `, values);
   return rows;
 }
 
@@ -1059,13 +1066,21 @@ export async function listAgents(limit = 100, offset = 0) {
       a.name, a.agent_type AS "agentType", a.mode, a.status, a.version,
       a.model_provider AS "modelProvider", a.model_name AS "modelName",
       a.created_at AS "createdAt", a.updated_at AS "updatedAt",
-      (SELECT COUNT(*) FROM agent_runs ar WHERE ar.agent_id = a.id)::int AS "runCount"
-    FROM agents a
+      (SELECT COUNT(*) FROM agent_run_steps ar WHERE ar.run_id = a.id)::int AS "stepCount",
+      a.run_count AS "runCount"
+    FROM (
+      SELECT id,workspace_id,goal AS name,'workflow' AS agent_type,'orchestrated' AS mode,status,NULL::int AS version,
+        NULL::text AS model_provider,NULL::text AS model_name,created_at,updated_at,1 AS run_count FROM agent_runs
+      UNION ALL
+      SELECT id,workspace_id,name,'configured',data->>'mode',status,version,
+        data->>'modelProvider',data->>'modelName',created_at,updated_at,NULL::int
+      FROM workspace_records WHERE resource_type='ai_agents' AND deleted_at IS NULL
+    ) a
     LEFT JOIN workspaces w ON w.id = a.workspace_id
-    WHERE a.deleted_at IS NULL
+    WHERE w.deleted_at IS NULL
     ORDER BY a.updated_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
+  `, [limit, offset]);
   return rows;
 }
 
@@ -1073,18 +1088,17 @@ export async function listIntegrations(limit = 100, offset = 0) {
   const { rows } = await query(`
     SELECT
       i.id, i.workspace_id AS "workspaceId", w.name AS "workspaceName",
-      i.provider, i.status, i.scopes,
+      i.provider_key AS provider, i.status, i.granted_scopes AS scopes,
       i.created_at AS "connectedAt",
-      i.expires_at AS "expiresAt",
-      i.last_synced_at AS "lastSyncedAt",
+      NULL AS "expiresAt",
+      i.last_success_at AS "lastSyncedAt",
       i.last_error AS "lastError",
-      i.sync_count::int AS "syncCount"
-    FROM integrations i
+      NULL::int AS "syncCount", i.mode, i.health_status AS health
+    FROM provider_connections i
     LEFT JOIN workspaces w ON w.id = i.workspace_id
-    WHERE i.deleted_at IS NULL
     ORDER BY i.updated_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
+  `, [limit, offset]);
   return rows;
 }
 
@@ -1228,73 +1242,63 @@ export async function listApprovals(limit = 100, offset = 0) {
   const { rows } = await query(`
     SELECT
       a.id, a.workspace_id AS "workspaceId", w.name AS "workspaceName",
-      a.approval_type AS "approvalType", a.status, a.reason,
+      a.action_type AS "approvalType", a.status, a.description AS reason, a.title,
       u.email AS "requesterEmail",
-      a.created_at AS "createdAt", a.resolved_at AS "resolvedAt"
-    FROM approvals a
+      a.created_at AS "createdAt", a.decided_at AS "resolvedAt"
+    FROM approval_requests a
     LEFT JOIN workspaces w ON w.id = a.workspace_id
-    LEFT JOIN users u ON u.id = a.requester_id
+    LEFT JOIN users u ON u.id = a.requested_by
     ORDER BY a.created_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
+  `, [limit, offset]);
   return rows;
 }
 
 export async function listErrorEvents(limit = 100, offset = 0) {
   const { rows } = await query(`
-    SELECT
-      id, workspace_id AS "workspaceId", user_id AS "userId",
-      level, message, source, status,
-      request_id AS "requestId", correlation_id AS "correlationId",
-      created_at AS "createdAt", resolved_at AS "resolvedAt",
-      occurrence_count::int AS "occurrenceCount"
-    FROM error_events
-    ORDER BY created_at DESC
+    SELECT id, workspace_id AS "workspaceId", NULL AS "userId",
+      'error' AS level, message, source, 'open' AS status,
+      NULL AS "requestId", NULL AS "correlationId",
+      created_at AS "createdAt", NULL AS "resolvedAt", 1 AS "occurrenceCount"
+    FROM (
+      SELECT id, workspace_id, COALESCE(error_code,'AGENT_RUN_FAILED') AS message, 'agent_run' AS source, updated_at AS created_at
+      FROM agent_runs WHERE status='failed'
+      UNION ALL
+      SELECT id, workspace_id, 'BACKGROUND_JOB_FAILED', job_type, updated_at FROM background_jobs WHERE status='failed'
+      UNION ALL
+      SELECT id, workspace_id, 'PROVIDER_CONNECTION_ERROR', provider_key, updated_at FROM provider_connections WHERE status='ERROR' OR health_status='ERROR'
+      UNION ALL
+      SELECT j.id, s.workspace_id, COALESCE(j.error_code,'WEBSITE_GENERATION_FAILED'), 'website_generation', j.updated_at
+      FROM website_generation_jobs j JOIN workspace_sites s ON s.id=j.site_id WHERE j.status='failed'
+      UNION ALL
+      SELECT id, workspace_id, 'DOMAIN_EVENT_DEAD_LETTER', event_type, occurred_at FROM domain_events WHERE status='dead_letter'
+      UNION ALL
+      SELECT id,workspace_id,metadata->>'action','api',created_at FROM security_events WHERE event_type='API_ERROR'
+      UNION ALL
+      SELECT id,workspace_id,COALESCE(error_code,'EMAIL_SYNC_FAILED'),'email_sync',updated_at FROM email_sync_jobs WHERE status='failed'
+      UNION ALL
+      SELECT id,workspace_id,COALESCE(error_code,'CALENDAR_SYNC_FAILED'),'calendar_sync',updated_at FROM calendar_sync_jobs WHERE status='failed'
+    ) errors
+    ORDER BY created_at DESC, id
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(async () => {
-    const fallback = await query(`
-      SELECT
-        n.id, n.workspace_id AS "workspaceId", n.user_id AS "userId",
-        n.level, n.message, n.source_template AS "source", 'new' AS status,
-        NULL AS "requestId", NULL AS "correlationId",
-        n.created_at AS "createdAt", NULL AS "resolvedAt",
-        1::int AS "occurrenceCount"
-      FROM notification_events n
-      ORDER BY n.created_at DESC
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
-    return fallback;
-  });
+  `, [limit, offset]);
   return rows;
 }
 
 export async function listAuditLogs(limit = 100, offset = 0) {
   const { rows } = await query(`
-    SELECT
-      id, actor_id AS "actorId", actor_type AS "actorType",
-      action, resource_type AS "resourceType", resource_id AS "resourceId",
-      workspace_id AS "workspaceId",
-      result, reason,
-      ip_address AS "ipAddress", user_agent AS "userAgent",
-      created_at AS "createdAt"
-    FROM audit_logs
+    SELECT id, actor_id AS "actorId", actor_type AS "actorType",action,entity_type AS "resourceType",entity_id AS "resourceId",
+      workspace_id AS "workspaceId", result,NULL AS reason,ip_address AS "ipAddress",user_agent AS "userAgent",created_at AS "createdAt"
+    FROM (
+      SELECT 'audit:'||id::text AS id,actor_id,CASE WHEN actor_id IS NULL THEN 'system' ELSE 'user' END AS actor_type,
+        action,entity_type,entity_id,workspace_id,NULL::text AS result,ip_address,user_agent,created_at FROM audit_log
+      UNION ALL
+      SELECT 'security:'||id::text,user_id,'security',event_type,'security_event',NULL,workspace_id,
+        metadata->>'outcome',NULL,NULL,created_at FROM security_events
+    ) history
     ORDER BY created_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(async () => {
-    const fallback = await query(`
-      SELECT
-        n.id, n.user_id AS "actorId", 'user' AS "actorType",
-        'notification' AS action, n.level AS "resourceType", NULL AS "resourceId",
-        n.workspace_id AS "workspaceId",
-        'sent' AS result, NULL AS reason,
-        NULL AS "ipAddress", NULL AS "userAgent",
-        n.created_at AS "createdAt"
-      FROM notification_events n
-      ORDER BY n.created_at DESC
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
-    return fallback;
-  });
+  `, [limit, offset]);
   return rows;
 }
 
@@ -1302,17 +1306,18 @@ export async function listConversations(limit = 100, offset = 0) {
   const { rows } = await query(`
     SELECT
       c.id, c.workspace_id AS "workspaceId", w.name AS "workspaceName",
-      c.channel, c.subject, c.status, c.priority,
-      c.external_id AS "externalId",
+      ch.channel_type AS channel, c.subject, c.status, c.priority,
+      NULL AS "externalId",
       c.last_message_at AS "lastMessageAt",
-      c.message_count::int AS "messageCount",
+      (SELECT COUNT(*)::int FROM omni_messages m WHERE m.workspace_id=c.workspace_id AND m.conversation_id=c.id) AS "messageCount",
       c.created_at AS "createdAt", c.updated_at AS "updatedAt"
-    FROM conversations c
+    FROM omni_conversations c
+    JOIN omni_channels ch ON ch.id=c.channel_id
     LEFT JOIN workspaces w ON w.id = c.workspace_id
-    WHERE c.deleted_at IS NULL
+    WHERE w.deleted_at IS NULL
     ORDER BY c.last_message_at DESC NULLS LAST
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
+  `, [limit, offset]);
   return rows;
 }
 
@@ -1322,17 +1327,42 @@ export async function listFiles(limit = 100, offset = 0) {
       f.id, f.workspace_id AS "workspaceId", w.name AS "workspaceName",
       f.uploaded_by AS "uploadedById", u.email AS "uploadedByEmail",
       f.file_name AS "fileName", f.mime_type AS "mimeType",
-      f.file_size_bytes::bigint AS "fileSizeBytes",
-      f.storage_key AS "storageKey", f.source,
-      f.created_at AS "uploadedAt", f.last_accessed_at AS "lastAccessedAt",
-      f.purge_scheduled_at AS "purgeScheduledAt", f.purged_at AS "purgedAt"
-    FROM files f
+      f.size_bytes::bigint AS "fileSizeBytes",
+      f.source,
+      f.created_at AS "uploadedAt", NULL AS "lastAccessedAt",
+      NULL AS "purgeScheduledAt", NULL AS "purgedAt"
+    FROM (
+      SELECT id, workspace_id, uploaded_by, file_name, mime_type, size_bytes, created_at, 'onboarding' AS source FROM onboarding_documents
+      UNION ALL
+      SELECT id, workspace_id, uploaded_by, file_name, mime_type, size_bytes, created_at, 'record' FROM record_attachments
+      UNION ALL
+      SELECT id, workspace_id, NULL::uuid, file_name, mime_type, size_bytes, created_at, 'omnichannel' FROM omni_message_attachments
+      UNION ALL
+      SELECT id, workspace_id, NULL::uuid, COALESCE(title,'Product media'),NULL::text,NULL::bigint,created_at,'product_media'
+      FROM product_media WHERE external_url IS NULL
+    ) f
     LEFT JOIN workspaces w ON w.id = f.workspace_id
     LEFT JOIN users u ON u.id = f.uploaded_by
     ORDER BY f.created_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
+  `, [limit, offset]);
   return rows;
+}
+
+export async function getUploadedFile(source: string, id: string) {
+  // Only persisted customer uploads; never accept a filesystem path or storage
+  // key supplied by the caller. Provider-only media is not a local upload.
+  const sources: Record<string,string> = {
+    onboarding: 'SELECT workspace_id,file_name,storage_key,content,size_bytes FROM onboarding_documents WHERE id=$1',
+    record: 'SELECT workspace_id,file_name,storage_key,NULL::bytea AS content,size_bytes FROM record_attachments WHERE id=$1',
+    omnichannel: "SELECT workspace_id,file_name,storage_reference AS storage_key,NULL::bytea AS content,size_bytes FROM omni_message_attachments WHERE id=$1 AND status='READY' AND provider_media_id IS NULL",
+  };
+  const sql=sources[source];
+  if(!sql) throw new AppError(404,'FILE_NOT_FOUND','Customer upload not found');
+  const file=(await query(sql,[id])).rows[0];
+  if(!file) throw new AppError(404,'FILE_NOT_FOUND','Customer upload not found');
+  if(Number(file.size_bytes)>26214400) throw new AppError(413,'FILE_TOO_LARGE','This download exceeds the supported size');
+  return file;
 }
 
 export async function listJobs(limit = 100, offset = 0) {
@@ -1340,33 +1370,34 @@ export async function listJobs(limit = 100, offset = 0) {
     SELECT
       id, job_type AS "jobType", status,
       workspace_id AS "workspaceId",
-      attempt::int AS "attempt", max_attempts::int AS "maxAttempts",
+      attempts::int AS "attempt", max_attempts::int AS "maxAttempts",
       scheduled_at AS "scheduledAt", started_at AS "startedAt",
-      completed_at AS "completedAt", failed_at AS "failedAt",
+      completed_at AS "completedAt", CASE WHEN status='failed' THEN updated_at END AS "failedAt",
       error_message AS "errorMessage",
-      correlation_id AS "correlationId",
+      NULL AS "correlationId",
       created_at AS "createdAt"
-    FROM background_jobs
+    FROM (
+      SELECT id,job_type,status,workspace_id,attempts,max_attempts,scheduled_at,started_at,completed_at,
+        CASE WHEN error_message IS NOT NULL THEN 'JOB_EXECUTION_FAILED' END AS error_message,created_at,updated_at
+      FROM background_jobs
+      UNION ALL
+      SELECT id,'event:'||event_type,status,workspace_id,attempts,max_attempts,available_at,locked_at,processed_at,
+        CASE WHEN last_error IS NOT NULL THEN 'EVENT_EXECUTION_FAILED' END,occurred_at,COALESCE(dead_lettered_at,processed_at,occurred_at)
+      FROM domain_events
+      UNION ALL
+      SELECT j.id,'website_generation',j.status,s.workspace_id,NULL::int,NULL::int,j.created_at,NULL::timestamptz,NULL::timestamptz,
+        j.error_code,j.created_at,j.updated_at FROM website_generation_jobs j JOIN workspace_sites s ON s.id=j.site_id
+      UNION ALL
+      SELECT id,'email_sync',status,workspace_id,NULL::int,NULL::int,created_at,started_at,finished_at,error_code,created_at,updated_at FROM email_sync_jobs
+      UNION ALL
+      SELECT id,'calendar_sync',status,workspace_id,NULL::int,NULL::int,created_at,started_at,finished_at,error_code,created_at,updated_at FROM calendar_sync_jobs
+      UNION ALL
+      SELECT id,'content_refresh',status,workspace_id,attempt_count,NULL::int,created_at,started_at,completed_at,
+        CASE WHEN error_message IS NOT NULL THEN 'CONTENT_REFRESH_FAILED' END,created_at,updated_at FROM workspace_content_refresh_jobs
+    ) jobs
     ORDER BY created_at DESC
     LIMIT $1 OFFSET $2
-  `, [limit, offset]).catch(async () => {
-    const fallback = await query(`
-      SELECT
-        id, 'onboarding_cleanup' AS "jobType",
-        CASE WHEN executed_at IS NOT NULL THEN 'completed' ELSE 'pending' END AS status,
-        workspace_id AS "workspaceId",
-        1::int AS "attempt", 3::int AS "maxAttempts",
-        scheduled_at AS "scheduledAt", NULL AS "startedAt",
-        executed_at AS "completedAt", NULL AS "failedAt",
-        NULL AS "errorMessage",
-        NULL AS "correlationId",
-        created_at AS "createdAt"
-      FROM onboarding_cleanup_jobs
-      ORDER BY created_at DESC
-      LIMIT $1 OFFSET $2
-    `, [limit, offset]).catch(() => ({ rows: [] as any[], rowCount: 0 }));
-    return fallback;
-  });
+  `, [limit, offset]);
   return rows;
 }
 

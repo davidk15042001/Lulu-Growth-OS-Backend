@@ -7,6 +7,7 @@ import { requireAdminCapabilities } from './admin.authorization.js';
 import * as omni from '../omnichannel/omnichannel.controller.js';
 import { streamAdminOmniEvents } from '../omnichannel/omnichannel.stream.js';
 import * as commercialDocuments from '../commercial-documents/commercial-documents.controller.js';
+import { adminSupportRoutes } from '../support/support.routes.js';
 
 const router = Router();
 
@@ -36,7 +37,7 @@ router.route('/oauth-connections/:provider').delete(requireAuth, requireAdminCap
 router.route('/provider-control-plane').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getProviderControlPlane).all(methodNotAllowed);
 router.route('/provider-control-plane/:connectionId/access').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.grantProviderWorkspaceAccess).delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.revokeProviderWorkspaceAccess).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
-router.route('/conversations').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getConversations).all(methodNotAllowed);
+router.route('/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), controller.getConversations).all(methodNotAllowed);
 router.route('/omnichannel/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminList).all(methodNotAllowed);
 router.route('/omnichannel/events/stream').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), streamAdminOmniEvents).all(methodNotAllowed);
 router.route('/omnichannel/conversations/:conversationId').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminDetail).all(methodNotAllowed);
@@ -47,7 +48,8 @@ router.route('/omnichannel/analytics').get(requireAuth, requireAdminCapabilities
 router.route('/quotes').get(requireAuth, requireAdminCapabilities('admin.quotes.read_all'), commercialDocuments.adminQuotes).all(methodNotAllowed);
 router.route('/invoices').get(requireAuth, requireAdminCapabilities('admin.invoices.read_all'), commercialDocuments.adminInvoices).all(methodNotAllowed);
 router.route('/files').get(requireAuth, requireAdminCapabilities('workspaces.read'), controller.getFiles).all(methodNotAllowed);
-router.route('/support').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read'), controller.getSupport).all(methodNotAllowed);
+router.route('/files/:source/:fileId/download').get(requireAuth, requireAdminCapabilities('files.read'), controller.downloadFile).all(methodNotAllowed);
+router.use('/support', requireAuth, adminSupportRoutes);
 
 router.route('/errors').get(requireAuth, requireAdminCapabilities('security.read'), controller.getErrors).all(methodNotAllowed);
 router.route('/audit-logs').get(requireAuth, requireAdminCapabilities('audit.read'), controller.getAuditLogs).all(methodNotAllowed);

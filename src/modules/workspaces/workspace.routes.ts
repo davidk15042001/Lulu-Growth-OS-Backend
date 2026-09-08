@@ -26,6 +26,7 @@ import { workspaceProviderRoutes } from '../provider-control/provider.routes.js'
 import productRoutes from '../products/product.routes.js';
 import omnichannelRoutes from '../omnichannel/omnichannel.routes.js';
 import commercialDocumentRoutes from '../commercial-documents/commercial-documents.routes.js';
+import { supportRoutes } from '../support/support.routes.js';
 
 const router = Router();
 
@@ -46,6 +47,7 @@ router.route('/:workspaceId')
   .all(methodNotAllowed);
 
 router.use('/:workspaceId', workspaceAppRoutes);
+router.use('/:workspaceId/support', supportRoutes);
 router.use('/:workspaceId/providers', workspaceProviderRoutes);
 router.use('/:workspaceId/products', productRoutes);
 router.use('/:workspaceId/onboarding', onboardingRoutes);

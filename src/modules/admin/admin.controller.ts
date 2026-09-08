@@ -13,6 +13,9 @@ import * as oauthService from '../onboarding/oauth.service.js';
 import * as adminOAuthRepo from './admin-oauth.repo.js';
 import * as providerControlService from '../provider-control/provider.service.js';
 import { connectionParamsSchema, providerAccessSchema } from '../provider-control/provider.validator.js';
+import { z } from 'zod';
+import { getObject } from '../../storage/s3.service.js';
+import { recordSecurityEvent } from '../security/security-event.service.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -33,8 +36,8 @@ function monthRange(value: unknown) {
 }
 
 function paginate(req: AuthedRequest) {
-  const limit = Math.min(Number(req.query.limit) || 100, 500);
-  const offset = Math.max(Number(req.query.offset) || 0, 0);
+  const limit = Math.max(1, Math.min(Math.floor(Number(req.query.limit)) || 100, 500));
+  const offset = Math.max(Math.floor(Number(req.query.offset)) || 0, 0);
   const search = typeof req.query.search === 'string' ? req.query.search : undefined;
   return { limit, offset, search };
 }
@@ -420,6 +423,20 @@ export async function getJobs(req: AuthedRequest, res: Response, next: NextFunct
     const jobs = await repo.listJobs(limit, offset);
     return successResponse(res, 'Jobs loaded', { jobs, limit, offset });
   } catch (error) { next(error); }
+}
+
+export async function downloadFile(req:AuthedRequest,res:Response,next:NextFunction) {
+  try {
+    const file=await repo.getUploadedFile(z.enum(['onboarding','record','omnichannel']).parse(req.params.source),z.string().uuid().parse(req.params.fileId));
+    await recordSecurityEvent({eventType:'ADMIN_ACTION',userId:req.user!.id,workspaceId:file.workspace_id,
+      requestId:String(req.id??''),metadata:{action:'customer_file.download',targetId:String(req.params.fileId)}});
+    const content=file.content??(file.storage_key?await getObject(file.storage_key):null);
+    if(!content) throw new AppError(404,'FILE_CONTENT_UNAVAILABLE','Customer upload content is unavailable');
+    res.setHeader('Content-Type','application/octet-stream');
+    res.setHeader('Content-Disposition',`attachment; filename="customer-upload"; filename*=UTF-8''${encodeURIComponent(file.file_name??'customer-upload')}`);
+    res.setHeader('Cache-Control','private, no-store');
+    return res.send(content);
+  } catch(error) {next(error);}
 }
 
 export async function getSettings(req: AuthedRequest, res: Response, next: NextFunction) {

@@ -1,8 +1,10 @@
 import type { NextFunction, Request, Response } from 'express';
 import { ZodError } from 'zod';
 import { logger } from '../config/logger.js';
-import { isProd } from '../config/env.js';
+import { isProd, hasDb } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
+import { recordSecurityEvent } from '../modules/security/security-event.service.js';
+import type { WorkspaceRequest } from './workspace.middleware.js';
 
 type DatabaseError = Error & { code?: string; detail?: string };
 
@@ -36,6 +38,17 @@ function errorPayload(req: Request, code: string, message: string, details?: unk
 export function errorHandler(error: unknown, req: Request, res: Response, _next: NextFunction) {
   const diagnostics = diagnosticContext(req);
   res.setHeader('X-Request-ID', diagnostics.requestId);
+  // Persist operational diagnostics, never request bodies, query strings,
+  // stack traces or provider responses. A logging failure must not recurse.
+  const status=error instanceof AppError?error.status:500;
+  const expected=error instanceof ZodError || ['23505','23503'].includes((error as DatabaseError)?.code??'');
+  if(hasDb && status>=500 && !expected) {
+    const context=req as WorkspaceRequest;
+    void recordSecurityEvent({eventType:'API_ERROR',userId:context.user?.id??null,
+      workspaceId:context.workspaceAccess?.id??null,requestId:diagnostics.requestId,
+      metadata:{outcome:status,action:error instanceof AppError?error.code:'INTERNAL_ERROR',reason:`${req.method} ${String(req.route?.path??'unknown')}`}})
+      .catch(()=>logger.error('Operational error event could not be persisted'));
+  }
 
   if (error instanceof ZodError) {
     return res.status(422).json(errorPayload(req, 'VALIDATION_ERROR', 'Request validation failed', error.issues.map((issue) => ({
