@@ -6,9 +6,48 @@ import { inspectTokenConnection, syncCalendarProvider } from './calendar.provide
 import { mergeCalendarEvents } from './calendar.merge.js';
 import type { CalendarProvider } from './calendar.types.js';
 import type { ListEventsQuery } from './calendar.validator.js';
+import type { CreateNativeEventInput } from './calendar.validator.js';
+import { RtcRole, RtcTokenBuilder } from 'agora-token';
+import { randomUUID } from 'node:crypto';
+import { env } from '../../config/env.js';
 
 export const listAccounts = repo.listAccounts;
 export const listEvents = repo.listEvents;
+export const listNativeEvents = repo.listNativeEvents;
+
+export async function createNativeEvent(workspaceId: string, userId: string, input: CreateNativeEventInput) {
+  return repo.createNativeEvent(workspaceId, userId, input);
+}
+
+export async function deleteNativeEvent(workspaceId: string, eventId: string) {
+  if (!(await repo.deleteNativeEvent(workspaceId, eventId))) throw notFoundError('Calendar event not found');
+}
+
+function agoraConfig() {
+  if (!env.AGORA_APP_ID || !env.AGORA_APP_CERTIFICATE) throw new AppError(503, 'AGORA_NOT_CONFIGURED', 'Agora is not configured on the server');
+  return { appId: env.AGORA_APP_ID, certificate: env.AGORA_APP_CERTIFICATE };
+}
+
+function buildAgoraToken(channelName: string, userAccount: string, expiresAt: number) {
+  const config = agoraConfig();
+  return RtcTokenBuilder.buildTokenWithUserAccount(config.appId, config.certificate, channelName, userAccount, RtcRole.PUBLISHER, expiresAt, expiresAt);
+}
+
+export async function createAgoraToken(workspaceId: string, eventId: string, userAccount: string) {
+  const event = await repo.findNativeEvent(workspaceId, eventId);
+  if (!event) throw notFoundError('Calendar event not found');
+  const expiresAt = Math.max(Math.floor(new Date(event.endAt).getTime() / 1000) + 3600, Math.floor(Date.now() / 1000) + 900);
+  const account = userAccount || randomUUID();
+  return { appId: agoraConfig().appId, channelName: event.agoraChannelName, userAccount: account, token: buildAgoraToken(event.agoraChannelName, account, expiresAt), expiresAt: new Date(expiresAt * 1000).toISOString(), event };
+}
+
+export async function createGuestAgoraToken(token: string, guestName?: string) {
+  const event = await repo.findNativeEventByGuestToken(token);
+  if (!event) throw notFoundError('Calendar meeting not found or expired');
+  const expiresAt = Math.max(Math.floor(new Date(event.endAt).getTime() / 1000) + 3600, Math.floor(Date.now() / 1000) + 900);
+  const userAccount = (guestName?.trim() || `guest-${randomUUID()}`).slice(0, 64);
+  return { appId: agoraConfig().appId, channelName: event.agoraChannelName, userAccount, token: buildAgoraToken(event.agoraChannelName, userAccount, expiresAt), expiresAt: new Date(expiresAt * 1000).toISOString(), event: { id: event.id, title: event.title, description: event.description, startAt: event.startAt, endAt: event.endAt, timezone: event.timezone, location: event.location } };
+}
 
 export function startOAuth(provider: Extract<CalendarProvider, 'google' | 'microsoft'>, workspaceId: string, userId: string, returnTo?: string) {
   return { provider, authorizationUrl: buildCalendarAuthorizationUrl(provider, workspaceId, userId, returnTo) };
@@ -76,13 +115,14 @@ export async function executeSyncJob(workspaceId: string, accountId: string, job
 }
 
 export async function getOverview(workspaceId: string, filters: ListEventsQuery) {
-  const [accounts, sourceEvents] = await Promise.all([repo.listAccounts(workspaceId), repo.listEvents(workspaceId, filters)]);
+  const [accounts, sourceEvents, nativeEvents] = await Promise.all([repo.listAccounts(workspaceId), repo.listEvents(workspaceId, filters), repo.listNativeEvents(workspaceId, filters)]);
   const events = mergeCalendarEvents(sourceEvents);
   const now = Date.now();
   const next7Days = now + 7 * 24 * 60 * 60 * 1000;
   return {
     accounts,
     events,
+    nativeEvents,
     summary: {
       connectedAccounts: accounts.length,
       syncedAccounts: accounts.filter((account) => account.lastSyncAt).length,

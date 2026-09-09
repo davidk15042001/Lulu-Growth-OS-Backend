@@ -1,8 +1,10 @@
 import { query, withTransaction } from '../../db/pool.js';
+import crypto from 'node:crypto';
 import { rotateStoredCredentials } from '../security/provider-credential.service.js';
 import type { PoolClient } from 'pg';
-import type { CalendarAccount, CalendarAccountCredential, CalendarEvent, CalendarSyncJob, CalendarProvider, ProviderCalendarEvent } from './calendar.types.js';
-import type { ListEventsQuery } from './calendar.validator.js';
+import type { CalendarAccount, CalendarAccountCredential, CalendarEvent, CalendarSyncJob, CalendarProvider, ProviderCalendarEvent, NativeCalendarEvent } from './calendar.types.js';
+import type { CreateNativeEventInput, ListEventsQuery, ListNativeEventsQuery } from './calendar.validator.js';
+import { env } from '../../config/env.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { syncLegacyControlStatus, upsertLegacyAccountControlConnection } from '../provider-control/provider.repo.js';
@@ -427,6 +429,50 @@ export async function createSyncJob(workspaceId: string, accountId: string, user
     );
     return existing.rows[0] ?? null;
   });
+}
+
+const nativeEventSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", title, description, start_at AS "startAt", end_at AS "endAt", timezone, location, status, agora_channel_name AS "agoraChannelName", created_at AS "createdAt", updated_at AS "updatedAt"`;
+
+export async function listNativeEvents(workspaceId: string, filters: ListNativeEventsQuery) {
+  const values: unknown[] = [workspaceId];
+  const where = ['workspace_id = $1'];
+  if (filters.from) where.push(`end_at >= $${values.push(filters.from)}`);
+  if (filters.to) where.push(`start_at <= $${values.push(filters.to)}`);
+  if (filters.q) { values.push(`%${filters.q}%`); where.push(`(title ILIKE $${values.length} OR COALESCE(description, '') ILIKE $${values.length} OR COALESCE(location, '') ILIKE $${values.length})`); }
+  const limitIndex = values.push(filters.limit);
+  const { rows } = await query<NativeCalendarEvent>(`SELECT ${nativeEventSelect} FROM calendar_native_events WHERE ${where.join(' AND ')} ORDER BY start_at ASC LIMIT $${limitIndex}`, values);
+  return rows.map((event) => ({ ...event, guestJoinPath: null }));
+}
+
+export async function createNativeEvent(workspaceId: string, userId: string, input: CreateNativeEventInput) {
+  const channelName = `lulu-${crypto.randomUUID().replace(/-/g, '')}`;
+  const guestToken = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(guestToken).digest('hex');
+  const { rows } = await query<NativeCalendarEvent & { guestToken: string }>(
+    `INSERT INTO calendar_native_events(workspace_id,created_by,title,description,start_at,end_at,timezone,location,agora_channel_name,guest_token_hash)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+     RETURNING ${nativeEventSelect}`,
+    [workspaceId, userId, input.title, input.description ?? null, input.startAt, input.endAt, input.timezone, input.location ?? null, channelName, tokenHash],
+  );
+  const event = rows[0];
+  if (!event) throw new Error('Native calendar event insert did not return a row');
+  return { ...event, guestToken, guestJoinPath: `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}/calendar/meeting/${guestToken}` };
+}
+
+export async function deleteNativeEvent(workspaceId: string, eventId: string) {
+  const result = await query(`DELETE FROM calendar_native_events WHERE workspace_id=$1 AND id=$2`, [workspaceId, eventId]);
+  return result.rowCount > 0;
+}
+
+export async function findNativeEventByGuestToken(token: string) {
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const { rows } = await query<NativeCalendarEvent & { guestTokenHash: string }>(`SELECT ${nativeEventSelect}, guest_token_hash AS "guestTokenHash" FROM calendar_native_events WHERE guest_token_hash=$1 AND status='scheduled'`, [tokenHash]);
+  return rows[0] ?? null;
+}
+
+export async function findNativeEvent(workspaceId: string, eventId: string) {
+  const { rows } = await query<NativeCalendarEvent & { guestTokenHash: string }>(`SELECT ${nativeEventSelect}, guest_token_hash AS "guestTokenHash" FROM calendar_native_events WHERE workspace_id=$1 AND id=$2`, [workspaceId, eventId]);
+  return rows[0] ?? null;
 }
 
 export async function startSyncJob(jobId: string) {

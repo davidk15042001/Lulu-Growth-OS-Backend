@@ -11,6 +11,9 @@ const connectionLimiter = dbRateLimit({ keyPrefix: 'calendar-connect', windowMs:
 const syncLimiter = dbRateLimit({ keyPrefix: 'calendar-sync', windowMs: 60 * 60 * 1000, limit: 60, message: rateLimitMessage });
 
 router.route('/overview').get(controller.overview).all(methodNotAllowed);
+router.route('/events').get(controller.nativeEvents).post(requireWorkspaceEditor, controller.createNativeEvent).all(methodNotAllowed);
+router.route('/events/:eventId').delete(requireWorkspaceEditor, controller.deleteNativeEvent).all(methodNotAllowed);
+router.route('/events/:eventId/agora-token').post(controller.agoraToken).all(methodNotAllowed);
 router.route('/accounts').get(controller.accounts).all(methodNotAllowed);
 router.route('/accounts/oauth/start').post(requireWorkspaceEditor, connectionLimiter, controller.startOAuth).all(methodNotAllowed);
 router.route('/accounts/token').post(requireWorkspaceEditor, connectionLimiter, controller.connectToken).all(methodNotAllowed);
@@ -19,3 +22,9 @@ router.route('/accounts/:accountId/sync').post(requireWorkspaceEditor, syncLimit
 router.route('/accounts/:accountId/sync/:jobId').get(controller.syncJob).all(methodNotAllowed);
 
 export default router;
+
+const publicRouter = Router();
+const guestLimiter = dbRateLimit({ keyPrefix: 'calendar-guest-token', windowMs: 15 * 60 * 1000, limit: 20, message: 'Too many meeting access attempts. Please wait and try again.' });
+publicRouter.route('/meetings/:token/agora-token').post(guestLimiter, controller.guestAgoraToken).all(methodNotAllowed);
+
+export { publicRouter as publicCalendarRoutes };

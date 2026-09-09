@@ -5,7 +5,7 @@ import { AppError } from '../../utils/app-error.js';
 import { env } from '../../config/env.js';
 import * as service from './calendar.service.js';
 import { completeCalendarOAuth, getSafeCalendarReturnTo, isCalendarOAuthProvider } from './calendar.oauth.service.js';
-import { accountParams, listEventsQuery, oauthStartSchema, syncJobParams, tokenConnectSchema, workspaceParams } from './calendar.validator.js';
+import { accountParams, createNativeEventSchema, listEventsQuery, listNativeEventsQuery, nativeEventParams, oauthStartSchema, publicNativeEventParams, syncJobParams, tokenConnectSchema, workspaceParams } from './calendar.validator.js';
 
 export async function overview(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
@@ -56,6 +56,26 @@ export async function syncJob(req: WorkspaceRequest, res: Response, next: NextFu
     const { workspaceId, accountId, jobId } = syncJobParams.parse(req.params);
     return successResponse(res, 'Calendar synchronization status loaded', await service.getSyncJob(workspaceId, accountId, jobId));
   } catch (error) { next(error); }
+}
+
+export async function nativeEvents(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId } = workspaceParams.parse(req.params); return successResponse(res, 'Native calendar events loaded', { items: await service.listNativeEvents(workspaceId, listNativeEventsQuery.parse(req.query)) }); } catch (error) { next(error); }
+}
+
+export async function createNativeEvent(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId } = workspaceParams.parse(req.params); return createdResponse(res, 'Calendar event created', await service.createNativeEvent(workspaceId, req.user!.id, createNativeEventSchema.parse(req.body))); } catch (error) { next(error); }
+}
+
+export async function deleteNativeEvent(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId, eventId } = nativeEventParams.parse(req.params); await service.deleteNativeEvent(workspaceId, eventId); return successResponse(res, 'Calendar event deleted'); } catch (error) { next(error); }
+}
+
+export async function agoraToken(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId, eventId } = nativeEventParams.parse(req.params); return successResponse(res, 'Agora meeting token created', await service.createAgoraToken(workspaceId, eventId, req.user!.id)); } catch (error) { next(error); }
+}
+
+export async function guestAgoraToken(req: Request, res: Response, next: NextFunction) {
+  try { const { token } = publicNativeEventParams.parse(req.params); const guestName = typeof req.body?.guestName === 'string' ? req.body.guestName : undefined; return successResponse(res, 'Agora guest token created', await service.createGuestAgoraToken(token, guestName)); } catch (error) { next(error); }
 }
 
 function frontendUrl(path: string) { return `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}${path}`; }

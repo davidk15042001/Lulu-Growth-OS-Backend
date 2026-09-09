@@ -103,6 +103,8 @@ const EnvSchema = z
     CALENDAR_CALCOM_ALLOWED_HOSTS: z.string().min(1).default('api.cal.com'),
     CALENDAR_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
     CALENDAR_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
+    AGORA_APP_ID: z.string().regex(/^[a-fA-F0-9]{32}$/).optional(),
+    AGORA_APP_CERTIFICATE: z.string().regex(/^[a-fA-F0-9]{32}$/).optional(),
     EMAIL_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     EMAIL_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     EMAIL_MICROSOFT_CLIENT_ID: z.string().min(1).optional(),

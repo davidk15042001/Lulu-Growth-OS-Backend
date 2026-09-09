@@ -84,6 +84,23 @@ export type CalendarSyncJob = {
   updatedAt: string;
 };
 
+export type NativeCalendarEvent = {
+  id: string;
+  workspaceId: string;
+  createdBy: string | null;
+  title: string;
+  description: string | null;
+  startAt: string;
+  endAt: string;
+  timezone: string;
+  location: string | null;
+  status: 'scheduled' | 'cancelled' | 'completed';
+  agoraChannelName: string;
+  guestJoinPath: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ProviderCalendarEvent = {
   providerEventId: string;
   sourceId?: string | null;
