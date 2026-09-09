@@ -11,6 +11,7 @@ const { pool } = await import('../src/db/pool.js');
 const authorization = await import('../src/modules/workspaces/workspace-authorization.service.js');
 const entitlements = await import('../src/modules/entitlements/entitlement.service.js');
 const identity = await import('../src/modules/business-identity/identity.service.js');
+const workspaceRepo = await import('../src/modules/workspaces/workspace.repo.js');
 const db = new PGlite();
 
 before(async () => {
@@ -83,5 +84,30 @@ describe('Part 2 tenant and authorization foundation', () => {
     assert.equal(first.factoryId, second.factoryId);
     const count = await db.query<{ total: string }>(`SELECT count(*)::text AS total FROM organizations WHERE source_workspace_id=$1`, [f.a]);
     assert.equal(count.rows[0]!.total, '1');
+  });
+
+  it('saves the complete company profile for an owner before billing is active', async () => {
+    const f = await fixture();
+    await db.query(`DELETE FROM workspace_subscriptions WHERE workspace_id=$1`, [f.a]);
+    const saved = await workspaceRepo.updateWorkspaceProfile(f.a, f.owner, {
+      companyName: 'Workspace A International',
+      industry: 'Manufacturing',
+      countryRegion: 'CN',
+      taxId: 'CN-TAX-1',
+      address: 'Shanghai',
+      legalForm: 'Limited company',
+      legalRepresentative: 'Owner',
+      phoneNumber: '+86 21 0000 0000',
+      bankAccountNumber: '123456789',
+      bankOpeningBank: 'Example Bank',
+      bankBranch: 'Shanghai Branch',
+      bankCode: 'EXAMPLECN',
+    });
+    assert.equal(saved?.companyName, 'Workspace A International');
+    assert.equal(saved?.bankCode, 'EXAMPLECN');
+    const persisted = (await db.query<{ name: string; taxId: string; bankCode: string }>(
+      `SELECT name, tax_id AS "taxId", bank_code AS "bankCode" FROM workspaces WHERE id=$1`, [f.a],
+    )).rows[0];
+    assert.deepEqual(persisted, { name: 'Workspace A International', taxId: 'CN-TAX-1', bankCode: 'EXAMPLECN' });
   });
 });
