@@ -5,6 +5,7 @@ import { recordSecurityEvent } from '../security/security-event.service.js';
 import { assertAdminCapability, getAdminCapabilities } from '../admin/admin.authorization.js';
 import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
+import { logger } from '../../config/logger.js';
 
 export type RegisterResult = { ok: true; userId: string; verificationRequired: false } | { conflict: true };
 type SessionUser = {
@@ -265,6 +266,13 @@ export async function changeCurrentUserPassword(
   const passwordHash = await bcrypt.hash(newPassword, env.BCRYPT_ROUNDS);
   const changed = await repo.changeUserPassword(userId, passwordHash);
   if (!changed) return { notFound: true };
-  await recordSecurityEvent({ eventType: 'PASSWORD_CHANGED', userId });
+  // The password update and session revocation have already committed at this
+  // point. Keep an audit-storage outage from turning that successful operation
+  // into a misleading error response.
+  try {
+    await recordSecurityEvent({ eventType: 'PASSWORD_CHANGED', userId });
+  } catch (error) {
+    logger.error({ error, userId }, 'Password changed but audit event could not be persisted');
+  }
   return { ok: true };
 }
