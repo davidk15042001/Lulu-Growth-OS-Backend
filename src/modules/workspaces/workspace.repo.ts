@@ -7,6 +7,7 @@ import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type { WorkspaceRole } from './workspace-permissions.js';
 export type { WorkspaceRole } from './workspace-permissions.js';
 import { ensureWorkspaceBusinessIdentity } from '../business-identity/identity.service.js';
+import { logger } from '../../config/logger.js';
 
 export type Workspace = {
   id: string;
@@ -397,25 +398,37 @@ export async function updateWorkspaceProfile(
       [workspaceId],
       client,
     )).rows[0];
-    if (current) {
-      await ensureWorkspaceBusinessIdentity({
+    // Keep the profile write durable even if an older production database has
+    // a temporary identity/event inconsistency. A savepoint lets us roll back
+    // only these secondary side effects while preserving the actual profile
+    // update; the error remains observable in structured server logs.
+    await query('SAVEPOINT workspace_profile_side_effects', [], client);
+    try {
+      if (current) {
+        await ensureWorkspaceBusinessIdentity({
+          workspaceId,
+          name: current.name,
+          country: current.country,
+          taxIdentifier: current.taxId,
+          legalForm: current.legalForm,
+          address: current.address,
+        }, client);
+      }
+      await appendDomainEvent({
         workspaceId,
-        name: current.name,
-        country: current.country,
-        taxIdentifier: current.taxId,
-        legalForm: current.legalForm,
-        address: current.address,
+        type: DOMAIN_EVENT_TYPES.WORKSPACE_UPDATED,
+        aggregateType: 'workspace',
+        aggregateId: workspaceId,
+        payload: { workspaceId, changedFields: entries.map(([key]) => key), source: 'profile' },
+        metadata: { actorId: userId, source: 'workspace-profile' },
+        idempotencyKey: `workspace:${workspaceId}:profile:${Date.now()}:${crypto.randomUUID()}`,
       }, client);
+      await query('RELEASE SAVEPOINT workspace_profile_side_effects', [], client);
+    } catch (error) {
+      await query('ROLLBACK TO SAVEPOINT workspace_profile_side_effects', [], client);
+      await query('RELEASE SAVEPOINT workspace_profile_side_effects', [], client);
+      logger.error({ error, workspaceId, userId }, 'Workspace profile secondary synchronization failed');
     }
-    await appendDomainEvent({
-      workspaceId,
-      type: DOMAIN_EVENT_TYPES.WORKSPACE_UPDATED,
-      aggregateType: 'workspace',
-      aggregateId: workspaceId,
-      payload: { workspaceId, changedFields: entries.map(([key]) => key), source: 'profile' },
-      metadata: { actorId: userId, source: 'workspace-profile' },
-      idempotencyKey: `workspace:${workspaceId}:profile:${Date.now()}:${crypto.randomUUID()}`,
-    }, client);
     return (await query<WorkspaceProfile>(
       `SELECT ${workspaceProfileSelect} FROM workspaces w WHERE w.id = $1 AND w.deleted_at IS NULL`,
       [workspaceId],
