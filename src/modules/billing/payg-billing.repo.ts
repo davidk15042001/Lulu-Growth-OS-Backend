@@ -344,10 +344,8 @@ export async function reservePaygApiCheckout(
               COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId",
               p.preferred_payment_method AS "preferredPaymentMethod"
        FROM workspace_payg_profiles p
-       JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
+       LEFT JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
        WHERE p.workspace_id=$1 AND p.enabled=TRUE
-         AND s.provider='airwallex' AND s.status='active'
-         AND s.plan_key IN ('starter', 'ai')
        FOR UPDATE OF p`,
       [workspaceId],
       client,
@@ -356,8 +354,12 @@ export async function reservePaygApiCheckout(
     // A hosted invoice needs an Airwallex Billing Customer. Direct QR
     // payments use a PaymentIntent instead and intentionally do not require
     // one, so they can still be created when customer provisioning is pending.
+    // Settling already-accrued usage must remain possible when a Workspace is
+    // internally activated, trialing, cancelled, or awaiting provider sync.
+    // A direct wallet QR payment uses an Airwallex PaymentIntent and therefore
+    // does not require an Airwallex Subscription or Billing Customer.
     if (!profile) {
-      throw new AppError(409, 'PAYG_SUBSCRIPTION_REQUIRED', 'An active AI billing subscription is required before API usage can be paid.');
+      throw new AppError(409, 'PAYG_PROFILE_REQUIRED', 'Pay-as-you-go billing is not enabled for this workspace.');
     }
     if (requireBillingCustomer && !profile.providerCustomerId) {
       throw new AppError(409, 'PAYG_BILLING_CUSTOMER_REQUIRED', 'A confirmed billing customer is required before API usage can be paid.');
