@@ -490,7 +490,9 @@ export async function rotateNativeGuestToken(workspaceId: string, eventId: strin
 
 export async function findNativeEventByGuestToken(token: string) {
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-  const { rows } = await query<NativeCalendarEvent & { guestTokenHash: string }>(`SELECT ${nativeEventSelect}, guest_token_hash AS "guestTokenHash" FROM calendar_native_events WHERE guest_token_hash=$1 AND status='scheduled'`, [tokenHash]);
+  // Guest access expires with the meeting. Keep the event row for history, but
+  // never return an expired token for public metadata or Agora token issuance.
+  const { rows } = await query<NativeCalendarEvent & { guestTokenHash: string }>(`SELECT ${nativeEventSelect}, guest_token_hash AS "guestTokenHash" FROM calendar_native_events WHERE guest_token_hash=$1 AND status='scheduled' AND end_at > NOW()`, [tokenHash]);
   return rows[0] ?? null;
 }
 

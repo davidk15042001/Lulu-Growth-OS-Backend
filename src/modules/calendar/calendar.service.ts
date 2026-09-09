@@ -47,9 +47,16 @@ function buildAgoraToken(channelName: string, userAccount: string, expiresAt: nu
   return RtcTokenBuilder.buildTokenWithUserAccount(config.appId, config.certificate, channelName, userAccount, RtcRole.PUBLISHER, expiresAt, expiresAt);
 }
 
+function assertMeetingAccessActive(event: { status: string; endAt: string }) {
+  if (event.status !== 'scheduled' || new Date(event.endAt).getTime() <= Date.now()) {
+    throw new AppError(410, 'CALENDAR_MEETING_EXPIRED', 'This calendar meeting link has expired');
+  }
+}
+
 export async function createAgoraToken(workspaceId: string, eventId: string, userAccount: string) {
   const event = await repo.findNativeEvent(workspaceId, eventId);
   if (!event) throw notFoundError('Calendar event not found');
+  assertMeetingAccessActive(event);
   const expiresAt = Math.max(Math.floor(new Date(event.endAt).getTime() / 1000) + 3600, Math.floor(Date.now() / 1000) + 900);
   const account = userAccount || randomUUID();
   return { appId: agoraConfig().appId, channelName: event.agoraChannelName, userAccount: account, token: buildAgoraToken(event.agoraChannelName, account, expiresAt), expiresAt: new Date(expiresAt * 1000).toISOString(), event };
@@ -58,6 +65,7 @@ export async function createAgoraToken(workspaceId: string, eventId: string, use
 export async function createGuestAgoraToken(token: string, guestName?: string) {
   const event = await repo.findNativeEventByGuestToken(token);
   if (!event) throw notFoundError('Calendar meeting not found or expired');
+  assertMeetingAccessActive(event);
   const expiresAt = Math.max(Math.floor(new Date(event.endAt).getTime() / 1000) + 3600, Math.floor(Date.now() / 1000) + 900);
   const userAccount = (guestName?.trim() || `guest-${randomUUID()}`).slice(0, 64);
   return { appId: agoraConfig().appId, channelName: event.agoraChannelName, userAccount, token: buildAgoraToken(event.agoraChannelName, userAccount, expiresAt), expiresAt: new Date(expiresAt * 1000).toISOString(), event: { id: event.id, title: event.title, description: event.description, startAt: event.startAt, endAt: event.endAt, timezone: event.timezone, location: event.location } };
