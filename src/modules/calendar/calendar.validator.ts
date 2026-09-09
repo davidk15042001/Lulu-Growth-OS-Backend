@@ -35,6 +35,7 @@ export const createNativeEventSchema = z.object({
   endAt: isoDateTime,
   timezone: z.string().trim().min(1).max(100).default('UTC'),
   location: z.string().trim().max(500).optional().nullable(),
+  customerId: z.string().uuid().optional(),
 }).superRefine((value, ctx) => {
   if (new Date(value.endAt).getTime() <= new Date(value.startAt).getTime()) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['endAt'], message: 'End time must be after start time' });
 });

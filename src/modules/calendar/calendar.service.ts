@@ -18,11 +18,20 @@ export const listEvents = repo.listEvents;
 export const listNativeEvents = repo.listNativeEvents;
 
 export async function createNativeEvent(workspaceId: string, userId: string, input: CreateNativeEventInput) {
-  return repo.createNativeEvent(workspaceId, userId, input);
+  const customer = input.customerId ? await repo.findCustomerRecord(workspaceId, input.customerId) : null;
+  if (input.customerId && !customer) throw notFoundError('Calendar customer not found');
+  const event = await repo.createNativeEvent(workspaceId, userId, input);
+  return { ...event, customerName: customer?.name ?? null };
 }
 
 export async function deleteNativeEvent(workspaceId: string, eventId: string) {
   if (!(await repo.deleteNativeEvent(workspaceId, eventId))) throw notFoundError('Calendar event not found');
+}
+
+export async function rotateNativeGuestToken(workspaceId: string, eventId: string) {
+  const event = await repo.rotateNativeGuestToken(workspaceId, eventId);
+  if (!event) throw notFoundError('Calendar event not found');
+  return event;
 }
 
 function agoraConfig() {

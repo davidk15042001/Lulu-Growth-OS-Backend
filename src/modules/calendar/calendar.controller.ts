@@ -70,6 +70,10 @@ export async function deleteNativeEvent(req: WorkspaceRequest, res: Response, ne
   try { const { workspaceId, eventId } = nativeEventParams.parse(req.params); await service.deleteNativeEvent(workspaceId, eventId); return successResponse(res, 'Calendar event deleted'); } catch (error) { next(error); }
 }
 
+export async function guestLink(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId, eventId } = nativeEventParams.parse(req.params); return successResponse(res, 'Calendar guest link created', await service.rotateNativeGuestToken(workspaceId, eventId)); } catch (error) { next(error); }
+}
+
 export async function agoraToken(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try { const { workspaceId, eventId } = nativeEventParams.parse(req.params); return successResponse(res, 'Agora meeting token created', await service.createAgoraToken(workspaceId, eventId, req.user!.id)); } catch (error) { next(error); }
 }

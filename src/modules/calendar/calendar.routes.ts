@@ -13,6 +13,7 @@ const syncLimiter = dbRateLimit({ keyPrefix: 'calendar-sync', windowMs: 60 * 60 
 router.route('/overview').get(controller.overview).all(methodNotAllowed);
 router.route('/events').get(controller.nativeEvents).post(requireWorkspaceEditor, controller.createNativeEvent).all(methodNotAllowed);
 router.route('/events/:eventId').delete(requireWorkspaceEditor, controller.deleteNativeEvent).all(methodNotAllowed);
+router.route('/events/:eventId/guest-link').post(requireWorkspaceEditor, controller.guestLink).all(methodNotAllowed);
 router.route('/events/:eventId/agora-token').post(controller.agoraToken).all(methodNotAllowed);
 router.route('/accounts').get(controller.accounts).all(methodNotAllowed);
 router.route('/accounts/oauth/start').post(requireWorkspaceEditor, connectionLimiter, controller.startOAuth).all(methodNotAllowed);

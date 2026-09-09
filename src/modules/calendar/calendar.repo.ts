@@ -431,7 +431,7 @@ export async function createSyncJob(workspaceId: string, accountId: string, user
   });
 }
 
-const nativeEventSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", title, description, start_at AS "startAt", end_at AS "endAt", timezone, location, status, agora_channel_name AS "agoraChannelName", created_at AS "createdAt", updated_at AS "updatedAt"`;
+const nativeEventSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", title, description, start_at AS "startAt", end_at AS "endAt", timezone, location, status, customer_record_id AS "customerId", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
 export async function listNativeEvents(workspaceId: string, filters: ListNativeEventsQuery) {
   const values: unknown[] = [workspaceId];
@@ -441,7 +441,13 @@ export async function listNativeEvents(workspaceId: string, filters: ListNativeE
   if (filters.q) { values.push(`%${filters.q}%`); where.push(`(title ILIKE $${values.length} OR COALESCE(description, '') ILIKE $${values.length} OR COALESCE(location, '') ILIKE $${values.length})`); }
   const limitIndex = values.push(filters.limit);
   const { rows } = await query<NativeCalendarEvent>(`SELECT ${nativeEventSelect} FROM calendar_native_events WHERE ${where.join(' AND ')} ORDER BY start_at ASC LIMIT $${limitIndex}`, values);
-  return rows.map((event) => ({ ...event, guestJoinPath: null }));
+  const customerIds = rows.map((event) => event.customerId).filter((id): id is string => Boolean(id));
+  const customerNames = new Map<string, string>();
+  if (customerIds.length) {
+    const customerRows = await query<{ id: string; name: string }>('SELECT id, name FROM workspace_records WHERE workspace_id=$1 AND id=ANY($2::uuid[]) AND deleted_at IS NULL', [workspaceId, customerIds]);
+    customerRows.rows.forEach((customer) => customerNames.set(customer.id, customer.name));
+  }
+  return rows.map((event) => ({ ...event, customerName: event.customerId ? customerNames.get(event.customerId) ?? null : null, guestJoinPath: null }));
 }
 
 export async function createNativeEvent(workspaceId: string, userId: string, input: CreateNativeEventInput) {
@@ -449,19 +455,32 @@ export async function createNativeEvent(workspaceId: string, userId: string, inp
   const guestToken = crypto.randomBytes(32).toString('base64url');
   const tokenHash = crypto.createHash('sha256').update(guestToken).digest('hex');
   const { rows } = await query<NativeCalendarEvent & { guestToken: string }>(
-    `INSERT INTO calendar_native_events(workspace_id,created_by,title,description,start_at,end_at,timezone,location,agora_channel_name,guest_token_hash)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    `INSERT INTO calendar_native_events(workspace_id,created_by,title,description,start_at,end_at,timezone,location,customer_record_id,agora_channel_name,guest_token_hash)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      RETURNING ${nativeEventSelect}`,
-    [workspaceId, userId, input.title, input.description ?? null, input.startAt, input.endAt, input.timezone, input.location ?? null, channelName, tokenHash],
+    [workspaceId, userId, input.title, input.description ?? null, input.startAt, input.endAt, input.timezone, input.location ?? null, input.customerId ?? null, channelName, tokenHash],
   );
   const event = rows[0];
   if (!event) throw new Error('Native calendar event insert did not return a row');
-  return { ...event, guestToken, guestJoinPath: `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}/calendar/meeting/${guestToken}` };
+  return { ...event, customerName: null, guestToken, guestJoinPath: `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}/calendar/meeting/${guestToken}` };
+}
+
+export async function findCustomerRecord(workspaceId: string, customerId: string) {
+  const { rows } = await query<{ id: string; name: string }>(`SELECT id, name FROM workspace_records WHERE workspace_id=$1 AND id=$2 AND resource_type IN ('customers','crm_contacts','ecommerce_customers') AND deleted_at IS NULL`, [workspaceId, customerId]);
+  return rows[0] ?? null;
 }
 
 export async function deleteNativeEvent(workspaceId: string, eventId: string) {
   const result = await query(`DELETE FROM calendar_native_events WHERE workspace_id=$1 AND id=$2`, [workspaceId, eventId]);
   return result.rowCount > 0;
+}
+
+export async function rotateNativeGuestToken(workspaceId: string, eventId: string) {
+  const guestToken = crypto.randomBytes(32).toString('base64url');
+  const tokenHash = crypto.createHash('sha256').update(guestToken).digest('hex');
+  const { rows } = await query<NativeCalendarEvent>(`UPDATE calendar_native_events SET guest_token_hash=$3, updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND status='scheduled' RETURNING ${nativeEventSelect}`, [workspaceId, eventId, tokenHash]);
+  const event = rows[0];
+  return event ? { ...event, customerName: null, guestToken, guestJoinPath: `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}/calendar/meeting/${guestToken}` } : null;
 }
 
 export async function findNativeEventByGuestToken(token: string) {

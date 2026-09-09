@@ -95,6 +95,8 @@ export type NativeCalendarEvent = {
   timezone: string;
   location: string | null;
   status: 'scheduled' | 'cancelled' | 'completed';
+  customerId: string | null;
+  customerName: string | null;
   agoraChannelName: string;
   guestJoinPath: string | null;
   createdAt: string;
