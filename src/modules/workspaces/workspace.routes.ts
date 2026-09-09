@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import {
   requireWorkspaceAdmin,
+  requireWorkspaceAdminRead,
   requireWorkspaceMember,
 } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
@@ -47,7 +48,7 @@ router.route('/:workspaceId')
   .all(methodNotAllowed);
 
 router.route('/:workspaceId/profile')
-  .get(requireWorkspaceAdmin, controller.getProfile)
+  .get(requireWorkspaceAdminRead, controller.getProfile)
   .patch(requireWorkspaceAdmin, controller.updateProfile)
   .all(methodNotAllowed);
 

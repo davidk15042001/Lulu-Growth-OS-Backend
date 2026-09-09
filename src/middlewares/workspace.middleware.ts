@@ -61,7 +61,10 @@ export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
 }
 
 /** Canonical capability middleware for new and migrated workspace routes. */
-export function requireWorkspaceCapability(capability: WorkspaceCapability) {
+export function requireWorkspaceCapability(
+  capability: WorkspaceCapability,
+  options: { enforceWriteEntitlement?: boolean } = {},
+) {
   return async function workspaceCapabilityMiddleware(
     req: WorkspaceRequest,
     _res: Response,
@@ -74,7 +77,12 @@ export function requireWorkspaceCapability(capability: WorkspaceCapability) {
       const membership = await findMembership(workspaceId, userId);
       if (!membership) { next(notFoundError('Workspace not found')); return; }
       await assertWorkspaceCapability({ workspaceId, userId, capability });
-      if (WRITE_CAPABILITIES.has(capability) && !(await hasWorkspaceEntitlement(workspaceId, 'workspace.write'))) {
+      // Reads must remain available while a workspace is unpaid. The write
+      // entitlement is enforced only for state-changing capabilities (or when
+      // a caller explicitly opts in), so sensitive read-only screens such as
+      // the company profile do not become inaccessible before billing.
+      const enforceWriteEntitlement = options.enforceWriteEntitlement ?? true;
+      if (enforceWriteEntitlement && WRITE_CAPABILITIES.has(capability) && !(await hasWorkspaceEntitlement(workspaceId, 'workspace.write'))) {
         next(forbiddenError('Workspace write access is not enabled for this plan or workspace')); return;
       }
       req.workspaceAccess = { id: workspaceId, role: membership.role };
@@ -135,3 +143,4 @@ export async function requireOnboardingComplete(
 export const requireWorkspaceMember = requireWorkspaceCapability('workspace.read');
 export const requireWorkspaceEditor = requireWorkspaceCapability('workspace.write');
 export const requireWorkspaceAdmin = requireWorkspaceCapability('workspace.manage');
+export const requireWorkspaceAdminRead = requireWorkspaceCapability('workspace.manage', { enforceWriteEntitlement: false });
