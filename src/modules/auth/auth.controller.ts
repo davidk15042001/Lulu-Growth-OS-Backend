@@ -251,7 +251,7 @@ export async function stopImpersonation(req: AuthedRequest, res: Response, next:
 
 export async function changePassword(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
-    if (req.impersonator) return jsonError(res, 403, 'FORBIDDEN', 'End impersonation to change the password');
+    if (req.impersonator) return jsonError(res, 403, 'IMPERSONATION_PASSWORD_CHANGE_BLOCKED', 'End impersonation before changing this password');
     const userId = req.user?.id;
     if (!userId) return jsonError(res, 401, 'UNAUTHORIZED', 'Please sign in');
     const input = changePasswordSchema.parse(req.body);
