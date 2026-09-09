@@ -1,3 +1,4 @@
+import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
@@ -99,15 +100,19 @@ export async function listApprovals(
 export async function createApproval(
   workspaceId: string,
   userId: string,
-  input: CreateApprovalInput
+  input: CreateApprovalInput,
+  transactionClient?: PoolClient,
 ) {
-  return withTransaction(async (client) => {
+  const insert = async (client: PoolClient) => {
     const { rows } = await query<Approval>(
       `INSERT INTO approval_requests (
          workspace_id, requested_by, assigned_to, action_type, entity_type,
          entity_id, title, description, impact_amount, impact_currency,
          payload, expires_at
        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       ON CONFLICT (workspace_id, action_type, entity_id)
+         WHERE action_type = 'agent_assistant_action' AND entity_id IS NOT NULL
+       DO UPDATE SET updated_at = approval_requests.updated_at
        RETURNING ${approvalSelect}`,
       [
         workspaceId,
@@ -137,7 +142,8 @@ export async function createApproval(
       idempotencyKey: `approval:${approval.id}:requested:v1`,
     }, client);
     return approval;
-  });
+  };
+  return transactionClient ? insert(transactionClient) : withTransaction(insert);
 }
 
 export async function decideApproval(

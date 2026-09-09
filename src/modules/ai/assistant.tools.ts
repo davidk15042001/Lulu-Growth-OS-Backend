@@ -1,10 +1,9 @@
-import crypto from 'node:crypto';
 import { isResourceType, type ResourceType } from '../../domain/resource-catalog.js';
 import * as recordRepo from '../records/record.repo.js';
 import * as agentRepo from '../agents/agent.repo.js';
 import * as agentService from '../agents/agent.service.js';
-import { agentExecutionCommandTypeSchema } from '../agents/agent.execution-command.js';
-import { executeAssistantAction } from './assistant-actions.service.js';
+import { requestAssistantAction } from './assistant-actions.service.js';
+import { assistantActionInputSchema } from './assistant-action.types.js';
 
 export type AssistantToolContext = { workspaceId: string; userId: string };
 
@@ -16,21 +15,10 @@ export type AssistantTool = {
   action?: boolean;
 };
 
-export type AssistantPendingAction = {
-  id: string;
-  type: string;
-  summary: string;
-  payload: Record<string, unknown>;
-};
-
 const ACTION_TOOL_NAME = 'request_action';
 
 function stringValue(value: unknown, maxLength = 400) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function compactRecord(record: Awaited<ReturnType<typeof recordRepo.listRecords>>['items'][number]) {
@@ -118,18 +106,6 @@ async function queryAgentHealth(ctx: AssistantToolContext) {
   };
 }
 
-function createPendingAction(args: Record<string, unknown>): AssistantPendingAction {
-  const rawType = stringValue(args.type, 120);
-  const parsed = agentExecutionCommandTypeSchema.safeParse(rawType);
-  const type = parsed.success ? parsed.data : '';
-  return {
-    id: crypto.randomUUID(),
-    type,
-    summary: stringValue(args.summary, 500) || 'Requested action',
-    payload: objectValue(args.payload),
-  };
-}
-
 export const assistantToolNames = {
   listRecords: 'list_records',
   knowledge: 'get_knowledge',
@@ -137,7 +113,7 @@ export const assistantToolNames = {
   action: ACTION_TOOL_NAME,
 };
 
-export function buildAssistantTools(): AssistantTool[] {
+export function buildAssistantTools(conversationId: string): AssistantTool[] {
   return [
     {
       name: assistantToolNames.listRecords,
@@ -172,7 +148,7 @@ export function buildAssistantTools(): AssistantTool[] {
     {
       name: ACTION_TOOL_NAME,
       description:
-        'Execute a real write action on the workspace immediately and autonomously. Use only when the user asks you to perform an action. Return the execution result so you can report it back to the user.',
+        'Request a real workspace write only when the user explicitly asks for it. The backend stores and authorizes the exact payload. Safe actions may run automatically; external, financial and publishing actions wait for a verified human approval.',
       parameters: {
         type: 'object',
         properties: {
@@ -195,10 +171,11 @@ export function buildAssistantTools(): AssistantTool[] {
         },
         required: ['type', 'summary', 'payload'],
       },
+      action: true,
       handler: async (args, ctx) => {
-        const action = createPendingAction(args);
         try {
-          return await executeAssistantAction(ctx.workspaceId, ctx.userId, action);
+          const action = assistantActionInputSchema.parse(args);
+          return await requestAssistantAction(ctx.workspaceId, ctx.userId, conversationId, action);
         } catch (error) {
           return { status: 'failed', error: error instanceof Error ? error.message : 'Action failed' };
         }

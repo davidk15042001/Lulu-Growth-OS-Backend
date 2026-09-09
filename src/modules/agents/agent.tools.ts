@@ -536,19 +536,12 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     approvalGates.some((gate) => /\bbudget\b/i.test(gate))
     || uniqueResourceTypes(input.resourceTypes).some((type) => type.includes('budget'))
     || normalizeActionResourceType(input.actionResourceType).includes('budget');
-  // Autonomous page agents may execute registered commands without a manual
-  // approval. Budget changes are the one deliberate exception; prohibited
-  // commands remain blocked by the backend policy registry.
   const commands: AgentExecutionCommand[] = commandPolicy.commands.map(({ policyDecision: commandDecision, policyReason: _policyReason, ...command }) => ({
     ...command,
-    approvalPolicy: executionMode === 'autonomous' && !budgetProtected && commandDecision !== 'forbidden'
-      ? 'allow'
-      : command.approvalPolicy as 'allow' | 'require_approval',
+    approvalPolicy: commandDecision === 'allow' ? 'allow' : 'require_approval',
   }));
   const hasForbiddenCommand = commandPolicy.commands.some((command) => command.policyDecision === 'forbidden');
-  const effectivePolicyDecision = !hasForbiddenCommand && !budgetProtected && executionMode === 'autonomous'
-    ? 'allow'
-    : !budgetProtected && policyDecision === 'allow' && commandPolicy.overallDecision === 'allow'
+  const effectivePolicyDecision = !hasForbiddenCommand && !budgetProtected && policyDecision === 'allow' && commandPolicy.overallDecision === 'allow'
     ? 'allow'
     : 'require_approval';
   const executionReady = effectivePolicyDecision === 'allow';

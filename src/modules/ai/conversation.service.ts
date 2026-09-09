@@ -6,10 +6,9 @@ import {
   generateAssistantResponse,
   generateAssistantResponseWithTools,
   isAiGenerationConfigured,
-  type AssistantPendingAction,
 } from './openai.service.js';
 import { buildAssistantTools } from './assistant.tools.js';
-import { executeAssistantAction } from './assistant-actions.service.js';
+import { executeAssistantActionRequest, listAssistantActions } from './assistant-actions.service.js';
 import { AppError } from '../../utils/app-error.js';
 import type {
   CreateConversationInput,
@@ -170,7 +169,7 @@ export async function respondAgentic(
         actionLevel: preferences.actionLevel,
       } : null,
     },
-    tools: buildAssistantTools(),
+    tools: buildAssistantTools(conversationId),
   });
 
   const assistantMessage = await repo.appendAssistantMessage(
@@ -197,6 +196,12 @@ export async function respondAgentic(
   };
 }
 
-export async function executeAction(workspaceId: string, userId: string, action: AssistantPendingAction) {
-  return executeAssistantAction(workspaceId, userId, action);
+export async function listActions(workspaceId: string, userId: string, conversationId: string) {
+  await getConversation(workspaceId, userId, conversationId);
+  return listAssistantActions(workspaceId, userId, conversationId);
+}
+
+export async function executeAction(workspaceId: string, userId: string, conversationId: string, actionId: string) {
+  await getConversation(workspaceId, userId, conversationId);
+  return executeAssistantActionRequest(workspaceId, userId, conversationId, actionId);
 }

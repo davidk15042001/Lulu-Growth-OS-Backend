@@ -28,7 +28,8 @@ router.route('/conversations/:conversationId/respond')
   .all(methodNotAllowed);
 
 router.route('/conversations/:conversationId/actions')
-  .post(requireWorkspaceEditor, controller.executeAction)
+  .get(requireWorkspaceEntitlement('ai.enabled'), controller.listActions)
+  .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.executeAction)
   .all(methodNotAllowed);
 
 export default router;

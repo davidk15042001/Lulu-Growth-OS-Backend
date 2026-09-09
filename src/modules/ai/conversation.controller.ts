@@ -2,7 +2,9 @@ import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './conversation.service.js';
-import type { AssistantPendingAction } from './openai.service.js';
+import {
+  assistantActionExecutionSchema,
+} from './assistant-action.types.js';
 import {
   conversationParamsSchema,
   createConversationSchema,
@@ -122,12 +124,18 @@ export async function respond(req: WorkspaceRequest, res: Response, next: NextFu
 export async function executeAction(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = conversationParamsSchema.parse(req.params);
-    const action = req.body?.action;
-    if (!action || typeof action !== 'object' || typeof (action as Record<string, unknown>).type !== 'string' || typeof (action as Record<string, unknown>).payload !== 'object') {
-      return res.status(422).json({ success: false, error: { code: 'INVALID_ACTION', message: 'action.type and action.payload are required' } });
-    }
-    const result = await service.executeAction(params.workspaceId, req.user!.id, action as AssistantPendingAction);
-    return successResponse(res, 'Action executed', result);
+    const input = assistantActionExecutionSchema.parse(req.body);
+    const result = await service.executeAction(params.workspaceId, req.user!.id, params.conversationId!, input.actionId);
+    return successResponse(res, 'Assistant action loaded', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function listActions(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = conversationParamsSchema.parse(req.params);
+    return successResponse(res, 'Assistant actions loaded', await service.listActions(params.workspaceId, req.user!.id, params.conversationId!));
   } catch (error) {
     next(error);
   }

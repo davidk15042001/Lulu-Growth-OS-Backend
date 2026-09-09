@@ -23,6 +23,7 @@ const agentAuth=await import('../src/modules/agents/agent.authorization.js');
 const { evaluateAgentActionPolicy, decideAgentToolPolicy }=await import('../src/modules/agents/agent.autonomy-policy.js');
 const records=await import('../src/modules/records/record.repo.js');
 const approvals=await import('../src/modules/approvals/approval.repo.js');
+const assistantActions=await import('../src/modules/ai/assistant-actions.service.js');
 const { registerAgentExecutionHandlers }=await import('../src/modules/agents/agent-execution.worker.js');
 const { registeredDomainEventHandlers }=await import('../src/events/domain-event.registry.js');
 const { DOMAIN_EVENT_TYPES }=await import('../src/events/domain-event.types.js');
@@ -267,6 +268,16 @@ describe('deterministic agent execution authorization',()=>{
     await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
     assert.equal(executed,1);
   });
+  it('keeps external packets approval-gated when the stored run mode is autonomous',async()=>{
+    const f=await agentFixture('google_reviews.reply');
+    f.record.data={...f.record.data,executionMode:'autonomous'};
+    const packet=await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
+    assert.ok(packet.approvalId);
+    assert.equal(packet.executionReady,false);
+    let executed=0;
+    await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
+    assert.equal(executed,0);
+  });
   it('rejects forged, tampered, prohibited and no-longer-entitled packets without side effects',async()=>{
     const f=await agentFixture();
     let executed=0;
@@ -294,5 +305,63 @@ describe('deterministic agent execution authorization',()=>{
     assert.equal(record?.stage,'execution_failed');
     assert.match(String(record?.data?.executionError),/untrusted_action_packet/);
     assert.equal((await db.query(`SELECT id FROM workspace_records WHERE source='agent_executor' AND workspace_id=$1`,[f.context.workspaceId])).rows.length,0);
+  });
+});
+
+describe('assistant action gateway',()=>{
+  async function assistantFixture() {
+    const user=await newUser(true);
+    const ws=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Assistant gateway',$1) RETURNING id`,[user.id])).rows[0]!;
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,[ws.id,user.id]);
+    await db.query(`INSERT INTO workspace_subscriptions(workspace_id,plan_key,status) VALUES($1,'test','active')`,[ws.id]);
+    const conversation=(await db.query<{id:string}>(`INSERT INTO ai_conversations(workspace_id,user_id,title) VALUES($1,$2,'Gateway test') RETURNING id`,[ws.id,user.id])).rows[0]!;
+    return {user,ws,conversation};
+  }
+
+  it('persists, authorizes and deduplicates safe assistant writes',async()=>{
+    const f=await assistantFixture();
+    const input={type:'crm.create_followup_task' as const,summary:'Create one customer follow-up',payload:{title:'Call customer',description:'Confirm the requested details'}};
+    const first=await assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,input);
+    assert.equal(first.status,'succeeded');
+    const second=await assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,input);
+    assert.equal(second.id,first.id);
+    const recordsResult=await db.query(`SELECT id FROM workspace_records WHERE workspace_id=$1 AND resource_type='crm_tasks' AND external_id=$2`,[f.ws.id,first.id]);
+    assert.equal(recordsResult.rows.length,1);
+  });
+
+  it('stores external actions behind an exact owner approval without side effects',async()=>{
+    const f=await assistantFixture();
+    const input={
+      type:'google_reviews.reply',summary:'Reply to the selected Google review',payload:{reviewId:'review-1',accountId:'account-1',locationId:'location-1',comment:'Thank you for your feedback.'},
+    } as const;
+    const [pending,retry]=await Promise.all([
+      assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,input),
+      assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,input),
+    ]);
+    assert.equal(pending.status,'pending_approval');
+    assert.equal(retry.id,pending.id);
+    assert.ok(pending.approvalId);
+    const approval=(await db.query<any>(`SELECT action_type,entity_id,payload,status FROM approval_requests WHERE id=$1`,[pending.approvalId])).rows[0];
+    assert.equal(approval.action_type,'agent_assistant_action');
+    assert.equal(approval.entity_id,pending.id);
+    assert.equal(approval.status,'pending');
+    assert.equal(typeof approval.payload.digest,'string');
+    assert.equal((await db.query(`SELECT id FROM approval_requests WHERE workspace_id=$1 AND action_type='agent_assistant_action' AND entity_id=$2`,[f.ws.id,pending.id])).rows.length,1);
+    assert.equal((await db.query(`SELECT id FROM workspace_records WHERE workspace_id=$1 AND source='ai_assistant'`,[f.ws.id])).rows.length,0);
+    await assert.rejects(assistantActions.executeAssistantActionRequest(f.ws.id,f.user.id,f.conversation.id,crypto.randomUUID()),{code:'NOT_FOUND'});
+  });
+
+  it('marks interrupted executions as uncertain instead of replaying an external side effect',async()=>{
+    const f=await assistantFixture();
+    const actionId=crypto.randomUUID();
+    await db.query(
+      `INSERT INTO assistant_action_requests(id,workspace_id,conversation_id,requested_by,action_type,summary,payload,payload_digest,status,idempotency_key,started_at)
+       VALUES($1,$2,$3,$4,'google_reviews.reply','Interrupted external action','{}',$5,'executing',$6,NOW()-INTERVAL '20 minutes')`,
+      [actionId,f.ws.id,f.conversation.id,f.user.id,'a'.repeat(64),crypto.randomUUID()],
+    );
+    await assistantActions.claimAndExecuteNextAssistantAction();
+    const interrupted=(await db.query<{status:string;errorCode:string}>(`SELECT status,error_code AS "errorCode" FROM assistant_action_requests WHERE id=$1`,[actionId])).rows[0]!;
+    assert.equal(interrupted.status,'failed');
+    assert.equal(interrupted.errorCode,'ASSISTANT_ACTION_STATE_UNCERTAIN');
   });
 });

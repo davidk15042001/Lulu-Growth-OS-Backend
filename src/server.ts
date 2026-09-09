@@ -18,6 +18,7 @@ import { startContentGenerationWorker, stopContentGenerationWorker } from './mod
 import { startDomainEventRuntime, stopDomainEventRuntime } from './events/domain-event.runtime.js';
 import { startAdminUserDeletionWorker, stopAdminUserDeletionWorker } from './modules/admin/admin-user-deletion.worker.js';
 import { startProviderControlWorkers, stopProviderControlWorkers } from './modules/provider-control/provider.worker.js';
+import { startAssistantActionWorker, stopAssistantActionWorker } from './modules/ai/assistant-action.worker.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -34,6 +35,7 @@ async function bootstrap() {
     startAutomaticAnalysisWorker();
     startAgentExecutionWorker();
     if (hasDb) {
+      startAssistantActionWorker();
       startAgentRunWorker();
       startContentGenerationWorker();
       startEmailSyncWorker();
@@ -65,6 +67,7 @@ async function bootstrap() {
       stopAutomaticAnalysisWorker();
       stopAgentExecutionWorker();
       if (hasDb) {
+        stopAssistantActionWorker();
         stopAgentRunWorker();
         stopContentGenerationWorker();
       }

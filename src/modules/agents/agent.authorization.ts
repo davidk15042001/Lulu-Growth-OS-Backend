@@ -13,17 +13,10 @@ import type { WorkspaceRecord } from '../records/record.repo.js';
 
 export type AgentExecutionIdentity = {workspaceId:string;userId:string;runId:string;stepId:string};
 function packetPolicy(command: AgentExecutionCommand, state: { capabilities: { autonomous: boolean } }, record: WorkspaceRecord) {
-  const policy = evaluateAgentActionPolicy(command.type, state.capabilities.autonomous, {
+  return evaluateAgentActionPolicy(command.type, state.capabilities.autonomous, {
     highRisk: command.riskLevel === 'high',
     budgetProtected: record.data?.budgetProtected === true,
   });
-  // Autonomous workflows may execute every registered action except explicit
-  // budget changes. Keep the policy registry fail-closed for direct callers,
-  // but resolve this product-level automation rule at the packet boundary.
-  if (record.data?.executionMode === 'autonomous' && record.data?.budgetProtected !== true && policy.decision === 'require_approval' && policy.autonomyClass !== 'PROHIBITED') {
-    return { ...policy, decision: 'allow' as const, reason: 'Autonomous workspace policy permits this registered action; budget changes remain approval-gated.' };
-  }
-  return policy;
 }
 function canonical(value:unknown):unknown {
   if(Array.isArray(value)) return value.map(canonical);

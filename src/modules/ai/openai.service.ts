@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
+import type { AssistantPendingAction } from './assistant-action.types.js';
 import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
@@ -247,12 +248,7 @@ export type AssistantLoopTool = {
   action?: boolean;
 };
 
-export type AssistantPendingAction = {
-  id: string;
-  type: string;
-  summary: string;
-  payload: Record<string, unknown>;
-};
+export type { AssistantPendingAction } from './assistant-action.types.js';
 
 export type AssistantToolCall = {
   name: string;
@@ -283,7 +279,7 @@ export async function generateAssistantResponseWithTools(
   const model = configuredModel(input.model);
   const instructions = [
     buildAssistantInstructions(input.context),
-    'Act autonomously: execute write actions directly when the user asks for them, then report back what you did and what the result was.',
+    'Act within the backend policy: request write actions only when the user explicitly asks. Report whether the action completed or is waiting for approval. Never claim success before the tool result confirms it.',
     'After analysis or actions, always give a clear structured report. Use these German sections where relevant: "Was ist passiert", "Gut / Schlecht", "Erledigt", "In Umsetzung", "Nächstes Ziel".',
     'Use markdown tables for tabular data. When numeric data benefits from a chart, add a fenced code block with the language "chart" containing JSON of the form {"type":"bar","title":"...","labels":["..."],"values":[numbers]}.',
   ].join('\n');
@@ -352,8 +348,11 @@ export async function generateAssistantResponseWithTools(
       toolCalls.push({ name, args, result });
 
       if (tool.action) {
-        pendingActions.push(result as AssistantPendingAction);
-        messages.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify({ status: 'pending_approval', actionId: (result as AssistantPendingAction).id }) });
+        const actionResult = result as Partial<AssistantPendingAction>;
+        if (actionResult.id && ['pending_approval', 'ready', 'executing'].includes(String(actionResult.status))) {
+          pendingActions.push(actionResult as AssistantPendingAction);
+        }
+        messages.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify(result) });
       } else {
         messages.push({ role: 'tool', tool_call_id: call.id, name, content: JSON.stringify(result) });
       }
