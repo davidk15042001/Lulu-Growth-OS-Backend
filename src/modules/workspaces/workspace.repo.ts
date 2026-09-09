@@ -378,7 +378,7 @@ export async function updateWorkspaceProfile(
   return withTransaction(async (client) => {
     const updated = await query(
       `UPDATE workspaces w
-          SET ${assignments.join(', ')}
+          SET ${assignments.join(', ')}, updated_at = NOW()
         WHERE w.id = $1
           AND w.deleted_at IS NULL
           AND EXISTS (
