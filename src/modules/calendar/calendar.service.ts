@@ -7,9 +7,11 @@ import { mergeCalendarEvents } from './calendar.merge.js';
 import type { CalendarProvider } from './calendar.types.js';
 import type { ListEventsQuery } from './calendar.validator.js';
 import type { CreateNativeEventInput } from './calendar.validator.js';
-import { RtcRole, RtcTokenBuilder } from 'agora-token';
+import AgoraToken from 'agora-token';
 import { randomUUID } from 'node:crypto';
 import { env } from '../../config/env.js';
+
+const { RtcRole, RtcTokenBuilder } = AgoraToken;
 
 export const listAccounts = repo.listAccounts;
 export const listEvents = repo.listEvents;
