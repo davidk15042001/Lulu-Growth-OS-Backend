@@ -47,6 +47,7 @@ async function main() {
       'workspace_payg_periods',
       'workspace_server_usage_ledger',
       'workspace_usage_adjustments',
+      'workspace_oauth_self_service_permissions',
       'idempotency_keys',
       'workspace_offerings',
       'workspace_platforms',

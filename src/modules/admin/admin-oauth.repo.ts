@@ -1,7 +1,7 @@
-import { query } from '../../db/pool.js';
+import { query, withTransaction } from '../../db/pool.js';
 import { disconnectLuluManagedControlConnection, upsertLuluManagedControlConnection } from '../provider-control/provider.repo.js';
 
-export const LULU_MANAGED_PROVIDERS = ['google-ads', 'google-analytics', 'meta', 'linkedin', 'tiktok-ads'] as const;
+export const LULU_MANAGED_PROVIDERS = ['google-ads', 'google-analytics', 'meta', 'facebook', 'instagram', 'whatsapp', 'linkedin', 'tiktok-ads'] as const;
 export type LuluManagedProvider = (typeof LULU_MANAGED_PROVIDERS)[number];
 
 export function isLuluManagedProvider(value: string): value is LuluManagedProvider {
@@ -97,4 +97,144 @@ export async function disconnectManagedOAuthConnection(provider: LuluManagedProv
   );
   for (const row of rows) await disconnectLuluManagedControlConnection(String(row.id));
   return Boolean(rowCount);
+}
+
+export async function isWorkspaceOAuthSelfServiceAllowed(workspaceId: string, provider: LuluManagedProvider) {
+  const { rows } = await query<{ allowed: boolean }>(
+    `SELECT allowed
+       FROM workspace_oauth_self_service_permissions
+      WHERE workspace_id = $1 AND provider = $2`,
+    [workspaceId, provider],
+  );
+  return rows[0]?.allowed === true;
+}
+
+export async function listWorkspaceOAuthSelfServiceProviders(workspaceId: string) {
+  const { rows } = await query<{ provider: LuluManagedProvider }>(
+    `SELECT provider
+       FROM workspace_oauth_self_service_permissions
+      WHERE workspace_id = $1 AND allowed = TRUE
+      ORDER BY provider`,
+    [workspaceId],
+  );
+  return rows.map((row) => row.provider);
+}
+
+export async function listWorkspaceOAuthSelfServicePermissions(search?: string) {
+  const values: unknown[] = [];
+  let filter = `w.deleted_at IS NULL`;
+  if (search?.trim()) {
+    values.push(`%${search.trim()}%`);
+    filter += ` AND (w.name ILIKE $1 OR w.slug ILIKE $1 OR EXISTS (
+      SELECT 1 FROM workspace_members wm_search
+      JOIN users u_search ON u_search.id = wm_search.user_id
+      WHERE wm_search.workspace_id = w.id AND u_search.email ILIKE $1
+    ))`;
+  }
+  const { rows } = await query<{
+    workspaceId: string;
+    workspaceName: string;
+    ownerEmail: string | null;
+    allowedProviders: LuluManagedProvider[];
+  }>(`
+    SELECT w.id AS "workspaceId", w.name AS "workspaceName",
+      (SELECT u.email FROM workspace_members wm
+        JOIN users u ON u.id = wm.user_id
+       WHERE wm.workspace_id = w.id AND wm.role = 'owner'
+       ORDER BY wm.joined_at ASC NULLS LAST LIMIT 1) AS "ownerEmail",
+      COALESCE(array_agg(p.provider ORDER BY p.provider)
+        FILTER (WHERE p.allowed = TRUE), '{}') AS "allowedProviders"
+    FROM workspaces w
+    LEFT JOIN workspace_oauth_self_service_permissions p ON p.workspace_id = w.id
+    WHERE ${filter}
+    GROUP BY w.id, w.name, w.created_at
+    ORDER BY w.created_at DESC
+    LIMIT 500
+  `, values);
+  return rows;
+}
+
+export async function setWorkspaceOAuthSelfServicePermission(input: {
+  workspaceId: string;
+  provider: LuluManagedProvider;
+  allowed: boolean;
+  actorId: string;
+}) {
+  return withTransaction(async (client) => {
+    const workspace = await query<{ id: string }>(
+      `SELECT id FROM workspaces WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [input.workspaceId],
+      client,
+    );
+    if (!workspace.rows[0]) return null;
+
+    const previous = await query<{ allowed: boolean }>(
+      `SELECT allowed FROM workspace_oauth_self_service_permissions
+        WHERE workspace_id = $1 AND provider = $2`,
+      [input.workspaceId, input.provider],
+      client,
+    );
+    await query(
+      `INSERT INTO workspace_oauth_self_service_permissions
+        (workspace_id, provider, allowed, granted_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (workspace_id, provider) DO UPDATE SET
+         allowed = EXCLUDED.allowed,
+         granted_by = EXCLUDED.granted_by,
+         updated_at = NOW()`,
+      [input.workspaceId, input.provider, input.allowed, input.actorId],
+      client,
+    );
+
+    if (!input.allowed) {
+      const affectedPlatforms = await query<{ id: string }>(
+        `SELECT id FROM workspace_platforms
+          WHERE workspace_id = $1 AND integration_key = $2 AND deleted_at IS NULL`,
+        [input.workspaceId, input.provider],
+        client,
+      );
+      const platformIds = affectedPlatforms.rows.map((row) => row.id);
+      if (platformIds.length > 0) {
+        await query(
+          `DELETE FROM workspace_platform_oauth_credentials
+            WHERE platform_id = ANY($1::uuid[])`,
+          [platformIds],
+          client,
+        );
+        await query(
+          `DELETE FROM provider_connections
+            WHERE workspace_id = $1 AND source_type = 'workspace_platform'
+              AND source_id = ANY($2::uuid[])`,
+          [input.workspaceId, platformIds],
+          client,
+        );
+        await query(
+          `UPDATE workspace_platforms SET
+             connection_status = 'disconnected', external_account_id = NULL,
+             granted_scopes = '{}', settings = '{}'::jsonb, last_error = NULL,
+             updated_at = NOW()
+           WHERE workspace_id = $1 AND id = ANY($2::uuid[])`,
+          [input.workspaceId, platformIds],
+          client,
+        );
+      }
+    }
+
+    await query(
+      `INSERT INTO audit_log
+        (workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data)
+       VALUES ($1, $2, 'workspace.oauth_self_service_changed',
+         'workspace_oauth_self_service_permission', $3,
+         $4::jsonb, $5::jsonb)`,
+      [
+        input.workspaceId,
+        input.actorId,
+        `${input.workspaceId}:${input.provider}`,
+        JSON.stringify({ allowed: previous.rows[0]?.allowed ?? false, provider: input.provider }),
+        JSON.stringify({ allowed: input.allowed, provider: input.provider }),
+      ],
+      client,
+    );
+    return { workspaceId: input.workspaceId, provider: input.provider, allowed: input.allowed };
+  });
 }

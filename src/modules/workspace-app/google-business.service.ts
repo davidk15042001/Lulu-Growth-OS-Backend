@@ -135,10 +135,10 @@ export async function getGoogleBusinessOverview(workspaceId: string) {
   }
 }
 
-export function createGoogleBusinessAuthorization(workspaceId: string, userId: string, input: { returnTo?: string | undefined }) {
+export async function createGoogleBusinessAuthorization(workspaceId: string, userId: string, input: { returnTo?: string | undefined }) {
   return {
     provider: GOOGLE_BUSINESS_PROVIDER,
-    authorizationUrl: buildAuthorizationUrl(
+    authorizationUrl: await buildAuthorizationUrl(
       GOOGLE_BUSINESS_PROVIDER,
       workspaceId,
       userId,

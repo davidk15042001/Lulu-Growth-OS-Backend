@@ -93,6 +93,10 @@ router.route('/platforms/:provider/connect')
   .get(requireWorkspaceEditor, controller.startOAuth)
   .all(methodNotAllowed);
 
+router.route('/oauth-self-service-permissions')
+  .get(requireWorkspaceMember, controller.oauthSelfServicePermissions)
+  .all(methodNotAllowed);
+
 router.route('/competitors')
   .get(requireWorkspaceMember, controller.listCompetitors)
   .post(requireWorkspaceEditor, controller.createCompetitor)

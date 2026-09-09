@@ -8,6 +8,7 @@ process.env.DATABASE_URL='postgres://test:test@127.0.0.1:1/admin_ops';
 process.env.JWT_SECRET='admin-operations-tests-secret-0123456789';
 const {pool}=await import('../src/db/pool.js');
 const repo=await import('../src/modules/admin/admin.repo.js');
+const adminOAuthRepo=await import('../src/modules/admin/admin-oauth.repo.js');
 const contentRepo=await import('../src/modules/content-generation/content-generation.repo.js');
 const support=await import('../src/modules/support/support.repo.js');
 const {capabilitiesForRoles}=await import('../src/modules/admin/admin.authorization.js');
@@ -63,6 +64,20 @@ it('keeps a cancelled workspace refresh cancelled when a worker reports late pro
   assert.equal(cancelled?.status,'cancelled');
   assert.equal(await contentRepo.updateJob(workspaceId,String(job.id),{status:'completed',progress:100}),null);
   assert.equal((await contentRepo.getJob(workspaceId,String(job.id)))?.status,'cancelled');
+});
+it('grants workspace-owned OAuth per provider and wipes its token when revoked',async()=>{
+  assert.equal(await adminOAuthRepo.isWorkspaceOAuthSelfServiceAllowed(workspaceId,'whatsapp'),false);
+  await adminOAuthRepo.setWorkspaceOAuthSelfServicePermission({workspaceId,provider:'whatsapp',allowed:true,actorId:userId});
+  assert.equal(await adminOAuthRepo.isWorkspaceOAuthSelfServiceAllowed(workspaceId,'whatsapp'),true);
+  const platform=(await db.query<{id:string}>(`INSERT INTO workspace_platforms(workspace_id,integration_key,name,category,connection_status)
+    VALUES($1,'whatsapp','WhatsApp','messaging','connected') RETURNING id`,[workspaceId])).rows[0]!;
+  await db.query(`INSERT INTO workspace_platform_oauth_credentials(platform_id,provider,encrypted_access_token)
+    VALUES($1,'whatsapp','encrypted-token')`,[platform.id]);
+  await adminOAuthRepo.setWorkspaceOAuthSelfServicePermission({workspaceId,provider:'whatsapp',allowed:false,actorId:userId});
+  assert.equal(await adminOAuthRepo.isWorkspaceOAuthSelfServiceAllowed(workspaceId,'whatsapp'),false);
+  assert.equal((await db.query(`SELECT 1 FROM workspace_platform_oauth_credentials WHERE platform_id=$1`,[platform.id])).rows.length,0);
+  assert.equal((await db.query<{connection_status:string}>(`SELECT connection_status FROM workspace_platforms WHERE id=$1`,[platform.id])).rows[0]?.connection_status,'disconnected');
+  assert.equal((await db.query(`SELECT 1 FROM audit_log WHERE action='workspace.oauth_self_service_changed' AND workspace_id=$1`,[workspaceId])).rows.length,2);
 });
 it('shows real sites, runs, approvals, jobs and audit entries',async()=>{
   await db.query(`INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name) VALUES($1,'managed','managed','Customer site')`,[workspaceId]);

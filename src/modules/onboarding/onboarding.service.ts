@@ -343,7 +343,7 @@ export function listPlatforms(workspaceId: string) {
 
 export async function createPlatform(workspaceId: string, input: CreatePlatformInput) {
   if (input.integrationKey && oauthService.isSupportedProvider(input.integrationKey) && oauthService.isLuluManagedOAuthProvider(input.integrationKey)) {
-    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'Advertising and analytics providers are managed centrally by Lulu and cannot be added to a workspace.', { provider: input.integrationKey, management: 'lulu_managed' });
+    await oauthService.assertWorkspaceOAuthProviderAllowed(input.integrationKey, workspaceId);
   }
   const platform = await repo.createPlatform(workspaceId, input);
   await repo.setOnboardingStep(workspaceId, 'billing');
@@ -357,10 +357,10 @@ export async function updatePlatform(
 ) {
   const current = (await repo.listPlatforms(workspaceId)).find((item) => item.id === platformId);
   if (current?.integrationKey && oauthService.isSupportedProvider(current.integrationKey) && oauthService.isLuluManagedOAuthProvider(current.integrationKey)) {
-    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu and cannot be changed inside a workspace.', { provider: current.integrationKey, management: 'lulu_managed' });
+    await oauthService.assertWorkspaceOAuthProviderAllowed(current.integrationKey, workspaceId);
   }
   if (input.integrationKey && oauthService.isSupportedProvider(input.integrationKey) && oauthService.isLuluManagedOAuthProvider(input.integrationKey)) {
-    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'Advertising and analytics providers are managed centrally by Lulu and cannot be added to a workspace.', { provider: input.integrationKey, management: 'lulu_managed' });
+    await oauthService.assertWorkspaceOAuthProviderAllowed(input.integrationKey, workspaceId);
   }
   const platform = await repo.updatePlatform(workspaceId, platformId, input);
   if (!platform) throw notFoundError('Platform not found');
@@ -370,7 +370,7 @@ export async function updatePlatform(
 export async function archivePlatform(workspaceId: string, platformId: string) {
   const current = (await repo.listPlatforms(workspaceId)).find((item) => item.id === platformId);
   if (current?.integrationKey && oauthService.isSupportedProvider(current.integrationKey) && oauthService.isLuluManagedOAuthProvider(current.integrationKey)) {
-    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu and cannot be changed inside a workspace.', { provider: current.integrationKey, management: 'lulu_managed' });
+    await oauthService.assertWorkspaceOAuthProviderAllowed(current.integrationKey, workspaceId);
   }
   if (!(await repo.archivePlatform(workspaceId, platformId))) {
     throw notFoundError('Platform not found');

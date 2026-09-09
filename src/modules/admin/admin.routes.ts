@@ -37,6 +37,8 @@ router.route('/integrations').get(requireAuth, requireAdminCapabilities('provide
 router.route('/oauth-connections').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getOAuthConnections).all(methodNotAllowed);
 router.route('/oauth-connections/:provider/start').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.startManagedOAuth).all(methodNotAllowed);
 router.route('/oauth-connections/:provider').delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.disconnectManagedOAuth).all(methodNotAllowed);
+router.route('/oauth-self-service').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getOAuthSelfServicePermissions).all(methodNotAllowed);
+router.route('/oauth-self-service/:workspaceId/:provider').put(requireAuth, requireAdminCapabilities('providers.manage'), controller.setOAuthSelfServicePermission).all(methodNotAllowed);
 router.route('/provider-control-plane').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getProviderControlPlane).all(methodNotAllowed);
 router.route('/provider-control-plane/:connectionId/access').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.grantProviderWorkspaceAccess).delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.revokeProviderWorkspaceAccess).all(methodNotAllowed);
 router.route('/unifyport/status').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortStatus).all(methodNotAllowed);

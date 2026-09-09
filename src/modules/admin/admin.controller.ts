@@ -420,6 +420,38 @@ export async function disconnectManagedOAuth(req: AuthedRequest, res: Response, 
   } catch (error) { next(error); }
 }
 
+export async function getOAuthSelfServicePermissions(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const search = typeof req.query.search === 'string' ? req.query.search.slice(0, 200) : undefined;
+    const workspaces = await adminOAuthRepo.listWorkspaceOAuthSelfServicePermissions(search);
+    return successResponse(res, 'Workspace OAuth self-service permissions loaded', {
+      workspaces,
+      providers: adminOAuthRepo.LULU_MANAGED_PROVIDERS,
+    });
+  } catch (error) { next(error); }
+}
+
+export async function setOAuthSelfServicePermission(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = z.string().uuid().parse(req.params.workspaceId);
+    const providerValue = z.string().min(1).parse(req.params.provider);
+    const allowed = z.boolean().parse(req.body?.allowed);
+    if (!adminOAuthRepo.isLuluManagedProvider(providerValue)) {
+      return res.status(404).json({ success: false, error: { code: 'OAUTH_PROVIDER_NOT_ADMIN_MANAGED', message: 'This provider is not configured as a Lulu-managed connection' } });
+    }
+    const permission = await adminOAuthRepo.setWorkspaceOAuthSelfServicePermission({
+      workspaceId,
+      provider: providerValue,
+      allowed,
+      actorId: req.user!.id,
+    });
+    if (!permission) return res.status(404).json({ success: false, error: { code: 'WORKSPACE_NOT_FOUND', message: 'Workspace not found' } });
+    return successResponse(res, allowed ? 'Workspace OAuth self-service enabled' : 'Workspace OAuth self-service disabled', permission);
+  } catch (error) { next(error); }
+}
+
 export async function getApprovals(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     if (!requireAdmin(req, res)) return;

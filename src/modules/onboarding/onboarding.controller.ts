@@ -3,6 +3,7 @@ import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import { AppError } from '../../utils/app-error.js';
 import * as oauthService from './oauth.service.js';
+import * as adminOAuthRepo from '../admin/admin-oauth.repo.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import { resetWebsiteProviderState } from '../websites/website.automation.service.js';
 import * as service from './onboarding.service.js';
@@ -384,14 +385,21 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
       return;
     }
     const providerValue = provider as oauthService.OAuthProvider;
-    // Advertising, analytics and social-ad credentials are owned by Lulu.
-    // Workspace users may still connect Google Business, CRM, website and
-    // other user-managed integrations through this route.
-    oauthService.assertWorkspaceOAuthProviderAllowed(providerValue);
+    // Centrally managed providers pass this route only after an administrator
+    // has enabled workspace OAuth self-service for the selected provider.
     const shop = typeof req.query.shop === 'string' ? req.query.shop.trim().toLowerCase() : undefined;
     const returnTo = typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined;
-    const url = oauthService.buildAuthorizationUrl(providerValue, workspaceId(req), req.user!.id, shop, returnTo);
+    const url = await oauthService.buildAuthorizationUrl(providerValue, workspaceId(req), req.user!.id, shop, returnTo);
     return successResponse(res, 'OAuth authorization URL created', { provider, authorizationUrl: url });
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function oauthSelfServicePermissions(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const providers = await adminOAuthRepo.listWorkspaceOAuthSelfServiceProviders(workspaceId(req));
+    return successResponse(res, 'Workspace OAuth permissions loaded', { providers });
   } catch (error) {
     next(error);
   }

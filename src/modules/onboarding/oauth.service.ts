@@ -5,7 +5,7 @@ import { AppError } from '../../utils/app-error.js';
 import * as repo from './onboarding.repo.js';
 import * as adminOAuthRepo from '../admin/admin-oauth.repo.js';
 
-export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'google-analytics' | 'google-business' | 'meta' | 'linkedin' | 'tiktok-ads' | 'webflow' | 'wordpress' | 'shopify';
+export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'google-analytics' | 'google-business' | 'meta' | 'facebook' | 'instagram' | 'whatsapp' | 'linkedin' | 'tiktok-ads' | 'webflow' | 'wordpress' | 'shopify';
 
 type ProviderConfig = {
   clientId: string;
@@ -36,6 +36,9 @@ const providerNames: Record<OAuthProvider, string> = {
   'google-analytics': 'Google Analytics',
   'google-business': 'Google Business',
   meta: 'Meta Marketing',
+  facebook: 'Facebook',
+  instagram: 'Instagram',
+  whatsapp: 'WhatsApp',
   linkedin: 'LinkedIn Ads',
   'tiktok-ads': 'TikTok Ads',
   webflow: 'Webflow',
@@ -51,6 +54,9 @@ const providerCategories: Record<OAuthProvider, string> = {
   'google-analytics': 'analytics',
   'google-business': 'digital-appearance',
   meta: 'marketing',
+  facebook: 'social',
+  instagram: 'social',
+  whatsapp: 'messaging',
   linkedin: 'marketing',
   'tiktok-ads': 'marketing',
   webflow: 'digital-appearance',
@@ -70,6 +76,9 @@ const providerScopes: Record<OAuthProvider, string[]> = {
   'google-analytics': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/analytics.readonly'],
   'google-business': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/business.manage'],
   meta: ['ads_read', 'ads_management', 'business_management'],
+  facebook: ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'],
+  instagram: ['instagram_basic', 'instagram_manage_messages', 'pages_show_list', 'pages_read_engagement'],
+  whatsapp: ['business_management', 'whatsapp_business_management', 'whatsapp_business_messaging'],
   linkedin: ['openid', 'profile', 'email', 'r_ads_reporting'],
   'tiktok-ads': ['user.info.basic', 'advertiser.read', 'ad.read', 'ad.write'],
   webflow: ['sites:read', 'sites:write', 'cms:read', 'cms:write'],
@@ -104,6 +113,9 @@ function providerConfig(provider: OAuthProvider): ProviderConfig {
       if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Business OAuth credentials are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'], requiredScope: 'https://www.googleapis.com/auth/business.manage' }, 500);
       return { ...common, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' };
     case 'meta':
+    case 'facebook':
+    case 'instagram':
+    case 'whatsapp':
       if (!env.META_CLIENT_ID || !env.META_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Meta OAuth credentials are missing on the server', { requiredEnv: ['META_CLIENT_ID', 'META_CLIENT_SECRET'] }, 500);
       return { ...common, clientId: env.META_CLIENT_ID, clientSecret: env.META_CLIENT_SECRET, authorizationUrl: `https://www.facebook.com/${env.META_GRAPH_VERSION}/dialog/oauth`, tokenUrl: `https://graph.facebook.com/${env.META_GRAPH_VERSION}/oauth/access_token` };
     case 'linkedin':
@@ -174,8 +186,8 @@ export function getSafeStateContext(stateValue?: string) {
   }
 }
 
-export function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: string, userId: string, shop?: string, returnTo?: string) {
-  assertWorkspaceOAuthProviderAllowed(provider);
+export async function buildAuthorizationUrl(provider: OAuthProvider, workspaceId: string, userId: string, shop?: string, returnTo?: string) {
+  await assertWorkspaceOAuthProviderAllowed(provider, workspaceId);
   const config = providerConfig(provider);
   if (provider === 'shopify' && (!shop || !/^[a-z0-9][a-z0-9-]*\.myshopify\.com$/i.test(shop))) throw oauthError(provider, 'SHOPIFY_SHOP_DOMAIN_INVALID', 'Shopify shop domain must use the format example.myshopify.com', { expectedFormat: 'example.myshopify.com' }, 400);
   const safeDestination = safeReturnTo(returnTo);
@@ -256,8 +268,8 @@ async function accountIdentity(provider: OAuthProvider, accessToken: string, tok
         ? 'https://openidconnect.googleapis.com/v1/userinfo'
         : provider === 'google-business'
           ? 'https://mybusinessaccountmanagement.googleapis.com/v1/accounts'
-          : provider === 'meta'
-        ? `https://graph.facebook.com/${env.META_GRAPH_VERSION}/me?fields=id,name`
+          : provider === 'meta' || provider === 'facebook' || provider === 'instagram' || provider === 'whatsapp'
+            ? `https://graph.facebook.com/${env.META_GRAPH_VERSION}/me?fields=id,name`
         : provider === 'linkedin'
           ? 'https://api.linkedin.com/v2/userinfo'
           : provider === 'webflow'
@@ -276,7 +288,7 @@ async function accountIdentity(provider: OAuthProvider, accessToken: string, tok
 export async function completeOAuthCallback(provider: OAuthProvider, code: string, stateValue: string) {
   const state = parseState(stateValue);
   if (state.provider !== provider) throw new Error('OAuth provider mismatch');
-  if (state.scope === 'workspace') assertWorkspaceOAuthProviderAllowed(provider);
+  if (state.scope === 'workspace') await assertWorkspaceOAuthProviderAllowed(provider, state.workspaceId!);
   else assertAdminOAuthProvider(provider);
   const config = providerConfig(provider);
   const exchangedTokenData = await exchangeCode(provider, code, state);
@@ -325,7 +337,7 @@ export async function refreshStoredOAuthCredential(input: {
   provider: OAuthProvider;
   encryptedRefreshToken: string | null;
 }) {
-  assertWorkspaceOAuthProviderAllowed(input.provider);
+  await assertWorkspaceOAuthProviderAllowed(input.provider, input.workspaceId);
   if (!input.encryptedRefreshToken) {
     throw oauthError(input.provider, 'OAUTH_REFRESH_TOKEN_MISSING', 'Provider connection must be re-authorized because no refresh token is stored', undefined, 401);
   }
@@ -347,7 +359,7 @@ export async function refreshStoredOAuthCredential(input: {
 }
 
 export function isSupportedProvider(value: string): value is OAuthProvider {
-  return ['salesforce', 'pipedrive', 'hubspot', 'google-ads', 'google-analytics', 'google-business', 'meta', 'linkedin', 'tiktok-ads', 'webflow', 'wordpress', 'shopify'].includes(value);
+  return ['salesforce', 'pipedrive', 'hubspot', 'google-ads', 'google-analytics', 'google-business', 'meta', 'facebook', 'instagram', 'whatsapp', 'linkedin', 'tiktok-ads', 'webflow', 'wordpress', 'shopify'].includes(value);
 }
 
 export function isLuluManagedOAuthProvider(provider: OAuthProvider) {
@@ -358,6 +370,8 @@ export function assertAdminOAuthProvider(provider: OAuthProvider) {
   if (!isLuluManagedOAuthProvider(provider)) throw oauthError(provider, 'OAUTH_PROVIDER_NOT_ADMIN_MANAGED', 'This provider is not configured as a Lulu-managed administrator connection', undefined, 403);
 }
 
-export function assertWorkspaceOAuthProviderAllowed(provider: OAuthProvider) {
-  if (isLuluManagedOAuthProvider(provider)) throw oauthError(provider, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu and cannot be connected inside a workspace', { management: 'lulu_managed' }, 403);
+export async function assertWorkspaceOAuthProviderAllowed(provider: OAuthProvider, workspaceId: string) {
+  if (!isLuluManagedOAuthProvider(provider)) return;
+  if (await adminOAuthRepo.isWorkspaceOAuthSelfServiceAllowed(workspaceId, provider)) return;
+  throw oauthError(provider, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu. An administrator must allow this workspace to connect its own account.', { management: 'lulu_managed', selfServiceAllowed: false }, 403);
 }
