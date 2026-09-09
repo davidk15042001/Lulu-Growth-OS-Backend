@@ -41,6 +41,9 @@ function agoraConfig() {
 
 function buildAgoraToken(channelName: string, userAccount: string, expiresAt: number) {
   const config = agoraConfig();
+  if (!channelName?.trim()) {
+    throw new AppError(500, 'AGORA_CHANNEL_UNAVAILABLE', 'The calendar meeting has no Agora channel configured');
+  }
   return RtcTokenBuilder.buildTokenWithUserAccount(config.appId, config.certificate, channelName, userAccount, RtcRole.PUBLISHER, expiresAt, expiresAt);
 }
 

@@ -431,7 +431,7 @@ export async function createSyncJob(workspaceId: string, accountId: string, user
   });
 }
 
-const nativeEventSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", title, description, start_at AS "startAt", end_at AS "endAt", timezone, location, status, customer_record_id AS "customerId", created_at AS "createdAt", updated_at AS "updatedAt"`;
+const nativeEventSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", title, description, start_at AS "startAt", end_at AS "endAt", timezone, location, status, customer_record_id AS "customerId", agora_channel_name AS "agoraChannelName", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
 function frontendBaseUrl() {
   const configured = env.FRONTEND_BASE_URL?.replace(/\/$/, '');
