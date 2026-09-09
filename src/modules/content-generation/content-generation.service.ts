@@ -1,6 +1,6 @@
 import { conflictError } from '../../utils/app-error.js';
 import * as repo from './content-generation.repo.js';
-import { startAutomaticRun } from '../agents/agent.service.js';
+import { cancelRun, startAutomaticRun } from '../agents/agent.service.js';
 import * as agentRepo from '../agents/agent.repo.js';
 import type { AgentModule } from '../agents/agent.capabilities.js';
 import * as onboardingService from '../onboarding/onboarding.service.js';
@@ -65,6 +65,20 @@ export async function getContentRefresh(workspaceId: string, jobId: string) {
   const job = await repo.getJob(workspaceId, jobId);
   if (!job) return null;
   return job;
+}
+
+export async function cancelContentRefresh(workspaceId: string, jobId: string, userId: string) {
+  const job = await repo.getJob(workspaceId, jobId);
+  if (!job) return null;
+  if (['completed', 'failed', 'cancelled'].includes(String(job.status))) return job;
+  const cancelled = await repo.cancelJob(workspaceId, jobId);
+  const statuses = job.moduleStatus && typeof job.moduleStatus === 'object' ? job.moduleStatus as Record<string, unknown> : {};
+  const current = typeof job.currentPhase === 'string' ? statuses[job.currentPhase] : null;
+  const runId = current && typeof current === 'object' && typeof (current as Record<string, unknown>).runId === 'string'
+    ? String((current as Record<string, unknown>).runId)
+    : null;
+  if (runId) await cancelRun(workspaceId, runId, userId).catch(() => undefined);
+  return cancelled;
 }
 
 export async function listContentAssets(workspaceId: string, module?: repo.ContentModule) {
@@ -134,6 +148,8 @@ export async function executeContentRefresh(workspaceId: string, userId: string,
     await repo.updateJob(workspaceId, jobId, { status: 'running', current_phase: 'modules', started_at: new Date(), heartbeat_at: new Date() });
     const moduleStatus: Record<string, unknown> = {};
     for (let index = 0; index < modules.length; index += 1) {
+      const currentJob = await repo.getJob(workspaceId, jobId);
+      if (currentJob?.status === 'cancelled') return;
       const module = modules[index]!;
       // #region debug-point D:backend-module-start
       reportDebug('D', 'src/modules/content-generation/content-generation.service.ts:executeContentRefresh:module:start', '[DEBUG] Backend begins content refresh module', { workspaceId, jobId, module, index, totalModules: modules.length });

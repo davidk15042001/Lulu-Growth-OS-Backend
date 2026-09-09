@@ -252,7 +252,7 @@ export async function saveCompanyInformation(workspaceId: string, input: Company
          country_region = $4,
          tax_id = $5,
          address = $6,
-         onboarding_step = 'business_description'
+         onboarding_step = 'products_services'
      WHERE id = $1 AND deleted_at IS NULL`,
     [workspaceId, input.companyName, input.industry, input.countryRegion, input.taxId, input.address]
   );

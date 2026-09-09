@@ -40,7 +40,8 @@ export async function updateJob(workspaceId: string, jobId: string, patch: Recor
   const assignments = keys.map((key, index) => `${key}=$${index + 3}`).join(', ');
   const values = keys.map((key) => patch[key]);
   return withTransaction(async (client) => {
-    const { rows } = await query(`UPDATE workspace_content_refresh_jobs SET ${assignments}, updated_at=NOW() WHERE workspace_id=$1 AND id=$2 RETURNING ${jobSelect}`, [workspaceId, jobId, ...values], client);
+    const preserveCancellation = patch.status === 'cancelled' ? '' : `AND status <> 'cancelled'`;
+    const { rows } = await query(`UPDATE workspace_content_refresh_jobs SET ${assignments}, updated_at=NOW() WHERE workspace_id=$1 AND id=$2 ${preserveCancellation} RETURNING ${jobSelect}`, [workspaceId, jobId, ...values], client);
     const job = rows[0] ?? null;
     const status = typeof patch.status === 'string' ? patch.status : null;
     if (job && (status === 'completed' || status === 'failed')) await appendDomainEvent({
@@ -53,6 +54,13 @@ export async function updateJob(workspaceId: string, jobId: string, patch: Recor
       idempotencyKey: `content-refresh:${jobId}:${status}:attempt:${job.attemptCount}:v1`,
     }, client);
     return job;
+  });
+}
+
+export async function cancelJob(workspaceId: string, jobId: string) {
+  return updateJob(workspaceId, jobId, {
+    status: 'cancelled', current_phase: 'cancelled', error_message: 'Cancelled by workspace user',
+    completed_at: new Date(), worker_id: null, heartbeat_at: new Date(),
   });
 }
 

@@ -61,8 +61,61 @@ export async function createVerifiedUser(email: string, passwordHash: string, fi
     const user=(await query<{id:string}>(
       'INSERT INTO users(email,password_hash,first_name,last_name,verified_at) VALUES($1,$2,$3,$4,NOW()) RETURNING id',
       [email.toLowerCase(),passwordHash,firstName,lastName],client)).rows[0]!;
+    await ensureInitialWorkspace(user.id, firstName, lastName, email, client);
     return {id:user.id};
   });
+}
+
+export async function ensureInitialWorkspace(
+  userId: string,
+  firstName: string | null,
+  lastName: string | null,
+  email: string,
+  transactionClient?: PoolClient,
+) {
+  const create = async (client: PoolClient) => {
+    await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`initial-workspace:${userId}`], client);
+    const existing = await query<{ id: string }>(
+      `SELECT w.id
+         FROM workspaces w
+         JOIN workspace_members wm ON wm.workspace_id=w.id
+        WHERE wm.user_id=$1 AND w.deleted_at IS NULL
+        ORDER BY w.created_at ASC
+        LIMIT 1`,
+      [userId],
+      client,
+    );
+    if (existing.rows[0]) return existing.rows[0];
+
+    const personName = [firstName, lastName].map((value) => value?.trim()).filter(Boolean).join(' ');
+    const emailName = email.split('@')[0]?.trim() || 'New';
+    const workspaceName = `${personName || emailName} Workspace`.slice(0, 200);
+    const workspace = await query<{ id: string }>(
+      `INSERT INTO workspaces(name, created_by, onboarding_step)
+       VALUES($1, $2, 'billing')
+       RETURNING id`,
+      [workspaceName, userId],
+      client,
+    );
+    const workspaceId = workspace.rows[0]!.id;
+    await query(
+      `INSERT INTO workspace_members(workspace_id, user_id, role)
+       VALUES($1, $2, 'owner')`,
+      [workspaceId, userId],
+      client,
+    );
+    await query(
+      `INSERT INTO workspace_subscriptions(
+         workspace_id, plan_key, status, seats, trial_ends_at,
+         current_period_starts_at, current_period_ends_at
+       ) VALUES($1, 'starter', 'trialing', 1, NOW() + INTERVAL '14 days', NOW(), NOW() + INTERVAL '1 month')
+       ON CONFLICT (workspace_id) DO NOTHING`,
+      [workspaceId],
+      client,
+    );
+    return { id: workspaceId };
+  };
+  return transactionClient ? create(transactionClient) : withTransaction(create);
 }
 export async function issueOtp(userId: string, purpose: 'verify_email'|'password_reset') {
   return withTransaction(async client=>{

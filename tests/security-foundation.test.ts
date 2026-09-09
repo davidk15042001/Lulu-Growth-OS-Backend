@@ -97,6 +97,23 @@ describe('email verification security',()=>{
   });
 });
 
+describe('billing-first account bootstrap',()=>{
+  it('creates exactly one billing-gated workspace for a newly registered user',async()=>{
+    const email=`${crypto.randomUUID()}@example.test`;
+    const user=await auth.createVerifiedUser(email,passwordHash,'Billing','First');
+    const initial=await db.query<{id:string;onboarding_step:string}>(
+      `SELECT w.id,w.onboarding_step FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1`,
+      [user.id],
+    );
+    assert.equal(initial.rows.length,1);
+    assert.equal(initial.rows[0]?.onboarding_step,'billing');
+    const login=await service.loginUser(email,'Test-password-2026!');
+    assert.ok('ok' in login);
+    const afterLogin=await db.query(`SELECT w.id FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1`,[user.id]);
+    assert.equal(afterLogin.rows.length,1);
+  });
+});
+
 describe('sessions and refresh families',()=>{
   it('login creates a short signed session without invalidating other logins',async()=>{
     const user=await newUser(true);

@@ -132,8 +132,8 @@ export async function createWorkspace(
 ): Promise<Workspace> {
   return withTransaction(async (client) => {
     const created = await query<{ id: string }>(
-      `INSERT INTO workspaces (name, slug, industry, company_size, country_region, tax_id, address, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO workspaces (name, slug, industry, company_size, country_region, tax_id, address, created_by, onboarding_step)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'billing')
        RETURNING id`,
       [
         input.companyName,

@@ -307,6 +307,15 @@ export async function contentRefreshStatus(req: WorkspaceRequest, res: Response,
   } catch (error) { next(error); }
 }
 
+export async function cancelContentRefresh(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    const job = await contentGeneration.cancelContentRefresh(workspaceId, String(req.params.jobId), req.user!.id);
+    if (!job) return res.status(404).json({ success: false, error: { code: 'CONTENT_REFRESH_NOT_FOUND', message: 'Workspace content refresh not found' } });
+    return successResponse(res, 'Workspace content refresh cancelled', job);
+  } catch (error) { next(error); }
+}
+
 export async function contentAssets(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { workspaceId } = params(req);

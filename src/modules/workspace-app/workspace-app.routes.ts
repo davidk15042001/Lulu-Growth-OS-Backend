@@ -127,6 +127,7 @@ router.route('/content-refresh')
 
 router.route('/content-refresh/:jobId')
   .get(requireWorkspaceMember, controller.contentRefreshStatus)
+  .post(requireWorkspaceEditor, controller.cancelContentRefresh)
   .all(methodNotAllowed);
 
 router.route('/content-assets')

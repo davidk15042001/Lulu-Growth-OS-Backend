@@ -596,7 +596,7 @@ async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey
       [workspaceId, planKey, JSON.stringify(metadata)],
       client,
     );
-    await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId], client);
+    await advanceOnboardingAfterBilling(workspaceId, client);
     if (automationTrigger) {
       await appendDomainEvent({
         workspaceId,
@@ -848,19 +848,22 @@ export async function syncPaygApiUsageQrPayment(workspaceId: string, paymentId: 
 }
 
 async function assertOnboardingReadyForBilling(workspaceId: string) {
-  const [workspace, state] = await Promise.all([
-    findWorkspaceById(workspaceId),
-    onboardingRepo.getCompletionState(workspaceId),
-  ]);
-  if (!workspace || !state) throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Workspace not found.');
+  const workspace = await findWorkspaceById(workspaceId);
+  if (!workspace) throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Workspace not found.');
+}
 
-  const missing: string[] = [];
-  if (!state.hasCompanyInformation) missing.push('companyInformation');
-  if (!state.hasBusinessDescription || workspace.onboardingFileReuploadRequired) missing.push('businessDescription');
-  if (!workspace.onboardingCompletedAt && !['billing', 'setup_complete'].includes(workspace.onboardingStep)) missing.push('existingPlatforms');
-  if (missing.length > 0) {
-    throw new AppError(422, 'ONBOARDING_INCOMPLETE', 'Complete the required onboarding steps before choosing a billing plan.', { missing });
-  }
+async function advanceOnboardingAfterBilling(workspaceId: string, client?: import('pg').PoolClient) {
+  await query(
+    `UPDATE workspaces
+        SET onboarding_step=CASE
+              WHEN onboarding_completed_at IS NULL THEN 'company_information'
+              ELSE onboarding_step
+            END,
+            onboarding_file_reupload_required=FALSE
+      WHERE id=$1 AND deleted_at IS NULL`,
+    [workspaceId],
+    client,
+  );
 }
 
 function testPlanPasswordMatches(password?: string) {
@@ -1224,7 +1227,7 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
     await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
   }
   await withTransaction(async (client) => {
-    await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId], client);
+    await advanceOnboardingAfterBilling(workspaceId, client);
     await appendDomainEvent({
       workspaceId,
       type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
@@ -1364,7 +1367,7 @@ export async function handleWebhook(event: AirwallexObject) {
         await ensurePaygProfile(workspaceId, typeof webhookPaymentSourceId === 'string' ? webhookPaymentSourceId : null);
       }
       await withTransaction(async (client) => {
-        await query(`UPDATE workspaces SET onboarding_step='setup_complete', onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()) WHERE id=$1 AND deleted_at IS NULL`, [workspaceId], client);
+        await advanceOnboardingAfterBilling(workspaceId, client);
         await appendDomainEvent({
           workspaceId,
           type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
@@ -1400,6 +1403,8 @@ registerDomainEventHandler({
   async handle(event) {
     if (!event.workspaceId) throw new Error('Billing activation event is missing a workspace ID');
     const trigger = typeof event.payload.trigger === 'string' ? event.payload.trigger : 'billing_activation';
+    const workspace = await findWorkspaceById(event.workspaceId);
+    if (!workspace?.onboardingCompletedAt) return { workspaceId: event.workspaceId, trigger, deferredUntilOnboarding: true };
     await startPostPaymentAutomation(event.workspaceId, trigger);
     return { workspaceId: event.workspaceId, trigger };
   },

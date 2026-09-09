@@ -6,6 +6,8 @@ import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import * as repo from './onboarding.repo.js';
 import * as oauthService from './oauth.service.js';
 import type {
@@ -68,7 +70,7 @@ export function listOfferings(workspaceId: string) {
 
 export async function createOffering(workspaceId: string, input: CreateOfferingInput) {
   const offering = await repo.createOffering(workspaceId, input);
-  await repo.setOnboardingStep(workspaceId, 'existing_platforms');
+  await repo.setOnboardingStep(workspaceId, 'products_services');
   return offering;
 }
 
@@ -376,15 +378,7 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
 }
 
 export async function continueFromExistingPlatforms(workspaceId: string, userId: string) {
-  // Provision the billing customer before moving to Billing. This creates no
-  // charge and is idempotent, while allowing every later subscription or
-  // usage payment flow to reuse the same Airwallex customer.
-  const { ensurePaygBillingCustomer } = await import('../billing/airwallex.service.js');
-  await ensurePaygBillingCustomer(workspaceId);
-  // Billing is an optional activation step. Mark the workspace as ready after
-  // the operational onboarding data is complete so unpaid/trial workspaces can
-  // enter Lulu and activate a plan later from the billing area.
-  await repo.completeOnboarding(workspaceId);
+  await completeOnboarding(workspaceId);
   return workspaceService.getWorkspace(workspaceId, userId);
 }
 
@@ -404,12 +398,22 @@ export async function completeOnboarding(workspaceId: string) {
 
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
-  if (!state.hasBusinessDescription) missing.push('businessDescription');
+  if (Number(state.offeringCount ?? 0) < 1) missing.push('productsServices');
+  if (!state.hasBillingConfirmation) missing.push('billing');
   if (missing.length > 0) {
     throw badRequest('Onboarding is incomplete', { missing });
   }
 
   await repo.completeOnboarding(workspaceId);
+  await appendDomainEvent({
+    workspaceId,
+    type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
+    aggregateType: 'workspace_subscription',
+    aggregateId: workspaceId,
+    payload: { trigger: 'onboarding_completed' },
+    metadata: { source: 'onboarding' },
+    idempotencyKey: `billing-activated-after-onboarding:${workspaceId}`,
+  });
   return {
     completed: true,
     completedAt: new Date().toISOString(),

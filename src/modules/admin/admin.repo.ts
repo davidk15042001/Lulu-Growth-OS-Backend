@@ -27,6 +27,14 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
         SELECT workspace_id, size_bytes FROM omni_message_attachments
       ) uploads
       GROUP BY workspace_id
+    ), usage_adjustments AS (
+      SELECT workspace_id,
+             COALESCE(SUM(amount_usd) FILTER (WHERE metric='api'), 0)::numeric AS "apiAdjustmentUsd",
+             COALESCE(SUM(amount_usd) FILTER (WHERE metric IN ('server','storage')), 0)::numeric AS "storageAdjustmentUsd"
+      FROM workspace_usage_adjustments
+      WHERE period_start < ($2::date + INTERVAL '1 day')
+        AND period_end > $1::date
+      GROUP BY workspace_id
     )
     SELECT
       w.id,
@@ -40,8 +48,8 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
       ws.custom_price_currency AS "customPriceCurrency",
       COALESCE(ws.current_period_starts_at, ws.created_at, w.created_at) AS "startDate",
       COALESCE(ws.current_period_ends_at, ws.trial_ends_at) AS "expiryDate",
-      COALESCE(api_usage."apiCostUsd", 0)::numeric AS "apiCostUsd",
-      COALESCE(server_usage."serverCostUsd", 0)::numeric AS "serverCostUsd",
+      GREATEST(0::numeric, COALESCE(api_usage."apiCostUsd", 0) - COALESCE(usage_adjustments."apiAdjustmentUsd", 0))::numeric AS "apiCostUsd",
+      GREATEST(0::numeric, COALESCE(server_usage."serverCostUsd", 0) - COALESCE(usage_adjustments."storageAdjustmentUsd", 0))::numeric AS "serverCostUsd",
       COALESCE(uploaded_bytes."storageBytes", 0)::numeric AS "storageBytes",
       -- Kept for backwards-compatible API clients. New clients must use the
       -- explicit USD fields above; these legacy counters are not authoritative.
@@ -54,6 +62,7 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
     LEFT JOIN api_usage ON api_usage.workspace_id = w.id
     LEFT JOIN server_usage ON server_usage.workspace_id = w.id
     LEFT JOIN uploaded_bytes ON uploaded_bytes.workspace_id = w.id
+    LEFT JOIN usage_adjustments ON usage_adjustments.workspace_id = w.id
     LEFT JOIN LATERAL (
       SELECT
         SUM(quantity) FILTER (WHERE metric_key IN ('api_cost_minor','api_cost_cny_minor')) AS "apiCostMinor",
@@ -67,6 +76,7 @@ export async function listCustomerBillingOverview(periodStart: string, periodEnd
              ws.current_period_ends_at, ws.trial_ends_at, ws.created_at,
              ws.custom_price_minor, ws.custom_price_currency, w.created_at,
              api_usage."apiCostUsd", server_usage."serverCostUsd", uploaded_bytes."storageBytes",
+             usage_adjustments."apiAdjustmentUsd", usage_adjustments."storageAdjustmentUsd",
              uc."apiCostMinor", uc."storageCostMinor"
     ORDER BY w.created_at DESC
   `, [periodStart, periodEnd]);
@@ -281,6 +291,65 @@ export async function addWorkspaceUsageAdjustment(
       client,
     );
     return adjustment;
+  });
+}
+
+export async function setWorkspaceUsageCosts(
+  workspaceId: string,
+  apiAiCostUsd: number,
+  storageCostUsd: number,
+  reason: string,
+  updatedBy: string,
+) {
+  return withTransaction(async (client) => {
+    const profile = await query<{ periodStart: string; periodEnd: string }>(
+      `SELECT current_period_start AS "periodStart", current_period_end AS "periodEnd"
+         FROM workspace_payg_profiles
+        WHERE workspace_id=$1 AND enabled=TRUE
+        FOR UPDATE`,
+      [workspaceId],
+      client,
+    );
+    const period = profile.rows[0];
+    if (!period) throw new AppError(409, 'PAYG_USAGE_NOT_CONFIGURED', 'PAYG usage is not configured for this workspace.');
+
+    const totals = await query<{
+      rawApi: string; rawStorage: string; apiAdjustments: string; storageAdjustments: string;
+    }>(
+      `SELECT
+         COALESCE((SELECT SUM(customer_cost_usd) FROM ai_usage_ledger
+           WHERE workspace_id=$1 AND payg_period_id IS NULL AND created_at >= $2 AND created_at < $3), 0)::numeric AS "rawApi",
+         COALESCE((SELECT SUM(customer_cost_usd) FROM workspace_server_usage_ledger
+           WHERE workspace_id=$1 AND payg_period_id IS NULL AND created_at >= $2 AND created_at < $3), 0)::numeric AS "rawStorage",
+         COALESCE((SELECT SUM(amount_usd) FROM workspace_usage_adjustments
+           WHERE workspace_id=$1 AND payg_period_id IS NULL AND period_start=$2 AND period_end=$3 AND metric='api'), 0)::numeric AS "apiAdjustments",
+         COALESCE((SELECT SUM(amount_usd) FROM workspace_usage_adjustments
+           WHERE workspace_id=$1 AND payg_period_id IS NULL AND period_start=$2 AND period_end=$3 AND metric IN ('server','storage')), 0)::numeric AS "storageAdjustments"`,
+      [workspaceId, period.periodStart, period.periodEnd],
+      client,
+    );
+    const current = totals.rows[0]!;
+    const changes = [
+      { metric: 'api' as const, amount: Number(current.rawApi) - apiAiCostUsd - Number(current.apiAdjustments) },
+      { metric: 'storage' as const, amount: Number(current.rawStorage) - storageCostUsd - Number(current.storageAdjustments) },
+    ].filter((entry) => Math.abs(entry.amount) >= 0.00000001);
+
+    for (const change of changes) {
+      await query(
+        `INSERT INTO workspace_usage_adjustments(
+           workspace_id, period_start, period_end, metric, amount_usd, reason, created_by
+         ) VALUES($1, $2, $3, $4, $5, $6, $7)`,
+        [workspaceId, period.periodStart, period.periodEnd, change.metric, change.amount, reason, updatedBy],
+        client,
+      );
+    }
+    await query(
+      `INSERT INTO audit_log(workspace_id, actor_id, action, entity_type, entity_id, after_data)
+       VALUES($1, $2, 'payg_usage.costs_set', 'workspace_payg_profile', $1::uuid::text, $3::jsonb)`,
+      [workspaceId, updatedBy, JSON.stringify({ apiAiCostUsd, storageCostUsd, reason, periodStart: period.periodStart, periodEnd: period.periodEnd })],
+      client,
+    );
+    return { workspaceId, apiAiCostUsd, storageCostUsd, periodStart: period.periodStart, periodEnd: period.periodEnd };
   });
 }
 

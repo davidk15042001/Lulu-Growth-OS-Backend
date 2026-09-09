@@ -8,6 +8,7 @@ process.env.DATABASE_URL='postgres://test:test@127.0.0.1:1/admin_ops';
 process.env.JWT_SECRET='admin-operations-tests-secret-0123456789';
 const {pool}=await import('../src/db/pool.js');
 const repo=await import('../src/modules/admin/admin.repo.js');
+const contentRepo=await import('../src/modules/content-generation/content-generation.repo.js');
 const support=await import('../src/modules/support/support.repo.js');
 const {capabilitiesForRoles}=await import('../src/modules/admin/admin.authorization.js');
 const db=new PGlite();
@@ -38,6 +39,30 @@ it('shows API and server customer costs for verified or unpaid workspaces',async
   assert.equal(Number(customer.apiCostUsd),12.34);
   assert.equal(Number(customer.serverCostUsd),5.67);
   assert.equal(Number(customer.apiCostMinor),0);
+});
+it('lets an admin set exact API/AI and storage costs, including an audited surcharge',async()=>{
+  await db.query(
+    `INSERT INTO workspace_payg_profiles(workspace_id,interval_days,current_period_start,current_period_end)
+     VALUES($1,7,NOW()-INTERVAL '1 hour',NOW()+INTERVAL '7 days')
+     ON CONFLICT(workspace_id) DO UPDATE SET enabled=TRUE,current_period_start=EXCLUDED.current_period_start,current_period_end=EXCLUDED.current_period_end`,
+    [workspaceId],
+  );
+  await repo.setWorkspaceUsageCosts(workspaceId,4.25,8.5,'Admin correction',userId);
+  const usage=await repo.getWorkspacePaygUsage(workspaceId);
+  assert.equal(usage?.apiBillableUsd,4.25);
+  assert.equal(usage?.serverBillableUsd,8.5);
+  const adjustments=await repo.listWorkspaceUsageAdjustments(workspaceId);
+  assert.ok(adjustments.some((entry:any)=>entry.metric==='storage'&&Number(entry.amountUsd)<0));
+  const audit=await db.query(`SELECT action FROM audit_log WHERE workspace_id=$1 AND action='payg_usage.costs_set'`,[workspaceId]);
+  assert.equal(audit.rows.length,1);
+});
+it('keeps a cancelled workspace refresh cancelled when a worker reports late progress',async()=>{
+  const job=await contentRepo.createJob(workspaceId,userId,['seo']);
+  assert.ok(job?.id);
+  const cancelled=await contentRepo.cancelJob(workspaceId,String(job.id));
+  assert.equal(cancelled?.status,'cancelled');
+  assert.equal(await contentRepo.updateJob(workspaceId,String(job.id),{status:'completed',progress:100}),null);
+  assert.equal((await contentRepo.getJob(workspaceId,String(job.id)))?.status,'cancelled');
 });
 it('shows real sites, runs, approvals, jobs and audit entries',async()=>{
   await db.query(`INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name) VALUES($1,'managed','managed','Customer site')`,[workspaceId]);

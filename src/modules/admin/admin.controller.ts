@@ -16,6 +16,7 @@ import { connectionParamsSchema, providerAccessSchema } from '../provider-contro
 import { z } from 'zod';
 import { getObject } from '../../storage/s3.service.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
+import { ensurePaygProfile } from '../billing/payg-billing.repo.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -299,6 +300,24 @@ export async function addWorkspaceUsageAdjustment(req: AuthedRequest, res: Respo
     }
     const adjustment = await repo.addWorkspaceUsageAdjustment(workspaceId, metric, amountUsd, reason, req.user!.id);
     return successResponse(res, 'Workspace usage credit added', adjustment);
+  } catch (error) { next(error); }
+}
+
+export async function setWorkspaceUsageCosts(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = String(req.params.workspaceId ?? '');
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const apiAiCostUsd = Number(req.body?.apiAiCostUsd);
+    const storageCostUsd = Number(req.body?.storageCostUsd);
+    if (![apiAiCostUsd, storageCostUsd].every((value) => Number.isFinite(value) && value >= 0 && value <= 1_000_000)) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_USAGE_COST', message: 'API/AI and storage costs must be between 0 and 1,000,000 USD' } });
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+    if (!reason) return res.status(422).json({ success: false, error: { code: 'USAGE_COST_REASON_REQUIRED', message: 'A reason is required when costs are changed' } });
+    await ensurePaygProfile(workspaceId);
+    await repo.setWorkspaceUsageCosts(workspaceId, apiAiCostUsd, storageCostUsd, reason, req.user!.id);
+    return successResponse(res, 'Workspace API/AI and storage costs updated', await repo.getWorkspacePaygUsage(workspaceId));
   } catch (error) { next(error); }
 }
 

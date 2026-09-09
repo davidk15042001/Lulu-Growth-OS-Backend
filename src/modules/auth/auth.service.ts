@@ -85,6 +85,10 @@ export async function loginUser(email: string, password: string, options?: { use
     return {unverified:true};
   }
 
+  if (user.role === 'user') {
+    await repo.ensureInitialWorkspace(user.id, user.first_name, user.last_name, user.email);
+  }
+
   const session = await repo.createAdditionalSession(user.id, {
     userAgent: options?.userAgent ?? null,
     ipAddress: options?.ipAddress ?? null,
