@@ -433,6 +433,11 @@ export async function createSyncJob(workspaceId: string, accountId: string, user
 
 const nativeEventSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", title, description, start_at AS "startAt", end_at AS "endAt", timezone, location, status, customer_record_id AS "customerId", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
+function frontendBaseUrl() {
+  const configured = env.FRONTEND_BASE_URL?.replace(/\/$/, '');
+  return configured || (env.NODE_ENV === 'production' ? 'https://lulu-ai.cn' : '');
+}
+
 export async function listNativeEvents(workspaceId: string, filters: ListNativeEventsQuery) {
   const values: unknown[] = [workspaceId];
   const where = ['workspace_id = $1'];
@@ -462,7 +467,7 @@ export async function createNativeEvent(workspaceId: string, userId: string, inp
   );
   const event = rows[0];
   if (!event) throw new Error('Native calendar event insert did not return a row');
-  return { ...event, customerName: null, guestToken, guestJoinPath: `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}/calendar/meeting/${guestToken}` };
+  return { ...event, customerName: null, guestToken, guestJoinPath: `${frontendBaseUrl()}/calendar/meeting/${guestToken}` };
 }
 
 export async function findCustomerRecord(workspaceId: string, customerId: string) {
@@ -480,7 +485,7 @@ export async function rotateNativeGuestToken(workspaceId: string, eventId: strin
   const tokenHash = crypto.createHash('sha256').update(guestToken).digest('hex');
   const { rows } = await query<NativeCalendarEvent>(`UPDATE calendar_native_events SET guest_token_hash=$3, updated_at=NOW() WHERE workspace_id=$1 AND id=$2 AND status='scheduled' RETURNING ${nativeEventSelect}`, [workspaceId, eventId, tokenHash]);
   const event = rows[0];
-  return event ? { ...event, customerName: null, guestToken, guestJoinPath: `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}/calendar/meeting/${guestToken}` } : null;
+  return event ? { ...event, customerName: null, guestToken, guestJoinPath: `${frontendBaseUrl()}/calendar/meeting/${guestToken}` } : null;
 }
 
 export async function findNativeEventByGuestToken(token: string) {

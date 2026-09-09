@@ -82,7 +82,11 @@ export async function guestAgoraToken(req: Request, res: Response, next: NextFun
   try { const { token } = publicNativeEventParams.parse(req.params); const guestName = typeof req.body?.guestName === 'string' ? req.body.guestName : undefined; return successResponse(res, 'Agora guest token created', await service.createGuestAgoraToken(token, guestName)); } catch (error) { next(error); }
 }
 
-function frontendUrl(path: string) { return `${(env.FRONTEND_BASE_URL ?? '').replace(/\/$/, '')}${path}`; }
+function frontendUrl(path: string) {
+  const configured = env.FRONTEND_BASE_URL?.replace(/\/$/, '');
+  const baseUrl = configured || (env.NODE_ENV === 'production' ? 'https://lulu-ai.cn' : '');
+  return `${baseUrl}${path}`;
+}
 
 export async function oauthCallback(req: Request, res: Response) {
   const providerValue = String(req.params.provider ?? '');
