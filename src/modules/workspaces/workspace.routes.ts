@@ -2,8 +2,8 @@ import { Router } from 'express';
 import { requireAuth } from '../../middlewares/auth.middleware.js';
 import {
   requireWorkspaceAdmin,
-  requireWorkspaceAdminRead,
   requireWorkspaceMember,
+  requireWorkspaceRole,
 } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './workspace.controller.js';
@@ -48,11 +48,14 @@ router.route('/:workspaceId')
   .all(methodNotAllowed);
 
 router.route('/:workspaceId/profile')
-  .get(requireWorkspaceAdminRead, controller.getProfile)
+  // Company/legal identity is sensitive, but it must remain available during
+  // onboarding and before a paid plan exists. Use the explicit workspace role
+  // check here instead of the commercial write-entitlement guard.
+  .get(requireWorkspaceRole('owner', 'admin'), controller.getProfile)
   // Company/legal identity is required during onboarding and must remain
   // editable before a paid workspace plan is active. Role authorization still
   // protects the endpoint; ordinary workspace writes remain entitlement-gated.
-  .patch(requireWorkspaceAdminRead, controller.updateProfile)
+  .patch(requireWorkspaceRole('owner', 'admin'), controller.updateProfile)
   .all(methodNotAllowed);
 
 router.use('/:workspaceId', workspaceAppRoutes);
