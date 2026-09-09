@@ -49,7 +49,10 @@ router.route('/:workspaceId')
 
 router.route('/:workspaceId/profile')
   .get(requireWorkspaceAdminRead, controller.getProfile)
-  .patch(requireWorkspaceAdmin, controller.updateProfile)
+  // Company/legal identity is required during onboarding and must remain
+  // editable before a paid workspace plan is active. Role authorization still
+  // protects the endpoint; ordinary workspace writes remain entitlement-gated.
+  .patch(requireWorkspaceAdminRead, controller.updateProfile)
   .all(methodNotAllowed);
 
 router.use('/:workspaceId', workspaceAppRoutes);
