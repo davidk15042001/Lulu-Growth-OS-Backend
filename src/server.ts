@@ -20,6 +20,7 @@ import { startAdminUserDeletionWorker, stopAdminUserDeletionWorker } from './mod
 import { startProviderControlWorkers, stopProviderControlWorkers } from './modules/provider-control/provider.worker.js';
 import { startAssistantActionWorker, stopAssistantActionWorker } from './modules/ai/assistant-action.worker.js';
 import { startCommercialDocumentDeliveryWorker, stopCommercialDocumentDeliveryWorker } from './modules/commercial-documents/commercial-document.delivery.service.js';
+import { startPremiumMediaWorker, stopPremiumMediaWorker } from './modules/premium-media/premium-media.worker.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -48,6 +49,7 @@ async function bootstrap() {
       startAdminUserDeletionWorker();
       startProviderControlWorkers();
       startCommercialDocumentDeliveryWorker();
+      startPremiumMediaWorker();
     }
   }
 
@@ -82,6 +84,7 @@ async function bootstrap() {
       stopAdminUserDeletionWorker();
       await stopProviderControlWorkers();
       stopCommercialDocumentDeliveryWorker();
+      stopPremiumMediaWorker();
     }
     server.close(async () => {
       if (hasDb) {

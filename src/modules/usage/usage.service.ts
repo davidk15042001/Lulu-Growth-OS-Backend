@@ -17,6 +17,17 @@ type UsageInput = {
   responseId?: string | null;
 };
 
+type MeteredUsageInput = {
+  workspaceId: string;
+  userId?: string | null;
+  provider: string;
+  model: string;
+  providerCostUsd: number;
+  customerCostUsd?: number;
+  responseId: string;
+  metadata?: Record<string, unknown>;
+};
+
 type Rate = {
   inputPerMillionUsd: number;
   outputPerMillionUsd: number;
@@ -125,6 +136,49 @@ export async function recordUsage(input: UsageInput) {
     if (existing.rows[0]) return { ...calculated, id: existing.rows[0].id, createdAt: existing.rows[0].createdAt };
   }
   return { ...calculated, id: null, createdAt: null };
+}
+
+/** Records non-token provider usage such as image/video generation. The same
+ * append-only ledger powers weekly PAYG invoicing, while responseId makes
+ * webhook retries and worker polling exactly-once for billing purposes. */
+export async function recordMeteredUsage(input: MeteredUsageInput) {
+  const providerCostUsd = Number.isFinite(input.providerCostUsd) && input.providerCostUsd > 0
+    ? input.providerCostUsd
+    : 0;
+  const customerCostUsd = Number.isFinite(input.customerCostUsd) && Number(input.customerCostUsd) >= 0
+    ? Number(input.customerCostUsd)
+    : providerCostUsd;
+  const responseId = input.responseId.trim();
+  if (!responseId) throw new Error('Metered usage requires a responseId');
+
+  const metadata = { ...(input.metadata ?? {}), responseId, metering: 'provider_cost' };
+  const { rows } = await query<{ id: string; createdAt: string }>(
+    `INSERT INTO ai_usage_ledger (
+       workspace_id, user_id, provider, model, input_tokens, output_tokens,
+       provider_cost_usd, customer_cost_usd, metadata
+     ) VALUES ($1,$2,$3,$4,0,0,$5,$6,$7::jsonb)
+     ON CONFLICT DO NOTHING
+     RETURNING id, created_at AS "createdAt"`,
+    [
+      input.workspaceId,
+      input.userId ?? null,
+      input.provider,
+      input.model,
+      providerCostUsd,
+      customerCostUsd,
+      JSON.stringify(metadata),
+    ],
+  );
+  if (rows[0]) return { id: rows[0].id, createdAt: rows[0].createdAt, providerCostUsd, customerCostUsd };
+
+  const existing = await query<{ id: string; createdAt: string }>(
+    `SELECT id, created_at AS "createdAt" FROM ai_usage_ledger
+      WHERE workspace_id=$1 AND metadata->>'responseId'=$2 LIMIT 1`,
+    [input.workspaceId, responseId],
+  );
+  return existing.rows[0]
+    ? { id: existing.rows[0].id, createdAt: existing.rows[0].createdAt, providerCostUsd, customerCostUsd }
+    : null;
 }
 
 export async function getWorkspaceCredits(workspaceId: string) {

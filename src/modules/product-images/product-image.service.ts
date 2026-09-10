@@ -1,12 +1,16 @@
-import { randomUUID } from 'node:crypto';
 import { AppError } from '../../utils/app-error.js';
 import { env } from '../../config/env.js';
-import { logger } from '../../config/logger.js';
-import { configuredModel, generateImage, getOpenAIResponsesClient } from '../ai/openai.service.js';
+import { configuredModel, getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { extractTextFromFile, type IngestFile } from '../records/record.service.js';
 import * as recordRepo from '../records/record.repo.js';
-import { getObject, productImageKey, putObject } from '../../storage/s3.service.js';
-import { createWebflowItem, firstWebflowSiteWithCollection } from '../websites/website.provider.service.js';
+import { getObject, productImageKey } from '../../storage/s3.service.js';
+import { createProductSchema } from '../products/product.validator.js';
+import { createProduct } from '../products/product.service.js';
+import {
+  ensurePremiumMediaRuntimeReady,
+  premiumMediaConfiguration,
+  startPremiumMediaFromProductBrief,
+} from '../premium-media/premium-media.service.js';
 
 export type ExtractedProduct = {
   name: string;
@@ -14,13 +18,6 @@ export type ExtractedProduct = {
   color: string;
   material: string;
   category: string;
-};
-
-type StoredImage = {
-  imageId: string;
-  mimeType: 'image/png';
-  s3Key: string | null;
-  dataUrl: string | null;
 };
 
 const MAX_PRODUCTS = 20;
@@ -91,34 +88,6 @@ export async function extractProductsFromText(text: string, workspaceId: string,
   return normalizeProducts(extractJson<unknown>(content));
 }
 
-function buildImagePrompt(product: ExtractedProduct): string {
-  return [
-    'Professional e-commerce product photograph',
-    product.name,
-    product.color ? `color ${product.color}` : '',
-    product.material ? `made of ${product.material}` : '',
-    'on a clean light studio background, soft even lighting, high detail, centered product, no text or watermark',
-  ]
-    .filter(Boolean)
-    .join(', ');
-}
-
-async function storeProductImage(workspaceId: string, b64Json: string | null): Promise<StoredImage> {
-  const imageId = randomUUID();
-  if (env.AWS_S3_BUCKET && b64Json) {
-    const key = productImageKey(workspaceId, imageId);
-    const content = Buffer.from(b64Json, 'base64');
-    await putObject({ key, content, mimeType: 'image/png', fileName: `${imageId}.png` });
-    return { imageId, mimeType: 'image/png', s3Key: key, dataUrl: null };
-  }
-  return {
-    imageId,
-    mimeType: 'image/png',
-    s3Key: null,
-    dataUrl: b64Json ? `data:image/png;base64,${b64Json}` : null,
-  };
-}
-
 export async function extractTextFromUpload(
   file: IngestFile | undefined,
   fallbackText: string,
@@ -131,89 +100,55 @@ export async function extractTextFromUpload(
   return text;
 }
 
-async function syncProductsToCommerce(
-  workspaceId: string,
-  records: Array<recordRepo.WorkspaceRecord>,
-): Promise<{ provider: string | null; synced: number; error: string | null }> {
-  let provider: string | null = null;
-  let synced = 0;
-  let error: string | null = null;
-  try {
-    const site = await firstWebflowSiteWithCollection(workspaceId);
-    provider = 'webflow';
-    for (const record of records) {
-      const data = record.data ?? {};
-      await createWebflowItem(workspaceId, site.collectionId, {
-        name: record.name,
-        slug: record.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
-        'product-description': record.description ?? '',
-        color: typeof data.color === 'string' ? data.color : '',
-        material: typeof data.material === 'string' ? data.material : '',
-        'lulu-product-id': record.id,
-      }, false);
-      synced += 1;
-    }
-  } catch (cause) {
-    error = cause instanceof Error ? cause.message : 'Commerce sync failed';
-  }
-  return { provider, synced, error };
-}
-
 export async function generateProductImagesFromText(text: string, workspaceId: string, userId: string) {
   const products = (await extractProductsFromText(text, workspaceId, userId)).slice(0, MAX_PRODUCTS);
   if (products.length === 0) throw new AppError(400, 'NO_PRODUCTS_FOUND', 'No products could be identified in the document');
-
-  const generated: Array<{ product: ExtractedProduct; image: StoredImage; model: string }> = [];
-  for (const product of products) {
-    const { b64Json } = await generateImage({ prompt: buildImagePrompt(product), workspaceId, userId });
-    const image = await storeProductImage(workspaceId, b64Json);
-    generated.push({ product, image, model: env.IMAGE_MODEL });
-  }
-
+  await ensurePremiumMediaRuntimeReady();
+  const models = premiumMediaConfiguration();
   const records: Array<recordRepo.WorkspaceRecord> = [];
-  for (const { product, image } of generated) {
+  const queued: Array<ExtractedProduct & { canonicalProductId: string; premiumMediaJobId: string; productionStatus: string }> = [];
+  for (const product of products) {
+    const description = [
+      product.description,
+      product.color ? `Color: ${product.color}` : '',
+      product.material ? `Material: ${product.material}` : '',
+      product.category ? `Category: ${product.category}` : '',
+    ].filter(Boolean).join('\n');
+    const canonical = await createProduct(workspaceId, userId, createProductSchema.parse({
+      name: product.name,
+      shortDescription: product.description || null,
+      longDescription: description || null,
+      productType: 'PHYSICAL_PRODUCT',
+      status: 'DRAFT',
+      sourceLanguage: 'en',
+    }));
+    const canonicalProductId = String(canonical.id);
+    const production = await startPremiumMediaFromProductBrief(workspaceId, canonicalProductId, userId, true);
     const record = await recordRepo.createRecord(workspaceId, 'ecommerce_products', userId, {
       name: product.name,
       description: product.description || null,
-      status: 'Active',
-      source: 'ai_generated',
+      status: 'Processing',
+      source: 'premium_media',
       data: {
         color: product.color || null,
         material: product.material || null,
         category: product.category || null,
-        imageModel: image.mimeType === 'image/png' ? env.IMAGE_MODEL : null,
-        images: [image],
-        syncStatus: 'pending',
+        canonicalProductId,
+        premiumMediaJobId: production.job.id,
+        imageModels: models.textImageModels,
+        videoModels: models.videoModels,
+        mediaProductionStatus: production.job.status,
+        syncStatus: 'awaiting_premium_media',
       },
     });
     records.push(record);
+    queued.push({ ...product, canonicalProductId, premiumMediaJobId: production.job.id, productionStatus: production.job.status });
   }
-
-  const sync = await syncProductsToCommerce(workspaceId, records);
-  for (const record of records) {
-    try {
-      await recordRepo.updateRecord(workspaceId, 'ecommerce_products', record.id, userId, {
-        data: {
-          ...(record.data ?? {}),
-          syncProvider: sync.provider,
-          syncStatus: sync.provider ? (sync.error ? 'failed' : 'synced') : 'not_connected',
-          syncError: sync.error,
-        },
-        expectedVersion: record.version,
-      });
-    } catch (error) {
-      logger.warn({ error, workspaceId, recordId: record.id }, 'Could not persist commerce sync status on product record');
-    }
-  }
-
   return {
     count: records.length,
     records,
-    sync,
-    products: generated.map(({ product, image }) => ({
-      ...product,
-      image,
-    })),
+    sync: { provider: null, synced: 0, error: null, status: 'awaiting_premium_media' },
+    products: queued,
   };
 }
 

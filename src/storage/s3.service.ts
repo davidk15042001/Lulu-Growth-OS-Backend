@@ -61,6 +61,27 @@ export function productImageKey(workspaceId: string, imageId: string) {
   return `workspaces/${workspaceId}/product-images/${imageId}.png`;
 }
 
+export function premiumProductMediaKey(
+  workspaceId: string,
+  productId: string,
+  jobId: string,
+  mediaId: string,
+  extension: string,
+) {
+  const safeExtension = extension.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
+  return `workspaces/${workspaceId}/products/${productId}/premium-media/${jobId}/${mediaId}.${safeExtension}`;
+}
+
+export function productReferenceKey(
+  workspaceId: string,
+  productId: string,
+  referenceId: string,
+  extension: string,
+) {
+  const safeExtension = extension.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
+  return `workspaces/${workspaceId}/products/${productId}/references/${referenceId}.${safeExtension}`;
+}
+
 export async function putObject(input: {
   key: string;
   content: Buffer;

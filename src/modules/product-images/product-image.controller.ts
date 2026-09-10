@@ -17,7 +17,7 @@ export async function generate(req: WorkspaceRequest, res: Response, next: NextF
       userId,
     );
     const result = await service.generateProductImagesFromText(text, workspaceId, userId);
-    return createdResponse(res, 'Product images generated', result);
+    return createdResponse(res, 'Premium product image and video production queued', result);
   } catch (error) {
     next(error);
   }

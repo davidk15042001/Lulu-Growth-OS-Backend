@@ -16,6 +16,7 @@ Multi-tenant TypeScript/Express API and PostgreSQL data layer for the Lulu Growt
 - PostgreSQL migrations with transaction and deployment locking
 - Automated HTTP, validation, catalog, OpenAI adapter and migration contract tests
 - A 145-agent capability registry with dynamic team selection, performance-based routing and independent automated outcome verification
+- Autonomous premium product-media production through Kie.ai: dual-model image and video candidates, independent multimodal QA, Topaz finishing, automatic retries and private permanent storage
 
 ## Requirements
 
@@ -93,6 +94,7 @@ All application routes are below `/api/v1`.
 | Notifications | `/workspaces/:workspaceId/notifications` |
 | AI conversations | `/workspaces/:workspaceId/ai/conversations` |
 | AI generation | `POST /workspaces/:workspaceId/ai/conversations/:conversationId/respond` |
+| Premium product media | `GET/POST /workspaces/:workspaceId/products/:productId/premium-media` |
 | Approvals | `/workspaces/:workspaceId/approvals` |
 
 Protected endpoints expect:

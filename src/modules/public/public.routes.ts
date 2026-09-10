@@ -2,6 +2,7 @@ import { Router, type RequestHandler } from 'express';
 import { dbRateLimit } from '../../middlewares/rateLimit.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './landing-kpis.controller.js';
+import * as premiumMediaController from '../premium-media/premium-media.controller.js';
 
 const router = Router();
 const databaseRateLimiter = dbRateLimit({
@@ -26,6 +27,10 @@ const bestEffortDatabaseRateLimiter: RequestHandler = (req, res, next) => {
 
 router.route('/landing-kpis')
   .get(bestEffortDatabaseRateLimiter, controller.get)
+  .all(methodNotAllowed);
+
+router.route('/kie/media-callback/:token')
+  .post(premiumMediaController.callback)
   .all(methodNotAllowed);
 
 export default router;

@@ -1,9 +1,11 @@
 import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
+import { env } from '../../config/env.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
-import { getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
+import { AWS_USAGE_CUSTOMER_MULTIPLIER, getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import { getPaygDirectPaymentMethods } from '../billing/payg-payment-methods.js';
+import { CUSTOMER_API_RATE } from '../usage/usage.service.js';
 import type {
   CreateSavedViewInput,
   InviteMemberInput,
@@ -447,7 +449,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     values.push(filters.to);
     usageConditions.push(`period_start <= $${values.length}`);
   }
-  const [subscription, usage, paygCurrent, paygInvoices, latestPaygPaymentSetup] = await Promise.all([
+  const [subscription, usage, paygCurrent, paygUsageBreakdown, paygInvoices, latestPaygPaymentSetup] = await Promise.all([
     query(
       `SELECT workspace_id AS "workspaceId", provider, plan_key AS "planKey", status, seats,
               trial_ends_at AS "trialEndsAt", current_period_starts_at AS "currentPeriodStartsAt",
@@ -540,6 +542,44 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       [workspaceId],
     ),
     query<{
+      provider: string;
+      model: string;
+      operation: string;
+      events: number;
+      inputTokens: string;
+      outputTokens: string;
+      kieCredits: string;
+      customerCostUsd: string;
+    }>(
+      `SELECT u.provider,
+              u.model,
+              COALESCE(NULLIF(u.metadata->>'operation', ''),
+                CASE WHEN u.provider='kie.ai' THEN 'premium_media' ELSE 'api_inference' END) AS operation,
+              COUNT(*)::int AS events,
+              COALESCE(SUM(u.input_tokens), 0)::bigint AS "inputTokens",
+              COALESCE(SUM(u.output_tokens), 0)::bigint AS "outputTokens",
+              COALESCE(SUM(
+                CASE
+                  WHEN u.provider='kie.ai' AND jsonb_typeof(u.metadata->'creditsConsumed')='number'
+                    THEN (u.metadata->>'creditsConsumed')::numeric
+                  ELSE 0
+                END
+              ), 0)::numeric AS "kieCredits",
+              COALESCE(SUM(u.customer_cost_usd), 0)::numeric AS "customerCostUsd"
+         FROM ai_usage_ledger u
+         JOIN workspace_payg_profiles p ON p.workspace_id=u.workspace_id
+        WHERE u.workspace_id=$1
+          AND u.payg_period_id IS NULL
+          AND u.created_at >= p.current_period_start
+          AND u.created_at < p.current_period_end
+        GROUP BY u.provider, u.model,
+                 COALESCE(NULLIF(u.metadata->>'operation', ''),
+                   CASE WHEN u.provider='kie.ai' THEN 'premium_media' ELSE 'api_inference' END)
+        ORDER BY SUM(u.customer_cost_usd) DESC, u.provider, u.model
+        LIMIT 100`,
+      [workspaceId],
+    ),
+    query<{
       id: string;
       periodStart: string;
       periodEnd: string;
@@ -613,6 +653,22 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       outputTokens: Number(current.outputTokens),
       apiEvents: current.apiEvents,
       serverDays: current.serverDays,
+      pricing: {
+        inputPerMillionUsd: CUSTOMER_API_RATE.inputPerMillionUsd,
+        outputPerMillionUsd: CUSTOMER_API_RATE.outputPerMillionUsd,
+        premiumMediaPerKieCreditUsd: env.KIE_CREDIT_COST_USD * env.KIE_CUSTOMER_MARKUP_MULTIPLIER,
+        serverProviderCostMultiplier: AWS_USAGE_CUSTOMER_MULTIPLIER,
+      },
+      usageBreakdown: paygUsageBreakdown.rows.map((entry) => ({
+        provider: entry.provider,
+        model: entry.model,
+        operation: entry.operation,
+        events: entry.events,
+        inputTokens: Number(entry.inputTokens),
+        outputTokens: Number(entry.outputTokens),
+        kieCredits: Number(entry.kieCredits),
+        customerCost: Number(entry.customerCostUsd),
+      })),
       paymentMethods: getPaygDirectPaymentMethods(),
       invoices: paygInvoices.rows.map((invoice) => ({
         ...invoice,

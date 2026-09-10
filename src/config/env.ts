@@ -74,6 +74,33 @@ const EnvSchema = z
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
     IMAGE_MODEL: z.string().min(1).default('gpt-image-1'),
     IMAGE_SIZE: z.string().min(1).default('1024x1024'),
+    // Kie.ai is Lulu's premium media gateway. The API key remains strictly
+    // server-side; model defaults intentionally select quality tiers only.
+    KIE_API_KEY: optionalNonEmptyString,
+    KIE_BASE_URL: z.string().url().default('https://api.kie.ai'),
+    KIE_UPLOAD_BASE_URL: z.string().url().default('https://kieai.redpandaai.co'),
+    KIE_CALLBACK_BASE_URL: z.string().url().optional(),
+    KIE_PREMIUM_IMAGE_MODELS: z.string().default('flux-2/pro-image-to-image,seedream/5-pro-image-to-image'),
+    KIE_PREMIUM_TEXT_IMAGE_MODELS: z.string().default('flux-2/pro-text-to-image,seedream/5-pro-text-to-image'),
+    KIE_PREMIUM_VIDEO_MODELS: z.string().default('kling/v3-turbo-image-to-video,veo3'),
+    KIE_IMAGE_RESOLUTION: z.enum(['1K', '2K']).default('2K'),
+    KIE_VIDEO_RESOLUTION: z.enum(['720p', '1080p']).default('720p'),
+    KIE_IMAGE_UPSCALE_FACTOR: z.coerce.number().int().min(2).max(4).default(2),
+    KIE_VIDEO_UPSCALE_FACTOR: z.coerce.number().int().min(2).max(4).default(2),
+    KIE_QUALITY_MODEL: z.string().min(1).default('gemini-3-pro'),
+    KIE_QUALITY_MODEL_PATH: z.string().regex(/^\/[a-zA-Z0-9_./-]+$/).default('/gemini-3-pro/v1/chat/completions'),
+    KIE_IMAGE_QUALITY_THRESHOLD: z.coerce.number().int().min(70).max(100).default(92),
+    KIE_VIDEO_QUALITY_THRESHOLD: z.coerce.number().int().min(70).max(100).default(90),
+    KIE_MEDIA_MAX_ROUNDS: z.coerce.number().int().min(1).max(5).default(3),
+    KIE_MEDIA_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(60_000).default(5_000),
+    KIE_MEDIA_POLL_AFTER_SECONDS: z.coerce.number().int().min(10).max(600).default(30),
+    KIE_MEDIA_TASK_TIMEOUT_MINUTES: z.coerce.number().int().min(15).max(1_440).default(90),
+    KIE_MEDIA_MAX_DOWNLOAD_MB: z.coerce.number().int().min(10).max(1_000).default(250),
+    KIE_MEDIA_ALLOWED_DOWNLOAD_HOSTS: z.string().default('aiquickdraw.com,redpandaai.co'),
+    // Credits are metered into Lulu's existing PAYG API ledger. Keep this
+    // configurable because the effective price changes with Kie credit packs.
+    KIE_CREDIT_COST_USD: z.coerce.number().min(0).max(100).default(0.005),
+    KIE_CUSTOMER_MARKUP_MULTIPLIER: z.coerce.number().min(1).max(20).default(2),
     AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(180_000),
     AI_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
     TRANSLATION_GLOBAL_CHARACTER_LIMIT_PER_HOUR: z.coerce.number().int().min(10_000).max(100_000_000).default(2_000_000),
@@ -243,3 +270,4 @@ export const hasAlibaba = !!env.DASHSCOPE_API_KEY;
 export const hasDeepSeek = !!env.DEEPSEEK_API_KEY;
 export const hasGroq = !!env.GROQ_API_KEY;
 export const hasAiProvider = hasOpenAI || hasAlibaba || hasDeepSeek || hasGroq;
+export const hasKie = !!env.KIE_API_KEY;

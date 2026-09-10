@@ -54,6 +54,19 @@ describe('security and finance hardening', () => {
     assert.equal(row.rows[0]?.user_id, null);
   });
 
+  it('records premium provider costs once for callback and polling retries', async () => {
+    const user = (await db.query<{ id: string }>(`INSERT INTO users(email,password_hash,verified_at) VALUES($1,'hash',NOW()) RETURNING id`, [`${crypto.randomUUID()}@example.test`])).rows[0]!.id;
+    const workspace = (await db.query<{ id: string }>(`INSERT INTO workspaces(name,created_by) VALUES('Premium usage workspace',$1) RETURNING id`, [user])).rows[0]!.id;
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`, [workspace, user]);
+    const input = { workspaceId: workspace, userId: null, provider: 'kie.ai', model: 'veo3', providerCostUsd: 0.42, customerCostUsd: 0.84, responseId: `kie-task:${crypto.randomUUID()}`, metadata: { creditsConsumed: 84 } };
+    const first = await usage.recordMeteredUsage(input);
+    const second = await usage.recordMeteredUsage(input);
+    assert.ok(first?.id);
+    assert.equal(first?.id, second?.id);
+    const rows = await db.query<{ count: string }>(`SELECT COUNT(*)::text AS count FROM ai_usage_ledger WHERE workspace_id=$1 AND metadata->>'responseId'=$2`, [workspace, input.responseId]);
+    assert.equal(rows.rows[0]?.count, '1');
+  });
+
   it('rejects generic record parents, relationships and assignees from another workspace', async () => {
     const userA = (await db.query<{ id: string }>(`INSERT INTO users(email,password_hash,verified_at) VALUES($1,'hash',NOW()) RETURNING id`, [`${crypto.randomUUID()}@example.test`])).rows[0]!.id;
     const userB = (await db.query<{ id: string }>(`INSERT INTO users(email,password_hash,verified_at) VALUES($1,'hash',NOW()) RETURNING id`, [`${crypto.randomUUID()}@example.test`])).rows[0]!.id;
