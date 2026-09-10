@@ -103,6 +103,10 @@ const EnvSchema = z
     KIE_CUSTOMER_MARKUP_MULTIPLIER: z.coerce.number().min(1).max(20).default(2),
     AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(10_000).max(600_000).default(180_000),
     AI_MAX_RETRIES: z.coerce.number().int().min(0).max(3).default(1),
+    // Customer AI usage is priced in USD and atomically debited from a CNY
+    // wallet. Persist the rate with every debit; never fetch a mutable rate
+    // after the customer has consumed the service.
+    API_USD_CNY_RATE: z.coerce.number().positive().max(20).default(7.2),
     TRANSLATION_GLOBAL_CHARACTER_LIMIT_PER_HOUR: z.coerce.number().int().min(10_000).max(100_000_000).default(2_000_000),
     WEBSITE_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
     WEBSITE_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(90),

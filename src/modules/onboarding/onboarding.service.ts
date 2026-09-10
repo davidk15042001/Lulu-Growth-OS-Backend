@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
+import bcrypt from 'bcryptjs';
 import { deleteObject, getObject, onboardingDocumentKey, putObject } from '../../storage/s3.service.js';
 import { AppError, badRequest, notFoundError } from '../../utils/app-error.js';
 import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
+import * as authRepo from '../auth/auth.repo.js';
+import { extractTextFromFile } from '../records/record.service.js';
+import { startPremiumMediaFromProductBrief } from '../premium-media/premium-media.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
-import { appendDomainEvent } from '../../events/domain-event.repo.js';
-import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import * as repo from './onboarding.repo.js';
 import * as oauthService from './oauth.service.js';
 import type {
@@ -21,6 +23,7 @@ import type {
   UpdateCustomerSegmentInput,
   UpdateOfferingInput,
   UpdatePlatformInput,
+  KnowledgeActivationInput,
 } from './onboarding.validator.js';
 
 export async function getSnapshot(workspaceId: string, userId: string) {
@@ -43,6 +46,20 @@ export async function saveCompanyInformation(
   userId: string,
   input: CompanyInformationInput
 ) {
+  const workspace=await findWorkspaceById(workspaceId);
+  const initial=workspace?.onboardingStep==='company_information'&&!workspace.onboardingCompletedAt;
+  if(initial&&(!input.fullName||!input.password||!input.repeatPassword||!input.industry?.trim())) {
+    throw new AppError(422,'COMPANY_INFORMATION_INCOMPLETE','Full name, password, company name and industry are required.');
+  }
+  if(input.password){
+    if(!input.fullName)throw new AppError(422,'FULL_NAME_REQUIRED','A full name is required when confirming the account password.');
+    const user = await authRepo.getUserById(userId);
+    if (!user || !await bcrypt.compare(input.password, user.password_hash)) throw new AppError(422, 'CURRENT_PASSWORD_INVALID', 'The password is incorrect.');
+    const nameParts = input.fullName!.trim().split(/\s+/);
+    const firstName = nameParts.shift() ?? '';
+    const lastName = nameParts.join(' ');
+    await authRepo.updateUserProfile(userId, { firstName, lastName });
+  }
   await repo.saveCompanyInformation(workspaceId, input);
   return workspaceService.getWorkspace(workspaceId, userId);
 }
@@ -416,24 +433,81 @@ export async function completeOnboarding(workspaceId: string) {
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
   if (!state.hasBillingConfirmation) missing.push('billing');
+  if (!state.hasProfile) missing.push('profile');
+  if (!state.hasKnowledgeBase) missing.push('knowledgeBase');
   if (missing.length > 0) {
     throw badRequest('Onboarding is incomplete', { missing });
   }
 
   await repo.completeOnboarding(workspaceId);
-  await appendDomainEvent({
-    workspaceId,
-    type: DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
-    aggregateType: 'workspace_subscription',
-    aggregateId: workspaceId,
-    payload: { trigger: 'onboarding_completed' },
-    metadata: { source: 'onboarding' },
-    idempotencyKey: `billing-activated-after-onboarding:${workspaceId}`,
-  });
   return {
     completed: true,
     completedAt: new Date().toISOString(),
   };
+}
+
+function activationJson(text:string){
+  const clean=text.trim().replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/^```json\s*/i,'').replace(/\s*```$/,'');
+  const start=clean.indexOf('{');const end=clean.lastIndexOf('}');
+  try{return JSON.parse(start>=0&&end>start?clean.slice(start,end+1):clean) as Record<string,unknown>;}catch{throw new AppError(502,'KNOWLEDGE_AI_RESPONSE_INVALID','AI could not return a valid company knowledge structure.');}
+}
+function activationText(value:unknown,max:number){return typeof value==='string'&&value.trim()?value.trim().slice(0,max):null;}
+
+export async function activateKnowledgeBase(workspaceId:string,userId:string,input:KnowledgeActivationInput){
+  const workspace=await findWorkspaceById(workspaceId);
+  if(!workspace)throw notFoundError('Workspace not found');
+  if(workspace.onboardingCompletedAt)return {completed:true,alreadyCompleted:true,productIds:[]};
+  if(workspace.onboardingStep!=='knowledge_base'||!workspace.profileCompletedAt)throw new AppError(409,'PROFILE_COMPLETION_REQUIRED','Complete the company profile before building the Knowledge Base.');
+  if(!isAiGenerationConfigured())throw new AppError(503,'AI_NOT_CONFIGURED','AI knowledge processing is not configured on the server.');
+  const documents:string[]=[];
+  for(const id of input.documentIds){
+    const document=await getOnboardingDocumentContent(workspaceId,id);
+    const text=await extractTextFromFile({name:document.fileName,type:document.mimeType,buffer:document.content},workspaceId,userId,{platformFunded:true});
+    documents.push(`Document: ${document.fileName}\n${text}`);
+    if(documents.join('\n\n').length>=100_000)break;
+  }
+  const source=[input.text,...documents].filter(Boolean).join('\n\n').slice(0,100_000);
+  if(!source.trim())throw new AppError(422,'KNOWLEDGE_CONTENT_EMPTY','No readable company information was found.');
+  const model=configuredModel();
+  const activationId=await repo.createKnowledgeActivation({workspaceId,userId,text:input.text,documentIds:input.documentIds,model});
+  try{
+    // This single activation analysis is platform-funded. Normal agent and
+    // premium-media execution remains strictly protected by the AI wallet.
+    const response=await getOpenAIResponsesClient().create({model,instructions:[
+      'You are Lulu company knowledge activation intelligence.',
+      'Classify only facts supported by the supplied information. Never invent products, prices, claims or credentials.',
+      'Separate physical/digital products, services and general company knowledge.',
+      'Return JSON only: {"summary":string,"businessDescription":string,"contentTypes":string[],"items":[{"name":string,"kind":"product"|"service"|"other","productType":"PHYSICAL_PRODUCT"|"DIGITAL_PRODUCT"|"OTHER"|null,"description":string|null,"category":string|null,"price":number|null,"currency":string|null}],"generalKnowledge":[{"title":string,"content":string}]}.'
+    ].join(' '),input:[{role:'user',content:`Company: ${workspace.companyName}\nIndustry: ${workspace.industry??''}\n\n${source}`}],max_output_tokens:8000,store:false});
+    const classification=activationJson(response.output_text??'');
+    const rawItems=Array.isArray(classification.items)?classification.items:[];
+    const seen=new Set<string>();
+    const items=rawItems.slice(0,100).map(entry=>{
+      const value=entry&&typeof entry==='object'?entry as Record<string,unknown>:{};
+      const name=activationText(value.name,300);if(!name)return null;
+      const kind=['product','service','other'].includes(String(value.kind))?String(value.kind) as 'product'|'service'|'other':'other';
+      const productType=['PHYSICAL_PRODUCT','DIGITAL_PRODUCT','OTHER'].includes(String(value.productType))?String(value.productType) as 'PHYSICAL_PRODUCT'|'DIGITAL_PRODUCT'|'OTHER':null;
+      const key=`${kind}:${name.toLowerCase()}`;if(seen.has(key))return null;seen.add(key);
+      const price=typeof value.price==='number'&&Number.isFinite(value.price)&&value.price>=0?value.price:null;
+      const currency=activationText(value.currency,3)?.toUpperCase()??null;
+      return{name,kind,productType,description:activationText(value.description,20_000),category:activationText(value.category,200),price,currency};
+    }).filter((item):item is NonNullable<typeof item>=>Boolean(item));
+    const summary=activationText(classification.summary,5000)??`Knowledge for ${workspace.companyName}`;
+    const generalKnowledge=(Array.isArray(classification.generalKnowledge)?classification.generalKnowledge:[]).slice(0,100).map(entry=>{
+      const value=entry&&typeof entry==='object'?entry as Record<string,unknown>:{};
+      const title=activationText(value.title,300);const content=activationText(value.content,20_000);
+      return title&&content?{title,content}:null;
+    }).filter((entry):entry is NonNullable<typeof entry>=>Boolean(entry));
+    const contentTypes=(Array.isArray(classification.contentTypes)?classification.contentTypes:[]).map(value=>activationText(value,100)).filter((value):value is string=>Boolean(value)).slice(0,30);
+    const normalizedClassification={summary,businessDescription:activationText(classification.businessDescription,10_000),contentTypes,items,generalKnowledge};
+    const result=await repo.applyKnowledgeClassification({activationId,workspaceId,userId,classification:normalizedClassification,summary,businessDescription:normalizedClassification.businessDescription,items});
+    const premiumJobs:Array<{productId:string;status:string}>=[];
+    for(const productId of result.missingImageProductIds){
+      try{const production=await startPremiumMediaFromProductBrief(workspaceId,productId,userId,false,false);premiumJobs.push({productId,status:production.job.status});}
+      catch(error){premiumJobs.push({productId,status:error instanceof AppError&&['AI_FUNDS_REQUIRED','AI_FUNDS_EXHAUSTED'].includes(error.code)?'WAITING_FOR_AI_FUNDS':'WAITING_FOR_PREMIUM_RUNTIME'});}
+    }
+    return {...result,classification:normalizedClassification,premiumJobs};
+  }catch(error){await repo.failKnowledgeActivation(activationId,error);throw error;}
 }
 
 

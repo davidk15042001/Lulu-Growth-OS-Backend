@@ -12,6 +12,7 @@ import {
   aiPreferencesSchema,
   businessDescriptionSchema,
   companyInformationSchema,
+  knowledgeActivationSchema,
   createCompetitorSchema,
   createCustomerSegmentSchema,
   createOfferingSchema,
@@ -394,6 +395,11 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
   } catch (error) {
     next(error);
   }
+}
+
+export async function activateKnowledge(req: WorkspaceRequest,res: Response,next: NextFunction){
+  try{const input=knowledgeActivationSchema.parse(req.body);return successResponse(res,'Knowledge Base processed',await service.activateKnowledgeBase(workspaceId(req),req.user!.id,input));}
+  catch(error){next(error);}
 }
 
 export async function continueProductsServices(req: WorkspaceRequest, res: Response, next: NextFunction) {

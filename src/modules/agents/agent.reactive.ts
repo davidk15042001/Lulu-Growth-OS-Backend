@@ -8,6 +8,8 @@ import {
 } from './agent.page-context.js';
 import { prepareAutomaticAgentTeam, startAutomaticRun } from './agent.service.js';
 import { modulesReactingToResourceType } from './agent.graph.js';
+import { getAdSpendOverview } from '../adspend/adspend.repo.js';
+import { assertAiBillingAccess } from '../billing/payg-billing.repo.js';
 
 const REACTIVE_DEDUPE_MINUTES = 30;
 
@@ -107,7 +109,7 @@ export function startReactiveDispatcher() {
   started = true;
   registerDomainEventHandler({
     name: 'agents.reactive-record-created.v1',
-    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED, DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED],
+    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED, DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED, DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED],
     async handle(event) {
       if (!event.workspaceId) return { ignored: true };
       if (event.type === DOMAIN_EVENT_TYPES.RECORD_CREATED) {
@@ -116,9 +118,17 @@ export function startReactiveDispatcher() {
         await reactToRecordCreated(event.workspaceId, resourceType);
         return { triggered: true, resourceType };
       }
-      if (event.type === DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED) {
+      if (event.type === DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED || event.type === DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED) {
+        const adSpend = await getAdSpendOverview(event.workspaceId);
+        if (!adSpend.wallet.adsEnabled) return { triggered: false, waitingFor: 'ad_spend_funds' };
+        try { await assertAiBillingAccess(event.workspaceId); }
+        catch (error) {
+          const code=error&&typeof error==='object'&&'code' in error?String(error.code):'';
+          if(code==='AI_FUNDS_REQUIRED'||code==='AI_FUNDS_EXHAUSTED')return {triggered:false,waitingFor:'ai_funds'};
+          throw error;
+        }
         await reactToAdSpendFunded(event.workspaceId);
-        return { triggered: true, source: 'ad_spend.funded' };
+        return { triggered: true, source: event.type };
       }
       const category = typeof event.payload.category === 'string' ? event.payload.category : '';
       const provider = typeof event.payload.provider === 'string'

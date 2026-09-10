@@ -460,6 +460,7 @@ export async function startPremiumMediaFromProductBrief(
   productId: string,
   userId: string,
   runtimeAlreadyVerified = false,
+  deliverVideo = true,
 ) {
   await assertAiBillingAccess(workspaceId, userId);
   const product = await repo.getProductMediaContext(workspaceId, productId);
@@ -471,7 +472,7 @@ export async function startPremiumMediaFromProductBrief(
     workspaceId,
     product,
     requestedBy: userId,
-    request: { aspectRatio: '1:1', deliverImage: true, deliverVideo: true, referenceImageUrls: [] },
+    request: { aspectRatio: '1:1', deliverImage: true, deliverVideo, referenceImageUrls: [] },
     references: [],
   });
 }

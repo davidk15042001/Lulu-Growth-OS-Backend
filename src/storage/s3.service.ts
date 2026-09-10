@@ -1,12 +1,14 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { env } from '../config/env.js';
 import { AppError } from '../utils/app-error.js';
 import { logger } from '../config/logger.js';
+import { reconcileR2Inventory, recordR2Delete, recordR2Get, recordR2Put } from './r2-metering.repo.js';
 
 const s3 = new S3Client({
   region: env.AWS_REGION,
@@ -19,12 +21,12 @@ const s3 = new S3Client({
 
 function bucketName() {
   if (!env.AWS_S3_BUCKET) {
-    throw new AppError(503, 'STORAGE_NOT_CONFIGURED', 'Amazon S3 storage is not configured on the server');
+    throw new AppError(503, 'STORAGE_NOT_CONFIGURED', 'Cloudflare R2 storage is not configured on the server');
   }
   return env.AWS_S3_BUCKET;
 }
 
-function storageError(operation: 'UPLOAD' | 'DOWNLOAD' | 'DELETE', error: unknown, context?: { key?: string }): AppError {
+function storageError(operation: 'UPLOAD' | 'DOWNLOAD' | 'DELETE' | 'LIST', error: unknown, context?: { key?: string }): AppError {
   if (error instanceof AppError) return error;
   const awsError = error as {
     name?: string;
@@ -42,10 +44,10 @@ function storageError(operation: 'UPLOAD' | 'DOWNLOAD' | 'DELETE', error: unknow
     awsCode,
     httpStatus,
     reason,
-  }, 'Amazon S3 operation failed');
+  }, 'Cloudflare R2 storage operation failed');
   const code = `S3_${operation}_FAILED`;
-  return new AppError(502, code, `Amazon S3 ${operation.toLowerCase()} failed`, {
-    provider: 'amazon-s3',
+  return new AppError(502, code, `Cloudflare R2 ${operation.toLowerCase()} failed`, {
+    provider: 'cloudflare-r2',
     operation,
     reason,
     awsCode,
@@ -98,6 +100,7 @@ export async function putObject(input: {
       ContentDisposition: 'inline',
       ServerSideEncryption: 'AES256',
     }));
+    await recordR2Put({ key: input.key, sizeBytes: input.content.byteLength, contentType: input.mimeType });
   } catch (error) {
     throw storageError('UPLOAD', error, { key: input.key });
   }
@@ -121,7 +124,9 @@ async function bodyToBuffer(body: unknown): Promise<Buffer> {
 export async function getObject(key: string) {
   try {
     const response = await s3.send(new GetObjectCommand({ Bucket: bucketName(), Key: key }));
-    return bodyToBuffer(response.Body);
+    const content = await bodyToBuffer(response.Body);
+    await recordR2Get(key);
+    return content;
   } catch (error) {
     throw storageError('DOWNLOAD', error, { key });
   }
@@ -130,7 +135,37 @@ export async function getObject(key: string) {
 export async function deleteObject(key: string) {
   try {
     await s3.send(new DeleteObjectCommand({ Bucket: bucketName(), Key: key }));
+    await recordR2Delete(key);
   } catch (error) {
     throw storageError('DELETE', error, { key });
+  }
+}
+
+export async function reconcileStoredObjectInventory() {
+  if (!env.AWS_S3_BUCKET) return { scanned: false, objects: 0 };
+  const scanStartedAt = new Date();
+  const objects: Array<{ key: string; sizeBytes: number }> = [];
+  let continuationToken: string | undefined;
+  try {
+    do {
+      const page = await s3.send(new ListObjectsV2Command({
+        Bucket: bucketName(),
+        Prefix: 'workspaces/',
+        ...(continuationToken ? { ContinuationToken: continuationToken } : {}),
+      }));
+      for (const object of page.Contents ?? []) {
+        if (typeof object.Key === 'string' && typeof object.Size === 'number') {
+          objects.push({ key: object.Key, sizeBytes: object.Size });
+        }
+      }
+      continuationToken = page.IsTruncated ? page.NextContinuationToken : undefined;
+      if (page.IsTruncated && !continuationToken) {
+        throw new Error('Storage inventory pagination did not return a continuation token');
+      }
+    } while (continuationToken);
+    const reconciled = await reconcileR2Inventory(objects, scanStartedAt);
+    return { scanned: true, objects: reconciled };
+  } catch (error) {
+    throw storageError('LIST', error);
   }
 }

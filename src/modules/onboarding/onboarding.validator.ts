@@ -9,12 +9,22 @@ const optionalStringList = (maximumItems: number, maximumLength = 120) =>
   stringList(maximumItems, maximumLength).optional();
 
 export const companyInformationSchema = z.object({
+  fullName: z.string().trim().min(2).max(200).optional(),
+  password: z.string().min(1).max(128).optional(),
+  repeatPassword: z.string().min(1).max(128).optional(),
   companyName: z.string().trim().min(1).max(200),
   industry: nullableText(200),
   countryRegion: nullableText(200),
   taxId: nullableText(100),
   address: nullableText(500),
+}).refine((value) => value.password === value.repeatPassword, {
+  path: ['repeatPassword'], message: 'Passwords do not match',
 });
+
+export const knowledgeActivationSchema = z.object({
+  text: z.string().trim().max(50_000).optional().default(''),
+  documentIds: z.array(z.string().uuid()).max(10).optional().default([]),
+}).refine((value) => value.text.length > 0 || value.documentIds.length > 0, 'Add company information or at least one document.');
 
 export const businessDescriptionSchema = z.object({
   businessDescription: nullableText(10_000),
@@ -231,6 +241,7 @@ export const onboardingDocumentParamsSchema = z.object({
 });
 
 export type CompanyInformationInput = z.infer<typeof companyInformationSchema>;
+export type KnowledgeActivationInput = z.infer<typeof knowledgeActivationSchema>;
 export type BusinessDescriptionInput = z.infer<typeof businessDescriptionSchema>;
 export type CreateOfferingInput = z.infer<typeof createOfferingSchema>;
 export type UpdateOfferingInput = z.infer<typeof updateOfferingSchema>;

@@ -42,6 +42,9 @@ export type Workspace = {
   regulatedIndustries: string[];
   onboardingStep: string;
   onboardingCompletedAt: string | null;
+  billingSkippedAt: string | null;
+  profileCompletedAt: string | null;
+  knowledgeBaseCompletedAt: string | null;
   onboardingFileReuploadRequired: boolean;
   onboardingFilesPurgedAt: string | null;
   createdBy: string;
@@ -65,6 +68,9 @@ export type WorkspaceProfile = {
   bankOpeningBank: string | null;
   bankBranch: string | null;
   bankCode: string | null;
+  onboardingStep: string;
+  profileCompletedAt: string | null;
+  missingRequiredFields: string[];
 };
 
 const workspaceSelect = `
@@ -100,6 +106,9 @@ const workspaceSelect = `
   w.regulated_industries AS "regulatedIndustries",
   w.onboarding_step AS "onboardingStep",
   w.onboarding_completed_at AS "onboardingCompletedAt",
+  w.billing_skipped_at AS "billingSkippedAt",
+  w.profile_completed_at AS "profileCompletedAt",
+  w.knowledge_base_completed_at AS "knowledgeBaseCompletedAt",
   w.onboarding_file_reupload_required AS "onboardingFileReuploadRequired",
   w.onboarding_files_purged_at AS "onboardingFilesPurgedAt",
   w.created_by AS "createdBy",
@@ -122,7 +131,23 @@ const workspaceProfileSelect = `
   w.bank_account_number AS "bankAccountNumber",
   w.bank_opening_bank AS "bankOpeningBank",
   w.bank_branch AS "bankBranch",
-  w.bank_code AS "bankCode"
+  w.bank_code AS "bankCode",
+  w.onboarding_step AS "onboardingStep",
+  w.profile_completed_at AS "profileCompletedAt",
+  ARRAY_REMOVE(ARRAY[
+    CASE WHEN NULLIF(trim(w.name),'') IS NULL THEN 'companyName' END,
+    CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END,
+    CASE WHEN NULLIF(trim(w.country_region),'') IS NULL THEN 'countryRegion' END,
+    CASE WHEN NULLIF(trim(w.tax_id),'') IS NULL THEN 'taxId' END,
+    CASE WHEN NULLIF(trim(w.address),'') IS NULL THEN 'address' END,
+    CASE WHEN NULLIF(trim(w.legal_form),'') IS NULL THEN 'legalForm' END,
+    CASE WHEN NULLIF(trim(w.legal_representative),'') IS NULL THEN 'legalRepresentative' END,
+    CASE WHEN NULLIF(trim(w.phone_number),'') IS NULL THEN 'phoneNumber' END,
+    CASE WHEN NULLIF(trim(w.bank_account_number),'') IS NULL THEN 'bankAccountNumber' END,
+    CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankOpeningBank' END,
+    CASE WHEN NULLIF(trim(w.bank_branch),'') IS NULL THEN 'bankBranch' END,
+    CASE WHEN NULLIF(trim(w.bank_code),'') IS NULL THEN 'bankCode' END
+  ],NULL) AS "missingRequiredFields"
 `;
 
 export async function createWorkspace(
@@ -235,6 +260,8 @@ export async function findWorkspaceById(workspaceId: string) {
             w.primary_challenges AS "primaryChallenges", w.languages,
             w.regulated_industries AS "regulatedIndustries",
             w.onboarding_step AS "onboardingStep", w.onboarding_completed_at AS "onboardingCompletedAt",
+            w.billing_skipped_at AS "billingSkippedAt",w.profile_completed_at AS "profileCompletedAt",
+            w.knowledge_base_completed_at AS "knowledgeBaseCompletedAt",
             w.onboarding_file_reupload_required AS "onboardingFileReuploadRequired",
             w.onboarding_files_purged_at AS "onboardingFilesPurgedAt",
             w.created_by AS "createdBy", w.created_at AS "createdAt", w.updated_at AS "updatedAt",
@@ -391,6 +418,21 @@ export async function updateWorkspaceProfile(
       client,
     );
     if (!updated.rowCount) return undefined;
+
+    // The database, not the browser, decides when the mandatory profile gate
+    // is complete. Partial PATCH calls can never unlock the workspace.
+    await query(
+      `UPDATE workspaces SET profile_completed_at=COALESCE(profile_completed_at,NOW()),
+          onboarding_step=CASE WHEN onboarding_step='profile_completion' THEN 'knowledge_base' ELSE onboarding_step END
+       WHERE id=$1 AND onboarding_completed_at IS NULL
+         AND NULLIF(trim(name),'') IS NOT NULL AND NULLIF(trim(industry),'') IS NOT NULL
+         AND NULLIF(trim(country_region),'') IS NOT NULL AND NULLIF(trim(tax_id),'') IS NOT NULL
+         AND NULLIF(trim(address),'') IS NOT NULL AND NULLIF(trim(legal_form),'') IS NOT NULL
+         AND NULLIF(trim(legal_representative),'') IS NOT NULL AND NULLIF(trim(phone_number),'') IS NOT NULL
+         AND NULLIF(trim(bank_account_number),'') IS NOT NULL AND NULLIF(trim(bank_opening_bank),'') IS NOT NULL
+         AND NULLIF(trim(bank_branch),'') IS NOT NULL AND NULLIF(trim(bank_code),'') IS NOT NULL`,
+      [workspaceId], client,
+    );
 
     const current = (await query<{ name: string; country: string | null; taxId: string | null; legalForm: string | null; address: string | null }>(
       `SELECT name, country_region AS country, tax_id AS "taxId", legal_form AS "legalForm", address

@@ -73,7 +73,7 @@ export const configurePaygPaymentMethodSchema = z.object({
 export const createPaygQrPaymentSchema = z.object({
   paymentMethod: z.enum(['wechatpay', 'alipaycn']),
   returnUrl: z.string().url(),
-  periodId: z.string().uuid().optional(),
+  periodId: z.string().uuid(),
 }).strict();
 
 export const paygQrPaymentParamsSchema = z.object({

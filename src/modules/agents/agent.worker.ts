@@ -32,6 +32,7 @@ export async function runAutomaticAnalysisCycle() {
       const prepared = await prepareAutomaticAgentTeam(target.workspace_id, 'scheduled');
       const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
       for (const selected of prepared.selection.specialists) {
+        if (selected.definition.module === 'ads' && !target.ad_spend_funded) continue;
         const page = automaticPageProfiles.find((profile) => profile.pageId === selected.definition.pageId);
         if (!page) continue;
         const goal = buildPageAgentGoal(page);

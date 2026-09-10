@@ -1,5 +1,6 @@
 import { query } from '../../db/pool.js';
 import { env } from '../../config/env.js';
+import { debitApiWallet, isApiWalletMeteredWorkspace } from '../api-wallet/api-wallet.repo.js';
 
 export const TOKENS_PER_CREDIT = 1_000;
 export const CUSTOMER_API_RATE: Rate = {
@@ -121,7 +122,10 @@ export async function recordUsage(input: UsageInput) {
       { responseId },
     ],
   );
-  if (rows[0]) return { ...calculated, id: rows[0].id, createdAt: rows[0].createdAt };
+  if (rows[0]) {
+    if (await isApiWalletMeteredWorkspace(input.workspaceId)) await debitApiWallet({ workspaceId: input.workspaceId, usageLedgerId: rows[0].id, customerCostUsd: calculated.customerCostUsd, responseId: responseId ?? rows[0].id, usdCnyRate: env.API_USD_CNY_RATE });
+    return { ...calculated, id: rows[0].id, createdAt: rows[0].createdAt };
+  }
 
   // A provider retry with the same response ID is already accounted for. Read
   // the existing append-only entry so callers get a deterministic result.
@@ -169,7 +173,10 @@ export async function recordMeteredUsage(input: MeteredUsageInput) {
       JSON.stringify(metadata),
     ],
   );
-  if (rows[0]) return { id: rows[0].id, createdAt: rows[0].createdAt, providerCostUsd, customerCostUsd };
+  if (rows[0]) {
+    if (await isApiWalletMeteredWorkspace(input.workspaceId)) await debitApiWallet({ workspaceId: input.workspaceId, usageLedgerId: rows[0].id, customerCostUsd, responseId, usdCnyRate: env.API_USD_CNY_RATE });
+    return { id: rows[0].id, createdAt: rows[0].createdAt, providerCostUsd, customerCostUsd };
+  }
 
   const existing = await query<{ id: string; createdAt: string }>(
     `SELECT id, created_at AS "createdAt" FROM ai_usage_ledger

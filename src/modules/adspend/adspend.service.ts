@@ -11,6 +11,9 @@ import {
 } from './adspend.repo.js';
 
 export function calculateAdSpendCharge(amount: number) {
+  if (![10_000, 25_000, 50_000, 90_000].includes(amount)) {
+    throw new AppError(422, 'AD_SPEND_PACKAGE_INVALID', 'Choose an available advertising package.');
+  }
   const netMinor = Math.round(amount * 100);
   if (!Number.isSafeInteger(netMinor) || netMinor < 100) {
     throw new AppError(422, 'AD_SPEND_AMOUNT_INVALID', 'Ad spend must be at least CNY 1.00.');

@@ -1,6 +1,7 @@
 export const DOMAIN_EVENT_TYPES = {
   WORKSPACE_CREATED: 'workspace.created',
   WORKSPACE_UPDATED: 'workspace.updated',
+  WORKSPACE_ACTIVATED: 'workspace.activated',
   RECORD_CREATED: 'record.created',
   RECORD_UPDATED: 'record.updated',
   RECORD_ARCHIVED: 'record.archived',
@@ -12,6 +13,7 @@ export const DOMAIN_EVENT_TYPES = {
   AGENT_RUN_REQUESTED: 'agent.run.requested',
   AGENT_RUN_RESUME_REQUESTED: 'agent.run.resume_requested',
   AGENT_AUTOMATIC_CYCLE_REQUESTED: 'agent.automatic_cycle.requested',
+  API_FUNDS_FUNDED: 'billing.api_funds.funded',
   AGENT_RUN_COMPLETED: 'run.completed',
   AGENT_RUN_FAILED: 'run.failed',
   AGENT_RUN_CANCELLED: 'run.cancelled',

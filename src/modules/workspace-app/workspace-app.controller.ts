@@ -1,9 +1,10 @@
 import type { NextFunction, Response } from 'express';
 import { z } from 'zod';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
+import { AppError } from '../../utils/app-error.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './workspace-app.service.js';
-import { configurePaygPaymentMethod as configurePaygPaymentMethodCheckout, createCheckout, createPaygApiUsageCheckout as createPaygApiUsageCheckoutInvoice, createPaygApiUsageQrPayment, syncCheckoutStatus, syncPaygApiUsageQrPayment, syncPaygPaymentMethodSetup, type BillingPlanKey } from '../billing/airwallex.service.js';
+import { configurePaygPaymentMethod as configurePaygPaymentMethodCheckout, createCheckout, createPaygApiUsageQrPayment, syncCheckoutStatus, syncPaygApiUsageQrPayment, syncPaygPaymentMethodSetup, type BillingPlanKey } from '../billing/airwallex.service.js';
 import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import * as contentGeneration from '../content-generation/content-generation.service.js';
 import { CONTENT_MODULES, type ContentModule } from '../content-generation/content-generation.repo.js';
@@ -224,10 +225,10 @@ export async function businessIdentity(req: WorkspaceRequest, res: Response, nex
   catch (error) { next(error); }
 }
 
-export async function createPaygApiUsageCheckout(req: WorkspaceRequest, res: Response, next: NextFunction) {
+export async function createPaygApiUsageCheckout(req: WorkspaceRequest, _res: Response, next: NextFunction) {
   try {
-    const { workspaceId } = params(req);
-    return successResponse(res, 'API usage payment checkout created', await createPaygApiUsageCheckoutInvoice(workspaceId));
+    params(req);
+    throw new AppError(410, 'API_PREPAID_REQUIRED', 'API usage is prepaid. Add one of the fixed AI balance packages instead.');
   } catch (error) { next(error); }
 }
 
@@ -240,7 +241,7 @@ export async function createPaygQrPayment(req: WorkspaceRequest, res: Response, 
       userId: req.user!.id,
       paymentMethod: input.paymentMethod,
       returnUrl: input.returnUrl,
-      ...(input.periodId ? { periodId: input.periodId } : {}),
+      periodId: input.periodId,
     }));
   } catch (error) { next(error); }
 }

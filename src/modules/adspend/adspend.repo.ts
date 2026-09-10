@@ -167,6 +167,8 @@ export async function attachAdSpendProviderPayment(input: {
 
 function mapProviderStatus(status: string): AdSpendTopupStatus {
   const normalized = status.trim().toUpperCase();
+  if (normalized.includes('CHARGEBACK')) return 'CHARGEBACK';
+  if (normalized.includes('REFUND')) return 'REFUNDED';
   if (['SUCCEEDED','PAID','COMPLETED'].includes(normalized)) return 'SUCCEEDED';
   if (normalized === 'CANCELLED' || normalized === 'CANCELED') return 'CANCELLED';
   if (normalized === 'EXPIRED') return 'EXPIRED';
@@ -192,11 +194,18 @@ export async function applyAdSpendProviderStatus(input: {
     )).rows[0];
     if (!topup) return null;
     const mappedStatus = mapProviderStatus(input.providerStatus);
+    const reversal = mappedStatus === 'REFUNDED' || mappedStatus === 'CHARGEBACK';
+    const wasReversed = topup.status === 'REFUNDED' || topup.status === 'CHARGEBACK';
     // Provider events can arrive out of order. Once funds were credited, a
     // delayed pending/failed event must never downgrade the successful top-up.
-    const status = topup.creditedAt ? 'SUCCEEDED' : mappedStatus;
+    const status: AdSpendTopupStatus = reversal
+      ? mappedStatus
+      : topup.creditedAt
+        ? (wasReversed ? topup.status : 'SUCCEEDED')
+        : mappedStatus;
     const successful = status === 'SUCCEEDED';
     const newlyCredited = successful && !topup.creditedAt;
+    const newlyReversed = reversal && Boolean(topup.creditedAt) && !wasReversed;
     await query(
       `UPDATE workspace_ad_spend_topups SET status=$2::varchar,
        paid_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(paid_at,$3::timestamptz,NOW()) ELSE paid_at END,
@@ -233,6 +242,37 @@ export async function applyAdSpendProviderStatus(input: {
         metadata: { actorId: topup.createdBy, source: 'airwallex' },
         idempotencyKey: `adspend-topup:${topup.id}:funded`,
       }, client);
+    }
+    if (newlyReversed) {
+      const before = await ensureWallet(topup.workspaceId, client);
+      const deducted = Math.min(Number(before.availableAmount), Number(topup.netAmount));
+      const wallet = (await query<WalletRow>(
+        `UPDATE workspace_ad_spend_wallets SET
+           available_amount=GREATEST(0,available_amount-$2),
+           reserved_amount=0,
+           refunded_amount=refunded_amount+$2,
+           total_funded_amount=GREATEST(0,total_funded_amount-$2),
+           total_fee_amount=GREATEST(0,total_fee_amount-$3),
+           version=version+1
+         WHERE workspace_id=$1 RETURNING ${walletSelect}`,
+        [topup.workspaceId, topup.netAmount, topup.feeAmount], client,
+      )).rows[0];
+      if (!wallet) throw new Error('Ad spend wallet reversal failed');
+      await query(
+        `UPDATE workspace_ad_spend_reservations
+         SET status='EXPIRED',metadata=metadata||$2::jsonb
+         WHERE workspace_id=$1 AND status='RESERVED'`,
+        [topup.workspaceId, JSON.stringify({ reason: 'provider_payment_reversal', topupId: topup.id })], client,
+      );
+      if (deducted > 0) {
+        await query(
+          `INSERT INTO workspace_ad_spend_ledger(
+             workspace_id,topup_id,entry_type,amount_delta,balance_after,currency,idempotency_key,metadata
+           ) VALUES($1,$2,'REFUND',$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
+          [topup.workspaceId, topup.id, (-deducted).toFixed(2), wallet.availableAmount,
+            `adspend-topup:${topup.id}:reversal`, JSON.stringify({ provider: 'airwallex', status, originalAmount: Number(topup.netAmount) })], client,
+        );
+      }
     }
     return (await query<AdSpendTopupRow>(
       `SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE workspace_id=$1 AND id=$2`,

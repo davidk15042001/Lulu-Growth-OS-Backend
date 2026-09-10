@@ -449,7 +449,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     values.push(filters.to);
     usageConditions.push(`period_start <= $${values.length}`);
   }
-  const [subscription, usage, paygCurrent, paygUsageBreakdown, paygInvoices, latestPaygPaymentSetup] = await Promise.all([
+  const [subscription, usage, paygCurrent, paygUsageBreakdown, paygInvoices, latestPaygPaymentSetup, apiWallet] = await Promise.all([
     query(
       `SELECT workspace_id AS "workspaceId", provider, plan_key AS "planKey", status, seats,
               trial_ends_at AS "trialEndsAt", current_period_starts_at AS "currentPeriodStartsAt",
@@ -500,7 +500,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
               p.blocked_period_id AS "blockedPeriodId",
               blocked.hosted_invoice_url AS "paymentLink",
               GREATEST(0::numeric, COALESCE(api.customer_cost_usd, 0) - COALESCE(adjustments.api_credit_usd, 0))::numeric AS "apiCostUsd",
-              GREATEST(0::numeric, COALESCE(server.customer_cost_usd, 0) - COALESCE(adjustments.server_credit_usd, 0) - COALESCE(adjustments.storage_credit_usd, 0))::numeric AS "serverCostUsd",
+              GREATEST(0::numeric, COALESCE(server.customer_cost_usd, 0) - COALESCE(adjustments.storage_credit_usd, 0))::numeric AS "serverCostUsd",
               COALESCE(api.input_tokens, 0)::bigint AS "inputTokens",
               COALESCE(api.output_tokens, 0)::bigint AS "outputTokens",
               COALESCE(api.event_count, 0)::int AS "apiEvents",
@@ -519,18 +519,14 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
            AND created_at < p.current_period_end
        ) api ON TRUE
        LEFT JOIN LATERAL (
-         SELECT SUM(customer_cost_usd) AS customer_cost_usd,
-                COUNT(*) AS usage_days
-         FROM workspace_server_usage_ledger
-         WHERE workspace_id=p.workspace_id
-           AND payg_period_id IS NULL
-           AND created_at >= p.current_period_start
-           AND created_at < p.current_period_end
+         SELECT SUM(customer_cost_usd) AS customer_cost_usd, COUNT(DISTINCT usage_date) AS usage_days
+         FROM workspace_r2_usage_ledger
+         WHERE workspace_id=p.workspace_id AND payg_period_id IS NULL
+           AND created_at >= p.current_period_start AND created_at < p.current_period_end
        ) server ON TRUE
        LEFT JOIN LATERAL (
          SELECT
            COALESCE(SUM(amount_usd) FILTER (WHERE metric='api'), 0) AS api_credit_usd,
-           COALESCE(SUM(amount_usd) FILTER (WHERE metric='server'), 0) AS server_credit_usd,
            COALESCE(SUM(amount_usd) FILTER (WHERE metric='storage'), 0) AS storage_credit_usd
          FROM workspace_usage_adjustments
          WHERE workspace_id=p.workspace_id
@@ -607,6 +603,9 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       [workspaceId],
     ),
     getLatestPaygPaymentMethodSetup(workspaceId),
+    query<{availableAmount:string;spentAmount:string;totalFundedAmount:string;currency:string}>(
+      `SELECT available_amount AS "availableAmount",spent_amount AS "spentAmount",total_funded_amount AS "totalFundedAmount",currency
+       FROM workspace_api_wallets WHERE workspace_id=$1`, [workspaceId]),
   ]);
   const current = paygCurrent.rows[0];
   const subscriptionRow = subscription.rows[0] ?? null;
@@ -614,6 +613,19 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
   return {
     subscription: subscriptionRow,
     usage: usage.rows,
+    apiWallet: apiWallet.rows[0] ? {
+      availableAmount: Number(apiWallet.rows[0].availableAmount), spentAmount: Number(apiWallet.rows[0].spentAmount),
+      totalFundedAmount: Number(apiWallet.rows[0].totalFundedAmount), currency: apiWallet.rows[0].currency,
+      packages: [1000, 2500, 5000, 9000], enabled: Number(apiWallet.rows[0].availableAmount) > 0,
+    } : { availableAmount: 0, spentAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [1000,2500,5000,9000], enabled: false },
+    storagePricing: {
+      currency: 'USD', freeTierDeduction: false, providerMarkupPercent: 10,
+      additionalStoragePerGbMonthUsd: 0.2,
+      storagePerGbMonthUsd: 0.2165,
+      classAPerMillionOperationsUsd: 4.95,
+      classBPerMillionOperationsUsd: 0.396,
+      egressPerGbUsd: 0,
+    },
     paygConfiguration: {
       availablePaymentMethods: getPaygDirectPaymentMethods(),
       selectedPaymentMethod: current?.preferredPaymentMethod ?? latestPaygPaymentSetup?.paymentMethod ?? null,
@@ -646,9 +658,9 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       blockReason: adminBillingBypass ? null : current.blockReason,
       blockedPeriodId: adminBillingBypass ? null : current.blockedPeriodId,
       paymentLink: adminBillingBypass ? null : current.paymentLink,
-      apiCost: Number(current.apiCostUsd),
+      apiCost: 0,
       serverCost: Number(current.serverCostUsd),
-      estimatedTotal: Number(current.apiCostUsd) + Number(current.serverCostUsd),
+      estimatedTotal: Number(current.serverCostUsd),
       inputTokens: Number(current.inputTokens),
       outputTokens: Number(current.outputTokens),
       apiEvents: current.apiEvents,

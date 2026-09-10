@@ -4,6 +4,8 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AppError } from '../../utils/app-error.js';
+import { snapshotAllR2Storage } from '../../storage/r2-metering.repo.js';
+import { reconcileStoredObjectInventory } from '../../storage/s3.service.js';
 import {
   addPaygInvoiceLineItems,
   createPaygInvoiceDraft,
@@ -12,8 +14,6 @@ import {
   payPaygInvoice,
 } from './airwallex.service.js';
 import {
-  AWS_USAGE_CUSTOMER_MULTIPLIER,
-  allocateDailyServerUsage,
   claimDuePaygPeriod,
   failPaygPeriod,
   finalizePaygPeriod,
@@ -28,6 +28,8 @@ import {
 const MAX_PERIODS_PER_CYCLE = 50;
 let running = false;
 let interval: NodeJS.Timeout | null = null;
+let lastStorageInventoryAt = 0;
+const STORAGE_INVENTORY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
 
 function invoiceAmount(value: string) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -40,7 +42,7 @@ async function settleFinalizedInvoice(period: PaygPeriod, invoiceId: string, inv
   }
   if (!period.paymentSourceId) {
     await finalizePaygPeriod(period, invoice);
-    logger.warn({ periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'PAYG invoice needs a payment source; AI access was blocked and the hosted payment link remains available');
+    logger.warn({ periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Storage invoice needs a payment source; the hosted payment link remains available');
     return;
   }
   try {
@@ -49,7 +51,7 @@ async function settleFinalizedInvoice(period: PaygPeriod, invoiceId: string, inv
   } catch (error) {
     const latest = await fetchAirwallexInvoice(invoiceId, `payg-payment-failure:${period.id}`).catch(() => null);
     await finalizePaygPeriod(period, latest ?? invoice, true);
-    logger.warn({ error, periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Automatic PAYG payment failed; AI access was blocked and the hosted payment link remains available');
+    logger.warn({ error, periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Automatic storage payment failed; the hosted payment link remains available');
   }
 }
 
@@ -122,9 +124,11 @@ export async function runPaygBillingCycle() {
   running = true;
   try {
     await repairCompletedProfilePointers();
-    const providerCost = env.PAYG_SERVER_COST_USD_PER_DAY;
-    await allocateDailyServerUsage(providerCost, providerCost * AWS_USAGE_CUSTOMER_MULTIPLIER);
-
+    if (Date.now() - lastStorageInventoryAt >= STORAGE_INVENTORY_INTERVAL_MS) {
+      const inventory = await reconcileStoredObjectInventory();
+      if (inventory.scanned) lastStorageInventoryAt = Date.now();
+    }
+    await snapshotAllR2Storage();
     for (let processed = 0; processed < MAX_PERIODS_PER_CYCLE; processed += 1) {
       const period = await claimDuePaygPeriod();
       if (!period) break;
@@ -166,7 +170,7 @@ export function startPaygBillingWorker() {
   void requestCycle();
   interval = setInterval(() => void requestCycle(), intervalMs);
   interval.unref();
-  logger.info({ intervalMinutes: env.PAYG_BILLING_WORKER_INTERVAL_MINUTES, awsProviderCostUsdPerDay: env.PAYG_SERVER_COST_USD_PER_DAY, awsCustomerMultiplier: AWS_USAGE_CUSTOMER_MULTIPLIER }, 'Weekly Monday PAYG billing worker started');
+  logger.info({ intervalMinutes: env.PAYG_BILLING_WORKER_INTERVAL_MINUTES }, 'Weekly Cloudflare R2 storage billing worker started');
 }
 
 export function stopPaygBillingWorker() {

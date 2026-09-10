@@ -7,7 +7,7 @@ const nullableText = (max: number) => z.string().trim().max(max).nullable().opti
 export const productParamsSchema = z.object({ workspaceId: uuid, productId: uuid.optional(), childId: uuid.optional() });
 
 export const productStatus = z.enum(['DRAFT', 'ACTIVE', 'INACTIVE', 'ARCHIVED']);
-export const productType = z.enum(['PHYSICAL_PRODUCT', 'CUSTOM_MANUFACTURING', 'OEM', 'ODM', 'SERVICE', 'COMPONENT', 'MATERIAL', 'MACHINE', 'OTHER']);
+export const productType = z.enum(['PHYSICAL_PRODUCT', 'DIGITAL_PRODUCT', 'CUSTOM_MANUFACTURING', 'OEM', 'ODM', 'SERVICE', 'COMPONENT', 'MATERIAL', 'MACHINE', 'OTHER']);
 export const pricingType = z.enum(['FIXED', 'STARTING_FROM', 'RANGE', 'QUOTE_REQUIRED', 'TIERED']);
 
 const productFields = {

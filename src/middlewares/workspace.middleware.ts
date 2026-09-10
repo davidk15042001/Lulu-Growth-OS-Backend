@@ -1,13 +1,14 @@
 import type { NextFunction, Response } from 'express';
 import { z } from 'zod';
 import type { AuthedRequest } from './auth.middleware.js';
-import { forbiddenError, notFoundError } from '../utils/app-error.js';
+import { AppError, forbiddenError, notFoundError } from '../utils/app-error.js';
 import { findMembership, type WorkspaceRole } from '../modules/workspaces/workspace.repo.js';
 import { getCompletionState } from '../modules/onboarding/onboarding.repo.js';
 import { assertWorkspaceCapability } from '../modules/workspaces/workspace-authorization.service.js';
 import type { WorkspaceCapability } from '../modules/workspaces/workspace-permissions.js';
 import { hasWorkspaceEntitlement } from '../modules/entitlements/entitlement.service.js';
 import type { EntitlementKey } from '../modules/entitlements/entitlement.types.js';
+import { query } from '../db/pool.js';
 
 export type WorkspaceRequest = AuthedRequest & {
   workspaceAccess?: { id: string; role: WorkspaceRole };
@@ -126,10 +127,7 @@ export async function requireOnboardingComplete(
       req.workspaceAccess = { id: workspaceId, role: membership.role };
     }
     const state = await getCompletionState(workspaceId);
-    const complete = Boolean(
-      state?.onboardingCompletedAt
-      || (state?.hasCompanyInformation && state.hasBusinessDescription && state.hasBillingConfirmation),
-    );
+    const complete = Boolean(state?.onboardingCompletedAt && state.hasProfile && state.hasKnowledgeBase);
     if (!complete) {
       next(forbiddenError('Complete onboarding before accessing the workspace'));
       return;
@@ -138,6 +136,36 @@ export async function requireOnboardingComplete(
   } catch (error) {
     next(error);
   }
+}
+
+/** Mandatory activation boundary for every workspace sub-route. The few
+ * endpoints needed by the active gate remain reachable; direct URLs cannot
+ * bypass this policy. */
+export async function requireWorkspaceActivationGate(req: WorkspaceRequest,_res:Response,next:NextFunction){
+  try{
+    const workspaceId=workspaceIdSchema.parse(req.params.workspaceId);
+    const member=await findMembership(workspaceId,req.user!.id);
+    if(!member){next(notFoundError('Workspace not found'));return;}
+    const workspace=(await query<{onboardingStep:string;onboardingCompletedAt:string|null}>(`SELECT onboarding_step AS "onboardingStep",onboarding_completed_at AS "onboardingCompletedAt" FROM workspaces WHERE id=$1 AND deleted_at IS NULL`,[workspaceId])).rows[0];
+    if(!workspace){next(notFoundError('Workspace not found'));return;}
+    if(workspace.onboardingCompletedAt){next();return;}
+    const suffix=req.path.replace(new RegExp(`^/${workspaceId}`),'');
+    const knowledgeRoute = suffix==='/onboarding'
+      || suffix==='/onboarding/documents'
+      || /^\/onboarding\/documents\/[0-9a-f-]+(?:\/content)?$/i.test(suffix)
+      || suffix==='/onboarding/knowledge-activation';
+    const allowed=workspace.onboardingStep==='company_information'
+      ? (suffix==='/onboarding'||suffix==='/onboarding/company-information')
+      : workspace.onboardingStep==='billing'
+        ? (suffix==='/onboarding'||suffix.startsWith('/billing'))
+        : workspace.onboardingStep==='profile_completion'
+          ? suffix==='/profile'
+          : workspace.onboardingStep==='knowledge_base'
+            ? knowledgeRoute
+            : false;
+    if(!allowed){next(new AppError(423,'WORKSPACE_ACTIVATION_REQUIRED','Complete the current activation step before accessing this workspace.',{onboardingStep:workspace.onboardingStep}));return;}
+    next();
+  }catch(error){next(error);}
 }
 
 export const requireWorkspaceMember = requireWorkspaceCapability('workspace.read');

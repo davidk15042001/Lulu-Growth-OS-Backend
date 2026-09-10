@@ -4,24 +4,18 @@ import { calculateAdSpendCharge } from '../src/modules/adspend/adspend.service.j
 
 describe('autonomous advertising wallet', () => {
   it('charges the 4% Lulu fee on top without reducing the credited ad spend', () => {
-    assert.deepEqual(calculateAdSpendCharge(100), {
-      netAmount: 100,
-      feeAmount: 4,
-      totalAmount: 104,
+    assert.deepEqual(calculateAdSpendCharge(10_000), {
+      netAmount: 10_000,
+      feeAmount: 400,
+      totalAmount: 10_400,
       feeBasisPoints: 400,
       feePercent: 4,
       currency: 'CNY',
     });
   });
 
-  it('rounds currency in minor units', () => {
-    assert.deepEqual(calculateAdSpendCharge(123.45), {
-      netAmount: 123.45,
-      feeAmount: 4.94,
-      totalAmount: 128.39,
-      feeBasisPoints: 400,
-      feePercent: 4,
-      currency: 'CNY',
-    });
+  it('accepts only the four explicit customer authorization packages', () => {
+    for (const amount of [10_000, 25_000, 50_000, 90_000]) assert.equal(calculateAdSpendCharge(amount).netAmount, amount);
+    assert.throws(() => calculateAdSpendCharge(123.45), { code: 'AD_SPEND_PACKAGE_INVALID' });
   });
 });

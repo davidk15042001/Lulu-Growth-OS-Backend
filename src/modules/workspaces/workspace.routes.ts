@@ -4,6 +4,7 @@ import {
   requireWorkspaceAdmin,
   requireWorkspaceMember,
   requireWorkspaceRole,
+  requireWorkspaceActivationGate,
 } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './workspace.controller.js';
@@ -28,6 +29,7 @@ import omnichannelRoutes from '../omnichannel/omnichannel.routes.js';
 import commercialDocumentRoutes from '../commercial-documents/commercial-documents.routes.js';
 import { supportRoutes } from '../support/support.routes.js';
 import adSpendRoutes from '../adspend/adspend.routes.js';
+import apiWalletRoutes from '../api-wallet/api-wallet.routes.js';
 
 const router = Router();
 
@@ -42,10 +44,11 @@ router.route('/invitations/:token/accept')
   .post(acceptInvitation)
   .all(methodNotAllowed);
 
-router.route('/:workspaceId')
-  .get(requireWorkspaceMember, controller.get)
-  .patch(requireWorkspaceAdmin, controller.update)
-  .all(methodNotAllowed);
+router.get('/:workspaceId', requireWorkspaceMember, controller.get);
+
+router.use('/:workspaceId', requireWorkspaceActivationGate);
+
+router.patch('/:workspaceId', requireWorkspaceAdmin, controller.update);
 
 router.route('/:workspaceId/profile')
   // Company/legal identity is sensitive, but it must remain available during
@@ -61,6 +64,7 @@ router.route('/:workspaceId/profile')
 router.use('/:workspaceId', workspaceAppRoutes);
 router.use('/:workspaceId/support', supportRoutes);
 router.use('/:workspaceId/adspend', adSpendRoutes);
+router.use('/:workspaceId/api-wallet', apiWalletRoutes);
 router.use('/:workspaceId/providers', workspaceProviderRoutes);
 router.use('/:workspaceId/products', productRoutes);
 router.use('/:workspaceId/onboarding', onboardingRoutes);

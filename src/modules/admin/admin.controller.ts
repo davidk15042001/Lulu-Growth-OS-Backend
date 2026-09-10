@@ -234,7 +234,7 @@ export async function patchWorkspace(req: AuthedRequest, res: Response, next: Ne
     }
     const planKey = typeof req.body?.planKey === 'string' ? req.body.planKey : undefined;
     if(action==='set-plan'||action==='skip-onboarding') await assertAdminCapability(req.user!.id,'billing.manage');
-    const result = await repo.updateWorkspaceStatus(workspaceId, action, planKey);
+    const result = await repo.updateWorkspaceStatus(workspaceId, action, planKey, req.user!.id);
     if (!result) return res.status(404).json({ success: false, error: { code: 'WORKSPACE_NOT_FOUND', message: 'Workspace not found' } });
     return successResponse(res, `Workspace ${action} complete`, result);
   } catch (error) { next(error); }

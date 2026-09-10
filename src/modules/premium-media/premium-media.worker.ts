@@ -3,6 +3,7 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { query } from '../../db/pool.js';
 import * as repo from './premium-media.repo.js';
 import {
   advancePremiumMediaJob,
@@ -10,6 +11,7 @@ import {
   pollCandidate,
   processCandidate,
   recordCandidateProviderUsage,
+  startPremiumMediaFromProductBrief,
 } from './premium-media.service.js';
 
 const workerId = `premium-media-${process.pid}-${randomUUID()}`;
@@ -98,6 +100,10 @@ export function requestPremiumMediaWorkerRun() {
   if (!stopping) void runPremiumMediaCycle();
 }
 
+export async function listKnowledgeProductsAwaitingImages(workspaceId: string) {
+  return (await query<{id:string}>(`SELECT p.id FROM products p WHERE p.workspace_id=$1 AND p.deleted_at IS NULL AND EXISTS(SELECT 1 FROM workspace_knowledge_activations ka WHERE ka.workspace_id=p.workspace_id AND ka.status='COMPLETED' AND ka.classification->'canonicalProductIds' ? p.id::text) AND NOT EXISTS(SELECT 1 FROM product_media m WHERE m.workspace_id=p.workspace_id AND m.product_id=p.id AND m.media_type='IMAGE') AND NOT EXISTS(SELECT 1 FROM premium_media_jobs j WHERE j.workspace_id=p.workspace_id AND j.product_id=p.id AND j.status NOT IN ('FAILED','CANCELLED')) ORDER BY p.created_at LIMIT 20`,[workspaceId])).rows;
+}
+
 export function startPremiumMediaWorker() {
   if (timer) return;
   registerDomainEventHandler({
@@ -111,6 +117,18 @@ export function startPremiumMediaWorker() {
       const result = await maybeStartAutonomousPremiumMedia(event.workspaceId, event.aggregateId, actorId);
       requestPremiumMediaWorkerRun();
       return { started: Boolean(result) };
+    },
+  });
+  registerDomainEventHandler({
+    name: 'premium-media.resume-after-api-funding.v1',
+    eventTypes: [DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED],
+    async handle(event) {
+      if (!event.workspaceId || typeof event.metadata.actorId !== 'string') return { skipped: true };
+      const products = await listKnowledgeProductsAwaitingImages(event.workspaceId);
+      let started=0;
+      for(const product of products){await startPremiumMediaFromProductBrief(event.workspaceId,product.id,event.metadata.actorId,false,false);started+=1;}
+      requestPremiumMediaWorkerRun();
+      return {started};
     },
   });
   stopping = false;

@@ -146,7 +146,12 @@ async function extractSpreadsheetText(buffer: Buffer): Promise<string> {
   }
 }
 
-export function extractTextFromFile(file: IngestFile, workspaceId: string, userId: string): Promise<string> {
+export function extractTextFromFile(
+  file: IngestFile,
+  workspaceId: string,
+  userId: string,
+  options: { platformFunded?: boolean } = {},
+): Promise<string> {
   const extension = file.name.split('.').pop()?.toLowerCase() ?? '';
   const isPdf = file.type === 'application/pdf' || extension === 'pdf';
   const isImage = file.type.startsWith('image/');
@@ -167,7 +172,7 @@ export function extractTextFromFile(file: IngestFile, workspaceId: string, userI
   if (isSpreadsheet) return extractSpreadsheetText(file.buffer);
   if (isImage) {
     const dataUrl = `data:${file.type};base64,${file.buffer.toString('base64')}`;
-    return describeImage({ dataUrl, workspaceId, userId });
+    return describeImage(options.platformFunded ? { dataUrl } : { dataUrl, workspaceId, userId });
   }
   return Promise.resolve('');
 }

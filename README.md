@@ -87,7 +87,7 @@ All application routes are below `/api/v1`.
 | Workspace bootstrap | `GET /workspaces/:workspaceId/bootstrap` |
 | Members and invitations | `/workspaces/:workspaceId/members`, `POST /workspaces/invitations/:token/accept` |
 | Saved views and audit | `/workspaces/:workspaceId/saved-views`, `GET /workspaces/:workspaceId/audit` |
-| Billing and integration sync | `GET /workspaces/:workspaceId/billing`, `POST /workspaces/:workspaceId/integrations/:platformId/sync` |
+| Billing and prepaid wallets | `GET /workspaces/:workspaceId/billing`, `/workspaces/:workspaceId/api-wallet`, `/workspaces/:workspaceId/adspend` |
 | Onboarding | `/workspaces/:workspaceId/onboarding/*` |
 | Typed records | `/workspaces/:workspaceId/records/:resourceType` |
 | Metrics | `/workspaces/:workspaceId/metrics` |
@@ -162,13 +162,13 @@ AI_MAX_RETRIES=1
 
 Set `AI_PROVIDER=alibaba`, `AI_PROVIDER=openai`, or `AI_PROVIDER=groq` with the corresponding provider variables to use another provider. Website generation is processed by a database-backed worker with resumable page checkpoints. No API key is committed to the repository.
 
-## Pay-as-you-go billing
+## Prepaid execution and storage billing
 
-Starter and AI workspaces receive a weekly usage period that closes every Monday in `Europe/Berlin`. Customer API pricing is fixed at USD 5 per million input tokens and USD 10 per million output tokens. The actual daily AWS cost allocated through `PAYG_SERVER_COST_USD_PER_DAY` is charged at exactly 2× provider cost. The worker creates separate Airwallex API and AWS invoice lines and explicitly pays the finalized invoice with the saved Payment Source.
+AI and premium-media execution use a CNY prepaid wallet with fixed customer packages of ¥1,000, ¥2,500, ¥5,000 and ¥9,000. Advertising uses a separate prepaid wallet with fixed packages of ¥10,000, ¥25,000, ¥50,000 and ¥90,000; Lulu adds a 4% service fee to the charge without reducing the advertising balance. Both wallets support hosted card payments and Airwallex Alipay/WeChat Pay QR payments. Provider callbacks credit each payment exactly once, and refunds or chargebacks cannot be replayed into available funds.
 
-Viewer and Test are internal-only plans. They are unavailable through public onboarding and require the designated billing administrator; Test additionally requires `BILLING_TEST_PLAN_PASSWORD`. Test workspaces are billing-exempt, while Viewer remains read-only and is not usage billed.
+Only Cloudflare R2 storage is PAYG. Lulu does not deduct Cloudflare's free tier. R2 Standard storage and operation rates receive a 10% margin, and storage additionally includes USD 0.20 per GB-month. The worker performs a daily object-inventory reconciliation and creates weekly storage-only invoices; AI execution is never blocked by a storage invoice.
 
-Set `PAYG_SERVER_COST_USD_PER_DAY` to the real daily AWS cost allocated to one active workspace before enabling live billing. The safe default is `0`, so deployment cannot invent infrastructure charges. The worker interval and invoice due window are controlled by `PAYG_BILLING_WORKER_INTERVAL_MINUTES` and `PAYG_INVOICE_DAYS_UNTIL_DUE`.
+Viewer and Test remain internal-only plans. They are unavailable through public onboarding and require the designated billing administrator; Test additionally requires `BILLING_TEST_PLAN_PASSWORD`. Test and explicitly internal workspaces remain billing-exempt.
 
 ## Health endpoints
 

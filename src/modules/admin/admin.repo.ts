@@ -1178,7 +1178,7 @@ export async function heartbeatUserDeletionJob(jobId: string, workerId: string) 
   );
 }
 
-export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' | 'unlock' | 'reset-onboarding' | 'skip-onboarding' | 'set-plan', planKey?: string) {
+export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' | 'unlock' | 'reset-onboarding' | 'skip-onboarding' | 'set-plan', planKey?: string, actorId?: string) {
   switch (action) {
     case 'lock':
       await query(`UPDATE workspaces SET deleted_at = NOW() WHERE id = $1 AND deleted_at IS NULL`, [workspaceId]);
@@ -1187,18 +1187,18 @@ export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' 
       await query(`UPDATE workspaces SET deleted_at = NULL WHERE id = $1`, [workspaceId]);
       break;
     case 'reset-onboarding':
-      await query(`UPDATE workspaces SET onboarding_step = 'company_information', onboarding_completed_at = NULL, updated_at = NOW() WHERE id = $1`, [workspaceId]);
+      await query(`UPDATE workspaces SET onboarding_step='company_information',onboarding_completed_at=NULL,billing_skipped_at=NULL,billing_skipped_by=NULL,profile_completed_at=NULL,knowledge_base_completed_at=NULL,updated_at=NOW() WHERE id=$1`, [workspaceId]);
       break;
     case 'skip-onboarding':
-      await query(
-        `UPDATE workspaces
-         SET onboarding_step = 'setup_complete',
-             onboarding_completed_at = COALESCE(onboarding_completed_at, NOW()),
-             onboarding_file_reupload_required = FALSE,
-             updated_at = NOW()
-         WHERE id = $1 AND deleted_at IS NULL`,
-        [workspaceId],
-      );
+      if (!actorId) throw new Error('Billing skip requires an admin actor');
+      await withTransaction(async (client) => {
+        const before=(await query<{onboardingStep:string;onboardingCompletedAt:string|null}>(`SELECT onboarding_step AS "onboardingStep",onboarding_completed_at AS "onboardingCompletedAt" FROM workspaces WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,[workspaceId],client)).rows[0];
+        if (!before) return;
+        if (!before.onboardingCompletedAt && before.onboardingStep === 'billing') {
+          await query(`UPDATE workspaces SET onboarding_step='profile_completion',billing_skipped_at=NOW(),billing_skipped_by=$2,onboarding_file_reupload_required=FALSE,updated_at=NOW() WHERE id=$1`,[workspaceId,actorId],client);
+          await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,before_data,after_data) VALUES($1::uuid,$2,'onboarding.billing_skipped','workspace',$1::text,$3::jsonb,$4::jsonb)`,[workspaceId,actorId,JSON.stringify(before),JSON.stringify({onboardingStep:'profile_completion',billingSkipped:true,subscriptionChanged:false,creditsGranted:false})],client);
+        }
+      });
       break;
     case 'set-plan':
       if (planKey) {

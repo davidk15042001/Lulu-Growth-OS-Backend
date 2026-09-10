@@ -17,18 +17,15 @@ import { startAutomaticWebsiteGeneration, syncWordpressProviderSites } from '../
 import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
 import {
   applyPaygInvoiceWebhook,
+  assertAiBillingAccess,
   disableWorkspacePaygBilling,
   ensurePaygProfile,
   failPaygPeriod,
-  finalizePaygApiCheckoutPeriod,
   getActivePaygQrPayment,
   getPaygQrEligiblePeriod,
   getPaygQrPayment,
-  markPaygLineItemsAdded,
   markPaygQrPaymentReady,
   applyPaygQrPaymentIntentStatus,
-  reservePaygApiCheckout,
-  savePaygProviderInvoice,
   savePaygQrPayment,
   completePaygCardPaymentMethodSetup,
   configurePaygDirectPaymentMethod,
@@ -42,6 +39,11 @@ import {
   attachAdSpendProviderPayment,
   type AdSpendTopupRow,
 } from '../adspend/adspend.repo.js';
+import {
+  applyApiProviderStatus,
+  attachApiProviderPayment,
+  type ApiTopupRow,
+} from '../api-wallet/api-wallet.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -172,8 +174,8 @@ export async function createPaygInvoiceDraft(input: {
     currency: 'USD',
     days_until_due: env.PAYG_INVOICE_DAYS_UNTIL_DUE,
     default_tax_percent: 0,
-    memo: `Lulu AI pay-as-you-go usage ${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`,
-    footer: 'API and AWS infrastructure usage is collected automatically every Monday. A payment link is available only if automatic collection fails.',
+    memo: `Lulu Cloudflare R2 storage usage ${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`,
+    footer: 'Only metered Cloudflare R2 storage and operations are collected. Prepaid AI and advertising balances remain separate.',
     metadata: {
       workspace_id: input.workspaceId,
       payg_period_id: input.periodId,
@@ -205,7 +207,7 @@ export async function addPaygInvoiceLineItems(input: {
   const periodLabel = `${input.periodStart.slice(0, 10)} - ${input.periodEnd.slice(0, 10)}`;
   const lineItems = [
     { key: 'api', name: 'Lulu AI API usage', description: `AI and external API usage for ${periodLabel}`, amount: input.apiCostUsd },
-    { key: 'server', name: 'Lulu AI AWS infrastructure usage', description: `AWS infrastructure usage for ${periodLabel}, billed at 2× provider cost`, amount: input.serverCostUsd },
+    { key: 'storage', name: 'Lulu Cloudflare R2 storage usage', description: `Metered R2 storage and operations for ${periodLabel}`, amount: input.serverCostUsd },
   ].filter((item) => item.amount > 0).map((item) => ({
     description: item.description,
     quantity: 1,
@@ -617,78 +619,8 @@ async function activateInternalPlan(workspaceId: string, planKey: BillingPlanKey
 }
 
 export async function createPaygApiUsageCheckout(workspaceId: string) {
-  // Hosted invoice checkout requires a confirmed Airwallex Billing Customer.
-  // Provision it before reserving API usage so a prior QR-only payment cannot
-  // leave the invoice flow without the customer reference it needs.
-  await ensurePaygBillingCustomer(workspaceId);
-  const period = await reservePaygApiCheckout(workspaceId);
-  if (period.providerInvoiceId && period.finalizedAt) {
-    return {
-      periodId: period.id,
-      paymentUrl: period.hostedInvoiceUrl,
-      status: period.status,
-      reused: true,
-    };
-  }
-  if (period.reused && period.status === 'processing' && !period.providerInvoiceId) {
-    throw new AppError(409, 'PAYG_API_CHECKOUT_IN_PROGRESS', 'An API usage payment is already being prepared. Please try again shortly.');
-  }
-  if (!period.providerCustomerId) {
-    throw new AppError(409, 'PAYG_BILLING_CUSTOMER_REQUIRED', 'A confirmed billing customer is required before API usage can be paid.');
-  }
-
-  try {
-    let invoiceId = period.providerInvoiceId;
-    let paymentUrl = period.hostedInvoiceUrl;
-    if (!invoiceId) {
-      const draft = await airwallexRequest('/api/v1/billing/invoices/create', {
-        billing_customer_id: period.providerCustomerId,
-        collection_method: 'CHARGE_ON_CHECKOUT',
-        currency: period.currency,
-        days_until_due: env.PAYG_INVOICE_DAYS_UNTIL_DUE,
-        default_tax_percent: 0,
-        memo: 'Lulu AI API usage payment',
-        footer: 'This invoice settles API usage accrued to the payment cutoff. Server and storage usage continue in the weekly billing cycle.',
-        metadata: {
-          workspace_id: workspaceId,
-          payg_period_id: period.id,
-          billing_type: 'payg_api_pay_now',
-        },
-        payment_options: {
-          payment_method_types: getPaygInvoicePaymentMethods(period.preferredPaymentMethod),
-        },
-        ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
-        ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
-      }, deterministicBillingRequestId(`payg-api-pay-now:${period.id}`), 'PAYG_API_CHECKOUT_CREATE');
-      invoiceId = String(draft.id ?? '');
-      if (!invoiceId) throw providerError('AIRWALLEX_PAYG_API_INVOICE_ID_MISSING', 'Airwallex did not return an invoice ID for the API usage payment.');
-      paymentUrl = typeof draft.hosted_url === 'string' ? draft.hosted_url : null;
-      await savePaygProviderInvoice(period.id, invoiceId, paymentUrl);
-    }
-
-    if (!period.lineItemsAddedAt) {
-      await addPaygInvoiceLineItems({
-        periodId: period.id,
-        invoiceId,
-        apiCostUsd: Number(period.apiCostUsd),
-        serverCostUsd: 0,
-        periodStart: period.periodStart,
-        periodEnd: period.periodEnd,
-      });
-      await markPaygLineItemsAdded(period.id);
-    }
-    const finalized = await finalizePaygInvoice(invoiceId);
-    await finalizePaygApiCheckoutPeriod(period.id, finalized);
-    return {
-      periodId: period.id,
-      paymentUrl: typeof finalized.hosted_url === 'string' ? finalized.hosted_url : paymentUrl,
-      status: String(finalized.payment_status ?? '').toUpperCase() === 'PAID' ? 'paid' as const : 'payment_due' as const,
-      reused: period.reused,
-    };
-  } catch (error) {
-    await failPaygPeriod(period.id, error instanceof AppError ? error.code : 'PAYG_API_CHECKOUT_FAILED', error instanceof Error ? error.message : 'Unknown API usage checkout error');
-    throw error;
-  }
+  void workspaceId;
+  throw new AppError(410, 'API_PREPAID_REQUIRED', 'API usage is prepaid. Add one of the fixed AI balance packages instead.');
 }
 
 type PaygQrPaymentMethod = 'wechatpay' | 'alipaycn';
@@ -848,6 +780,67 @@ export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
   return topup;
 }
 
+/** Creates a prepaid AI-wallet payment. Unlike advertising top-ups, no Lulu
+ * service fee is added: the complete paid amount is credited as AI balance. */
+export async function createApiWalletProviderPayment(topup: ApiTopupRow, returnUrl: string) {
+  if (!getPaygDirectPaymentMethods().includes(topup.paymentMethod)) {
+    throw new AppError(422, 'API_TOPUP_PAYMENT_METHOD_UNAVAILABLE', 'This AI balance payment method is not enabled.');
+  }
+  assertPaygReturnUrl(returnUrl);
+  if (topup.paymentMethod === 'card') {
+    const billingCustomerId = await ensurePaygBillingCustomer(topup.workspaceId);
+    const invoice = await airwallexRequest('/api/v1/billing/invoices/create', {
+      billing_customer_id: billingCustomerId, collection_method: 'CHARGE_ON_CHECKOUT', currency: 'CNY',
+      days_until_due: 1, default_tax_percent: 0, memo: `Lulu prepaid AI balance ${topup.id}`,
+      footer: 'The full paid amount is credited to the Lulu AI wallet after payment confirmation.',
+      metadata: { workspace_id: topup.workspaceId, api_wallet_topup_id: topup.id, billing_type: 'api_wallet_topup' },
+      payment_options: { payment_method_save: { mode: 'DISABLED' }, payment_method_types: ['card'] },
+      ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+      ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
+    }, deterministicBillingRequestId(`api-wallet-invoice:${topup.id}`), 'API_WALLET_INVOICE_CREATE');
+    const invoiceId = typeof invoice.id === 'string' ? invoice.id : null;
+    if (!invoiceId) throw providerError('AIRWALLEX_API_WALLET_INVOICE_ID_MISSING', 'Airwallex did not return an invoice ID.');
+    await airwallexRequest(`/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/add_line_items`, {
+      line_items: [{ description: 'Prepaid AI execution balance', quantity: 1,
+        metadata: { api_wallet_topup_id: topup.id, line_type: 'api_balance' },
+        price: { pricing_model: 'FLAT', flat_amount: Number(topup.amount), tax_included: false,
+          product: { name: 'Lulu AI balance', description: 'Prepaid balance for AI and premium-media execution', unit: 'top-up' } } }],
+    }, deterministicBillingRequestId(`api-wallet-lines:${topup.id}`), 'API_WALLET_LINE_ITEMS_ADD');
+    const finalized = await finalizePaygInvoice(invoiceId);
+    const checkoutUrl = providerCheckoutUrl(finalized) ?? providerCheckoutUrl(invoice);
+    if (!checkoutUrl) throw providerError('AIRWALLEX_API_WALLET_CHECKOUT_URL_MISSING', 'Airwallex did not return a hosted card checkout URL.');
+    return attachApiProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerInvoiceId: invoiceId, checkoutUrl, providerResponse: finalized });
+  }
+  const intent = await airwallexRequest('/api/v1/pa/payment_intents/create', {
+    amount: Number(topup.amount), currency: 'CNY', merchant_order_id: topup.merchantOrderId, return_url: returnUrl,
+    metadata: { workspace_id: topup.workspaceId, api_wallet_topup_id: topup.id, billing_type: 'api_wallet_topup' },
+  }, deterministicBillingRequestId(`api-wallet-intent:${topup.id}`), 'API_WALLET_PAYMENT_INTENT_CREATE');
+  const intentId = typeof intent.id === 'string' ? intent.id : null;
+  if (!intentId) throw providerError('AIRWALLEX_API_WALLET_INTENT_ID_MISSING', 'Airwallex did not return a Payment Intent ID.');
+  const confirmation = await airwallexRequest(`/api/v1/pa/payment_intents/${encodeURIComponent(intentId)}/confirm`, {
+    payment_method: { type: topup.paymentMethod, [topup.paymentMethod]: { flow: 'qrcode' } },
+  }, deterministicBillingRequestId(`api-wallet-confirm:${topup.id}`), 'API_WALLET_PAYMENT_CONFIRM');
+  const nextAction = (confirmation.next_action ?? {}) as AirwallexObject;
+  const qrPayload = typeof nextAction.qrcode === 'string' ? nextAction.qrcode : typeof nextAction.qrcode_url === 'string' ? nextAction.qrcode_url : null;
+  if (!qrPayload) throw providerError('AIRWALLEX_API_WALLET_QR_MISSING', 'Airwallex did not return a QR code.');
+  return attachApiProviderPayment({ topupId: topup.id, status: 'REQUIRES_CUSTOMER_ACTION', providerPaymentIntentId: intentId,
+    qrPayload, checkoutUrl: typeof nextAction.url === 'string' ? nextAction.url : null,
+    expiresAt: paygQrExpiry(topup.paymentMethod), providerResponse: confirmation });
+}
+
+export async function syncApiWalletProviderPayment(topup: ApiTopupRow) {
+  if (topup.status === 'SUCCEEDED') return topup;
+  if (topup.providerPaymentIntentId) {
+    const intent = await airwallexGet(`/api/v1/pa/payment_intents/${encodeURIComponent(topup.providerPaymentIntentId)}`, 'API_WALLET_PAYMENT_STATUS');
+    return applyApiProviderStatus({ providerPaymentIntentId: topup.providerPaymentIntentId, providerStatus: String(intent.status ?? 'PENDING'), paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null, providerResponse: intent });
+  }
+  if (topup.providerInvoiceId) {
+    const invoice = await airwallexGet(`/api/v1/billing/invoices/${encodeURIComponent(topup.providerInvoiceId)}`, 'API_WALLET_INVOICE_STATUS');
+    return applyApiProviderStatus({ providerInvoiceId: topup.providerInvoiceId, providerStatus: String(invoice.payment_status ?? invoice.status ?? 'PENDING'), paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null, providerResponse: invoice });
+  }
+  return topup;
+}
+
 /**
  * Creates a one-time, provider-hosted QR payment for the currently accrued
  * API usage. The amount is calculated entirely on the server and the QR
@@ -858,15 +851,13 @@ export async function createPaygApiUsageQrPayment(input: {
   userId: string;
   paymentMethod: PaygQrPaymentMethod;
   returnUrl: string;
-  periodId?: string;
+  periodId: string;
 }) {
   if (!getPaygDirectPaymentMethods().includes(input.paymentMethod)) {
     throw new AppError(422, 'PAYG_PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not enabled for the Lulu billing account.');
   }
   assertPaygReturnUrl(input.returnUrl);
-  const period = input.periodId
-    ? await getPaygQrEligiblePeriod(input.workspaceId, input.periodId)
-    : await reservePaygApiCheckout(input.workspaceId, { requireBillingCustomer: false });
+  const period = await getPaygQrEligiblePeriod(input.workspaceId, input.periodId);
   if (!period) throw new AppError(404, 'PAYG_QR_PAYMENT_PERIOD_NOT_FOUND', 'The usage payment period does not belong to this workspace or is no longer payable.');
   if (period.providerInvoiceId) {
     throw new AppError(409, 'PAYG_QR_PAYMENT_INVOICE_EXISTS', 'This usage payment already has an invoice. Open the invoice to complete payment instead of creating a second charge.');
@@ -993,8 +984,7 @@ async function assertOnboardingReadyForBilling(workspaceId: string) {
 async function advanceOnboardingAfterBilling(workspaceId: string, client?: import('pg').PoolClient) {
   await query(
     `UPDATE workspaces
-        SET onboarding_step=CASE WHEN onboarding_completed_at IS NULL THEN 'setup_complete' ELSE onboarding_step END,
-            onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()),
+        SET onboarding_step=CASE WHEN onboarding_completed_at IS NULL THEN 'profile_completion' ELSE onboarding_step END,
             onboarding_file_reupload_required=FALSE
       WHERE id=$1 AND deleted_at IS NULL`,
     [workspaceId],
@@ -1464,6 +1454,29 @@ export async function handleWebhook(event: AirwallexObject) {
       logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
       return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
     }
+    const upperEventType = eventType.toUpperCase();
+    const walletReversalStatus = upperEventType.includes('CHARGEBACK')
+      ? 'CHARGEBACK'
+      : upperEventType.includes('REFUND')
+        ? 'REFUNDED'
+        : null;
+
+    const apiWalletTopupId = typeof metadata.api_wallet_topup_id === 'string' ? metadata.api_wallet_topup_id : null;
+    if (apiWalletTopupId) {
+      const invoice = (data.invoice ?? data) as AirwallexObject;
+      const providerInvoiceId = eventType.toUpperCase().includes('INVOICE')
+        ? (typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null)
+        : null;
+      const handled = await applyApiProviderStatus({
+        providerPaymentIntentId: paymentIntentId,
+        providerInvoiceId,
+        providerStatus: walletReversalStatus ?? paymentIntentStatus ?? String(invoice.payment_status ?? invoice.status ?? (upperEventType.includes('PAID') ? 'PAID' : 'PENDING')),
+        paidAt: typeof paymentIntent.paid_at === 'string' ? paymentIntent.paid_at : typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
+        providerResponse: paymentIntentId ? paymentIntent : invoice,
+      });
+      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL,last_error_code=NULL WHERE event_id=$1`, [eventId]);
+      return { processed: Boolean(handled), eventId, apiWalletTopupId, status: handled?.status.toLowerCase() ?? 'not_found' };
+    }
 
     const adSpendTopupId = typeof metadata.ad_spend_topup_id === 'string' ? metadata.ad_spend_topup_id : null;
     if (adSpendTopupId) {
@@ -1471,8 +1484,8 @@ export async function handleWebhook(event: AirwallexObject) {
       const providerInvoiceId = eventType.toUpperCase().includes('INVOICE')
         ? (typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null)
         : null;
-      const providerStatus = paymentIntentStatus
-        ?? String(invoice.payment_status ?? invoice.status ?? (eventType.toUpperCase().includes('PAID') ? 'PAID' : 'PENDING'));
+      const providerStatus = walletReversalStatus ?? paymentIntentStatus
+        ?? String(invoice.payment_status ?? invoice.status ?? (upperEventType.includes('PAID') ? 'PAID' : 'PENDING'));
       const handled = await applyAdSpendProviderStatus({
         providerPaymentIntentId: paymentIntentId,
         providerInvoiceId,
@@ -1555,12 +1568,19 @@ export async function handleWebhook(event: AirwallexObject) {
 
 registerDomainEventHandler({
   name: 'billing.post-payment-automation',
-  eventTypes: [DOMAIN_EVENT_TYPES.BILLING_ACTIVATED],
+  eventTypes: [DOMAIN_EVENT_TYPES.BILLING_ACTIVATED, DOMAIN_EVENT_TYPES.WORKSPACE_ACTIVATED, DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED],
   async handle(event) {
     if (!event.workspaceId) throw new Error('Billing activation event is missing a workspace ID');
-    const trigger = typeof event.payload.trigger === 'string' ? event.payload.trigger : 'billing_activation';
+    const trigger = typeof event.payload.trigger === 'string' ? event.payload.trigger
+      : event.type === DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED ? 'api_wallet_funded' : 'billing_activation';
     const workspace = await findWorkspaceById(event.workspaceId);
     if (!workspace?.onboardingCompletedAt) return { workspaceId: event.workspaceId, trigger, deferredUntilOnboarding: true };
+    try { await assertAiBillingAccess(event.workspaceId); }
+    catch (error) {
+      const code=error&&typeof error==='object'&&'code' in error?String(error.code):'';
+      if(code==='AI_FUNDS_REQUIRED'||code==='AI_FUNDS_EXHAUSTED')return {workspaceId:event.workspaceId,trigger,deferredUntilAiFunds:true};
+      throw error;
+    }
     await startPostPaymentAutomation(event.workspaceId, trigger);
     return { workspaceId: event.workspaceId, trigger };
   },

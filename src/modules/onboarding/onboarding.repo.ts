@@ -3,6 +3,7 @@ import { rotateStoredCredentials } from '../security/provider-credential.service
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { AppError } from '../../utils/app-error.js';
 import { syncLegacyControlStatus, upsertLegacyPlatformControlConnection } from '../provider-control/provider.repo.js';
 import type {
   AiPreferencesInput,
@@ -252,7 +253,10 @@ export async function saveCompanyInformation(workspaceId: string, input: Company
          country_region = $4,
          tax_id = $5,
          address = $6,
-         onboarding_step = 'billing'
+         onboarding_step = CASE
+           WHEN onboarding_completed_at IS NULL AND onboarding_step='company_information' THEN 'billing'
+           ELSE onboarding_step
+         END
      WHERE id = $1 AND deleted_at IS NULL`,
     [workspaceId, input.companyName, input.industry, input.countryRegion, input.taxId, input.address]
   );
@@ -1101,6 +1105,8 @@ export async function getCompletionState(workspaceId: string) {
     offeringCount: number;
     hasAiPreferences: boolean;
     hasBillingConfirmation: boolean;
+    hasProfile: boolean;
+    hasKnowledgeBase: boolean;
   }>(
     `SELECT
        w.onboarding_completed_at AS "onboardingCompletedAt",
@@ -1117,7 +1123,9 @@ export async function getCompletionState(workspaceId: string) {
            AND s.status = 'active'
            AND s.provider IN ('internal', 'airwallex')
            AND s.plan_key IN ('viewer', 'starter', 'ai', 'test')
-       ) AS "hasBillingConfirmation"
+       ) OR w.billing_skipped_at IS NOT NULL AS "hasBillingConfirmation",
+       w.profile_completed_at IS NOT NULL AS "hasProfile",
+       w.knowledge_base_completed_at IS NOT NULL AS "hasKnowledgeBase"
      FROM workspaces w
      WHERE w.id = $1 AND w.deleted_at IS NULL`,
     [workspaceId]
@@ -1378,6 +1386,55 @@ export async function markPlatformConnectionError(workspaceId: string, integrati
   const { rows } = await query<{ id: string }>(`SELECT id FROM workspace_platforms WHERE workspace_id=$1 AND integration_key=$2 AND deleted_at IS NULL`, [workspaceId, integrationKey]);
   for (const row of rows) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: row.id, status: 'error', lastError: message });
 }
+
+export async function createKnowledgeActivation(input:{workspaceId:string;userId:string;text:string;documentIds:string[];model:string|null}) {
+  return withTransaction(async client=>{
+    const workspace=(await query<{step:string;profileCompletedAt:string|null}>(`SELECT onboarding_step AS step,profile_completed_at AS "profileCompletedAt" FROM workspaces WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,[input.workspaceId],client)).rows[0];
+    if(!workspace||workspace.step!=='knowledge_base'||!workspace.profileCompletedAt)throw new AppError(409,'PROFILE_COMPLETION_REQUIRED','Complete the company profile before building the Knowledge Base.');
+    await query(`UPDATE workspace_knowledge_activations SET status='FAILED',error_code='PROCESSING_TIMEOUT',error_message='A stale activation was safely released.' WHERE workspace_id=$1 AND status='PROCESSING' AND updated_at<NOW()-INTERVAL '15 minutes'`,[input.workspaceId],client);
+    const active=(await query<{id:string}>(`SELECT id FROM workspace_knowledge_activations WHERE workspace_id=$1 AND status='PROCESSING' LIMIT 1`,[input.workspaceId],client)).rows[0];
+    if(active)throw new AppError(409,'KNOWLEDGE_PROCESSING_IN_PROGRESS','The Knowledge Base is already being processed.');
+    const {rows}=await query<{id:string}>(`INSERT INTO workspace_knowledge_activations(workspace_id,created_by,source_text,source_document_ids,model) VALUES($1,$2,$3,$4,$5) RETURNING id`,[input.workspaceId,input.userId,input.text||null,input.documentIds,input.model],client);
+    return rows[0]!.id;
+  });
+}
+
+export async function failKnowledgeActivation(id:string,error:unknown) {
+  const code=error instanceof Error&&'code' in error?String((error as Error&{code:unknown}).code):'KNOWLEDGE_PROCESSING_FAILED';
+  const message=error instanceof Error?error.message:'Unknown knowledge processing error';
+  await query(`UPDATE workspace_knowledge_activations SET status='FAILED',error_code=$2,error_message=$3 WHERE id=$1`,[id,code.slice(0,120),message.slice(0,2000)]);
+}
+
+export async function applyKnowledgeClassification(input:{activationId:string;workspaceId:string;userId:string;classification:Record<string,unknown>;summary:string;businessDescription:string|null;items:Array<{name:string;kind:'product'|'service'|'other';productType:'PHYSICAL_PRODUCT'|'DIGITAL_PRODUCT'|'OTHER'|null;description:string|null;category:string|null;price:number|null;currency:string|null}>}) {
+  return withTransaction(async client=>{
+    const productIds:string[]=[];
+    const missingImageProductIds:string[]=[];
+    const activation=(await query<{id:string}>(
+      `SELECT id FROM workspace_knowledge_activations
+       WHERE id=$1 AND workspace_id=$2 AND created_by=$3 AND status='PROCESSING'
+       FOR UPDATE`,
+      [input.activationId,input.workspaceId,input.userId],client,
+    )).rows[0];
+    if(!activation)throw new AppError(409,'KNOWLEDGE_ACTIVATION_STALE','This Knowledge Base activation is no longer active.');
+    for(const item of input.items){
+      if(item.kind==='other')continue;
+      await query(`INSERT INTO workspace_offerings(workspace_id,name,offering_type,category,description,price_amount,price_currency,status) SELECT $1,$2,$3,$4,$5,$6,$7,'active' WHERE NOT EXISTS(SELECT 1 FROM workspace_offerings WHERE workspace_id=$1 AND deleted_at IS NULL AND lower(name)=lower($2) AND offering_type=$3)`,[input.workspaceId,item.name,item.kind,item.category,item.description,item.price,item.currency],client);
+      if(item.kind==='service')continue;
+      const existing=(await query<{id:string;needsImage:boolean}>(`SELECT p.id,NOT EXISTS(SELECT 1 FROM product_media m WHERE m.workspace_id=p.workspace_id AND m.product_id=p.id AND m.media_type='IMAGE') AS "needsImage" FROM products p WHERE p.workspace_id=$1 AND p.deleted_at IS NULL AND lower(p.name)=lower($2) LIMIT 1`,[input.workspaceId,item.name],client)).rows[0];
+      if(existing){productIds.push(existing.id);if(existing.needsImage)missingImageProductIds.push(existing.id);continue;}
+      const created=(await query<{id:string}>(`INSERT INTO products(workspace_id,status,product_type,name,short_description,long_description,default_currency,default_price,pricing_type,visibility,source_language,created_by,updated_by) VALUES($1,'DRAFT',$2,$3,$4,$4,$5,$6,$7,'PRIVATE','en',$8,$8) RETURNING id`,[input.workspaceId,item.productType??'OTHER',item.name,item.description,item.currency,item.price,item.price===null?'QUOTE_REQUIRED':'FIXED',input.userId],client)).rows[0];
+      if(created){productIds.push(created.id);missingImageProductIds.push(created.id);await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.PRODUCT_CREATED,aggregateType:'product',aggregateId:created.id,payload:{productId:created.id,name:item.name,source:'knowledge_activation'},metadata:{actorId:input.userId,source:'knowledge_activation'},idempotencyKey:`product:${created.id}:created:v1`},client);}
+    }
+    await query(`UPDATE workspace_knowledge_activations SET status='COMPLETED',classification=$2::jsonb,completed_at=NOW() WHERE id=$1`,[input.activationId,JSON.stringify({...input.classification,canonicalProductIds:productIds})],client);
+    const activated=(await query<{id:string}>(`UPDATE workspaces SET business_description=COALESCE(NULLIF(trim(business_description),''),$2),knowledge_base_completed_at=COALESCE(knowledge_base_completed_at,NOW()),onboarding_step='setup_complete',onboarding_completed_at=COALESCE(onboarding_completed_at,NOW()),onboarding_file_reupload_required=FALSE WHERE id=$1 AND profile_completed_at IS NOT NULL AND onboarding_step='knowledge_base' RETURNING id`,[input.workspaceId,input.businessDescription??input.summary],client)).rows[0];
+    if(!activated)throw new AppError(409,'KNOWLEDGE_ACTIVATION_STALE','The workspace activation state changed before processing completed.');
+    await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.WORKSPACE_ACTIVATED,aggregateType:'workspace',aggregateId:input.workspaceId,payload:{activationId:input.activationId,trigger:'knowledge_base_completed'},metadata:{actorId:input.userId,source:'knowledge_activation'},idempotencyKey:`workspace-activated:${input.activationId}`},client);
+    await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,after_data) VALUES($1,$2,'onboarding.knowledge_activated','workspace_knowledge_activation',$3,$4::jsonb)`,[input.workspaceId,input.userId,input.activationId,JSON.stringify({productIds,itemCount:input.items.length,completed:true})],client);
+    return {activationId:input.activationId,productIds,missingImageProductIds,completed:true};
+  });
+}
+
+export async function getKnowledgeActivationState(workspaceId:string){const row=(await query<{status:string;completedAt:string|null;classification:Record<string,unknown>}>(`SELECT status,completed_at AS "completedAt",classification FROM workspace_knowledge_activations WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 1`,[workspaceId])).rows[0];return row??null;}
 
 export async function markPlatformConnected(workspaceId: string, integrationKey: string) {
   await query(
