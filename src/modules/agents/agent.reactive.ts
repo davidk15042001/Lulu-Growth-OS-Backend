@@ -70,12 +70,23 @@ async function reactToIntegrationConnected(workspaceId: string, category: string
   }
 }
 
+async function reactToAdSpendFunded(workspaceId: string) {
+  const pages = automaticPageProfiles.filter((page) => resolveAgentModule('general', page) === 'ads');
+  for (const page of pages) {
+    try {
+      await startAutomaticRun(workspaceId, buildPageAgentGoal(page), 'ads', page, 1);
+    } catch (error) {
+      logger.warn({ error, workspaceId, pageId: page.pageId }, 'Funded ad spend agent trigger failed');
+    }
+  }
+}
+
 export function startReactiveDispatcher() {
   if (started) return;
   started = true;
   registerDomainEventHandler({
     name: 'agents.reactive-record-created.v1',
-    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED],
+    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.INTEGRATION_CONNECTED, DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED],
     async handle(event) {
       if (!event.workspaceId) return { ignored: true };
       if (event.type === DOMAIN_EVENT_TYPES.RECORD_CREATED) {
@@ -83,6 +94,10 @@ export function startReactiveDispatcher() {
         if (!resourceType) return { ignored: true };
         await reactToRecordCreated(event.workspaceId, resourceType);
         return { triggered: true, resourceType };
+      }
+      if (event.type === DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED) {
+        await reactToAdSpendFunded(event.workspaceId);
+        return { triggered: true, source: 'ad_spend.funded' };
       }
       const category = typeof event.payload.category === 'string' ? event.payload.category : '';
       const provider = typeof event.payload.provider === 'string'

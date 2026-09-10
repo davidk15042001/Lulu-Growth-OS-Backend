@@ -12,6 +12,7 @@ import {
 } from './agent.execution-command.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import { assertAdSpendFunded } from '../adspend/adspend.repo.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
@@ -235,6 +236,7 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
   }
 
   if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation') {
+    if (command.type === 'advertising.create_optimization') await assertAdSpendFunded(record.workspaceId);
     const resourceType = command.type === 'advertising.create_optimization' ? 'ad_optimizations' : 'finance_automations';
     const item = await persistCommandExecutionResult(record, command, {
       title: textValue(payload.title || command.summary, 240),

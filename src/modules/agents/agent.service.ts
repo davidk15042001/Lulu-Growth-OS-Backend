@@ -10,6 +10,7 @@ import { getAgentCapabilities, type AgentModule, isAgentModule } from './agent.c
 import { buildAgentExecutionProfile } from './agent.domain.js';
 import {
   automaticPageProfiles,
+  buildGlobalAgentGoal,
   buildPageAgentGoal,
   pageSnapshotType,
   resolveAgentModule,
@@ -70,7 +71,7 @@ function buildPipeline(
     ...(capabilities.act && profile.executorToolName && profile.executorInstruction && profile.actionResourceType
       ? [{
           role: 'executor' as const,
-          title: page ? `${page.pageLabel}: Queue approved backend action` : 'Queue approved backend action',
+          title: page ? `${page.pageLabel}: Execute backend action` : 'Execute backend action',
           instruction: profile.executorInstruction,
           toolName: profile.executorToolName,
           toolInput: {
@@ -88,7 +89,7 @@ function buildPipeline(
       : []),
     {
       role: 'reviewer',
-      title: page ? `${page.pageLabel}: Review evidence and approvals` : 'Review evidence and approvals',
+      title: page ? `${page.pageLabel}: Verify evidence and outcomes` : 'Verify evidence and outcomes',
       instruction: profile.reviewerInstruction,
     },
   ];
@@ -490,7 +491,7 @@ export async function executePersistedAgentRun(run: AgentRun) {
 export async function startRun(
   workspaceId: string,
   userId: string,
-  goal: string,
+  _requestedGoal: string | undefined,
   module: AgentModule = 'general',
   pageInput?: unknown,
   dedupeMinutes?: number,
@@ -500,6 +501,7 @@ export async function startRun(
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
   if (pageInput && !page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');
   const resolvedModule = resolveAgentModule(isAgentModule(module) ? module : 'general', page);
+  const goal = page ? buildPageAgentGoal(page) : buildGlobalAgentGoal();
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
   if (!capabilities.analyze) throw new AppError(403, 'AGENT_EXPLORER_READ_ONLY', 'Explorer is read-only and does not run AI analysis. Choose Starter or AI.');
   const executionMode = capabilities.autonomous ? 'autonomous' : 'analysis_only';
@@ -523,7 +525,7 @@ export async function startRun(
 }
 export async function startAutomaticRun(
   workspaceId: string,
-  goal: string,
+  _requestedGoal: string,
   module: AgentModule,
   pageInput?: unknown,
   dedupeMinutes?: number,
@@ -533,6 +535,7 @@ export async function startAutomaticRun(
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
   if (pageInput && !page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');
   const resolvedModule = resolveAgentModule(module, page);
+  const goal = page ? buildPageAgentGoal(page) : buildGlobalAgentGoal();
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
   if ((subscription.status !== 'active' && subscription.status !== 'trialing') || !capabilities.automatic || !capabilities.analyze) return null;
   const automaticCapabilities = { ...capabilities };

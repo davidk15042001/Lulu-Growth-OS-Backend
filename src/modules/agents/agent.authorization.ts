@@ -12,10 +12,10 @@ import type { AgentExecutionCommand } from './agent.execution-command.js';
 import type { WorkspaceRecord } from '../records/record.repo.js';
 
 export type AgentExecutionIdentity = {workspaceId:string;userId:string;runId:string;stepId:string};
-function packetPolicy(command: AgentExecutionCommand, state: { capabilities: { autonomous: boolean } }, record: WorkspaceRecord) {
+function packetPolicy(command: AgentExecutionCommand, state: { capabilities: { autonomous: boolean } }, _record: WorkspaceRecord) {
   return evaluateAgentActionPolicy(command.type, state.capabilities.autonomous, {
     highRisk: command.riskLevel === 'high',
-    budgetProtected: record.data?.budgetProtected === true,
+    budgetProtected: command.budgetAuthority === 'customer_authorization_required',
   });
 }
 function canonical(value:unknown):unknown {

@@ -24,6 +24,7 @@ const { evaluateAgentActionPolicy, decideAgentToolPolicy }=await import('../src/
 const records=await import('../src/modules/records/record.repo.js');
 const approvals=await import('../src/modules/approvals/approval.repo.js');
 const assistantActions=await import('../src/modules/ai/assistant-actions.service.js');
+const adSpend=await import('../src/modules/adspend/adspend.repo.js');
 const { registerAgentExecutionHandlers }=await import('../src/modules/agents/agent-execution.worker.js');
 const { registeredDomainEventHandlers }=await import('../src/events/domain-event.registry.js');
 const { DOMAIN_EVENT_TYPES }=await import('../src/events/domain-event.types.js');
@@ -247,8 +248,8 @@ async function agentFixture(type:AgentExecutionCommand['type']='crm.create_follo
 }
 
 describe('deterministic agent execution authorization',()=>{
-  it('autonomous mode cannot bypass financial, external, budget or prohibited classes',()=>{
-    for(const action of ['finance.create_automation','website.publish_job','google_reviews.reply','advertising.create_optimization']) assert.equal(evaluateAgentActionPolicy(action,true).decision,'require_approval');
+  it('allows registered autonomous actions while preserving budget and prohibited boundaries',()=>{
+    for(const action of ['finance.create_automation','website.publish_job','google_reviews.reply','advertising.create_optimization']) assert.equal(evaluateAgentActionPolicy(action,true).decision,'allow');
     assert.equal(evaluateAgentActionPolicy('crm.create_followup_task',true,{budgetProtected:true}).decision,'require_approval');
     assert.equal(evaluateAgentActionPolicy('payments.transfer',true).autonomyClass,'PROHIBITED');
     assert.equal(evaluateAgentActionPolicy('payments.transfer',true).decision,'forbidden');
@@ -270,6 +271,8 @@ describe('deterministic agent execution authorization',()=>{
   });
   it('requires a human backend approval bound to the exact packet and consumes it once',async()=>{
     const f=await agentFixture('google_reviews.reply');
+    f.command.budgetAuthority='customer_authorization_required';
+    f.record.data={...f.record.data,commands:[f.command],budgetProtected:true};
     const packet=await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
     assert.ok(packet.approvalId);
     let executed=0;
@@ -285,15 +288,15 @@ describe('deterministic agent execution authorization',()=>{
     await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
     assert.equal(executed,1);
   });
-  it('keeps external packets approval-gated when the stored run mode is autonomous',async()=>{
+  it('executes external packets without approval when the stored run mode is autonomous',async()=>{
     const f=await agentFixture('google_reviews.reply');
     f.record.data={...f.record.data,executionMode:'autonomous'};
     const packet=await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
-    assert.ok(packet.approvalId);
-    assert.equal(packet.executionReady,false);
+    assert.equal(packet.approvalId,null);
+    assert.equal(packet.executionReady,true);
     let executed=0;
-    await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
-    assert.equal(executed,0);
+    await agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;});
+    assert.equal(executed,1);
   });
   it('rejects forged, tampered, prohibited and no-longer-entitled packets without side effects',async()=>{
     const f=await agentFixture();
@@ -325,6 +328,25 @@ describe('deterministic agent execution authorization',()=>{
   });
 });
 
+describe('ad spend authorization boundary',()=>{
+  it('credits a confirmed payment exactly once and rejects reservations above the prepaid balance',async()=>{
+    const user=await newUser(true);
+    const ws=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Ad spend test',$1) RETURNING id`,[user.id])).rows[0]!;
+    const topup=await adSpend.createAdSpendTopup({workspaceId:ws.id,userId:user.id,netAmount:100,feeAmount:4,totalAmount:104,paymentMethod:'alipaycn'});
+    await adSpend.attachAdSpendProviderPayment({topupId:topup.id,status:'REQUIRES_CUSTOMER_ACTION',providerPaymentIntentId:'pi-adspend-test'});
+    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'SUCCEEDED'});
+    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'SUCCEEDED'});
+    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'PENDING'});
+    const overview=await adSpend.getAdSpendOverview(ws.id);
+    assert.equal(overview.wallet.availableAmount,100);
+    assert.equal(overview.wallet.totalFeeAmount,4);
+    assert.equal(overview.topups[0]?.status,'SUCCEEDED');
+    assert.equal((await db.query(`SELECT id FROM workspace_ad_spend_ledger WHERE topup_id=$1`,[topup.id])).rows.length,1);
+    assert.equal((await db.query(`SELECT id FROM domain_events WHERE idempotency_key=$1`,[`adspend-topup:${topup.id}:funded`])).rows.length,1);
+    await assert.rejects(adSpend.reserveAdSpend({workspaceId:ws.id,amount:101,idempotencyKey:'reserve-over-wallet'}),{code:'AD_SPEND_FUNDS_REQUIRED'});
+  });
+});
+
 describe('assistant action gateway',()=>{
   async function assistantFixture() {
     const user=await newUser(true);
@@ -346,25 +368,20 @@ describe('assistant action gateway',()=>{
     assert.equal(recordsResult.rows.length,1);
   });
 
-  it('stores external actions behind an exact owner approval without side effects',async()=>{
+  it('executes external-capable assistant actions autonomously and deduplicates them',async()=>{
     const f=await assistantFixture();
     const input={
-      type:'google_reviews.reply',summary:'Reply to the selected Google review',payload:{reviewId:'review-1',accountId:'account-1',locationId:'location-1',comment:'Thank you for your feedback.'},
+      type:'finance.create_automation',summary:'Create the reconciliation workflow',payload:{title:'Reconcile overdue invoices',description:'Run the finance workflow automatically.'},
     } as const;
-    const [pending,retry]=await Promise.all([
+    const [completed,retry]=await Promise.all([
       assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,input),
       assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,input),
     ]);
-    assert.equal(pending.status,'pending_approval');
-    assert.equal(retry.id,pending.id);
-    assert.ok(pending.approvalId);
-    const approval=(await db.query<any>(`SELECT action_type,entity_id,payload,status FROM approval_requests WHERE id=$1`,[pending.approvalId])).rows[0];
-    assert.equal(approval.action_type,'agent_assistant_action');
-    assert.equal(approval.entity_id,pending.id);
-    assert.equal(approval.status,'pending');
-    assert.equal(typeof approval.payload.digest,'string');
-    assert.equal((await db.query(`SELECT id FROM approval_requests WHERE workspace_id=$1 AND action_type='agent_assistant_action' AND entity_id=$2`,[f.ws.id,pending.id])).rows.length,1);
-    assert.equal((await db.query(`SELECT id FROM workspace_records WHERE workspace_id=$1 AND source='ai_assistant'`,[f.ws.id])).rows.length,0);
+    assert.equal(completed.status,'succeeded');
+    assert.equal(retry.id,completed.id);
+    assert.equal(completed.approvalId,null);
+    assert.equal((await db.query(`SELECT id FROM approval_requests WHERE workspace_id=$1 AND action_type='agent_assistant_action' AND entity_id=$2`,[f.ws.id,completed.id])).rows.length,0);
+    assert.equal((await db.query(`SELECT id FROM workspace_records WHERE workspace_id=$1 AND source='ai_assistant'`,[f.ws.id])).rows.length,1);
     await assert.rejects(assistantActions.executeAssistantActionRequest(f.ws.id,f.user.id,f.conversation.id,crypto.randomUUID()),{code:'NOT_FOUND'});
   });
 

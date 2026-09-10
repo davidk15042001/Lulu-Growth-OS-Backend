@@ -25,6 +25,7 @@ export type AgentExecutionCommand = {
   provider: string | null;
   riskLevel: AgentExecutionRiskLevel;
   approvalPolicy: 'allow' | 'require_approval';
+  budgetAuthority?: 'none' | 'prepaid_ad_spend_wallet' | 'customer_authorization_required';
   targetEntityType: string | null;
   targetEntityId: string | null;
   payload: Record<string, unknown>;
@@ -73,6 +74,7 @@ const agentExecutionCommandSchema = z.object({
   provider: z.string().trim().min(1).max(80).nullable().optional(),
   riskLevel: z.enum(['low', 'medium', 'high']).default('medium'),
   approvalPolicy: z.enum(['allow', 'require_approval']).default('require_approval'),
+  budgetAuthority: z.enum(['none', 'prepaid_ad_spend_wallet', 'customer_authorization_required']).default('none'),
   targetEntityType: z.string().trim().min(1).max(80).nullable().optional(),
   targetEntityId: z.string().trim().min(1).max(200).nullable().optional(),
   payload: z.record(z.string(), z.unknown()).default({}),
@@ -109,7 +111,7 @@ function defaultSummary(context: InferCommandContext) {
   const jobs = context.jobs.slice(0, 4).join(', ');
   return jobs
     ? `${context.pageLabel}: ${jobs}`
-    : `${context.pageLabel}: ${context.goal || 'Execute the next approved agent action.'}`;
+    : `${context.pageLabel}: ${context.goal || 'Execute the next autonomous agent action.'}`;
 }
 
 function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCommand {
@@ -192,6 +194,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       provider: null,
       riskLevel: 'medium',
       approvalPolicy: context.policyDecision,
+      budgetAuthority: 'prepaid_ad_spend_wallet',
       targetEntityType: 'ad_optimization',
       targetEntityId: context.pageId,
       payload: {
@@ -377,22 +380,13 @@ export function listAgentExecutionCommandTypes(commands: readonly AgentExecution
   return [...new Set(commands.map((command) => command.type))];
 }
 
-function isBudgetCommand(command: AgentExecutionCommand): boolean {
-  const haystack = [
-    command.type,
-    command.targetEntityType ?? '',
-    command.targetSystem ?? '',
-    command.summary,
-  ].join(' ').toLowerCase();
-  return haystack.includes('budget');
-}
-
 export function decideExecutionCommandPolicy(
   command: AgentExecutionCommand,
   executionMode: 'analysis_only' | 'autonomous',
 ): AgentExecutionCommandPolicy {
   return evaluateAgentActionPolicy(command.type,executionMode==='autonomous',{
-    highRisk:command.riskLevel==='high',budgetProtected:isBudgetCommand(command),
+    highRisk:command.riskLevel==='high',
+    budgetProtected:command.budgetAuthority === 'customer_authorization_required',
   });
 }
 

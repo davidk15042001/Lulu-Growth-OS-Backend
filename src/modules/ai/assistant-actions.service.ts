@@ -13,6 +13,7 @@ import { evaluateAgentActionPolicy } from '../agents/agent.autonomy-policy.js';
 import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import { assertWorkspaceCapability } from '../workspaces/workspace-authorization.service.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
+import { assertAdSpendFunded } from '../adspend/adspend.repo.js';
 import {
   assistantActionInputSchema,
   type AssistantActionInput,
@@ -200,6 +201,7 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
   if (!resourceType || !isResourceType(resourceType)) {
     throw new Error(`Unsupported action type: ${action.type}`);
   }
+  if (action.type === 'advertising.create_optimization') await assertAdSpendFunded(workspaceId);
   const result = await createTaskRecord(workspaceId, userId, resourceType, action);
   return { ...result, message: `${action.type} completed.` };
 }

@@ -11,7 +11,8 @@ export const agentRunQuerySchema = z.object({
   pageId: z.string().trim().regex(/^[a-z0-9-]+$/).max(120).optional(),
 });
 export const createAgentRunSchema = z.object({
-  goal: z.string().trim().min(3).max(4000),
+  // Kept optional for backwards compatibility. The backend always applies Lulu's permanent mission.
+  goal: z.string().trim().max(4000).optional(),
   module: z.enum([
     'general',
     'dashboard',

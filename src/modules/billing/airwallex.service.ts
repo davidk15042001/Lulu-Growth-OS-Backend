@@ -37,6 +37,11 @@ import {
   updatePaygPaymentMethodSetupStatus,
 } from './payg-billing.repo.js';
 import { getPaygDirectPaymentMethods, getPaygInvoicePaymentMethods } from './payg-payment-methods.js';
+import {
+  applyAdSpendProviderStatus,
+  attachAdSpendProviderPayment,
+  type AdSpendTopupRow,
+} from '../adspend/adspend.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -719,6 +724,130 @@ function paygQrExpiry(paymentMethod: PaygQrPaymentMethod) {
   return new Date(Date.now() + minutes * 60_000).toISOString();
 }
 
+function providerCheckoutUrl(value: AirwallexObject) {
+  return typeof value.hosted_url === 'string' ? value.hosted_url
+    : typeof value.url === 'string' ? value.url
+      : typeof value.checkout_url === 'string' ? value.checkout_url
+        : typeof value.hosted_checkout_url === 'string' ? value.hosted_checkout_url
+          : null;
+}
+
+/** Creates the only customer authorization required for paid advertising. */
+export async function createAdSpendProviderPayment(topup: AdSpendTopupRow, returnUrl: string) {
+  if (!getPaygDirectPaymentMethods().includes(topup.paymentMethod)) {
+    throw new AppError(422, 'AD_SPEND_PAYMENT_METHOD_UNAVAILABLE', 'This ad spend payment method is not enabled.');
+  }
+  assertPaygReturnUrl(returnUrl);
+
+  if (topup.paymentMethod === 'card') {
+    const billingCustomerId = await ensurePaygBillingCustomer(topup.workspaceId);
+    const invoice = await airwallexRequest('/api/v1/billing/invoices/create', {
+      billing_customer_id: billingCustomerId,
+      collection_method: 'CHARGE_ON_CHECKOUT',
+      currency: 'CNY',
+      days_until_due: 1,
+      default_tax_percent: 0,
+      memo: `Lulu autonomous advertising wallet top-up ${topup.id}`,
+      footer: 'The Lulu service fee is charged on top. Only the ad spend amount is credited to your advertising wallet.',
+      metadata: {
+        workspace_id: topup.workspaceId,
+        ad_spend_topup_id: topup.id,
+        billing_type: 'ad_spend_topup',
+      },
+      payment_options: {
+        payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
+        payment_method_types: ['card'],
+      },
+      ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
+      ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
+    }, deterministicBillingRequestId(`adspend-invoice:${topup.id}`), 'AD_SPEND_INVOICE_CREATE');
+    const invoiceId = typeof invoice.id === 'string' ? invoice.id : null;
+    if (!invoiceId) throw providerError('AIRWALLEX_AD_SPEND_INVOICE_ID_MISSING', 'Airwallex did not return an invoice ID.');
+    await airwallexRequest(`/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/add_line_items`, {
+      line_items: [
+        {
+          description: 'Prepaid media budget for autonomous campaigns', quantity: 1,
+          metadata: { ad_spend_topup_id: topup.id, line_type: 'ad_spend' },
+          price: { pricing_model: 'FLAT', flat_amount: Number(topup.netAmount), tax_included: false,
+            product: { name: 'Lulu advertising budget', description: 'Funds credited to the autonomous advertising wallet', unit: 'top-up' } },
+        },
+        {
+          description: 'Lulu ad spend service fee (4%)', quantity: 1,
+          metadata: { ad_spend_topup_id: topup.id, line_type: 'service_fee', fee_basis_points: 400 },
+          price: { pricing_model: 'FLAT', flat_amount: Number(topup.feeAmount), tax_included: false,
+            product: { name: 'Lulu service fee', description: '4% service fee charged on top of ad spend', unit: 'top-up' } },
+        },
+      ],
+    }, deterministicBillingRequestId(`adspend-lines:${topup.id}`), 'AD_SPEND_LINE_ITEMS_ADD');
+    const finalized = await finalizePaygInvoice(invoiceId);
+    const checkoutUrl = providerCheckoutUrl(finalized) ?? providerCheckoutUrl(invoice);
+    if (!checkoutUrl) throw providerError('AIRWALLEX_AD_SPEND_CHECKOUT_URL_MISSING', 'Airwallex did not return a hosted card checkout URL.');
+    return attachAdSpendProviderPayment({
+      topupId: topup.id,
+      status: 'PENDING_PAYMENT',
+      providerInvoiceId: invoiceId,
+      checkoutUrl,
+      providerResponse: finalized,
+    });
+  }
+
+  const intent = await airwallexRequest('/api/v1/pa/payment_intents/create', {
+    amount: Number(topup.totalAmount),
+    currency: 'CNY',
+    merchant_order_id: topup.merchantOrderId,
+    return_url: returnUrl,
+    metadata: {
+      workspace_id: topup.workspaceId,
+      ad_spend_topup_id: topup.id,
+      billing_type: 'ad_spend_topup',
+    },
+  }, deterministicBillingRequestId(`adspend-intent:${topup.id}`), 'AD_SPEND_PAYMENT_INTENT_CREATE');
+  const intentId = typeof intent.id === 'string' ? intent.id : null;
+  if (!intentId) throw providerError('AIRWALLEX_AD_SPEND_INTENT_ID_MISSING', 'Airwallex did not return a Payment Intent ID.');
+  const confirmation = await airwallexRequest(`/api/v1/pa/payment_intents/${encodeURIComponent(intentId)}/confirm`, {
+    payment_method: {
+      type: topup.paymentMethod,
+      [topup.paymentMethod]: { flow: 'qrcode' },
+    },
+  }, deterministicBillingRequestId(`adspend-confirm:${topup.id}`), 'AD_SPEND_PAYMENT_CONFIRM');
+  const nextAction = (confirmation.next_action ?? {}) as AirwallexObject;
+  const qrPayload = typeof nextAction.qrcode === 'string' ? nextAction.qrcode
+    : typeof nextAction.qrcode_url === 'string' ? nextAction.qrcode_url : null;
+  if (!qrPayload) throw providerError('AIRWALLEX_AD_SPEND_QR_MISSING', 'Airwallex did not return a QR code.');
+  return attachAdSpendProviderPayment({
+    topupId: topup.id,
+    status: 'REQUIRES_CUSTOMER_ACTION',
+    providerPaymentIntentId: intentId,
+    qrPayload,
+    checkoutUrl: typeof nextAction.url === 'string' ? nextAction.url : null,
+    expiresAt: paygQrExpiry(topup.paymentMethod),
+    providerResponse: confirmation,
+  });
+}
+
+export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
+  if (topup.status === 'SUCCEEDED') return topup;
+  if (topup.providerPaymentIntentId) {
+    const intent = await airwallexGet(`/api/v1/pa/payment_intents/${encodeURIComponent(topup.providerPaymentIntentId)}`, 'AD_SPEND_PAYMENT_STATUS');
+    return applyAdSpendProviderStatus({
+      providerPaymentIntentId: topup.providerPaymentIntentId,
+      providerStatus: String(intent.status ?? 'PENDING'),
+      paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null,
+      providerResponse: intent,
+    });
+  }
+  if (topup.providerInvoiceId) {
+    const invoice = await airwallexGet(`/api/v1/billing/invoices/${encodeURIComponent(topup.providerInvoiceId)}`, 'AD_SPEND_INVOICE_STATUS');
+    return applyAdSpendProviderStatus({
+      providerInvoiceId: topup.providerInvoiceId,
+      providerStatus: String(invoice.payment_status ?? invoice.status ?? 'PENDING'),
+      paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
+      providerResponse: invoice,
+    });
+  }
+  return topup;
+}
+
 /**
  * Creates a one-time, provider-hosted QR payment for the currently accrued
  * API usage. The amount is calculated entirely on the server and the QR
@@ -1327,6 +1456,26 @@ export async function handleWebhook(event: AirwallexObject) {
       await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL WHERE event_id=$1`, [eventId]);
       logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
       return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
+    }
+
+    const adSpendTopupId = typeof metadata.ad_spend_topup_id === 'string' ? metadata.ad_spend_topup_id : null;
+    if (adSpendTopupId) {
+      const invoice = (data.invoice ?? data) as AirwallexObject;
+      const providerInvoiceId = eventType.toUpperCase().includes('INVOICE')
+        ? (typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null)
+        : null;
+      const providerStatus = paymentIntentStatus
+        ?? String(invoice.payment_status ?? invoice.status ?? (eventType.toUpperCase().includes('PAID') ? 'PAID' : 'PENDING'));
+      const handled = await applyAdSpendProviderStatus({
+        providerPaymentIntentId: paymentIntentId,
+        providerInvoiceId,
+        providerStatus,
+        paidAt: typeof paymentIntent.paid_at === 'string' ? paymentIntent.paid_at
+          : typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
+        providerResponse: paymentIntentId ? paymentIntent : invoice,
+      });
+      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
+      return { processed: Boolean(handled), eventId, adSpendTopupId, status: handled?.status.toLowerCase() ?? 'not_found' };
     }
 
     const paygPeriodId = typeof metadata.payg_period_id === 'string' ? metadata.payg_period_id : null;

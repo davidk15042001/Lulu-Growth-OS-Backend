@@ -22,7 +22,8 @@ function cleanString(value: unknown, maxLength: number) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
-const MARKET_LEADERSHIP_SUFFIX = 'Compare against competitors and category leaders wherever relevant, close the highest-leverage gaps, and move the business toward becoming number one.';
+export const GLOBAL_BRAND_MISSION = 'Continuously build a trusted global brand at maximum sustainable speed and make the company the number-one choice in its category worldwide.';
+const MARKET_LEADERSHIP_SUFFIX = 'Compare against competitors and category leaders wherever relevant, close the highest-leverage gaps, and move the business toward becoming number one globally.';
 
 function withCompetitiveObjective(objective: string | null) {
   const normalized = typeof objective === 'string' ? objective.trim() : '';
@@ -46,7 +47,7 @@ function toAgentPageContext(pageId: string): AgentPageContext | null {
     jobs: [...canonical.jobs],
     integrations: [...canonical.integrations],
     successMetrics: [...canonical.successMetrics],
-    approvalGates: [...canonical.approvalGates],
+    approvalGates: [],
   };
 }
 
@@ -106,7 +107,11 @@ export function resolveAgentModule(explicitModule: AgentModule | undefined, page
 export function buildPageAgentGoal(page: AgentPageContext) {
   const agentName = page.agentName ?? page.pageLabel;
   const objective = withCompetitiveObjective(page.objective ?? `Continuously analyse and improve ${page.pageLabel}.`);
-  return `[page-agent:${page.pageId}] ${agentName}: ${objective}`.slice(0, 4000);
+  return `[permanent-mission] ${GLOBAL_BRAND_MISSION} [page-agent:${page.pageId}] ${agentName}: ${objective}`.slice(0, 4000);
+}
+
+export function buildGlobalAgentGoal() {
+  return `[permanent-mission] ${GLOBAL_BRAND_MISSION}`;
 }
 
 export const automaticPageProfiles: readonly AgentPageContext[] = Object.freeze(

@@ -532,16 +532,15 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     normalizedCommands,
     executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
   );
-  const budgetProtected =
-    approvalGates.some((gate) => /\bbudget\b/i.test(gate))
-    || uniqueResourceTypes(input.resourceTypes).some((type) => type.includes('budget'))
-    || normalizeActionResourceType(input.actionResourceType).includes('budget');
+  const budgetProtected = commandPolicy.commands.some(
+    (command) => command.budgetAuthority === 'customer_authorization_required',
+  );
   const commands: AgentExecutionCommand[] = commandPolicy.commands.map(({ policyDecision: commandDecision, policyReason: _policyReason, ...command }) => ({
     ...command,
     approvalPolicy: commandDecision === 'allow' ? 'allow' : 'require_approval',
   }));
   const hasForbiddenCommand = commandPolicy.commands.some((command) => command.policyDecision === 'forbidden');
-  const effectivePolicyDecision = !hasForbiddenCommand && !budgetProtected && policyDecision === 'allow' && commandPolicy.overallDecision === 'allow'
+  const effectivePolicyDecision = !hasForbiddenCommand && !budgetProtected && commandPolicy.overallDecision === 'allow'
     ? 'allow'
     : 'require_approval';
   const executionReady = effectivePolicyDecision === 'allow';
@@ -579,7 +578,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       budgetProtected,
       approvedBy,
       approvedAt,
-      approvedAutomatically: false,
+      approvedAutomatically: executionReady,
       createdByAgent: true,
       createdAt: new Date().toISOString(),
     },
