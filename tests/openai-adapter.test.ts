@@ -4,6 +4,7 @@ import { env } from '../src/config/env.js';
 import {
   buildAssistantInstructions,
   buildSafetyIdentifier,
+  classifyAiProviderFailure,
   generateAssistantResponse,
   isAiProviderFailoverError,
   type ResponsesClient,
@@ -42,11 +43,23 @@ describe('OpenAI Responses adapter', () => {
     assert.notEqual(first, 'user-123');
   });
 
-  it('fails over only for transient provider failures',()=>{
+  it('fails over for provider-specific failures that another configured provider can recover from',()=>{
+    assert.equal(isAiProviderFailoverError({status:401}),true);
     assert.equal(isAiProviderFailoverError({status:402}),true);
+    assert.equal(isAiProviderFailoverError({status:404}),true);
+    assert.equal(isAiProviderFailoverError({status:422}),true);
     assert.equal(isAiProviderFailoverError({status:429}),true);
     assert.equal(isAiProviderFailoverError({name:'APIConnectionError'}),true);
-    assert.equal(isAiProviderFailoverError({status:400}),false);
+    assert.equal(isAiProviderFailoverError({status:400}),true);
+  });
+
+  it('classifies provider failures without exposing response bodies',()=>{
+    assert.equal(classifyAiProviderFailure({status:401}),'authentication');
+    assert.equal(classifyAiProviderFailure({status:402}),'insufficient_balance');
+    assert.equal(classifyAiProviderFailure({status:404}),'model_unavailable');
+    assert.equal(classifyAiProviderFailure({status:429}),'rate_limited');
+    assert.equal(classifyAiProviderFailure({status:503}),'upstream');
+    assert.equal(classifyAiProviderFailure({name:'APIConnectionError'}),'network');
   });
 
   it('sends a non-persisted Responses API request and maps usage', async () => {

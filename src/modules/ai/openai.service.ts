@@ -61,7 +61,21 @@ type ProviderCircuitState = {
   failures: number;
   blockedUntil: number;
   lastError: string | null;
+  lastFailureStatus: number | null;
+  lastFailureCategory: AiProviderFailureCategory;
+  lastFailureAt: number;
 };
+
+export type AiProviderFailureCategory =
+  | 'authentication'
+  | 'insufficient_balance'
+  | 'model_unavailable'
+  | 'rate_limited'
+  | 'timeout'
+  | 'upstream'
+  | 'network'
+  | 'request'
+  | 'unknown';
 
 const providerCircuits = new Map<AiProviderName, ProviderCircuitState>();
 
@@ -117,11 +131,39 @@ function providerErrorStatus(error: unknown) {
 
 export function isAiProviderFailoverError(error: unknown) {
   const status = providerErrorStatus(error);
-  if (status === 402 || status === 408 || status === 409 || status === 429 || (status !== null && status >= 500)) return true;
+  if (
+    status === 400
+    || status === 401
+    || status === 402
+    || status === 403
+    || status === 404
+    || status === 408
+    || status === 409
+    || status === 422
+    || status === 429
+    || (status !== null && status >= 500)
+  ) return true;
   if (!error || typeof error !== 'object') return false;
   const candidate=error as {code?:unknown;name?:unknown};
   const code = String(candidate.code ?? candidate.name ?? '').replaceAll(/[^A-Z0-9]/gi,'_').toUpperCase();
   return ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'API_CONNECTION_ERROR', 'APICONNECTIONERROR'].includes(code);
+}
+
+export function classifyAiProviderFailure(error: unknown): AiProviderFailureCategory {
+  const status = providerErrorStatus(error);
+  if (status === 401 || status === 403) return 'authentication';
+  if (status === 402) return 'insufficient_balance';
+  if (status === 404 || status === 409) return 'model_unavailable';
+  if (status === 429) return 'rate_limited';
+  if (status === 408) return 'timeout';
+  if (status !== null && status >= 500) return 'upstream';
+  if (status === 400 || status === 422) return 'request';
+  if (!error || typeof error !== 'object') return 'unknown';
+  const candidate = error as { code?: unknown; name?: unknown };
+  const code = String(candidate.code ?? candidate.name ?? '').replaceAll(/[^A-Z0-9]/gi, '_').toUpperCase();
+  if (code === 'ETIMEDOUT') return 'timeout';
+  if (['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'API_CONNECTION_ERROR', 'APICONNECTIONERROR'].includes(code)) return 'network';
+  return 'unknown';
 }
 
 function errorMessage(error: unknown) {
@@ -133,13 +175,24 @@ function circuitIsOpen(provider: AiProviderName) {
 }
 
 function markProviderFailure(provider: AiProviderName, error: unknown) {
-  const prior = providerCircuits.get(provider) ?? { failures: 0, blockedUntil: 0, lastError: null };
+  const prior = providerCircuits.get(provider) ?? {
+    failures: 0,
+    blockedUntil: 0,
+    lastError: null,
+    lastFailureStatus: null,
+    lastFailureCategory: 'unknown' as const,
+    lastFailureAt: 0,
+  };
   const failures = prior.failures + 1;
-  const immediate = providerErrorStatus(error) === 402;
+  const status = providerErrorStatus(error);
+  const immediate = status === 401 || status === 402 || status === 403 || status === 404;
   providerCircuits.set(provider, {
     failures,
     blockedUntil: immediate || failures >= 2 ? Date.now() + env.AI_CIRCUIT_BREAKER_COOLDOWN_MS : 0,
     lastError: errorMessage(error),
+    lastFailureStatus: status,
+    lastFailureCategory: classifyAiProviderFailure(error),
+    lastFailureAt: Date.now(),
   });
 }
 
@@ -217,6 +270,9 @@ export function getAiProviderHealth() {
       available: providerConfigured(provider) && !circuitIsOpen(provider),
       circuitOpenUntil: state?.blockedUntil ? new Date(state.blockedUntil).toISOString() : null,
       consecutiveFailures: state?.failures ?? 0,
+      lastFailureStatus: state?.lastFailureStatus ?? null,
+      lastFailureCategory: state?.lastFailureCategory ?? null,
+      lastFailureAt: state?.lastFailureAt ? new Date(state.lastFailureAt).toISOString() : null,
       lastError: state?.lastError ?? null,
     };
   });
