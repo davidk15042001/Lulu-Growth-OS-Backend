@@ -5,6 +5,7 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { sendMail } from '../../utils/mailer.js';
+import { createDraft, listAccounts, sendDraft } from '../email/email.service.js';
 import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
 
 type Delivery = {
@@ -22,6 +23,27 @@ function absoluteDocumentUrl(path:string){
   const base=env.FRONTEND_BASE_URL?.replace(/\/$/,'');
   if(!base)throw new Error('FRONTEND_BASE_URL is required for commercial document delivery');
   return `${base}${path.startsWith('/')?'':'/'}${path}`;
+}
+
+async function sendDocumentEmail(delivery:Delivery,recipient:string,label:string,url:string){
+  const subject=`${label} ${delivery.number}`;
+  const bodyText=`Your ${label.toLowerCase()} ${delivery.number} is ready.\n\nOpen secure document: ${url}`;
+  const account=(await listAccounts(delivery.workspaceId)).find((candidate)=>candidate.status==='connected');
+  if(account&&delivery.actorId){
+    const draft=await createDraft(delivery.workspaceId,delivery.actorId,{
+      accountId:account.id,
+      threadId:null,
+      to:[{address:recipient}],
+      cc:[],
+      subject,
+      bodyText,
+      replyToProviderMessageId:null,
+    });
+    const sent=await sendDraft(delivery.workspaceId,draft.id) as Record<string,unknown>|null;
+    return typeof sent?.providerMessageId==='string'?sent.providerMessageId:null;
+  }
+  await sendMail(recipient,subject,`<p>Your ${label.toLowerCase()} <strong>${escapeHtml(delivery.number)}</strong> is ready.</p><p><a href="${escapeHtml(url)}">Open secure document</a></p>`);
+  return null;
 }
 
 async function loadAndClaim(deliveryId:string){
@@ -54,7 +76,7 @@ export async function deliverCommercialDocument(deliveryId:string){
       if(!delivery.recipient)throw new Error('Email delivery requires a recipient');
       const url=absoluteDocumentUrl(delivery.documentPath);
       const label=delivery.documentType==='QUOTE'?'Quote':'Invoice';
-      await sendMail(delivery.recipient,`${label} ${delivery.number}`,`<p>Your ${label.toLowerCase()} <strong>${escapeHtml(delivery.number)}</strong> is ready.</p><p><a href="${escapeHtml(url)}">Open secure document</a></p>`);
+      providerMessageId=await sendDocumentEmail(delivery,delivery.recipient,label,url);
     }else if(delivery.channel==='conversation'){
       if(!delivery.conversationId||!delivery.actorId)throw new Error('Conversation delivery requires a conversation and actor');
       const url=absoluteDocumentUrl(delivery.documentPath);
