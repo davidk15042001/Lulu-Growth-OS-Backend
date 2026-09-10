@@ -38,8 +38,7 @@ export const claimExpiredOnboardingWorkspaceSql = `
 
 export const finishOnboardingFileCleanupSql = `
   UPDATE workspaces
-  SET onboarding_step = 'business_description',
-      onboarding_file_reupload_required = TRUE,
+  SET onboarding_file_reupload_required = FALSE,
       onboarding_files_purged_at = NOW(),
       onboarding_files_expires_at = NOW() + ($2::int * INTERVAL '1 day'),
       onboarding_file_cleanup_started_at = NULL

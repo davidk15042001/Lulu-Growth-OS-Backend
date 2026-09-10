@@ -115,7 +115,7 @@ describe('company-first account bootstrap',()=>{
     assert.equal(afterLogin.rows.length,1);
   });
 
-  it('moves from products and services to billing only after an offering exists',async()=>{
+  it('moves directly from company information to billing without requiring an offering',async()=>{
     const email=`${crypto.randomUUID()}@example.test`;
     const user=await auth.createVerifiedUser(email,passwordHash,'Onboarding','Order');
     const workspace=(await db.query<{id:string;onboarding_step:string}>(
@@ -123,20 +123,22 @@ describe('company-first account bootstrap',()=>{
       [user.id],
     )).rows[0]!;
 
-    await onboarding.saveCompanyInformation(workspace.id,user.id,{
+    await assert.rejects(
+      onboarding.continueFromProductsServices(workspace.id,user.id),
+      {status:400},
+    );
+    await assert.rejects(
+      onboarding.continueFromExistingPlatforms(workspace.id,user.id),
+      {status:400},
+    );
+
+    const advanced=await onboarding.saveCompanyInformation(workspace.id,user.id,{
       companyName:'Onboarding Order',
       industry:null,
       countryRegion:null,
       taxId:null,
       address:null,
     });
-    await assert.rejects(
-      onboarding.continueFromProductsServices(workspace.id,user.id),
-      {status:400},
-    );
-
-    await onboarding.createOffering(workspace.id,{name:'Lulu AI',offeringType:'service'});
-    const advanced=await onboarding.continueFromProductsServices(workspace.id,user.id);
     assert.equal(advanced.onboardingStep,'billing');
     assert.equal((await onboarding.continueFromProductsServices(workspace.id,user.id)).onboardingStep,'billing');
   });

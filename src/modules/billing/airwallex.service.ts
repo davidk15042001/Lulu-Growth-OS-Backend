@@ -984,31 +984,17 @@ async function assertOnboardingReadyForBilling(workspaceId: string) {
   const state = await onboardingRepo.getCompletionState(workspaceId);
   const missing: string[] = [];
   if (!state?.hasCompanyInformation) missing.push('companyInformation');
-  if (Number(state?.offeringCount ?? 0) < 1) missing.push('productsServices');
   if (workspace.onboardingStep !== 'billing') missing.push('billingStep');
   if (missing.length > 0) {
-    throw new AppError(409, 'ONBOARDING_INCOMPLETE', 'Complete company information and products or services before choosing a billing plan.', { missing });
+    throw new AppError(409, 'ONBOARDING_INCOMPLETE', 'Complete company information before choosing a billing plan.', { missing });
   }
 }
 
 async function advanceOnboardingAfterBilling(workspaceId: string, client?: import('pg').PoolClient) {
   await query(
     `UPDATE workspaces
-        SET onboarding_step=CASE
-              WHEN onboarding_completed_at IS NOT NULL THEN onboarding_step
-              WHEN EXISTS (
-                SELECT 1 FROM workspace_offerings o
-                WHERE o.workspace_id=workspaces.id AND o.deleted_at IS NULL
-              ) THEN 'setup_complete'
-              ELSE 'company_information'
-            END,
-            onboarding_completed_at=CASE
-              WHEN onboarding_completed_at IS NULL AND EXISTS (
-                SELECT 1 FROM workspace_offerings o
-                WHERE o.workspace_id=workspaces.id AND o.deleted_at IS NULL
-              ) THEN NOW()
-              ELSE onboarding_completed_at
-            END,
+        SET onboarding_step=CASE WHEN onboarding_completed_at IS NULL THEN 'setup_complete' ELSE onboarding_step END,
+            onboarding_completed_at=COALESCE(onboarding_completed_at, NOW()),
             onboarding_file_reupload_required=FALSE
       WHERE id=$1 AND deleted_at IS NULL`,
     [workspaceId],

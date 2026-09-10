@@ -252,19 +252,19 @@ async function main() {
        FROM workspaces WHERE id = $1`,
       [workspaceId],
     );
-    assert.equal(cleanedWorkspace.rows[0]?.onboarding_step, 'business_description');
-    assert.equal(cleanedWorkspace.rows[0]?.onboarding_file_reupload_required, true);
+    assert.equal(cleanedWorkspace.rows[0]?.onboarding_step, 'company_information');
+    assert.equal(cleanedWorkspace.rows[0]?.onboarding_file_reupload_required, false);
     assert.ok(cleanedWorkspace.rows[0]?.onboarding_files_purged_at);
     assert.equal(cleanedWorkspace.rows[0]?.onboarding_file_cleanup_started_at, null);
-    const blockedDescriptionSave = await database.query<{ id: string }>(saveBusinessDescriptionSql, [
+    const descriptionSaveWithoutReupload = await database.query<{ id: string }>(saveBusinessDescriptionSql, [
       workspaceId,
-      'Existing text must not bypass the re-upload requirement.',
+      'Company information remains editable after retained files are purged.',
       null,
       null,
       null,
       [],
     ]);
-    assert.equal(blockedDescriptionSave.rows.length, 0);
+    assert.equal(descriptionSaveWithoutReupload.rows[0]?.id, workspaceId);
     await database.query(
       `INSERT INTO onboarding_documents (
          workspace_id, uploaded_by, file_name, mime_type, size_bytes, storage_key, content

@@ -68,9 +68,7 @@ export function listOfferings(workspaceId: string) {
 }
 
 export async function createOffering(workspaceId: string, input: CreateOfferingInput) {
-  const offering = await repo.createOffering(workspaceId, input);
-  await repo.setOnboardingStep(workspaceId, 'products_services');
-  return offering;
+  return repo.createOffering(workspaceId, input);
 }
 
 export async function updateOffering(
@@ -373,15 +371,21 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
 }
 
 export async function continueFromExistingPlatforms(workspaceId: string, userId: string) {
-  await completeOnboarding(workspaceId);
+  const workspace = await workspaceService.getWorkspace(workspaceId, userId);
+  if (workspace.onboardingCompletedAt || workspace.onboardingStep === 'billing') return workspace;
+  if (workspace.onboardingStep === 'company_information') {
+    throw badRequest('Complete company information before billing', { missing: ['companyInformation'] });
+  }
+
+  await repo.setOnboardingStep(workspaceId, 'billing');
   return workspaceService.getWorkspace(workspaceId, userId);
 }
 
 export async function continueFromProductsServices(workspaceId: string, userId: string) {
   const workspace = await workspaceService.getWorkspace(workspaceId, userId);
   if (workspace.onboardingCompletedAt || workspace.onboardingStep === 'billing') return workspace;
-  if (workspace.onboardingStep !== 'products_services') {
-    throw badRequest('Complete company information before products and services', { missing: ['companyInformation'] });
+  if (workspace.onboardingStep === 'company_information') {
+    throw badRequest('Complete company information before billing', { missing: ['companyInformation'] });
   }
 
   const state = await repo.getCompletionState(workspaceId);
@@ -389,9 +393,8 @@ export async function continueFromProductsServices(workspaceId: string, userId: 
 
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
-  if (Number(state.offeringCount ?? 0) < 1) missing.push('productsServices');
   if (missing.length > 0) {
-    throw badRequest('Complete company information and add at least one product or service before billing', { missing });
+    throw badRequest('Complete company information before billing', { missing });
   }
 
   await repo.setOnboardingStep(workspaceId, 'billing');
@@ -403,9 +406,7 @@ export async function getAiPreferences(workspaceId: string) {
 }
 
 export async function saveAiPreferences(workspaceId: string, input: AiPreferencesInput) {
-  const preferences = await repo.saveAiPreferences(workspaceId, input);
-  await repo.setOnboardingStep(workspaceId, 'setup_complete');
-  return preferences;
+  return repo.saveAiPreferences(workspaceId, input);
 }
 
 export async function completeOnboarding(workspaceId: string) {
@@ -414,7 +415,6 @@ export async function completeOnboarding(workspaceId: string) {
 
   const missing: string[] = [];
   if (!state.hasCompanyInformation) missing.push('companyInformation');
-  if (Number(state.offeringCount ?? 0) < 1) missing.push('productsServices');
   if (!state.hasBillingConfirmation) missing.push('billing');
   if (missing.length > 0) {
     throw badRequest('Onboarding is incomplete', { missing });

@@ -252,7 +252,7 @@ export async function saveCompanyInformation(workspaceId: string, input: Company
          country_region = $4,
          tax_id = $5,
          address = $6,
-         onboarding_step = 'products_services'
+         onboarding_step = 'billing'
      WHERE id = $1 AND deleted_at IS NULL`,
     [workspaceId, input.companyName, input.industry, input.countryRegion, input.taxId, input.address]
   );
@@ -265,7 +265,6 @@ export const saveBusinessDescriptionSql = `
          target_market = $4,
          short_brand_description = $5,
          positioning_tags = $6,
-         onboarding_step = 'existing_platforms',
          onboarding_file_reupload_required = FALSE
      WHERE id = $1
        AND deleted_at IS NULL
