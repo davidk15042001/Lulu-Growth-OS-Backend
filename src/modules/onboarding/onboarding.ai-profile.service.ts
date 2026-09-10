@@ -1,6 +1,5 @@
-import { env } from '../../config/env.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
-import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
+import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import { getKnowledgeBundle } from '../agents/agent.repo.js';
 import * as repo from './onboarding.repo.js';
@@ -15,14 +14,6 @@ type CustomerSegmentContext = Pick<
   repo.CustomerSegment,
   'name' | 'industry' | 'companySize' | 'region' | 'maturityLevel' | 'painPoints' | 'jobsToBeDone' | 'decisionCriteria' | 'useCases' | 'buyingRoles' | 'priceSensitivity' | 'primarySegment' | 'notes'
 >;
-
-function resolveAiModel() {
-  return env.AI_PROVIDER === 'alibaba'
-    ? env.DASHSCOPE_MODEL
-    : env.AI_PROVIDER === 'deepseek'
-      ? env.DEEPSEEK_MODEL
-      : env.OPENAI_MODEL;
-}
 
 function extractJson<T>(text: string) {
   const normalized = text
@@ -162,7 +153,7 @@ async function generateCompetitorDrafts(workspaceId: string, userId: string) {
     );
   }
 
-  const model = resolveAiModel();
+  const model = configuredModel();
   const response = await getOpenAIResponsesClient().create({
     model,
     instructions: buildCompetitorDiscoveryInstructions(),
@@ -480,7 +471,7 @@ export async function generateAiBusinessProfile(workspaceId: string, userId: str
     throw new AppError(422, 'SEARCH_INTELLIGENCE_CONTEXT_MISSING', 'At least one competitor is required for AI business profile generation');
   }
 
-  const model = resolveAiModel();
+  const model = configuredModel();
   const response = await getOpenAIResponsesClient().create({
     model,
     instructions: buildAiBusinessProfileInstructions(),

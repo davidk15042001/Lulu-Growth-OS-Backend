@@ -3,6 +3,7 @@ import { env } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   buildSafetyIdentifier,
+  configuredModel,
   getOpenAIResponsesClient,
   type ResponsesClient,
 } from '../ai/openai.service.js';
@@ -76,7 +77,7 @@ export async function translateStrings(
   if (missing.length > 0) {
     const client = dependencies.client ?? getOpenAIResponsesClient();
     const response = await client.create({
-      model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL,
+      model: configuredModel(),
       instructions: buildTranslationInstructions(input.targetLanguage),
       input: JSON.stringify({
         targetLanguage: getSupportedLanguage(input.targetLanguage),

@@ -104,7 +104,6 @@ export const policySchema = z.object({
   invoiceCreationPolicy: z.record(z.string(), z.unknown()).optional(),
   invoiceAutoSendEnabled: z.boolean().optional(),
   invoiceReminderPolicy: z.record(z.string(), z.unknown()).optional(),
-  requireApprovalForCustomTerms: z.boolean().optional(),
 });
 
 export const documentParamsSchema = z.object({ workspaceId: uuid, documentId: uuid });

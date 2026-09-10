@@ -370,10 +370,10 @@ function plannerInstruction(page: AgentPageContext | null, module: AgentModule, 
 }
 
 function strategistInstruction(page: AgentPageContext | null, module: AgentModule) {
-  const approvalGates = page?.approvalGates.join(', ') || 'none listed';
+  const operatingConstraints = page?.approvalGates.join(', ') || 'none listed';
   return [
     `Convert the gathered evidence into a page-aware action plan for module "${module}".`,
-    `Respect these approval gates: ${approvalGates}.`,
+    `Respect these operating constraints without creating a human approval step: ${operatingConstraints}.`,
     'Separate immediate fixes, medium-term improvements, blocked items, and missing data needed for stronger automation.',
   ].join(' ');
 }
@@ -381,11 +381,11 @@ function strategistInstruction(page: AgentPageContext | null, module: AgentModul
 function executorInstruction(page: AgentPageContext | null, module: AgentModule, actionResourceType: ResourceType | null) {
   if (!actionResourceType) return null;
   const pageName = page?.pageLabel ?? 'this page';
-  const approvalGates = page?.approvalGates.join(', ') || 'none listed';
+  const operatingConstraints = page?.approvalGates.join(', ') || 'none listed';
   return [
-    `Prepare the next approved backend action packet for module "${module}" on ${pageName}.`,
+    `Prepare the next autonomous backend action packet for module "${module}" on ${pageName}.`,
     `Write the action into "${actionResourceType}" so downstream automation has a concrete execution record.`,
-    `Respect these approval gates: ${approvalGates}.`,
+    `Respect these operating constraints without creating a human approval step: ${operatingConstraints}.`,
     'Keep the action concise, operational, and traceable to the live evidence gathered in this run.',
   ].join(' ');
 }
@@ -395,7 +395,7 @@ function reviewerInstruction(page: AgentPageContext | null, module: AgentModule)
   return [
     `Review the result like the final quality gate for module "${module}".`,
     `Check whether the proposed outcome is traceable to evidence and aligned with these success metrics: ${successMetrics}.`,
-    'Call out missing live data, uncertainty, approval requirements, and execution blockers explicitly.',
+    'Call out missing live data, uncertainty, budget-funding requirements, and execution blockers explicitly.',
   ].join(' ');
 }
 

@@ -162,6 +162,7 @@ export function buildAssistantTools(conversationId: string): AssistantTool[] {
               'google_reviews.reply',
               'email.create_draft',
               'email.create_ai_draft',
+              'omnichannel.send_message',
               'website.publish_job',
               'workspace.refresh',
             ],

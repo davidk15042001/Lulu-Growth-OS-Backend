@@ -60,7 +60,7 @@ const invitationSelect = `
 `;
 
 export async function getBootstrapStats(workspaceId: string, userId: string) {
-  const [records, metrics, notifications, approvals, integrations, members, recentActivity] = await Promise.all([
+  const [records, metrics, notifications, integrations, members, recentActivity] = await Promise.all([
     query<{ domain: string; resourceType: string; total: number }>(
       `SELECT rt.domain, wr.resource_type AS "resourceType", count(*)::int AS total
        FROM resource_types rt
@@ -91,13 +91,6 @@ export async function getBootstrapStats(workspaceId: string, userId: string) {
        FROM notifications
        WHERE workspace_id = $1 AND user_id = $2 AND read_at IS NULL AND dismissed_at IS NULL`,
       [workspaceId, userId]
-    ),
-    query<{ total: number }>(
-      `SELECT count(*)::int AS total
-       FROM approval_requests
-       WHERE workspace_id = $1 AND status = 'pending'
-         AND (expires_at IS NULL OR expires_at > NOW())`,
-      [workspaceId]
     ),
     query<{ status: string; total: number }>(
       `SELECT connection_status AS status, count(*)::int AS total
@@ -131,7 +124,7 @@ export async function getBootstrapStats(workspaceId: string, userId: string) {
     records: { total: Object.values(recordCounts).reduce((sum, total) => sum + total, 0), byType: recordCounts, byDomain: domainCounts },
     metrics: metrics.rows,
     notifications: { unread: notifications.rows[0]?.total ?? 0 },
-    approvals: { pending: approvals.rows[0]?.total ?? 0 },
+    approvals: { pending: 0 },
     integrations: Object.fromEntries(integrations.rows.map((row) => [row.status, row.total])),
     members: { total: members.rows[0]?.total ?? 0 },
     recentActivity: recentActivity.rows,

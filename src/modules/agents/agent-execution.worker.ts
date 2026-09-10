@@ -1,8 +1,8 @@
 import { logger } from '../../config/logger.js';
-import { executeAuthorizedAgentPacket, releaseApprovedAgentPackets } from './agent.authorization.js';
+import { executeAuthorizedAgentPacket } from './agent.authorization.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as recordRepo from '../records/record.repo.js';
-import { createAiDraft, createDraft } from '../email/email.service.js';
+import { createAiDraft, createDraft, sendDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
 import { generateProductImagesFromText } from '../product-images/product-image.service.js';
@@ -12,7 +12,9 @@ import {
 } from './agent.execution-command.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-import { assertAdSpendFunded } from '../adspend/adspend.repo.js';
+import { assertAdSpendFunded, consumeAdSpendReservation, releaseAdSpendReservation, reserveAdSpend } from '../adspend/adspend.repo.js';
+import { executeAdvertisingProviderOperation } from '../adspend/advertising.provider.service.js';
+import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
@@ -33,12 +35,12 @@ function executionSummary(record: recordRepo.WorkspaceRecord) {
   const targetSystem = textValue(data.targetSystem) || 'ai';
   const pageLabel = textValue(data.pageLabel) || record.name;
   const jobs = stringList(data.jobs).slice(0, 4);
-  const gates = stringList(data.approvalGates).slice(0, 4);
+  const constraints = stringList(data.approvalGates).slice(0, 4);
   const fragments = [
     `Execution packet processed for ${pageLabel}.`,
     `Target system: ${targetSystem}.`,
     jobs.length > 0 ? `Jobs: ${jobs.join(', ')}.` : 'Jobs: no explicit jobs attached.',
-    gates.length > 0 ? `Approval gates respected: ${gates.join(', ')}.` : 'Approval gates: none attached.',
+    constraints.length > 0 ? `Operating constraints respected: ${constraints.join(', ')}.` : 'Operating constraints: none attached.',
   ];
   return fragments.join(' ');
 }
@@ -235,21 +237,45 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     };
   }
 
-  if (command.type === 'advertising.create_optimization' || command.type === 'finance.create_automation') {
-    if (command.type === 'advertising.create_optimization') await assertAdSpendFunded(record.workspaceId);
-    const resourceType = command.type === 'advertising.create_optimization' ? 'ad_optimizations' : 'finance_automations';
+  if (command.type === 'advertising.create_optimization') {
+    const provider=textValue(command.provider||payload.provider,40);
+    const action=textValue(payload.action,20)==='pause'?'pause':'launch';
+    if(provider!=='google-ads')throw new Error('advertising.create_optimization requires the executable google-ads provider');
+    if(action==='pause'){
+      const result=await executeAdvertisingProviderOperation(record.workspaceId,{provider:'google-ads',action:'pause',customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})});
+      const item=await persistCommandExecutionResult(record,command,{status:'executed',...result});
+      return {type:command.type,targetEntityId:command.targetEntityId,provider,resultRecordId:item.id,result};
+    }
+    const wallet=await assertAdSpendFunded(record.workspaceId);
+    const requested=numberValue(payload.budgetAmountCny,Number(wallet.availableAmount));
+    const amount=Math.min(requested,Number(wallet.availableAmount));
+    const reservation=await reserveAdSpend({workspaceId:record.workspaceId,amount,idempotencyKey:`agent:${command.idempotencyKey}:ad-spend`,platform:provider,campaignId:textValue(payload.campaignId),metadata:{recordId:record.id,commandType:command.type}});
+    try{
+      const result=await executeAdvertisingProviderOperation(record.workspaceId,{provider:'google-ads',action:'launch',customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})});
+      await consumeAdSpendReservation({workspaceId:record.workspaceId,reservationId:reservation.id,providerOperationId:result.providerOperationId,metadata:{providerResponse:result.response}});
+      const item=await persistCommandExecutionResult(record,command,{status:'executed',reservationId:reservation.id,budgetAmountCny:amount,...result});
+      return {type:command.type,targetEntityId:command.targetEntityId,provider,resultRecordId:item.id,result:{...result,reservationId:reservation.id,budgetAmountCny:amount}};
+    }catch(error){
+      await releaseAdSpendReservation({workspaceId:record.workspaceId,reservationId:reservation.id,reason:error instanceof Error?error.message:'Provider execution failed'});
+      throw error;
+    }
+  }
+
+  if (command.type === 'finance.create_automation') {
+    const resourceType = 'finance_automations';
     const item = await persistCommandExecutionResult(record, command, {
       title: textValue(payload.title || command.summary, 240),
       description: textValue(payload.description || command.summary, 4000),
       jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
-      status: 'created',
+      status: 'planned',
+      executionBoundary: 'full_accounting_engine_excluded',
     });
     return {
       type: command.type,
       targetEntityId: item.id,
       provider: command.provider,
       resultRecordId: item.id,
-      result: { status: 'created', resourceType },
+      result: { status: 'planned', resourceType, executionBoundary: 'full_accounting_engine_excluded' },
     };
   }
 
@@ -265,18 +291,20 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       bodyText: textValue(payload.bodyText, 100_000),
       replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
     });
+    const sent = await sendDraft(record.workspaceId, draft.id);
     const stored = await persistCommandExecutionResult(record, command, {
       draftId: draft.id,
       threadId: draft.threadId,
-      status: draft.status,
+      status: 'sent',
       source: draft.source,
+      providerMessageId: sent?.providerMessageId ?? null,
     });
     return {
       type: command.type,
       targetEntityId: draft.id,
       provider: command.provider,
       resultRecordId: stored.id,
-      result: { draftId: draft.id, threadId: draft.threadId, status: draft.status, source: draft.source },
+      result: { draftId: draft.id, threadId: draft.threadId, status: 'sent', source: draft.source, providerMessageId: sent?.providerMessageId ?? null },
     };
   }
 
@@ -297,19 +325,37 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       'automation',
       { sourceActionRecordId: record.id, generatedBy: 'agent_executor' },
     );
+    const sent = await sendDraft(record.workspaceId, draft.id);
     const stored = await persistCommandExecutionResult(record, command, {
       draftId: draft.id,
       threadId: draft.threadId,
-      status: draft.status,
+      status: 'sent',
       source: draft.source,
+      providerMessageId: sent?.providerMessageId ?? null,
     });
     return {
       type: command.type,
       targetEntityId: draft.id,
       provider: command.provider,
       resultRecordId: stored.id,
-      result: { draftId: draft.id, threadId: draft.threadId, status: draft.status, source: draft.source },
+      result: { draftId: draft.id, threadId: draft.threadId, status: 'sent', source: draft.source, providerMessageId: sent?.providerMessageId ?? null },
     };
+  }
+
+  if (command.type === 'omnichannel.send_message') {
+    const conversationId = textValue(payload.conversationId || command.targetEntityId);
+    const text = textValue(payload.text, 10_000);
+    if (!conversationId || !text) throw new Error('omnichannel.send_message requires conversationId and text');
+    const message = await sendAutonomousMessage(record.workspaceId, conversationId, actorUserId, {
+      text,
+      messageType: textValue(payload.messageType, 20) || 'TEXT',
+      clientMessageId: `agent-command:${command.idempotencyKey}`,
+      ...(textValue(payload.accountId) ? { accountId: textValue(payload.accountId) } : {}),
+      ...(textValue(payload.recipientId) ? { recipientId: textValue(payload.recipientId) } : {}),
+      ...(payload.recipientType === 'group' || payload.recipientType === 'channel' ? { recipientType: payload.recipientType } : {}),
+    });
+    const stored = await persistCommandExecutionResult(record, command, { messageId: message.id, providerMessageId: message.providerMessageId, status: 'sent' });
+    return { type: command.type, targetEntityId: message.id, provider: command.provider, resultRecordId: stored.id, result: { status: 'sent', messageId: message.id, providerMessageId: message.providerMessageId } };
   }
 
   if (command.type === 'website.publish_job') {
@@ -349,14 +395,7 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     };
   }
 
-  const stored = await persistCommandExecutionResult(record, command, { status: 'record_only', summary: command.summary });
-  return {
-    type: command.type,
-    targetEntityId: command.targetEntityId,
-    provider: command.provider,
-    resultRecordId: stored.id,
-    result: { status: 'record_only', summary: command.summary },
-  };
+  throw new Error(`No executable adapter is registered for agent command ${command.type}`);
 }
 
 async function executeRecord(record: recordRepo.WorkspaceRecord) {
@@ -369,7 +408,7 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     pageLabel: textValue(data.pageLabel) || record.name,
     goal: textValue(data.goal, 400) || record.name,
     jobs: stringList(data.jobs),
-    policyDecision: textValue(data.policyDecision) === 'allow' ? 'allow' : 'require_approval',
+    policyDecision: ['require_budget', 'require_approval'].includes(textValue(data.policyDecision)) ? 'require_budget' : 'allow',
     executionMode: textValue(data.executionMode) === 'autonomous' ? 'autonomous' : 'analysis_only',
     accountId: textValue(data.accountId) || null,
     threadId: textValue(data.threadId) || null,
@@ -475,7 +514,6 @@ export async function runAgentExecutionCycle() {
   if (running) return;
   running = true;
   try {
-    await releaseApprovedAgentPackets();
     const claimed = await recordRepo.claimExecutionReadyRecords(batchSize);
     for (const record of claimed) {
       try {
@@ -495,9 +533,8 @@ export async function runAgentExecutionCycle() {
 export function registerAgentExecutionHandlers() {
   registerDomainEventHandler({
     name: 'agents.execution-record-wakeup.v1',
-    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED, DOMAIN_EVENT_TYPES.APPROVAL_DECIDED],
-    async handle(event) {
-      if(event.type===DOMAIN_EVENT_TYPES.APPROVAL_DECIDED) await releaseApprovedAgentPackets(event.workspaceId ?? undefined,event.aggregateId ?? undefined);
+    eventTypes: [DOMAIN_EVENT_TYPES.RECORD_CREATED],
+    async handle() {
       await runAgentExecutionCycle();
       return { woken: true };
     },

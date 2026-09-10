@@ -1,13 +1,53 @@
-import { forbiddenError, notFoundError } from '../../utils/app-error.js';
+import { randomUUID } from 'node:crypto';
+import { AppError, forbiddenError, notFoundError } from '../../utils/app-error.js';
 import { assertWorkspaceCapability } from '../workspaces/workspace-authorization.service.js';
 import { query } from '../../db/pool.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import * as repo from './omnichannel.repo.js';
+import { sendMessage as sendUnifyPortMessage } from '../provider-control/unifyport.client.js';
 
 export async function assertWorkspace(workspaceId:string,userId:string,capability:'omnichannel.read'|'omnichannel.reply'|'omnichannel.manage') { await assertWorkspaceCapability({workspaceId,userId,capability}); }
 export async function list(workspaceId:string,userId:string,filters:any){await assertWorkspace(workspaceId,userId,'omnichannel.read');return repo.listConversations(workspaceId,filters);}
 export async function detail(workspaceId:string,id:string,userId:string){await assertWorkspace(workspaceId,userId,'omnichannel.read');const result=await repo.getConversation(workspaceId,id);if(!result)throw notFoundError('Conversation not found');return result;}
-export async function send(workspaceId:string,id:string,userId:string,input:{text:string;messageType:string;clientMessageId?:string}) { await assertWorkspace(workspaceId,userId,'omnichannel.reply'); const result=await repo.getConversation(workspaceId,id);if(!result)throw notFoundError('Conversation not found'); if(result.conversation.status==='SPAM' || result.conversation.status==='CLOSED') throw forbiddenError('This conversation is not accepting messages'); if(result.conversation.handlingMode==='AI_AUTO') throw forbiddenError('Take over the conversation before sending as a human'); return repo.createMessage({workspaceId,conversationId:id,channelId:result.conversation.channelId,channelIdentityId:result.conversation.channelIdentityId,direction:'OUTBOUND',senderType:'USER',senderUserId:userId,messageType:input.messageType,text:input.text,...(input.clientMessageId ? {clientMessageId:input.clientMessageId} : {})},userId); }
+function transportText(value:unknown){return typeof value==='string'&&value.trim()?value.trim():null;}
+function recipientType(value:unknown):'user'|'group'|'channel'{return value==='group'||value==='channel'?value:'user';}
+
+async function deliverOutboundMessage(workspaceId:string,id:string,userId:string,input:{text:string;messageType:string;clientMessageId:string;accountId?:string;recipientId?:string;recipientType?:'user'|'group'|'channel';senderType:'USER'|'AI_AGENT'}) {
+  const detail=await repo.getConversation(workspaceId,id);
+  if(!detail)throw notFoundError('Conversation not found');
+  if(detail.conversation.status==='SPAM'||detail.conversation.status==='CLOSED')throw forbiddenError('This conversation is not accepting messages');
+  const existing=detail.messages.find(message=>message.clientMessageId===input.clientMessageId);
+  if(existing)return existing;
+  const transport=await repo.getConversationTransport(workspaceId,id);
+  if(!transport)throw notFoundError('Conversation transport not found');
+  let providerMessageId:string|null=null;
+  if(transport.channelType!=='WEBSITE_CHAT'){
+    const identityMetadata=transport.identityMetadata??{};
+    const conversationMetadata=transport.conversationMetadata??{};
+    const recipientMetadata=transport.recipient?.metadata??{};
+    const accountId=input.accountId??transportText(identityMetadata.unifyportAccountId)??transport.externalIdentityId;
+    const recipientId=input.recipientId??transportText(recipientMetadata.externalId)??transportText(conversationMetadata.externalSenderKey)??transport.recipient?.participantKey??null;
+    if(!accountId||!recipientId)throw new AppError(409,'OMNICHANNEL_DELIVERY_CONTEXT_MISSING','The social channel account or recipient is missing from this conversation.');
+    const sent=await sendUnifyPortMessage({account_id:accountId,to:{id:recipientId,type:recipientType(input.recipientType??recipientMetadata.recipientType)},message:{type:input.messageType.toLowerCase(),text:input.text}});
+    providerMessageId=transportText(sent.id)??transportText(sent.message_id)??transportText(sent.messageId);
+  }
+  return repo.createMessage({workspaceId,conversationId:id,channelId:transport.channelId,channelIdentityId:transport.channelIdentityId,direction:'OUTBOUND',senderType:input.senderType,senderUserId:userId,messageType:input.messageType,text:input.text,status:'SENT',clientMessageId:input.clientMessageId,providerMessageId},userId);
+}
+
+export async function send(workspaceId:string,id:string,userId:string,input:{text:string;messageType:string;clientMessageId?:string}) {
+  await assertWorkspace(workspaceId,userId,'omnichannel.reply');
+  const detail=await repo.getConversation(workspaceId,id);
+  if(!detail)throw notFoundError('Conversation not found');
+  if(detail.conversation.handlingMode==='AI_AUTO')throw forbiddenError('Take over the conversation before sending as a human');
+  return deliverOutboundMessage(workspaceId,id,userId,{...input,clientMessageId:input.clientMessageId??`manual:${randomUUID()}`,senderType:'USER'});
+}
+
+/** Sends an agent-authored reply through the real channel transport. Website
+ * chat is delivered from the database; external social channels use UnifyPort. */
+export async function sendAutonomousMessage(workspaceId:string,id:string,userId:string,input:{text:string;messageType?:string;clientMessageId:string;accountId?:string;recipientId?:string;recipientType?:'user'|'group'|'channel'}) {
+  await assertWorkspaceCapability({workspaceId,userId,capability:'omnichannel.reply',actorType:'AI_AGENT'});
+  return deliverOutboundMessage(workspaceId,id,userId,{...input,messageType:input.messageType??'TEXT',senderType:'AI_AGENT'});
+}
 export async function note(workspaceId:string,id:string,userId:string,text:string){await assertWorkspace(workspaceId,userId,'omnichannel.reply');const result=await repo.getConversation(workspaceId,id);if(!result)throw notFoundError('Conversation not found');return repo.createMessage({workspaceId,conversationId:id,channelId:result.conversation.channelId,channelIdentityId:result.conversation.channelIdentityId,direction:'INTERNAL',senderType:'USER',senderUserId:userId,messageType:'INTERNAL_NOTE',text},userId);}
 export async function update(workspaceId:string,id:string,userId:string,input:any){await assertWorkspace(workspaceId,userId,'omnichannel.manage'); if(input.assignedUserId){const member=await query(`SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND user_id=$2`,[workspaceId,input.assignedUserId]);if(!member.rows[0]) throw forbiddenError('Assigned user is not a workspace member');}const result=await repo.updateConversation(workspaceId,id,input,userId);if(!result)throw notFoundError('Conversation not found');return result;}
 export async function channels(workspaceId:string,userId:string){await assertWorkspace(workspaceId,userId,'omnichannel.read');return repo.listChannels(workspaceId);}

@@ -1,11 +1,9 @@
 import { AppError, conflictError, notFoundError } from '../../utils/app-error.js';
-import { createApproval, decideApproval } from '../approvals/approval.repo.js';
 import { env } from '../../config/env.js';
-import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
+import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import * as repo from './agent.repo.js';
 import type { AgentRole, AgentRun, AgentTool } from './agent.types.js';
-import type { DecideApprovalInput } from '../approvals/approval.validator.js';
 import { getAgentCapabilities, type AgentModule, isAgentModule } from './agent.capabilities.js';
 import { buildAgentExecutionProfile } from './agent.domain.js';
 import {
@@ -18,9 +16,7 @@ import {
   type AgentPageContext,
 } from './agent.page-context.js';
 import { registerAgentTools } from './agent.tools.js';
-import { authorizeAgentTool, authorizeAgentIdentity, agentActionDigest } from './agent.authorization.js';
-import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { authorizeAgentTool, authorizeAgentIdentity } from './agent.authorization.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -362,28 +358,7 @@ async function executeStep(runId: string, workspaceId: string, userId: string, s
     policyDecision,
     executionMode: autonomous ? 'autonomous' : 'analysis_only',
   };
-  if (tool && policyDecision === 'require_approval') {
-    const approval = await createApproval(workspaceId, userId, {
-      actionType: `agent_tool:${tool.name}`,
-      entityType: 'agent_run_step',
-      entityId: step.id,
-      title: `Approve ${tool.name}`,
-      description: step.instruction,
-      expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-      payload: {
-        runId,
-        stepId: step.id,
-        toolName: tool.name,
-        toolInput: effectiveToolInput,
-        digest: agentActionDigest(toolInput),
-      },
-    });
-    if (!approval) throw new AppError(500, 'AGENT_APPROVAL_CREATION_FAILED', 'The approval request could not be created');
-    await repo.updateStep(step.id, { status: 'waiting_approval', approval_id: approval.id });
-    await repo.updateRun(runId, { status: 'waiting_approval' });
-    await event({ runId, stepId: step.id, workspaceId, eventType: 'step.waiting_approval', agentRole: 'executor', payload: { approvalId: approval.id, toolName: tool.name } });
-    return { waiting: true, output: undefined };
-  }
+  if (tool && policyDecision === 'require_budget') throw new AppError(409, 'CUSTOMER_BUDGET_REQUIRED', 'Fund the prepaid ad-spend wallet before this action can run.');
   const toolOutput = tool ? await withTimeout(tool.execute(effectiveToolInput, identity), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT') : { acknowledged: true, role: step.agentRole, instruction: step.instruction };
   await repo.updateStep(step.id, { status: 'completed', tool_output: toolOutput, result: toolOutput, finished_at: new Date() });
   await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: toolOutput });
@@ -415,9 +390,6 @@ async function executeRun(
         if (step.result) outputs.push({ stepId: step.id, output: step.result });
         continue;
       }
-      if (step.status === 'waiting_approval') {
-        return;
-      }
       const result = await executeStep(runId, workspaceId, userId, step, executionMode === 'autonomous');
       if (result.waiting) return;
       outputs.push({ stepId: step.id, output: result.output });
@@ -439,7 +411,7 @@ async function executeRun(
     if (isAiGenerationConfigured()) {
       if (!steps[0]) throw new AppError(403,'AGENT_EXECUTION_FORBIDDEN','Agent synthesis requires a persisted step identity');
       await authorizeAgentIdentity({workspaceId,userId,runId,stepId:steps[0].id});
-      const response = await withTimeout(getOpenAIResponsesClient().create({ model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL, instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: { workspaceId, userId: userId === 'system' ? null : userId } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
+      const response = await withTimeout(getOpenAIResponsesClient().create({ model: configuredModel(), instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: { workspaceId, userId: userId === 'system' ? null : userId } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
       finalResult = { ...finalResult, summary: response.output_text?.trim() ?? null };
     }
     await persistPageSnapshot(runId, workspaceId, goal, page, finalResult);
@@ -470,7 +442,6 @@ async function executeRun(
 
 export async function executePersistedAgentRun(run: AgentRun) {
   if (['completed', 'failed', 'cancelled'].includes(run.status)) return;
-  if (run.status === 'waiting_approval') return;
   const subscription = await repo.getWorkspacePlan(run.workspaceId);
   const module = isAgentModule(run.plan?.module) ? run.plan.module : 'general';
   const capabilities = getAgentCapabilities(subscription.plan_key, module);
@@ -671,36 +642,4 @@ export async function cancelRun(workspaceId: string, runId: string, userId: stri
   });
   return repo.getRun(workspaceId, runId);
 }
-export async function approveStep(workspaceId: string, runId: string, stepId: string, userId: string, decision: DecideApprovalInput) {
-  const step = await repo.getStep(workspaceId, runId, stepId);
-  if (!step) throw notFoundError('Agent step not found');
-  if (!step.approvalId) throw conflictError('This agent step has no pending approval');
-  const approvalStatus = await repo.getApprovalStatus(workspaceId, step.approvalId);
-  if (approvalStatus !== 'pending') throw conflictError(`Approval is already ${approvalStatus ?? 'unavailable'}`);
-  const approval = await decideApproval(workspaceId, step.approvalId, userId, true, decision);
-  if (!approval) throw conflictError('The approval could not be decided');
-  if (decision.decision !== 'approved') {
-    await repo.updateStep(stepId, { status: 'failed', error_code: 'AGENT_ACTION_REJECTED', error_message: decision.note ?? 'The action was rejected', finished_at: new Date() });
-    await repo.updateRun(runId, { status: 'failed', error_code: 'AGENT_ACTION_REJECTED', error_message: decision.note ?? 'The action was rejected', finished_at: new Date() });
-    await event({ runId, stepId, workspaceId, eventType: 'step.rejected', agentRole: 'executor', payload: { decision: decision.decision, note: decision.note ?? null } });
-    return getRunDetails(workspaceId, runId);
-  }
-  await repo.updateStep(stepId, {
-    status: 'pending',
-    approval_id: step.approvalId,
-  });
-  await repo.updateRun(runId, { status: 'running', error_code: null, error_message: null });
-  await event({ runId, stepId, workspaceId, eventType: 'step.approved', agentRole: 'executor', payload: {} });
-  await appendDomainEvent({
-    workspaceId,
-    type: DOMAIN_EVENT_TYPES.AGENT_RUN_RESUME_REQUESTED,
-    aggregateType: 'agent_run',
-    aggregateId: runId,
-    payload: { runId, stepId },
-    metadata: { actorId: userId, source: 'agents.approval' },
-    idempotencyKey: `agent-run:${runId}:resume:${stepId}:v1`,
-  });
-  return getRunDetails(workspaceId, runId);
-}
-
 export { automaticPageProfiles, buildPageAgentGoal };

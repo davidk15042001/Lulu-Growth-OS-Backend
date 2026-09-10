@@ -59,7 +59,7 @@ export async function listAutomatedTargets() {
   return rows;
 }
 export async function hasRecentAutomaticRun(workspaceId: string, goal: string, minutes = 30) {
-  const { rows } = await query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM agent_runs WHERE workspace_id=$1 AND goal=$2 AND created_at > NOW() - ($3 * INTERVAL '1 minute') AND status IN ('queued','planning','running','waiting_approval','completed')) AS exists`, [workspaceId, goal, minutes]);
+  const { rows } = await query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM agent_runs WHERE workspace_id=$1 AND goal=$2 AND created_at > NOW() - ($3 * INTERVAL '1 minute') AND status IN ('queued','planning','running','waiting_approval','completed','failed')) AS exists`, [workspaceId, goal, minutes]);
   return Boolean(rows[0]?.exists);
 }
 export async function getRecentPageRun(workspaceId: string, pageId: string, minutes = 45, client?: PoolClient) {
@@ -68,7 +68,7 @@ export async function getRecentPageRun(workspaceId: string, pageId: string, minu
     WHERE workspace_id=$1
       AND plan -> 'page' ->> 'pageId' = $2
       AND updated_at > NOW() - ($3 * INTERVAL '1 minute')
-      AND status IN ('queued','planning','running','waiting_approval','completed')
+      AND status IN ('queued','planning','running','waiting_approval','completed','failed')
     ORDER BY updated_at DESC
     LIMIT 1`, [workspaceId, pageId, minutes], client);
   return rows[0] ?? null;
@@ -277,10 +277,6 @@ export async function getWorkspacePlan(workspaceId: string) {
   return rows[0] ?? { plan_key: 'explorer' as const, status: 'inactive' };
 }
 
-export async function getApprovalStatus(workspaceId: string, approvalId: string) {
-  const { rows } = await query<{ status: string }>(`SELECT status FROM approval_requests WHERE workspace_id=$1 AND id=$2`, [workspaceId, approvalId]);
-  return rows[0]?.status ?? null;
-}
 
 export async function listEvents(workspaceId: string, runId: string) {
   const { rows } = await query<AgentRunEvent>(`SELECT ${eventSelect} FROM agent_run_events WHERE workspace_id=$1 AND run_id=$2 ORDER BY created_at ASC`, [workspaceId, runId]);

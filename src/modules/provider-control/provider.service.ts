@@ -4,7 +4,7 @@ import { assertWorkspaceCapability } from '../workspaces/workspace-authorization
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import * as repo from './provider.repo.js';
-import { canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, isProviderRegistered, providerError } from './provider-registry.js';
+import { PROVIDER_CATALOG, canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, isProviderRegistered, providerError } from './provider-registry.js';
 import type { ProviderCapabilityStatus, ProviderConnectionStatus, ProviderHealthStatus, ProviderMode } from './provider.types.js';
 import { verifyWebhookSignature as verifyUnifyPortWebhookSignature } from './unifyport.client.js';
 
@@ -231,12 +231,8 @@ export async function ingestProviderWebhook(input: { provider: string; rawBody: 
 }
 
 export function providerStatusMatrix() {
-  return PROVIDER_MATRIX;
+  return PROVIDER_CATALOG.map(({providerKey,implementationStatus})=>[providerKey,implementationStatus] as const);
 }
-
-const PROVIDER_MATRIX = [
-  ['google_ads', 'PARTIAL'], ['google_analytics', 'PARTIAL'], ['google_business', 'IMPLEMENTED'], ['google_calendar', 'IMPLEMENTED'], ['microsoft_calendar', 'IMPLEMENTED'], ['meta', 'PARTIAL'], ['facebook_messenger', 'NOT_IMPLEMENTED'], ['instagram', 'NOT_IMPLEMENTED'], ['linkedin', 'PARTIAL'], ['tiktok_ads', 'PARTIAL'], ['lulu_managed_website', 'PARTIAL'], ['wordpress', 'PARTIAL'], ['webflow', 'PARTIAL'], ['shopify', 'PARTIAL'], ['gmail', 'IMPLEMENTED'], ['microsoft_email', 'IMPLEMENTED'], ['imap_smtp', 'IMPLEMENTED'], ['airwallex', 'IMPLEMENTED'], ['calendly', 'PARTIAL'], ['cal_com', 'PARTIAL'], ['salesforce', 'PARTIAL'], ['hubspot', 'PARTIAL'], ['pipedrive', 'PARTIAL'], ['whatsapp', 'NOT_IMPLEMENTED'], ['unifyport', 'PARTIAL'], ['custom', 'NOT_IMPLEMENTED'],
-] as const;
 
 export function isProviderMode(value: string): value is ProviderMode {
   return ['LULU_MANAGED', 'CUSTOMER_OWNED', 'PARTNER_MANAGED', 'HYBRID'].includes(value);

@@ -258,31 +258,113 @@ export async function reserveAdSpend(input: {
   campaignId?: string | null;
   metadata?: Record<string, unknown>;
 }) {
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new AppError(400, 'AD_SPEND_AMOUNT_INVALID', 'Ad spend reservations require a positive CNY amount.');
+  }
+  const amount = Math.round(input.amount * 100) / 100;
   return withTransaction(async (client) => {
-    const prior = (await query<{ id: string }>(
-      `SELECT id FROM workspace_ad_spend_reservations WHERE idempotency_key=$1`, [input.idempotencyKey], client,
+    const prior = (await query<{ id: string; workspaceId: string; amount: string; status: string }>(
+      `SELECT id,workspace_id AS "workspaceId",amount,status FROM workspace_ad_spend_reservations WHERE idempotency_key=$1`, [input.idempotencyKey], client,
     )).rows[0];
-    if (prior) return prior;
+    if (prior) {
+      if (prior.workspaceId !== input.workspaceId || Number(prior.amount) !== amount) {
+        throw new AppError(409, 'AD_SPEND_IDEMPOTENCY_CONFLICT', 'This ad spend operation key was already used for a different reservation.');
+      }
+      return { ...prior, amount: Number(prior.amount), idempotent: true };
+    }
     await ensureWallet(input.workspaceId, client);
     const wallet = (await query<WalletRow>(
       `UPDATE workspace_ad_spend_wallets SET available_amount=available_amount-$2,
        reserved_amount=reserved_amount+$2,version=version+1
        WHERE workspace_id=$1 AND available_amount >= $2 RETURNING ${walletSelect}`,
-      [input.workspaceId, input.amount.toFixed(2)], client,
+      [input.workspaceId, amount.toFixed(2)], client,
     )).rows[0];
     if (!wallet) throw new AppError(409, 'AD_SPEND_FUNDS_REQUIRED', 'Paid ads are paused until the ad spend wallet is funded.');
     const reservation = (await query<{ id: string }>(
       `INSERT INTO workspace_ad_spend_reservations(workspace_id,amount,platform,campaign_id,idempotency_key,metadata)
        VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id`,
-      [input.workspaceId, input.amount.toFixed(2), input.platform ?? null, input.campaignId ?? null,
+      [input.workspaceId, amount.toFixed(2), input.platform ?? null, input.campaignId ?? null,
         input.idempotencyKey, JSON.stringify(input.metadata ?? {})], client,
     )).rows[0];
     if (!reservation) throw new Error('Ad spend reservation failed');
     await query(
       `INSERT INTO workspace_ad_spend_ledger(workspace_id,entry_type,amount_delta,balance_after,idempotency_key,metadata)
        VALUES($1,'RESERVE',$2,$3,$4,$5::jsonb)`,
-      [input.workspaceId, (-input.amount).toFixed(2), wallet.availableAmount, `adspend-reserve:${reservation.id}`, JSON.stringify(input.metadata ?? {})], client,
+      [input.workspaceId, (-amount).toFixed(2), wallet.availableAmount, `adspend-reserve:${reservation.id}`, JSON.stringify(input.metadata ?? {})], client,
     );
-    return reservation;
+    return { ...reservation, amount, status: 'RESERVED' as const, idempotent: false };
+  });
+}
+
+/** Converts a reservation into irreversible provider spend after the provider
+ * accepted the operation. Replays are safe and never double-charge the wallet. */
+export async function consumeAdSpendReservation(input: {
+  workspaceId: string;
+  reservationId: string;
+  providerOperationId?: string | null;
+  metadata?: Record<string, unknown>;
+}) {
+  return withTransaction(async (client) => {
+    const reservation = (await query<{id:string;amount:string;status:string;metadata:Record<string,unknown>}>(
+      `SELECT id,amount,status,metadata FROM workspace_ad_spend_reservations WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+      [input.reservationId, input.workspaceId], client,
+    )).rows[0];
+    if (!reservation) throw new AppError(404, 'AD_SPEND_RESERVATION_NOT_FOUND', 'Ad spend reservation not found.');
+    if (reservation.status === 'CONSUMED') return { ...reservation, amount: Number(reservation.amount), idempotent: true };
+    if (reservation.status !== 'RESERVED') throw new AppError(409, 'AD_SPEND_RESERVATION_CLOSED', `Ad spend reservation is already ${reservation.status.toLowerCase()}.`);
+    const metadata = { ...reservation.metadata, ...input.metadata, providerOperationId: input.providerOperationId ?? null };
+    const wallet = (await query<WalletRow>(
+      `UPDATE workspace_ad_spend_wallets SET reserved_amount=reserved_amount-$2,spent_amount=spent_amount+$2,version=version+1
+       WHERE workspace_id=$1 AND reserved_amount >= $2 RETURNING ${walletSelect}`,
+      [input.workspaceId, reservation.amount], client,
+    )).rows[0];
+    if (!wallet) throw new AppError(409, 'AD_SPEND_RESERVATION_BALANCE_MISMATCH', 'Reserved ad spend no longer matches the wallet balance.');
+    await query(
+      `UPDATE workspace_ad_spend_reservations SET status='CONSUMED',metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
+      [input.reservationId, input.workspaceId, JSON.stringify(metadata)], client,
+    );
+    await query(
+      `INSERT INTO workspace_ad_spend_ledger(workspace_id,entry_type,amount_delta,balance_after,idempotency_key,metadata)
+       VALUES($1,'SPEND',$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING`,
+      [input.workspaceId, (-Number(reservation.amount)).toFixed(2), wallet.availableAmount,
+        `adspend-consume:${reservation.id}`, JSON.stringify(metadata)], client,
+    );
+    return { id: reservation.id, amount: Number(reservation.amount), status: 'CONSUMED' as const, idempotent: false };
+  });
+}
+
+/** Releases unspent funds when a provider rejects or cannot apply an action. */
+export async function releaseAdSpendReservation(input: {
+  workspaceId: string;
+  reservationId: string;
+  reason: string;
+  metadata?: Record<string, unknown>;
+}) {
+  return withTransaction(async (client) => {
+    const reservation = (await query<{id:string;amount:string;status:string;metadata:Record<string,unknown>}>(
+      `SELECT id,amount,status,metadata FROM workspace_ad_spend_reservations WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+      [input.reservationId, input.workspaceId], client,
+    )).rows[0];
+    if (!reservation) throw new AppError(404, 'AD_SPEND_RESERVATION_NOT_FOUND', 'Ad spend reservation not found.');
+    if (reservation.status === 'RELEASED' || reservation.status === 'EXPIRED') return { ...reservation, amount: Number(reservation.amount), idempotent: true };
+    if (reservation.status !== 'RESERVED') throw new AppError(409, 'AD_SPEND_RESERVATION_CLOSED', `Ad spend reservation is already ${reservation.status.toLowerCase()}.`);
+    const metadata = { ...reservation.metadata, ...input.metadata, releaseReason: input.reason.slice(0, 500) };
+    const wallet = (await query<WalletRow>(
+      `UPDATE workspace_ad_spend_wallets SET reserved_amount=reserved_amount-$2,available_amount=available_amount+$2,version=version+1
+       WHERE workspace_id=$1 AND reserved_amount >= $2 RETURNING ${walletSelect}`,
+      [input.workspaceId, reservation.amount], client,
+    )).rows[0];
+    if (!wallet) throw new AppError(409, 'AD_SPEND_RESERVATION_BALANCE_MISMATCH', 'Reserved ad spend no longer matches the wallet balance.');
+    await query(
+      `UPDATE workspace_ad_spend_reservations SET status='RELEASED',metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
+      [input.reservationId, input.workspaceId, JSON.stringify(metadata)], client,
+    );
+    await query(
+      `INSERT INTO workspace_ad_spend_ledger(workspace_id,entry_type,amount_delta,balance_after,idempotency_key,metadata)
+       VALUES($1,'RELEASE',$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING`,
+      [input.workspaceId, Number(reservation.amount).toFixed(2), wallet.availableAmount,
+        `adspend-release:${reservation.id}`, JSON.stringify(metadata)], client,
+    );
+    return { id: reservation.id, amount: Number(reservation.amount), status: 'RELEASED' as const, idempotent: false };
   });
 }

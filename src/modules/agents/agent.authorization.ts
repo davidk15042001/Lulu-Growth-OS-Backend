@@ -3,7 +3,6 @@ import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { assertAiBillingAccess } from '../billing/payg-billing.repo.js';
-import { createApproval } from '../approvals/approval.repo.js';
 import { getAgentCapabilities, isAgentModule, type SubscriptionPlan } from './agent.capabilities.js';
 import { evaluateAgentActionPolicy } from './agent.autonomy-policy.js';
 import { roleCan } from '../workspaces/workspace-permissions.js';
@@ -63,30 +62,12 @@ export async function authorizeAgentIdentity(context:AgentExecutionIdentity,writ
   return {...state,capabilities};
 }
 
-async function consumeApproval(context:AgentExecutionIdentity,approvalId:string,action:string,entityId:string,digest:string) {
-  // One approval authorizes one exact operation. Never trust JSON approvedBy/approvedAt.
-  const consumed=await withTransaction(async client=>{
-    const row=(await query<{id:string}>(`UPDATE approval_requests a SET authorization_consumed_at=NOW()
-      WHERE a.id=$1 AND a.workspace_id=$2 AND a.action_type=$3 AND a.entity_id=$4 AND a.payload->>'digest'=$5
-      AND a.status='approved' AND a.authorization_consumed_at IS NULL AND a.expires_at>NOW()
-      AND EXISTS(SELECT 1 FROM workspace_members m JOIN users u ON u.id=m.user_id
-        WHERE m.workspace_id=a.workspace_id AND m.user_id=a.decided_by AND m.role IN ('owner','admin') AND u.verified_at IS NOT NULL AND u.deleted_at IS NULL)
-      RETURNING a.id`,[approvalId,context.workspaceId,action,entityId,digest],client)).rows[0];
-    if(row) await recordSecurityEvent({eventType:'ADMIN_ACTION',workspaceId:context.workspaceId,userId:context.userId,metadata:{action:'agent_authorization_consumed',approvalId,stepId:context.stepId}},client);
-    return Boolean(row);
-  });
-  if(!consumed) return deny(context,'approval_missing_expired_consumed_or_untrusted');
-}
-
 export async function authorizeAgentTool(context:AgentExecutionIdentity,toolName:string|null) {
   const state=await authorizeAgentIdentity(context,toolName==='page_action_writeback');
   if(state.tool_name!==toolName) return deny(context,'tool_identity_mismatch');
   const policy=evaluateAgentActionPolicy(`tool:${toolName??'agent.reason'}`,state.capabilities.autonomous);
   if(policy.decision==='forbidden') return deny(context,'prohibited_tool');
-  if(policy.decision==='require_approval' && state.approval_id) {
-    await consumeApproval(context,state.approval_id,`agent_tool:${toolName}`,context.stepId,agentActionDigest(state.tool_input??{}));
-    return {...policy,decision:'allow' as const};
-  }
+  if(policy.decision==='require_budget') return deny(context,'customer_budget_must_be_funded');
   return policy;
 }
 
@@ -96,21 +77,15 @@ export async function registerAgentActionPacket(context:AgentExecutionIdentity,r
   const policies=commands.map(command=>packetPolicy(command,state,record));
   if(!commands.length || policies.some(policy=>policy.decision==='forbidden')) return deny(context,'prohibited_command');
   const digest=packetDigest(record);
-  const requiresApproval=policies.some(policy=>policy.decision==='require_approval');
-  const approval=requiresApproval?await createApproval(context.workspaceId,context.userId,{
-    actionType:'agent_packet',entityType:'workspace_record',entityId:record.id,title:`Authorize ${record.name}`.slice(0,200),
-    description:commands.map(command=>`${command.type}: ${command.summary}`).join('\n').slice(0,2000),
-    payload:{digest,recordId:record.id,runId:context.runId,stepId:context.stepId,commands},
-    expiresAt:new Date(Date.now()+86_400_000).toISOString(),
-  }):null;
+  if(policies.some(policy=>policy.decision==='require_budget')) return deny(context,'customer_budget_must_be_funded');
   await withTransaction(async client=>{
     await query(`INSERT INTO agent_action_packets(record_id,workspace_id,run_id,step_id,user_id,commands_digest,approval_id) VALUES($1,$2,$3,$4,$5,$6,$7)`,
-      [record.id,context.workspaceId,context.runId,context.stepId,context.userId,digest,approval?.id??null],client);
-    const patch={executionReady:!requiresApproval,executionStatus:requiresApproval?'waiting_approval':'queued',approvalId:approval?.id??null,approvalStatus:requiresApproval?'pending':'not_required'};
-    await query(`UPDATE workspace_records SET stage=$3,data=data||$4::jsonb,version=version+1 WHERE workspace_id=$1 AND id=$2`,[context.workspaceId,record.id,requiresApproval?'waiting_approval':'queued_for_execution',JSON.stringify(patch)],client);
-    Object.assign(record,{stage:requiresApproval?'waiting_approval':'queued_for_execution',version:record.version+1,data:{...record.data,...patch}});
+      [record.id,context.workspaceId,context.runId,context.stepId,context.userId,digest,null],client);
+    const patch={executionReady:true,executionStatus:'queued',approvalId:null,approvalStatus:'not_required'};
+    await query(`UPDATE workspace_records SET stage='queued_for_execution',data=data||$3::jsonb,version=version+1 WHERE workspace_id=$1 AND id=$2`,[context.workspaceId,record.id,JSON.stringify(patch)],client);
+    Object.assign(record,{stage:'queued_for_execution',version:record.version+1,data:{...record.data,...patch}});
   });
-  return {executionReady:!requiresApproval,approvalId:approval?.id??null};
+  return {executionReady:true,approvalId:null};
 }
 
 /** The only entry into the existing command dispatcher, for manual AND event work. */
@@ -122,9 +97,8 @@ export async function executeAuthorizedAgentPacket<T>(record:WorkspaceRecord,com
   if(record.createdBy!==packet.user_id || packet.commands_digest!==packetDigest(record) || agentActionDigest(commands)!==agentActionDigest(record.data?.commands)) return deny(context,'action_packet_tampered');
   const policies=commands.map(command=>packetPolicy(command,state,record));
   if(!commands.length || policies.some(policy=>policy.decision==='forbidden')) return deny(context,'prohibited_command');
-  if(policies.some(policy=>policy.decision==='require_approval')) {
-    if(!packet.approval_id) return deny(context,'approval_required');
-    await consumeApproval(context,packet.approval_id,'agent_packet',record.id,packet.commands_digest);
+  if(policies.some(policy=>policy.decision==='require_budget')) {
+    return deny(context,'customer_budget_must_be_funded');
   }
   const results:T[]=[];
   for(const command of commands) {
@@ -132,13 +106,4 @@ export async function executeAuthorizedAgentPacket<T>(record:WorkspaceRecord,com
     results.push(await dispatch(command));
   }
   return results;
-}
-
-export async function releaseApprovedAgentPackets(workspaceId?:string,approvalId?:string) {
-  // Read approval state, not event payload assertions. Also recovers missed wakeups.
-  await query(`UPDATE workspace_records r SET stage='queued_for_execution',data=r.data||'{"executionReady":true,"executionStatus":"queued"}'::jsonb,version=r.version+1
-    FROM agent_action_packets p JOIN approval_requests a ON a.id=p.approval_id AND a.workspace_id=p.workspace_id
-    WHERE r.id=p.record_id AND r.workspace_id=p.workspace_id AND r.stage='waiting_approval' AND r.deleted_at IS NULL
-      AND a.status='approved' AND a.authorization_consumed_at IS NULL AND a.expires_at>NOW()
-      AND ($1::uuid IS NULL OR p.workspace_id=$1) AND ($2::uuid IS NULL OR a.id=$2)`,[workspaceId??null,approvalId??null]);
 }

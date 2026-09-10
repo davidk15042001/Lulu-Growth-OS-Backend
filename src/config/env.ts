@@ -57,6 +57,8 @@ const EnvSchema = z
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
     AI_PROVIDER: z.enum(['openai', 'alibaba', 'deepseek', 'groq']).default('deepseek'),
+    AI_PROVIDER_FALLBACK_ORDER: z.string().default('openai,alibaba,deepseek,groq'),
+    AI_CIRCUIT_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
     DASHSCOPE_API_KEY: z.string().min(1).optional(),
@@ -126,6 +128,7 @@ const EnvSchema = z
     GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     GOOGLE_ADS_DEVELOPER_TOKEN: z.string().min(1).optional(),
+    GOOGLE_ADS_PREPAID_BILLING_ENABLED: z.enum(['true','false']).default('false').transform(value=>value==='true'),
     META_CLIENT_ID: z.string().min(1).optional(),
     META_CLIENT_SECRET: z.string().min(1).optional(),
     META_GRAPH_VERSION: z.string().regex(/^v[0-9.]+$/).default('v23.0'),
@@ -233,8 +236,10 @@ export const env: Env = parsedEnv;
 
 export const isProd = env.NODE_ENV === 'production';
 export const hasDb = !!env.DATABASE_URL;
-export const hasOpenAI = env.AI_PROVIDER === 'openai' && !!env.OPENAI_API_KEY;
-export const hasAlibaba = env.AI_PROVIDER === 'alibaba' && !!env.DASHSCOPE_API_KEY;
-export const hasDeepSeek = env.AI_PROVIDER === 'deepseek' && !!env.DEEPSEEK_API_KEY;
-export const hasGroq = env.AI_PROVIDER === 'groq' && !!env.GROQ_API_KEY;
+// Availability is intentionally independent from the preferred provider so a
+// configured secondary provider can take over when the primary is unavailable.
+export const hasOpenAI = !!env.OPENAI_API_KEY;
+export const hasAlibaba = !!env.DASHSCOPE_API_KEY;
+export const hasDeepSeek = !!env.DEEPSEEK_API_KEY;
+export const hasGroq = !!env.GROQ_API_KEY;
 export const hasAiProvider = hasOpenAI || hasAlibaba || hasDeepSeek || hasGroq;

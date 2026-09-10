@@ -1,7 +1,6 @@
 import { query } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
-import { env } from '../../config/env.js';
-import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
+import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { listCompetitors, listCustomerSegments, listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import * as agentRepo from './agent.repo.js';
@@ -177,7 +176,7 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
   void (async () => {
     try {
       const response = await getOpenAIResponsesClient().create({
-        model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.OPENAI_MODEL,
+        model: configuredModel(),
         instructions: buildInstructions(),
         input: [{ role: 'user', content: [
           `Workspace analysis target: ${workspaceId}`,

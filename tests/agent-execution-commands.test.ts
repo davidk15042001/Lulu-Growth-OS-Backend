@@ -35,7 +35,7 @@ describe('agent execution commands', () => {
       pageLabel: 'Google Reviews',
       goal: 'Answer priority negative review',
       jobs: ['Reply to priority review'],
-      policyDecision: 'require_approval',
+      policyDecision: 'require_budget',
       executionMode: 'autonomous',
       accountId: 'account-1',
       locationId: 'location-1',

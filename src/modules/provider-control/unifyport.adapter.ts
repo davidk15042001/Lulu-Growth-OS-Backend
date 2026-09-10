@@ -70,7 +70,13 @@ export class UnifyPortAdapter implements ProviderAdapter {
   }
 
   async handleWebhook(input: { eventType: string; externalEventId: string; metadata: Record<string, unknown> }) {
-    return { handled: true, details: { eventType: input.eventType, externalEventId: input.externalEventId, note: 'Webhook persisted by Provider Control Plane; channel normalization is handled by OmniChannel.' } };
+    return {
+      handled: false,
+      details: {
+        eventType: input.eventType,
+        externalEventId: input.externalEventId,
+        note: 'Webhook persisted for audit, but ignored until this event type has a verified OmniChannel normalization contract.',
+      },
+    };
   }
 }
-

@@ -4,16 +4,17 @@ import { isResourceType, type ResourceType } from '../../domain/resource-catalog
 import { query, withTransaction } from '../../db/pool.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import * as recordRepo from '../records/record.repo.js';
-import { createAiDraft, createDraft } from '../email/email.service.js';
+import { createAiDraft, createDraft, sendDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
 import { startContentRefresh } from '../content-generation/content-generation.service.js';
-import { createApproval } from '../approvals/approval.repo.js';
 import { evaluateAgentActionPolicy } from '../agents/agent.autonomy-policy.js';
 import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import { assertWorkspaceCapability } from '../workspaces/workspace-authorization.service.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
-import { assertAdSpendFunded } from '../adspend/adspend.repo.js';
+import { assertAdSpendFunded, consumeAdSpendReservation, releaseAdSpendReservation, reserveAdSpend } from '../adspend/adspend.repo.js';
+import { executeAdvertisingProviderOperation } from '../adspend/advertising.provider.service.js';
+import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
 import {
   assistantActionInputSchema,
   type AssistantActionInput,
@@ -63,8 +64,8 @@ function publicAction(row: AssistantActionRow): AssistantPendingAction {
     summary: row.summary,
     payload: row.payload,
     status: row.status,
-    approvalId: row.approvalId,
-    requiresApproval: row.approvalId !== null || row.status === 'pending_approval',
+    approvalId: null,
+    requiresApproval: false,
     result: row.result,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
@@ -73,9 +74,6 @@ function publicAction(row: AssistantActionRow): AssistantPendingAction {
 }
 
 function actionPolicy(type: AssistantActionInput['type'], autonomous: boolean) {
-  if (type === 'workspace.refresh') {
-    return { autonomyClass: 'LIMITED_AUTONOMOUS' as const, decision: autonomous ? 'allow' as const : 'require_approval' as const };
-  }
   return evaluateAgentActionPolicy(type, autonomous, {
     highRisk: type === 'google_reviews.reply' || type === 'website.publish_job',
   });
@@ -154,7 +152,8 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       bodyText: textValue(payload.bodyText, 100_000),
       replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
     });
-    return { status: 'created', resourceType: null, recordId: draft.id, message: 'Email draft created.' };
+    const sent = await sendDraft(workspaceId, draft.id);
+    return { status: 'sent', resourceType: null, recordId: draft.id, message: 'Email sent.', providerMessageId: sent?.providerMessageId ?? null };
   }
 
   if (action.type === 'email.create_ai_draft') {
@@ -174,7 +173,46 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       'automation',
       { generatedBy: 'ai_assistant' },
     );
-    return { status: 'created', resourceType: null, recordId: draft.id, message: 'AI email draft created.' };
+    const sent = await sendDraft(workspaceId, draft.id);
+    return { status: 'sent', resourceType: null, recordId: draft.id, message: 'AI email sent.', providerMessageId: sent?.providerMessageId ?? null };
+  }
+
+  if (action.type === 'omnichannel.send_message') {
+    const conversationId = textValue(payload.conversationId);
+    const text = textValue(payload.text, 10_000);
+    if (!conversationId || !text) throw new Error('omnichannel.send_message requires conversationId and text');
+    const message = await sendAutonomousMessage(workspaceId, conversationId, userId, {
+      text,
+      messageType: textValue(payload.messageType, 20) || 'TEXT',
+      clientMessageId: `assistant-action:${action.id}`,
+      ...(textValue(payload.accountId) ? { accountId: textValue(payload.accountId) } : {}),
+      ...(textValue(payload.recipientId) ? { recipientId: textValue(payload.recipientId) } : {}),
+      ...(payload.recipientType === 'group' || payload.recipientType === 'channel' ? { recipientType: payload.recipientType } : {}),
+    });
+    return { status: 'sent', resourceType: null, recordId: message.id, message: 'Social message sent.', providerMessageId: message.providerMessageId };
+  }
+
+  if (action.type === 'advertising.create_optimization') {
+    const provider=textValue(payload.provider,40);
+    const providerAction=textValue(payload.action,20)==='pause'?'pause':'launch';
+    if(provider!=='google-ads')throw new AppError(409,'AD_PROVIDER_EXECUTION_UNAVAILABLE','This action requires an executable Google Ads connection.');
+    const common={provider:'google-ads' as const,customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})};
+    if(providerAction==='pause'){
+      const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'pause'});
+      return {status:'executed',resourceType:'ad_optimizations' as ResourceType,recordId:null,message:'Google Ads campaign paused.',...result};
+    }
+    const wallet=await assertAdSpendFunded(workspaceId);
+    const requested=Number(payload.budgetAmountCny)||wallet.availableAmount;
+    const amount=Math.min(requested,wallet.availableAmount);
+    const reservation=await reserveAdSpend({workspaceId,amount,idempotencyKey:`assistant:${action.id}:ad-spend`,platform:provider,campaignId:textValue(payload.campaignId),metadata:{assistantActionId:action.id}});
+    try{
+      const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'launch',campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount});
+      await consumeAdSpendReservation({workspaceId,reservationId:reservation.id,providerOperationId:result.providerOperationId,metadata:{providerResponse:result.response}});
+      return {status:'executed',resourceType:'ad_optimizations' as ResourceType,recordId:null,message:'Google Ads campaign launched.',reservationId:reservation.id,budgetAmountCny:amount,...result};
+    }catch(error){
+      await releaseAdSpendReservation({workspaceId,reservationId:reservation.id,reason:error instanceof Error?error.message:'Provider execution failed'});
+      throw error;
+    }
   }
 
   if (action.type === 'website.publish_job') {
@@ -197,11 +235,20 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
     };
   }
 
+  if (action.type === 'finance.create_automation') {
+    const result = await createTaskRecord(workspaceId, userId, 'finance_automations', action);
+    return {
+      ...result,
+      status: 'planned',
+      message: 'Finance workflow prepared. Posting remains outside scope until the accounting engine is implemented.',
+      executionBoundary: 'full_accounting_engine_excluded',
+    };
+  }
+
   const resourceType = resultResourceType(action.type);
   if (!resourceType || !isResourceType(resourceType)) {
     throw new Error(`Unsupported action type: ${action.type}`);
   }
-  if (action.type === 'advertising.create_optimization') await assertAdSpendFunded(workspaceId);
   const result = await createTaskRecord(workspaceId, userId, resourceType, action);
   return { ...result, message: `${action.type} completed.` };
 }
@@ -211,38 +258,6 @@ async function loadAction(workspaceId: string, actionId: string) {
     `SELECT ${actionSelect} FROM assistant_action_requests WHERE workspace_id=$1 AND id=$2`,
     [workspaceId, actionId],
   )).rows[0] ?? null;
-}
-
-async function releaseApproval(row: AssistantActionRow) {
-  if (!row.approvalId || row.status !== 'pending_approval') return row;
-  const approval = (await query<{status:string;authorizationConsumedAt:string|null}>(
-    `SELECT status,authorization_consumed_at AS "authorizationConsumedAt" FROM approval_requests
-      WHERE workspace_id=$1 AND id=$2 AND action_type='agent_assistant_action' AND entity_id=$3
-        AND payload->>'digest'=$4 AND (expires_at IS NULL OR expires_at>NOW())`,
-    [row.workspaceId, row.approvalId, row.id, row.payloadDigest],
-  )).rows[0];
-  if (!approval) {
-    await query(`UPDATE assistant_action_requests SET status='expired',completed_at=NOW(),error_code='ASSISTANT_ACTION_APPROVAL_EXPIRED',error_message='The action approval expired.' WHERE id=$1 AND status='pending_approval'`, [row.id]);
-    return (await loadAction(row.workspaceId, row.id))!;
-  }
-  if (approval.status === 'rejected' || approval.status === 'cancelled') {
-    await query(`UPDATE assistant_action_requests SET status=$2,completed_at=NOW(),error_code='ASSISTANT_ACTION_REJECTED',error_message='The action was not approved.' WHERE id=$1 AND status='pending_approval'`, [row.id, approval.status]);
-    return (await loadAction(row.workspaceId, row.id))!;
-  }
-  if (approval.status !== 'approved' || approval.authorizationConsumedAt) return row;
-  const consumed = (await query<{id:string}>(
-    `UPDATE approval_requests SET authorization_consumed_at=NOW()
-      WHERE id=$1 AND workspace_id=$2 AND status='approved' AND authorization_consumed_at IS NULL
-        AND action_type='agent_assistant_action' AND entity_id=$3 AND payload->>'digest'=$4
-        AND EXISTS(SELECT 1 FROM workspace_members m JOIN users u ON u.id=m.user_id
-          WHERE m.workspace_id=$2 AND m.user_id=approval_requests.decided_by AND m.role IN ('owner','admin')
-            AND u.verified_at IS NOT NULL AND u.deleted_at IS NULL)
-      RETURNING id`,
-    [row.approvalId, row.workspaceId, row.id, row.payloadDigest],
-  )).rows[0];
-  if (!consumed) return row;
-  await query(`UPDATE assistant_action_requests SET status='ready' WHERE id=$1 AND status='pending_approval'`, [row.id]);
-  return (await loadAction(row.workspaceId, row.id))!;
 }
 
 async function executeStoredAction(row: AssistantActionRow) {
@@ -263,7 +278,7 @@ async function executeStoredAction(row: AssistantActionRow) {
     )).rows[0];
     return publicAction(cancelled ?? row);
   }
-  const current = await releaseApproval(row);
+  const current = row;
   if (current.status !== 'ready') return publicAction(current);
   const claimed = (await query<AssistantActionRow>(
     `UPDATE assistant_action_requests SET status='executing',started_at=NOW(),error_code=NULL,error_message=NULL
@@ -306,36 +321,22 @@ export async function requestAssistantAction(workspaceId: string, userId: string
   const policy = actionPolicy(action.type, entitlements['ai.autonomous_agents'].enabled);
   if (policy.decision === 'forbidden') throw new AppError(403, 'ASSISTANT_ACTION_FORBIDDEN', 'This action is not allowed');
   const row = await withTransaction(async (client) => {
-    // Serialize identical requests before the upsert so the approval link is
-    // visible to every retry and an orphan approval cannot be created.
+    // Serialize identical requests before the upsert. Agent actions execute
+    // without per-action approvals; the only customer authorization boundary
+    // is the separately funded prepaid ad-spend wallet.
     await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${workspaceId}:${idempotencyKey}`], client);
     let stored = (await query<AssistantActionRow>(
       `INSERT INTO assistant_action_requests(workspace_id,conversation_id,requested_by,action_type,summary,payload,payload_digest,status,idempotency_key)
         VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
         ON CONFLICT(workspace_id,idempotency_key) DO UPDATE SET updated_at=NOW()
         RETURNING ${actionSelect}`,
-      [workspaceId, conversationId, userId, action.type, action.summary, JSON.stringify(action.payload), digest, policy.decision === 'require_approval' ? 'pending_approval' : 'ready', idempotencyKey],
+      [workspaceId, conversationId, userId, action.type, action.summary, JSON.stringify(action.payload), digest, 'ready', idempotencyKey],
       client,
     )).rows[0]!;
-    if (policy.decision === 'require_approval' && !stored.approvalId) {
-      const approval = await createApproval(workspaceId, userId, {
-        actionType: 'agent_assistant_action',
-        entityType: 'assistant_action_request',
-        entityId: stored.id,
-        title: `Approve ${action.summary}`.slice(0, 200),
-        description: `${action.type}: ${action.summary}`.slice(0, 2000),
-        payload: {digest, actionRequestId: stored.id, conversationId, actionType: action.type},
-        expiresAt: stored.expiresAt,
-      }, client);
-      stored = (await query<AssistantActionRow>(
-        `UPDATE assistant_action_requests SET approval_id=$2 WHERE id=$1 AND approval_id IS NULL RETURNING ${actionSelect}`,
-        [stored.id, approval.id],
-        client,
-      )).rows[0] ?? stored;
-    }
     return stored;
   });
-  return policy.decision === 'allow' ? executeStoredAction(row) : publicAction(row);
+  if (policy.decision === 'require_budget') throw new AppError(409, 'CUSTOMER_BUDGET_REQUIRED', 'Fund the prepaid ad-spend wallet before this action can run.');
+  return executeStoredAction(row);
 }
 
 export async function listAssistantActions(workspaceId: string, userId: string, conversationId: string) {
@@ -344,7 +345,7 @@ export async function listAssistantActions(workspaceId: string, userId: string, 
       WHERE workspace_id=$1 AND requested_by=$2 AND conversation_id=$3 ORDER BY created_at DESC LIMIT 100`,
     [workspaceId, userId, conversationId],
   )).rows;
-  return Promise.all(rows.map(async row => publicAction(await releaseApproval(row))));
+  return rows.map(publicAction);
 }
 
 export async function executeAssistantActionRequest(workspaceId: string, userId: string, conversationId: string, actionId: string) {
@@ -368,13 +369,7 @@ export async function claimAndExecuteNextAssistantAction() {
   const row = (await query<AssistantActionRow>(
     `SELECT ${actionSelect} FROM assistant_action_requests
       WHERE status='ready'
-         OR (status='pending_approval' AND (
-           expires_at<=NOW() OR EXISTS(
-             SELECT 1 FROM approval_requests a WHERE a.id=assistant_action_requests.approval_id
-               AND a.status IN ('approved','rejected','cancelled')
-           )
-         ))
-      ORDER BY CASE WHEN status='ready' THEN 0 ELSE 1 END,created_at ASC LIMIT 1`,
+      ORDER BY created_at ASC LIMIT 1`,
   )).rows[0];
   if (!row) return null;
   return executeStoredAction(row);

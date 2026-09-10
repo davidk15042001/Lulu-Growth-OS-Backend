@@ -19,10 +19,10 @@ async function enforceQuotePolicy(workspaceId: string, input: CreateQuoteInput) 
   if (!policy) throw new AppError(409, 'COMMERCIAL_POLICY_MISSING', 'A commercial policy must be configured before automatic quotes can be created');
   if (input.creationMode === 'AUTOMATIC' && !policy.automaticQuoteEnabled) throw new AppError(403, 'AUTOMATIC_QUOTE_DISABLED', 'Automatic quote creation is disabled for this workspace');
   const total = estimate(input.lines, input.shippingTotal ?? 0);
-  if (policy.maxAutomaticQuoteValue != null && total > Number(policy.maxAutomaticQuoteValue)) throw new AppError(409, 'QUOTE_APPROVAL_REQUIRED', 'This quote exceeds the automatic value limit', { total, maxAutomaticQuoteValue: policy.maxAutomaticQuoteValue });
+  if (policy.maxAutomaticQuoteValue != null && total > Number(policy.maxAutomaticQuoteValue)) throw new AppError(409, 'QUOTE_AUTOMATION_LIMIT_EXCEEDED', 'The autonomous quote must be replanned within the configured value limit', { total, maxAutomaticQuoteValue: policy.maxAutomaticQuoteValue });
   const discount = input.lines.reduce((sum, line) => sum + (line.discount ?? 0), 0);
   const subtotal = input.lines.reduce((sum, line) => sum + line.quantity * line.unitPrice, 0);
-  if (subtotal > 0 && policy.automaticDiscountLimit != null && (discount / subtotal) * 100 > Number(policy.automaticDiscountLimit)) throw new AppError(409, 'QUOTE_APPROVAL_REQUIRED', 'This quote exceeds the automatic discount limit');
+  if (subtotal > 0 && policy.automaticDiscountLimit != null && (discount / subtotal) * 100 > Number(policy.automaticDiscountLimit)) throw new AppError(409, 'QUOTE_AUTOMATION_LIMIT_EXCEEDED', 'The autonomous quote must be replanned within the configured discount limit');
 }
 
 export async function listQuotes(workspaceId: string, userId: string, filters: Parameters<typeof repo.listQuotes>[1]) { await authorize(workspaceId,userId,'quotes.read'); return repo.listQuotes(workspaceId,filters); }

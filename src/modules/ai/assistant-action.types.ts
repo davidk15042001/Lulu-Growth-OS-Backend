@@ -8,6 +8,7 @@ export const assistantActionTypeSchema = z.enum([
   'google_reviews.reply',
   'email.create_draft',
   'email.create_ai_draft',
+  'omnichannel.send_message',
   'website.publish_job',
   'workspace.refresh',
 ]);

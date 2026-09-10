@@ -23,7 +23,4 @@ router.route('/:runId')
 router.route('/:runId/cancel')
   .post(requireWorkspaceEditor, controller.cancel)
   .all(methodNotAllowed);
-router.route('/:runId/steps/:stepId/approve')
-  .post(requireWorkspaceEditor, controller.approve)
-  .all(methodNotAllowed);
 export default router;

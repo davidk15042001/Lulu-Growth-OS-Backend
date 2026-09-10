@@ -19,6 +19,7 @@ import { startDomainEventRuntime, stopDomainEventRuntime } from './events/domain
 import { startAdminUserDeletionWorker, stopAdminUserDeletionWorker } from './modules/admin/admin-user-deletion.worker.js';
 import { startProviderControlWorkers, stopProviderControlWorkers } from './modules/provider-control/provider.worker.js';
 import { startAssistantActionWorker, stopAssistantActionWorker } from './modules/ai/assistant-action.worker.js';
+import { startCommercialDocumentDeliveryWorker, stopCommercialDocumentDeliveryWorker } from './modules/commercial-documents/commercial-document.delivery.service.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -46,6 +47,7 @@ async function bootstrap() {
       startPaygBillingWorker();
       startAdminUserDeletionWorker();
       startProviderControlWorkers();
+      startCommercialDocumentDeliveryWorker();
     }
   }
 
@@ -79,6 +81,7 @@ async function bootstrap() {
       stopPaygBillingWorker();
       stopAdminUserDeletionWorker();
       await stopProviderControlWorkers();
+      stopCommercialDocumentDeliveryWorker();
     }
     server.close(async () => {
       if (hasDb) {

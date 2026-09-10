@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { env } from '../../config/env.js';
 import { deleteObject, getObject, onboardingDocumentKey, putObject } from '../../storage/s3.service.js';
 import { AppError, badRequest, notFoundError } from '../../utils/app-error.js';
-import { getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
+import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
@@ -276,11 +275,7 @@ export async function discoverCompetitors(workspaceId: string, userId: string) {
   }
 
   const response = await getOpenAIResponsesClient().create({
-    model: env.AI_PROVIDER === 'alibaba'
-      ? env.DASHSCOPE_MODEL
-      : env.AI_PROVIDER === 'deepseek'
-        ? env.DEEPSEEK_MODEL
-        : env.OPENAI_MODEL,
+    model: configuredModel(),
     instructions: buildCompetitorDiscoveryInstructions(),
     input: [{
       role: 'user',

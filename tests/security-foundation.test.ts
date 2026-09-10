@@ -22,9 +22,9 @@ const bcrypt=await import('bcryptjs');
 const agentAuth=await import('../src/modules/agents/agent.authorization.js');
 const { evaluateAgentActionPolicy, decideAgentToolPolicy }=await import('../src/modules/agents/agent.autonomy-policy.js');
 const records=await import('../src/modules/records/record.repo.js');
-const approvals=await import('../src/modules/approvals/approval.repo.js');
 const assistantActions=await import('../src/modules/ai/assistant-actions.service.js');
 const adSpend=await import('../src/modules/adspend/adspend.repo.js');
+const commercialDelivery=await import('../src/modules/commercial-documents/commercial-document.delivery.service.js');
 const { registerAgentExecutionHandlers }=await import('../src/modules/agents/agent-execution.worker.js');
 const { registeredDomainEventHandlers }=await import('../src/events/domain-event.registry.js');
 const { DOMAIN_EVENT_TYPES }=await import('../src/events/domain-event.types.js');
@@ -250,7 +250,7 @@ async function agentFixture(type:AgentExecutionCommand['type']='crm.create_follo
 describe('deterministic agent execution authorization',()=>{
   it('allows registered autonomous actions while preserving budget and prohibited boundaries',()=>{
     for(const action of ['finance.create_automation','website.publish_job','google_reviews.reply','advertising.create_optimization']) assert.equal(evaluateAgentActionPolicy(action,true).decision,'allow');
-    assert.equal(evaluateAgentActionPolicy('crm.create_followup_task',true,{budgetProtected:true}).decision,'require_approval');
+    assert.equal(evaluateAgentActionPolicy('crm.create_followup_task',true,{budgetProtected:true}).decision,'require_budget');
     assert.equal(evaluateAgentActionPolicy('payments.transfer',true).autonomyClass,'PROHIBITED');
     assert.equal(evaluateAgentActionPolicy('payments.transfer',true).decision,'forbidden');
     assert.equal(decideAgentToolPolicy({name:'payments.transfer',version:'1',risk:'financial',autonomy:'always_safe',description:'fake',execute:async()=>({})},true,'approved'),'forbidden');
@@ -269,24 +269,12 @@ describe('deterministic agent execution authorization',()=>{
     await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
     assert.equal(executed,1);
   });
-  it('requires a human backend approval bound to the exact packet and consumes it once',async()=>{
+  it('rejects unfunded budget authority without creating a human approval queue',async()=>{
     const f=await agentFixture('google_reviews.reply');
     f.command.budgetAuthority='customer_authorization_required';
     f.record.data={...f.record.data,commands:[f.command],budgetProtected:true};
-    const packet=await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
-    assert.ok(packet.approvalId);
-    let executed=0;
-    f.record.data={...f.record.data,approvalDecision:'approved',approvedBy:f.user.id};
-    await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
-    assert.equal(executed,0);
-    const member=await newUser(true);
-    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'member')`,[f.context.workspaceId,member.id]);
-    assert.equal(await approvals.decideApproval(f.context.workspaceId,packet.approvalId,member.id,true,{decision:'approved'}),undefined);
-    assert.ok(await approvals.decideApproval(f.context.workspaceId,packet.approvalId,f.user.id,true,{decision:'approved'}));
-    await agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;});
-    assert.equal(executed,1);
-    await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
-    assert.equal(executed,1);
+    await assert.rejects(agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]),{code:'AGENT_EXECUTION_FORBIDDEN'});
+    assert.equal((await db.query(`SELECT id FROM approval_requests WHERE workspace_id=$1 AND action_type IN ('agent_tool','agent_packet','agent_assistant_action')`,[f.context.workspaceId])).rows.length,0);
   });
   it('executes external packets without approval when the stored run mode is autonomous',async()=>{
     const f=await agentFixture('google_reviews.reply');
@@ -344,6 +332,33 @@ describe('ad spend authorization boundary',()=>{
     assert.equal((await db.query(`SELECT id FROM workspace_ad_spend_ledger WHERE topup_id=$1`,[topup.id])).rows.length,1);
     assert.equal((await db.query(`SELECT id FROM domain_events WHERE idempotency_key=$1`,[`adspend-topup:${topup.id}:funded`])).rows.length,1);
     await assert.rejects(adSpend.reserveAdSpend({workspaceId:ws.id,amount:101,idempotencyKey:'reserve-over-wallet'}),{code:'AD_SPEND_FUNDS_REQUIRED'});
+    const consumedReservation=await adSpend.reserveAdSpend({workspaceId:ws.id,amount:25,idempotencyKey:'reserve-consume'});
+    const consumed=await adSpend.consumeAdSpendReservation({workspaceId:ws.id,reservationId:consumedReservation.id,providerOperationId:'google-op-1'});
+    assert.equal(consumed.status,'CONSUMED');
+    assert.equal((await adSpend.consumeAdSpendReservation({workspaceId:ws.id,reservationId:consumedReservation.id})).idempotent,true);
+    const releasedReservation=await adSpend.reserveAdSpend({workspaceId:ws.id,amount:30,idempotencyKey:'reserve-release'});
+    const released=await adSpend.releaseAdSpendReservation({workspaceId:ws.id,reservationId:releasedReservation.id,reason:'provider rejected operation'});
+    assert.equal(released.status,'RELEASED');
+    assert.equal((await adSpend.releaseAdSpendReservation({workspaceId:ws.id,reservationId:releasedReservation.id,reason:'retry'})).idempotent,true);
+    const finalOverview=await adSpend.getAdSpendOverview(ws.id);
+    assert.equal(finalOverview.wallet.availableAmount,75);
+    assert.equal(finalOverview.wallet.reservedAmount,0);
+    assert.equal(finalOverview.wallet.spentAmount,25);
+  });
+});
+
+describe('commercial document delivery worker',()=>{
+  it('claims and completes secure-link deliveries exactly once',async()=>{
+    const user=await newUser(true);
+    const ws=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Delivery test',$1) RETURNING id`,[user.id])).rows[0]!;
+    const invoice=(await db.query<{id:string}>(`INSERT INTO invoices(workspace_id,invoice_number,status,currency,document_status,document_storage_reference,created_by) VALUES($1,'INV-DELIVERY-1','SENT','CNY','READY','/documents/commercial/test-token',$2) RETURNING id`,[ws.id,user.id])).rows[0]!;
+    const delivery=(await db.query<{id:string}>(`INSERT INTO document_deliveries(workspace_id,document_type,document_id,channel,status,actor_id) VALUES($1,'INVOICE',$2,'secure_link','QUEUED',$3) RETURNING id`,[ws.id,invoice.id,user.id])).rows[0]!;
+    const first=await commercialDelivery.deliverCommercialDocument(delivery.id);
+    assert.equal(first.status,'DELIVERED');
+    assert.deepEqual(await commercialDelivery.deliverCommercialDocument(delivery.id),{deliveryId:delivery.id,reused:true});
+    const stored=(await db.query<{status:string;attemptCount:number}>(`SELECT status,attempt_count AS "attemptCount" FROM document_deliveries WHERE id=$1`,[delivery.id])).rows[0]!;
+    assert.equal(stored.status,'DELIVERED');
+    assert.equal(stored.attemptCount,1);
   });
 });
 

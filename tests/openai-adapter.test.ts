@@ -5,6 +5,7 @@ import {
   buildAssistantInstructions,
   buildSafetyIdentifier,
   generateAssistantResponse,
+  isAiProviderFailoverError,
   type ResponsesClient,
 } from '../src/modules/ai/openai.service.js';
 
@@ -26,10 +27,10 @@ const context = {
 };
 
 describe('OpenAI Responses adapter', () => {
-  it('builds bounded instructions with company and approval context', () => {
+  it('builds bounded instructions with company and prepaid-budget context', () => {
     const instructions = buildAssistantInstructions(context);
     assert.match(instructions, /Acme GmbH/);
-    assert.match(instructions, /approval boundaries/);
+    assert.match(instructions, /only customer authorization boundary is adding prepaid paid-media budget/);
     assert.match(instructions, /advisory/);
   });
 
@@ -39,6 +40,13 @@ describe('OpenAI Responses adapter', () => {
     assert.equal(first, second);
     assert.equal(first.length, 64);
     assert.notEqual(first, 'user-123');
+  });
+
+  it('fails over only for transient provider failures',()=>{
+    assert.equal(isAiProviderFailoverError({status:402}),true);
+    assert.equal(isAiProviderFailoverError({status:429}),true);
+    assert.equal(isAiProviderFailoverError({name:'APIConnectionError'}),true);
+    assert.equal(isAiProviderFailoverError({status:400}),false);
   });
 
   it('sends a non-persisted Responses API request and maps usage', async () => {

@@ -10,6 +10,7 @@ import * as websiteRepo from '../websites/website.repo.js';
 import * as searchRepo from '../search-intelligence/search-intelligence.repo.js';
 import type { AgentTool } from './agent.types.js';
 import type { ListRecordsQuery } from '../records/record.validator.js';
+import { AppError } from '../../utils/app-error.js';
 import {
   applyExecutionCommandPolicies,
   listAgentExecutionCommandTypes,
@@ -497,7 +498,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const module = compactText(input.module, 40) || 'general';
   const goal = compactText(input.goal, 400);
   const executionMode = compactText(input.executionMode, 40) || 'analysis_only';
-  const policyDecision = compactText((input as Record<string, unknown>).policyDecision, 40) || 'require_approval';
+  const policyDecision = compactText((input as Record<string, unknown>).policyDecision, 40) || 'allow';
   const approvedBy = null;
   const approvedAt = null;
   const targetSystem = resolveTargetSystem(module, resourceType);
@@ -509,7 +510,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     pageLabel,
     goal,
     jobs,
-    policyDecision: policyDecision === 'allow' ? 'allow' : 'require_approval',
+    policyDecision: policyDecision === 'allow' ? 'allow' : 'require_budget',
     executionMode: executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
     accountId: compactText(input.accountId, 120) || null,
     threadId: compactText(input.threadId, 120) || null,
@@ -537,23 +538,21 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   );
   const commands: AgentExecutionCommand[] = commandPolicy.commands.map(({ policyDecision: commandDecision, policyReason: _policyReason, ...command }) => ({
     ...command,
-    approvalPolicy: commandDecision === 'allow' ? 'allow' : 'require_approval',
+    approvalPolicy: commandDecision === 'allow' ? 'allow' : 'budget_required',
   }));
   const hasForbiddenCommand = commandPolicy.commands.some((command) => command.policyDecision === 'forbidden');
-  const effectivePolicyDecision = !hasForbiddenCommand && !budgetProtected && commandPolicy.overallDecision === 'allow'
-    ? 'allow'
-    : 'require_approval';
-  const executionReady = effectivePolicyDecision === 'allow';
-  const approvalStatus = executionReady ? 'approved' : 'pending';
+  if(hasForbiddenCommand)throw new AppError(403,'AGENT_COMMAND_FORBIDDEN',commandPolicy.reasons.join(' ')||'The command is not registered for autonomous execution.');
+  if(budgetProtected)throw new AppError(409,'CUSTOMER_BUDGET_REQUIRED','Fund the prepaid ad-spend wallet before this action can run.');
+  const effectivePolicyDecision = 'allow' as const;
+  const executionReady = true;
+  const approvalStatus = 'not_required';
   const commandTypes = listAgentExecutionCommandTypes(commands);
-  const requiresHumanReviewReason = budgetProtected
-    ? 'Budget changes are never executed automatically; this record is a suggestion only.'
-    : summarizeExecutionReviewReason(commands, effectivePolicyDecision, commandPolicy.reasons);
+  const requiresHumanReviewReason = summarizeExecutionReviewReason(commands, effectivePolicyDecision, commandPolicy.reasons);
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
-    name: executionReady ? `${pageLabel} execution-ready action packet` : `${pageLabel} action packet`,
+    name: `${pageLabel} autonomous action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
     status: 'approved',
-    stage: 'waiting_approval',
+    stage: 'queued_for_execution',
     source: 'page_agent',
     tags: [module, resourceType, ...(input.pageId ? [String(input.pageId)] : [])].slice(0, 12),
     data: {
@@ -567,8 +566,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       executionMode,
       policyDecision: effectivePolicyDecision,
       approvalStatus,
-      executionReady: false,
-      executionStatus: executionReady ? 'queued' : 'waiting_approval',
+      executionReady: true,
+      executionStatus: 'queued',
       targetSystem,
       targetModule: module,
       commands,
@@ -585,18 +584,19 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   });
   const authorization = await registerAgentActionPacket(identity,record,commands);
   const resolvedPolicyDecision = authorization.executionReady ? 'allow' : effectivePolicyDecision;
+  const authorizedRecord=await recordRepo.findRecord(workspaceId,resourceType,record.id);
   return {
     snapshotType: 'page_action_writeback',
     module,
     pageId: input.pageId ?? null,
     pageLabel: input.pageLabel ?? null,
     actionResourceType: resourceType,
-    actionRecord: compactRecord(record),
+    actionRecord: compactRecord(authorizedRecord??record),
     jobs,
     approvalGates,
     executionMode,
     policyDecision: resolvedPolicyDecision,
-    approvalStatus: authorization.executionReady ? 'not_required' : 'pending',
+    approvalStatus: 'not_required',
     executionReady: authorization.executionReady,
     approvalId: authorization.approvalId,
     targetSystem,
@@ -674,7 +674,7 @@ export function registerAgentTools(tools: Map<string, AgentTool>) {
     version: '1.0.0',
     risk: 'write',
     autonomy: 'autonomous_only',
-    description: 'Creates an approval-gated action packet record for the page-specific backend specialist.',
+    description: 'Creates an autonomous action packet for the page-specific backend specialist.',
     execute: async (input, context) => pageActionWriteback(input as AgentSnapshotInput, context.workspaceId, context.userId, context),
   });
 }

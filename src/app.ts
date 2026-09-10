@@ -8,6 +8,7 @@ import { checkDatabase } from './db/pool.js';
 import { notFound } from './middlewares/notFound.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import v1Routes from './modules/v1.routes.js';
+import { getAiProviderHealth } from './modules/ai/openai.service.js';
 
 export function createApp() {
   const app = express();
@@ -78,9 +79,10 @@ export function createApp() {
     try {
       const database = await checkDatabase();
       const ready = database.configured && database.connected;
+      const aiProviders = getAiProviderHealth().map(({ lastError: _lastError, ...provider }) => provider);
       res.status(ready ? 200 : 503).json({
         success: ready,
-        data: { status: ready ? 'ready' : 'not_ready', database },
+        data: { status: ready ? (aiProviders.some((provider) => provider.available) ? 'ready' : 'degraded') : 'not_ready', database, aiProviders },
       });
     } catch (error) {
       next(error);

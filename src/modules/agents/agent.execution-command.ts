@@ -12,6 +12,7 @@ export const agentExecutionCommandTypeSchema = z.enum([
   'google_reviews.reply',
   'email.create_draft',
   'email.create_ai_draft',
+  'omnichannel.send_message',
   'website.publish_job',
   'ecommerce.generate_product_images',
 ]);
@@ -24,7 +25,9 @@ export type AgentExecutionCommand = {
   targetSystem: string;
   provider: string | null;
   riskLevel: AgentExecutionRiskLevel;
-  approvalPolicy: 'allow' | 'require_approval';
+  /** Persisted field name retained for existing action-packet JSON. It now
+   * represents only the prepaid-budget boundary, never a human approval. */
+  approvalPolicy: 'allow' | 'budget_required';
   budgetAuthority?: 'none' | 'prepaid_ad_spend_wallet' | 'customer_authorization_required';
   targetEntityType: string | null;
   targetEntityId: string | null;
@@ -32,7 +35,7 @@ export type AgentExecutionCommand = {
   idempotencyKey: string;
 };
 
-export type AgentExecutionCommandPolicyDecision = 'allow' | 'require_approval' | 'forbidden';
+export type AgentExecutionCommandPolicyDecision = 'allow' | 'require_budget' | 'forbidden';
 export type AgentExecutionCommandPolicy = {
   decision: AgentExecutionCommandPolicyDecision;
   reason: string;
@@ -46,7 +49,7 @@ type InferCommandContext = {
   pageLabel: string;
   goal: string;
   jobs: string[];
-  policyDecision: 'allow' | 'require_approval';
+  policyDecision: 'allow' | 'require_budget';
   executionMode: 'analysis_only' | 'autonomous';
   accountId?: string | null;
   threadId?: string | null;
@@ -73,7 +76,9 @@ const agentExecutionCommandSchema = z.object({
   targetSystem: z.string().trim().min(1).max(80),
   provider: z.string().trim().min(1).max(80).nullable().optional(),
   riskLevel: z.enum(['low', 'medium', 'high']).default('medium'),
-  approvalPolicy: z.enum(['allow', 'require_approval']).default('require_approval'),
+  approvalPolicy: z.enum(['allow', 'budget_required', 'require_approval'])
+    .default('allow')
+    .transform((value) => value === 'require_approval' ? 'budget_required' as const : value),
   budgetAuthority: z.enum(['none', 'prepaid_ad_spend_wallet', 'customer_authorization_required']).default('none'),
   targetEntityType: z.string().trim().min(1).max(80).nullable().optional(),
   targetEntityId: z.string().trim().min(1).max(200).nullable().optional(),
@@ -114,6 +119,10 @@ function defaultSummary(context: InferCommandContext) {
     : `${context.pageLabel}: ${context.goal || 'Execute the next autonomous agent action.'}`;
 }
 
+function storedBudgetPolicy(decision: InferCommandContext['policyDecision']): AgentExecutionCommand['approvalPolicy'] {
+  return decision === 'allow' ? 'allow' : 'budget_required';
+}
+
 function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCommand {
   const summary = defaultSummary(context);
   const jobsSummary = context.jobs.slice(0, 4).join(', ');
@@ -123,7 +132,7 @@ function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCom
     targetSystem: context.targetSystem,
     provider: null,
     riskLevel: context.executionMode === 'autonomous' ? 'medium' : 'low',
-    approvalPolicy: context.policyDecision,
+    approvalPolicy: storedBudgetPolicy(context.policyDecision),
     targetEntityType: context.actionResourceType,
     targetEntityId: context.pageId,
     payload: {
@@ -153,7 +162,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'crm',
       provider: null,
       riskLevel: 'low',
-      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : context.policyDecision,
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
       targetEntityType: 'crm_task',
       targetEntityId: context.pageId,
       payload: {
@@ -173,7 +182,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'sales',
       provider: null,
       riskLevel: 'low',
-      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : context.policyDecision,
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
       targetEntityType: 'sales_task',
       targetEntityId: context.pageId,
       payload: {
@@ -193,7 +202,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'advertising',
       provider: null,
       riskLevel: 'medium',
-      approvalPolicy: context.policyDecision,
+      approvalPolicy: storedBudgetPolicy(context.policyDecision),
       budgetAuthority: 'prepaid_ad_spend_wallet',
       targetEntityType: 'ad_optimization',
       targetEntityId: context.pageId,
@@ -214,7 +223,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'finance',
       provider: null,
       riskLevel: 'medium',
-      approvalPolicy: context.policyDecision,
+      approvalPolicy: storedBudgetPolicy(context.policyDecision),
       targetEntityType: 'finance_automation',
       targetEntityId: context.pageId,
       payload: {
@@ -234,7 +243,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'reputation',
       provider: 'google_business',
       riskLevel: 'high',
-      approvalPolicy: 'require_approval',
+      approvalPolicy: 'allow',
       targetEntityType: 'google_review',
       targetEntityId: context.reviewId,
       payload: {
@@ -260,7 +269,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'communication',
       provider: 'email',
       riskLevel: 'medium',
-      approvalPolicy: context.policyDecision,
+      approvalPolicy: storedBudgetPolicy(context.policyDecision),
       targetEntityType: 'email_thread',
       targetEntityId: context.threadId,
       payload: {
@@ -289,7 +298,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'communication',
       provider: 'email',
       riskLevel: 'medium',
-      approvalPolicy: context.policyDecision,
+      approvalPolicy: storedBudgetPolicy(context.policyDecision),
       targetEntityType: 'email_thread',
       targetEntityId: context.threadId,
       payload: {
@@ -317,7 +326,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'website',
       provider: textValue(context.provider, 80) || 'website',
       riskLevel: 'high',
-      approvalPolicy: 'require_approval',
+      approvalPolicy: 'allow',
       targetEntityType: 'website_job',
       targetEntityId: context.jobId,
       payload: {
@@ -339,7 +348,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       targetSystem: 'ecommerce',
       provider: null,
       riskLevel: 'medium',
-      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : context.policyDecision,
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
       targetEntityType: 'ecommerce_products',
       targetEntityId: context.pageId,
       payload: {
@@ -398,13 +407,15 @@ export function applyExecutionCommandPolicies(
     const policy = decideExecutionCommandPolicy(command, executionMode);
     return {
       ...command,
-      approvalPolicy: policy.decision === 'allow' ? 'allow' : 'require_approval',
+      approvalPolicy: policy.decision === 'allow' ? 'allow' : 'budget_required',
       riskLevel: policy.decision === 'allow' ? command.riskLevel : (command.riskLevel === 'low' ? 'medium' : command.riskLevel),
       policyDecision: policy.decision,
       policyReason: policy.reason,
     };
   });
-  const overallDecision = decisions.some((entry) => entry.policyDecision !== 'allow') ? 'require_approval' : 'allow';
+  const overallDecision = decisions.some((entry) => entry.policyDecision === 'forbidden')
+    ? 'forbidden'
+    : decisions.some((entry) => entry.policyDecision === 'require_budget') ? 'require_budget' : 'allow';
   const reasons = decisions
     .filter((entry) => entry.policyDecision !== 'allow')
     .map((entry) => `${entry.type}: ${entry.policyReason}`);
@@ -417,11 +428,12 @@ export function applyExecutionCommandPolicies(
 
 export function summarizeExecutionReviewReason(
   commands: readonly AgentExecutionCommand[],
-  policyDecision: 'allow' | 'require_approval',
+  policyDecision: AgentExecutionCommandPolicyDecision,
   policyReasons: readonly string[] = [],
 ) {
   if (policyReasons.length > 0) return policyReasons.join(' ');
-  if (policyDecision === 'require_approval') return 'The execution includes approval-gated actions and must be reviewed before side effects are applied.';
+  if (policyDecision === 'require_budget') return 'The execution requires prepaid customer budget before side effects can be applied.';
+  if (policyDecision === 'forbidden') return 'The execution contains an action that is not registered for autonomous execution.';
   const highRisk = commands.find((command) => command.riskLevel === 'high');
   if (highRisk) return `High-risk command ${highRisk.type} was prepared and should be monitored closely even though it is currently allowed.`;
   return 'The execution command set is safe for autonomous processing.';

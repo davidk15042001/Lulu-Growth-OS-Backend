@@ -43,6 +43,25 @@ export async function getConversation(workspaceId:string,id:string) {
   return {conversation:mapConversation(row.rows[0]),messages:messages.rows.map(mapMessage),participants:participants.rows};
 }
 
+export async function getConversationTransport(workspaceId:string,id:string) {
+  const result=await query<{
+    conversationId:string;channelId:string;channelIdentityId:string;channelType:string;provider:string;
+    identityStatus:string;externalIdentityId:string;identityMetadata:Record<string,unknown>;conversationMetadata:Record<string,unknown>;
+  }>(`SELECT c.id AS "conversationId",c.channel_id AS "channelId",c.channel_identity_id AS "channelIdentityId",
+      ch.channel_type AS "channelType",ch.provider,ci.status AS "identityStatus",ci.external_identity_id AS "externalIdentityId",
+      ci.metadata AS "identityMetadata",c.metadata AS "conversationMetadata"
+    FROM omni_conversations c JOIN omni_channels ch ON ch.id=c.channel_id
+      JOIN omni_channel_identities ci ON ci.id=c.channel_identity_id
+    WHERE c.workspace_id=$1 AND c.id=$2`,[workspaceId,id]);
+  if(!result.rows[0]) return null;
+  const participant=await query<{participantKey:string;metadata:Record<string,unknown>}>(
+    `SELECT participant_key AS "participantKey",metadata FROM omni_conversation_participants
+      WHERE workspace_id=$1 AND conversation_id=$2 AND participant_type IN ('PARTY','CONTACT') ORDER BY created_at LIMIT 1`,
+    [workspaceId,id],
+  );
+  return {...result.rows[0],recipient:participant.rows[0]??null};
+}
+
 function mapPublicMessage(r:any) {
   return {
     id:r.id,

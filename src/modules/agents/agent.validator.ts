@@ -1,12 +1,10 @@
 import { z } from 'zod';
-import { decideApprovalSchema } from '../approvals/approval.validator.js';
 
 export const agentRunParamsSchema = z.object({
   workspaceId: z.string().uuid(),
   runId: z.string().uuid().optional(),
   stepId: z.string().uuid().optional(),
 });
-export const agentStepDecisionSchema = decideApprovalSchema;
 export const agentRunQuerySchema = z.object({
   pageId: z.string().trim().regex(/^[a-z0-9-]+$/).max(120).optional(),
 });
