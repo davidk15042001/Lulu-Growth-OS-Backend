@@ -92,7 +92,7 @@ export async function ensureInitialWorkspace(
     const workspaceName = `${personName || emailName} Workspace`.slice(0, 200);
     const workspace = await query<{ id: string }>(
       `INSERT INTO workspaces(name, created_by, onboarding_step)
-       VALUES($1, $2, 'billing')
+       VALUES($1, $2, 'company_information')
        RETURNING id`,
       [workspaceName, userId],
       client,

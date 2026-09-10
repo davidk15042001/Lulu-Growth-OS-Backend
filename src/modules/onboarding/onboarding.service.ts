@@ -377,6 +377,27 @@ export async function continueFromExistingPlatforms(workspaceId: string, userId:
   return workspaceService.getWorkspace(workspaceId, userId);
 }
 
+export async function continueFromProductsServices(workspaceId: string, userId: string) {
+  const workspace = await workspaceService.getWorkspace(workspaceId, userId);
+  if (workspace.onboardingCompletedAt || workspace.onboardingStep === 'billing') return workspace;
+  if (workspace.onboardingStep !== 'products_services') {
+    throw badRequest('Complete company information before products and services', { missing: ['companyInformation'] });
+  }
+
+  const state = await repo.getCompletionState(workspaceId);
+  if (!state) throw notFoundError('Workspace not found');
+
+  const missing: string[] = [];
+  if (!state.hasCompanyInformation) missing.push('companyInformation');
+  if (Number(state.offeringCount ?? 0) < 1) missing.push('productsServices');
+  if (missing.length > 0) {
+    throw badRequest('Complete company information and add at least one product or service before billing', { missing });
+  }
+
+  await repo.setOnboardingStep(workspaceId, 'billing');
+  return workspaceService.getWorkspace(workspaceId, userId);
+}
+
 export async function getAiPreferences(workspaceId: string) {
   return (await repo.getAiPreferences(workspaceId)) ?? null;
 }

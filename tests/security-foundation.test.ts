@@ -12,6 +12,7 @@ process.env.PROVIDER_CREDENTIAL_KEY='42'.repeat(32);
 const { pool }=await import('../src/db/pool.js');
 const auth=await import('../src/modules/auth/auth.repo.js');
 const service=await import('../src/modules/auth/auth.service.js');
+const onboarding=await import('../src/modules/onboarding/onboarding.service.js');
 const admin=await import('../src/modules/admin/admin.authorization.js');
 const { createSecretBox }=await import('../src/utils/secret-box.js');
 const { safeSecurityMetadata }=await import('../src/modules/security/security-event.service.js');
@@ -98,8 +99,8 @@ describe('email verification security',()=>{
   });
 });
 
-describe('billing-first account bootstrap',()=>{
-  it('creates exactly one billing-gated workspace for a newly registered user',async()=>{
+describe('company-first account bootstrap',()=>{
+  it('creates exactly one company-information workspace for a newly registered user',async()=>{
     const email=`${crypto.randomUUID()}@example.test`;
     const user=await auth.createVerifiedUser(email,passwordHash,'Billing','First');
     const initial=await db.query<{id:string;onboarding_step:string}>(
@@ -107,11 +108,37 @@ describe('billing-first account bootstrap',()=>{
       [user.id],
     );
     assert.equal(initial.rows.length,1);
-    assert.equal(initial.rows[0]?.onboarding_step,'billing');
+    assert.equal(initial.rows[0]?.onboarding_step,'company_information');
     const login=await service.loginUser(email,'Test-password-2026!');
     assert.ok('ok' in login);
     const afterLogin=await db.query(`SELECT w.id FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1`,[user.id]);
     assert.equal(afterLogin.rows.length,1);
+  });
+
+  it('moves from products and services to billing only after an offering exists',async()=>{
+    const email=`${crypto.randomUUID()}@example.test`;
+    const user=await auth.createVerifiedUser(email,passwordHash,'Onboarding','Order');
+    const workspace=(await db.query<{id:string;onboarding_step:string}>(
+      `SELECT w.id,w.onboarding_step FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id WHERE m.user_id=$1`,
+      [user.id],
+    )).rows[0]!;
+
+    await onboarding.saveCompanyInformation(workspace.id,user.id,{
+      companyName:'Onboarding Order',
+      industry:null,
+      countryRegion:null,
+      taxId:null,
+      address:null,
+    });
+    await assert.rejects(
+      onboarding.continueFromProductsServices(workspace.id,user.id),
+      {status:400},
+    );
+
+    await onboarding.createOffering(workspace.id,{name:'Lulu AI',offeringType:'service'});
+    const advanced=await onboarding.continueFromProductsServices(workspace.id,user.id);
+    assert.equal(advanced.onboardingStep,'billing');
+    assert.equal((await onboarding.continueFromProductsServices(workspace.id,user.id)).onboardingStep,'billing');
   });
 });
 

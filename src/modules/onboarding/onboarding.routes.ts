@@ -65,6 +65,10 @@ router.route('/offerings/:offeringId')
   .delete(requireWorkspaceEditor, controller.deleteOffering)
   .all(methodNotAllowed);
 
+router.route('/products-services/continue')
+  .post(requireWorkspaceEditor, controller.continueProductsServices)
+  .all(methodNotAllowed);
+
 router.route('/customer-segments')
   .get(requireWorkspaceMember, controller.listCustomerSegments)
   .post(requireWorkspaceEditor, controller.createCustomerSegment)

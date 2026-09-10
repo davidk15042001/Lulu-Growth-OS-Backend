@@ -396,6 +396,15 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
   }
 }
 
+export async function continueProductsServices(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const result = await service.continueFromProductsServices(workspaceId(req), req.user!.id);
+    return successResponse(res, 'Products and services completed', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function oauthSelfServicePermissions(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const providers = await adminOAuthRepo.listWorkspaceOAuthSelfServiceProviders(workspaceId(req));
