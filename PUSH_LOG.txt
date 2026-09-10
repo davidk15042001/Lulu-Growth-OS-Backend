@@ -128,3 +128,6 @@ Push-Zeitstempel: 2026-08-26 09:42:57 Europe/Berlin
 
 Push-Zeitstempel: 2026-08-26 15:54:15 Europe/Berlin
 Änderungen: Der Testplan bleibt ohne Zugangsgebühr, erfordert vor dem Dashboard aber das Testpasswort und eine über Airwallex gespeicherte Bankkarte. API-Verbrauch wird exakt mit 5 USD je Million Input- und 10 USD je Million Output-Tokens, AWS-Verbrauch mit dem Doppelten der Providerkosten berechnet und jeden Montag automatisch von der Karte eingezogen. Bei fehlender Karte oder fehlgeschlagener Abbuchung werden Zahlungslink und Rechnung gespeichert und sämtliche Workspace-KI-Funktionen bis zur erfolgreichen Zahlung zentral gesperrt; Migration, Altbestands-Provisionierung, Webhooks und Hintergrundprozess sind integriert.
+
+Push-Zeitstempel: 2026-09-10 11:38:09 Europe/Berlin
+Änderungen: Das produktive Agenten-Ökosystem umfasst jetzt 145 strukturierte Agenten, stellt pro Workspace dynamisch ein kleines spezialisiertes Team zusammen, lernt aus verifizierten Ergebnissen und führt Planungs-, Analyse-, Ausführungs- und unabhängige Prüfpfade ohne menschliche Routinefreigaben aus. Der unveränderliche globale Marken- und Vertrauensauftrag bleibt fest; nur neues Paid-Ads-Budget muss vorausbezahlt werden.

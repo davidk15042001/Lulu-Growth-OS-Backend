@@ -27,6 +27,12 @@ export async function health(req: WorkspaceRequest, res: Response, next: NextFun
     return successResponse(res, 'Agent health loaded', await service.getAgentHealth(params.workspaceId, query.pageId));
   } catch (error) { next(error); }
 }
+export async function ecosystem(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = agentRunParamsSchema.parse(req.params);
+    return successResponse(res, 'Agent ecosystem loaded', await service.getAgentEcosystem(params.workspaceId));
+  } catch (error) { next(error); }
+}
 export async function list(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = agentRunParamsSchema.parse(req.params);

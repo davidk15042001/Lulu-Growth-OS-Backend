@@ -5,11 +5,14 @@ import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type { AgentRun, AgentRunEvent, AgentStep } from './agent.types.js';
 
 const runSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", goal, status, plan,
+ team_cycle_id AS "teamCycleId",
  result, error_code AS "errorCode", error_message AS "errorMessage", started_at AS "startedAt",
  finished_at AS "finishedAt", worker_id AS "workerId", locked_at AS "lockedAt",
  heartbeat_at AS "heartbeatAt", attempt_count AS "attemptCount", created_at AS "createdAt", updated_at AS "updatedAt"`;
 const stepSelect = `id, run_id AS "runId", workspace_id AS "workspaceId", sequence_no AS "sequenceNo",
- agent_role AS "agentRole", title, instruction, status, depends_on AS "dependsOn", tool_name AS "toolName",
+ agent_role AS "agentRole", agent_id AS "agentId", task_type AS "taskType", success_criteria AS "successCriteria",
+ verification_status AS "verificationStatus", idempotency_key AS "idempotencyKey", title, instruction, status,
+ depends_on AS "dependsOn", tool_name AS "toolName",
  tool_input AS "toolInput", tool_output AS "toolOutput", approval_id AS "approvalId", result,
  error_code AS "errorCode", error_message AS "errorMessage", started_at AS "startedAt", finished_at AS "finishedAt",
  created_at AS "createdAt", updated_at AS "updatedAt"`;
@@ -57,6 +60,154 @@ export async function listAutomatedTargets() {
       JOIN workspaces w ON w.id = ws.workspace_id
       WHERE ws.status IN ('active', 'trialing') AND ws.plan_key IN ('starter', 'ai', 'test')`);
   return rows;
+}
+
+export async function listWorkspaceResourceTypes(workspaceId: string) {
+  const { rows } = await query<{ resourceType: string; recordCount: number }>(
+    `SELECT resource_type AS "resourceType", COUNT(*)::integer AS "recordCount"
+     FROM workspace_records
+     WHERE workspace_id=$1 AND deleted_at IS NULL
+     GROUP BY resource_type`,
+    [workspaceId],
+  );
+  return rows;
+}
+
+export async function listAgentPerformance(workspaceId: string) {
+  const { rows } = await query<{
+    agentId: string;
+    agentName: string;
+    module: string;
+    tier: string;
+    runCount: number;
+    successCount: number;
+    failureCount: number;
+    selectionCount: number;
+    performanceScore: string | number;
+    lastStatus: string | null;
+    lastRunId: string | null;
+    lastRunAt: string | null;
+  }>(`SELECT agent_id AS "agentId", agent_name AS "agentName", module, tier,
+      run_count AS "runCount", success_count AS "successCount", failure_count AS "failureCount",
+      selection_count AS "selectionCount", performance_score AS "performanceScore",
+      last_status AS "lastStatus", last_run_id AS "lastRunId", last_run_at AS "lastRunAt"
+    FROM workspace_agent_performance WHERE workspace_id=$1`, [workspaceId]);
+  return rows.map((row) => ({ ...row, performanceScore: Number(row.performanceScore) }));
+}
+
+export async function listAgentRoutingSignals(workspaceId: string) {
+  const [recentResult, performance] = await Promise.all([
+    query<{ pageId: string; lastStatus: string; lastRunAt: string }>(
+      `SELECT DISTINCT ON (plan -> 'page' ->> 'pageId')
+         plan -> 'page' ->> 'pageId' AS "pageId", status AS "lastStatus", updated_at AS "lastRunAt"
+       FROM agent_runs
+       WHERE workspace_id=$1 AND plan -> 'page' ->> 'pageId' IS NOT NULL
+       ORDER BY plan -> 'page' ->> 'pageId', updated_at DESC`,
+      [workspaceId],
+    ),
+    listAgentPerformance(workspaceId),
+  ]);
+  const performanceByPage = new Map(performance
+    .filter((row) => row.agentId.startsWith('page:'))
+    .map((row) => [row.agentId.slice('page:'.length), row]));
+  const recentByPage = new Map(recentResult.rows.map((row) => [row.pageId, row]));
+  const pageIds = new Set([...recentByPage.keys(), ...performanceByPage.keys()]);
+  return [...pageIds].map((pageId) => {
+    const recent = recentByPage.get(pageId);
+    const score = performanceByPage.get(pageId);
+    return {
+      pageId,
+      lastStatus: recent?.lastStatus ?? score?.lastStatus ?? null,
+      lastRunAt: recent?.lastRunAt ?? score?.lastRunAt ?? null,
+      performanceScore: score?.performanceScore ?? null,
+      selectionCount: score?.selectionCount ?? 0,
+    };
+  });
+}
+
+export async function createAgentTeamCycle(input: {
+  workspaceId: string;
+  triggerType: 'scheduled' | 'reactive' | 'manual' | 'recovery';
+  northStar: string;
+  candidateCount: number;
+  agents: Array<{ id: string; name: string; module: string; tier: string; score: number; reasons: string[] }>;
+  context?: Record<string, unknown>;
+}) {
+  return withTransaction(async (client) => {
+    const { rows } = await query<{
+      id: string;
+      workspaceId: string;
+      triggerType: string;
+      status: string;
+      candidateCount: number;
+      selectedAgentIds: string[];
+      selectionReasons: unknown[];
+      context: Record<string, unknown>;
+      createdAt: string;
+    }>(`INSERT INTO workspace_agent_team_cycles
+        (workspace_id, trigger_type, north_star, candidate_count, selected_agent_ids, selection_reasons, context)
+      VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb)
+      RETURNING id, workspace_id AS "workspaceId", trigger_type AS "triggerType", status,
+        candidate_count AS "candidateCount", selected_agent_ids AS "selectedAgentIds",
+        selection_reasons AS "selectionReasons", context, created_at AS "createdAt"`, [
+      input.workspaceId,
+      input.triggerType,
+      input.northStar,
+      input.candidateCount,
+      JSON.stringify(input.agents.map((agent) => agent.id)),
+      JSON.stringify(input.agents.map((agent) => ({ agentId: agent.id, score: agent.score, reasons: agent.reasons }))),
+      JSON.stringify(input.context ?? {}),
+    ], client);
+    for (const agent of input.agents) {
+      await query(`INSERT INTO workspace_agent_performance
+          (workspace_id, agent_id, agent_name, module, tier, selection_count, metadata)
+        VALUES ($1,$2,$3,$4,$5,1,$6::jsonb)
+        ON CONFLICT (workspace_id, agent_id)
+        DO UPDATE SET agent_name=EXCLUDED.agent_name, module=EXCLUDED.module, tier=EXCLUDED.tier,
+          selection_count=workspace_agent_performance.selection_count + 1,
+          metadata=workspace_agent_performance.metadata || EXCLUDED.metadata,
+          updated_at=NOW()`, [
+        input.workspaceId,
+        agent.id,
+        agent.name,
+        agent.module,
+        agent.tier,
+        JSON.stringify({ latestSelectionScore: agent.score, latestSelectionReasons: agent.reasons }),
+      ], client);
+    }
+    const cycle = rows[0];
+    if (!cycle) throw new Error('Agent team cycle insert did not return a row');
+    return cycle;
+  });
+}
+
+export async function getLatestAgentTeamCycle(workspaceId: string) {
+  const { rows } = await query<{
+    id: string;
+    triggerType: string;
+    northStar: string;
+    status: string;
+    candidateCount: number;
+    selectedAgentIds: string[];
+    selectionReasons: Array<{ agentId: string; score: number; reasons: string[] }>;
+    context: Record<string, unknown>;
+    createdAt: string;
+  }>(`SELECT id, trigger_type AS "triggerType", north_star AS "northStar", status,
+      candidate_count AS "candidateCount", selected_agent_ids AS "selectedAgentIds",
+      selection_reasons AS "selectionReasons", context, created_at AS "createdAt"
+    FROM workspace_agent_team_cycles WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 1`, [workspaceId]);
+  return rows[0] ?? null;
+}
+
+export async function markAgentTeamCycleRunning(workspaceId: string, cycleId: string) {
+  const { rows } = await query<{ id: string; status: string }>(
+    `UPDATE workspace_agent_team_cycles
+     SET status='running', updated_at=NOW()
+     WHERE id=$1 AND workspace_id=$2 AND status='scheduled'
+     RETURNING id, status`,
+    [cycleId, workspaceId],
+  );
+  return rows[0] ?? null;
 }
 export async function hasRecentAutomaticRun(workspaceId: string, goal: string, minutes = 30) {
   const { rows } = await query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM agent_runs WHERE workspace_id=$1 AND goal=$2 AND created_at > NOW() - ($3 * INTERVAL '1 minute') AND status IN ('queued','planning','running','waiting_approval','completed','failed')) AS exists`, [workspaceId, goal, minutes]);
@@ -204,6 +355,31 @@ export async function updateRun(runId: string, patch: Record<string, unknown>, c
   return rows[0];
 }
 
+export async function releaseLegacyApprovalWait(workspaceId: string, runId: string) {
+  return withTransaction(async (client) => {
+    await query(`UPDATE agent_run_steps
+      SET status='pending', approval_id=NULL, updated_at=NOW()
+      WHERE workspace_id=$1 AND run_id=$2 AND status='waiting_approval'`, [workspaceId, runId], client);
+    const { rows } = await query<AgentRun>(`UPDATE agent_runs
+      SET status='queued', updated_at=NOW()
+      WHERE workspace_id=$1 AND id=$2 AND status='waiting_approval'
+      RETURNING ${runSelect}`, [workspaceId, runId], client);
+    const run = rows[0] ?? null;
+    if (run) {
+      await appendDomainEvent({
+        workspaceId,
+        type: DOMAIN_EVENT_TYPES.AGENT_RUN_RESUME_REQUESTED,
+        aggregateType: 'agent_run',
+        aggregateId: runId,
+        payload: { runId, reason: 'legacy_approval_gate_removed' },
+        metadata: { source: 'agents.autonomy-recovery' },
+        idempotencyKey: `agent-run:${runId}:legacy-approval-release:v1`,
+      }, client);
+    }
+    return run;
+  });
+}
+
 export async function finalizeRun(input: {
   runId: string;
   workspaceId: string;
@@ -240,14 +416,98 @@ export async function finalizeRun(input: {
       metadata: { actorId: input.actorId ?? null, source: 'agents' },
       idempotencyKey: `agent-run:${input.runId}:${eventType}:v1`,
     }, client);
+    const rawDefinition = run.plan?.agentDefinition;
+    const definition = rawDefinition && typeof rawDefinition === 'object'
+      ? rawDefinition as Record<string, unknown>
+      : null;
+    const agentId = typeof definition?.id === 'string' ? definition.id : null;
+    const agentName = typeof definition?.name === 'string' ? definition.name : null;
+    const module = typeof definition?.module === 'string' ? definition.module : null;
+    const tier = typeof definition?.tier === 'string' ? definition.tier : null;
+    if (agentId && agentName && module && tier && ['executive','domain_lead','specialist','auditor'].includes(tier)) {
+      await query(`INSERT INTO workspace_agent_performance
+          (workspace_id, agent_id, agent_name, module, tier, run_count, success_count, failure_count,
+           performance_score, last_status, last_run_id, last_run_at)
+        VALUES ($1,$2,$3,$4,$5,1,$6,$7,$8,$9,$10,NOW())
+        ON CONFLICT (workspace_id, agent_id)
+        DO UPDATE SET agent_name=EXCLUDED.agent_name, module=EXCLUDED.module, tier=EXCLUDED.tier,
+          run_count=workspace_agent_performance.run_count + 1,
+          success_count=workspace_agent_performance.success_count + EXCLUDED.success_count,
+          failure_count=workspace_agent_performance.failure_count + EXCLUDED.failure_count,
+          performance_score=CASE
+            WHEN EXCLUDED.last_status='completed' THEN LEAST(100, workspace_agent_performance.performance_score + 2)
+            WHEN EXCLUDED.last_status='failed' THEN GREATEST(0, workspace_agent_performance.performance_score - 8)
+            ELSE workspace_agent_performance.performance_score
+          END,
+          last_status=EXCLUDED.last_status, last_run_id=EXCLUDED.last_run_id,
+          last_run_at=EXCLUDED.last_run_at, updated_at=NOW()`, [
+        input.workspaceId,
+        agentId,
+        agentName,
+        module,
+        tier,
+        input.status === 'completed' ? 1 : 0,
+        input.status === 'failed' ? 1 : 0,
+        input.status === 'completed' ? 52 : input.status === 'failed' ? 42 : 50,
+        input.status,
+        input.runId,
+      ], client);
+    }
+    if (run.teamCycleId) {
+      await query(`UPDATE workspace_agent_team_cycles AS cycle
+        SET status=CASE
+          WHEN EXISTS (
+            SELECT 1 FROM agent_runs
+            WHERE team_cycle_id=cycle.id AND status IN ('queued','planning','running','waiting_approval')
+          ) THEN 'running'
+          WHEN EXISTS (
+            SELECT 1 FROM agent_runs
+            WHERE team_cycle_id=cycle.id AND status IN ('failed','cancelled')
+          ) THEN 'failed'
+          WHEN EXISTS (SELECT 1 FROM agent_runs WHERE team_cycle_id=cycle.id) THEN 'completed'
+          ELSE cycle.status
+        END,
+        updated_at=NOW()
+        WHERE cycle.id=$1 AND cycle.workspace_id=$2`, [run.teamCycleId, input.workspaceId], client);
+    }
     return run;
   });
 }
-export async function createSteps(steps: Array<{ runId: string; workspaceId: string; sequenceNo: number; agentRole: string; title: string; instruction: string; toolName?: string | null; toolInput?: Record<string, unknown> | null }>) {
+export async function createSteps(steps: Array<{
+  runId: string;
+  workspaceId: string;
+  sequenceNo: number;
+  agentRole: string;
+  agentId: string;
+  taskType: string;
+  title: string;
+  instruction: string;
+  successCriteria: string[];
+  toolName?: string | null;
+  toolInput?: Record<string, unknown> | null;
+}>) {
   const created: AgentStep[] = [];
   for (const step of steps) {
-    const { rows } = await query<AgentStep>(`INSERT INTO agent_run_steps (run_id, workspace_id, sequence_no, agent_role, title, instruction, tool_name, tool_input)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING ${stepSelect}`, [step.runId, step.workspaceId, step.sequenceNo, step.agentRole, step.title, step.instruction, step.toolName ?? null, step.toolInput ?? null]);
+    const dependency = created.at(-1)?.id;
+    const { rows } = await query<AgentStep>(`INSERT INTO agent_run_steps
+        (run_id, workspace_id, sequence_no, agent_role, agent_id, task_type, title, instruction,
+         success_criteria, verification_status, idempotency_key, depends_on, tool_name, tool_input)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,'pending',$10,$11,$12,$13)
+      RETURNING ${stepSelect}`, [
+      step.runId,
+      step.workspaceId,
+      step.sequenceNo,
+      step.agentRole,
+      step.agentId,
+      step.taskType,
+      step.title,
+      step.instruction,
+      JSON.stringify(step.successCriteria),
+      `step:${step.runId}:${step.sequenceNo}`,
+      dependency ? [dependency] : [],
+      step.toolName ?? null,
+      step.toolInput ?? null,
+    ]);
     if (rows[0]) created.push(rows[0]);
   }
   return created;

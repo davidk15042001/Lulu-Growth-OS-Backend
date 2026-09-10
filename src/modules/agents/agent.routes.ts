@@ -10,6 +10,9 @@ router.route('/knowledge')
 router.route('/health')
   .get(requireWorkspaceMember, controller.health)
   .all(methodNotAllowed);
+router.route('/ecosystem')
+  .get(requireWorkspaceMember, controller.ecosystem)
+  .all(methodNotAllowed);
 router.route('/')
   .get(requireWorkspaceMember, controller.list)
   .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.create)

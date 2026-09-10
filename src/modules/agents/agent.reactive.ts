@@ -4,10 +4,9 @@ import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import {
   automaticPageProfiles,
   buildPageAgentGoal,
-  resolveAgentModule,
   type AgentPageContext,
 } from './agent.page-context.js';
-import { startAutomaticRun } from './agent.service.js';
+import { prepareAutomaticAgentTeam, startAutomaticRun } from './agent.service.js';
 import { modulesReactingToResourceType } from './agent.graph.js';
 
 const REACTIVE_DEDUPE_MINUTES = 30;
@@ -40,14 +39,20 @@ async function reactToRecordCreated(workspaceId: string, resourceType: string) {
   if (IGNORED_RESOURCE_TYPES.has(resourceType)) return;
   const modules = modulesReactingToResourceType(resourceType);
   if (modules.length === 0) return;
-  const pages = automaticPageProfiles.filter((page: AgentPageContext) =>
-    modules.includes(resolveAgentModule('general', page)),
-  );
-  for (const page of pages) {
-    const module = resolveAgentModule('general', page);
+  const prepared = await prepareAutomaticAgentTeam(workspaceId, 'reactive');
+  const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
+  const selected = prepared.selection.specialists.filter((entry) => modules.includes(entry.definition.module));
+  for (const entry of selected) {
+    const page = automaticPageProfiles.find((profile: AgentPageContext) => profile.pageId === entry.definition.pageId);
+    if (!page) continue;
+    const module = entry.definition.module;
     const goal = buildPageAgentGoal(page);
     try {
-      await startAutomaticRun(workspaceId, goal, module, page, REACTIVE_DEDUPE_MINUTES);
+      await startAutomaticRun(workspaceId, goal, module, page, REACTIVE_DEDUPE_MINUTES, undefined, {
+        cycleId: prepared.cycle!.id,
+        selectedAgentIds,
+        selectionReason: entry.reasons,
+      });
     } catch (error) {
       logger.warn({ error, workspaceId, pageId: page.pageId, resourceType }, 'Reactive agent trigger failed');
     }
@@ -56,14 +61,22 @@ async function reactToRecordCreated(workspaceId: string, resourceType: string) {
 
 async function reactToIntegrationConnected(workspaceId: string, category: string, provider: string) {
   const terms = [category, provider].map((value) => value.trim().toLowerCase()).filter(Boolean);
-  const pages = automaticPageProfiles.filter((page) => {
-    const haystack = `${page.sectionLabel} ${page.pageLabel} ${page.integrations.join(' ')}`.toLowerCase();
+  const prepared = await prepareAutomaticAgentTeam(workspaceId, 'reactive');
+  const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
+  const selected = prepared.selection.specialists.filter((entry) => {
+    const page = automaticPageProfiles.find((profile) => profile.pageId === entry.definition.pageId);
+    const haystack = page ? `${page.sectionLabel} ${page.pageLabel} ${page.integrations.join(' ')}`.toLowerCase() : '';
     return terms.some((term) => haystack.includes(term));
   });
-  for (const page of pages) {
-    const module = resolveAgentModule('general', page);
+  for (const entry of selected) {
+    const page = automaticPageProfiles.find((profile) => profile.pageId === entry.definition.pageId);
+    if (!page) continue;
     try {
-      await startAutomaticRun(workspaceId, buildPageAgentGoal(page), module, page, REACTIVE_DEDUPE_MINUTES);
+      await startAutomaticRun(workspaceId, buildPageAgentGoal(page), entry.definition.module, page, REACTIVE_DEDUPE_MINUTES, undefined, {
+        cycleId: prepared.cycle!.id,
+        selectedAgentIds,
+        selectionReason: entry.reasons,
+      });
     } catch (error) {
       logger.warn({ error, workspaceId, pageId: page.pageId, category, provider }, 'Integration-connected agent trigger failed');
     }
@@ -71,10 +84,18 @@ async function reactToIntegrationConnected(workspaceId: string, category: string
 }
 
 async function reactToAdSpendFunded(workspaceId: string) {
-  const pages = automaticPageProfiles.filter((page) => resolveAgentModule('general', page) === 'ads');
-  for (const page of pages) {
+  const prepared = await prepareAutomaticAgentTeam(workspaceId, 'reactive');
+  const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
+  const selected = prepared.selection.specialists.filter((entry) => entry.definition.module === 'ads').slice(0, 2);
+  for (const entry of selected) {
+    const page = automaticPageProfiles.find((profile) => profile.pageId === entry.definition.pageId);
+    if (!page) continue;
     try {
-      await startAutomaticRun(workspaceId, buildPageAgentGoal(page), 'ads', page, 1);
+      await startAutomaticRun(workspaceId, buildPageAgentGoal(page), 'ads', page, 1, undefined, {
+        cycleId: prepared.cycle!.id,
+        selectedAgentIds,
+        selectionReason: entry.reasons,
+      });
     } catch (error) {
       logger.warn({ error, workspaceId, pageId: page.pageId }, 'Funded ad spend agent trigger failed');
     }

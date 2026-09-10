@@ -49,6 +49,7 @@ type AgentSnapshotInput = {
   siteId?: unknown;
   jobId?: unknown;
   provider?: unknown;
+  delegatedContext?: unknown;
 };
 
 const DEFAULT_RECORD_QUERY = {
@@ -502,6 +503,9 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const approvedBy = null;
   const approvedAt = null;
   const targetSystem = resolveTargetSystem(module, resourceType);
+  const delegatedContext = Array.isArray(input.delegatedContext)
+    ? input.delegatedContext.slice(-4)
+    : [];
   const normalizedCommands = normalizeAgentExecutionCommands(input.commands, {
     module,
     targetSystem,
@@ -571,6 +575,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       targetSystem,
       targetModule: module,
       commands,
+      delegatedContext,
       commandTypes,
       primaryCommandType: commandTypes[0] ?? null,
       requiresHumanReviewReason,

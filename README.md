@@ -15,6 +15,7 @@ Multi-tenant TypeScript/Express API and PostgreSQL data layer for the Lulu Growt
 - Optional OpenAI Responses API adapter with non-persisted provider requests
 - PostgreSQL migrations with transaction and deployment locking
 - Automated HTTP, validation, catalog, OpenAI adapter and migration contract tests
+- A 145-agent capability registry with dynamic team selection, performance-based routing and independent automated outcome verification
 
 ## Requirements
 
@@ -67,6 +68,8 @@ This runs strict TypeScript validation, all SQL migrations in a PostgreSQL-compa
 Asynchronous business workflows use the durable PostgreSQL event runtime in `src/events`. A business change and its versioned domain event are written in the same database transaction, so a committed action cannot lose its follow-up work. PostgreSQL `LISTEN/NOTIFY` wakes consumers immediately; ordered database catch-up remains the recovery path after disconnects or restarts.
 
 Consumers use `FOR UPDATE SKIP LOCKED`, leases, heartbeats, bounded exponential retries, per-consumer receipts and a dead-letter state. Agent runs and long-running website/content work use separate leased job workers so slow AI or provider calls never block the event dispatcher. Records, metrics, approvals, integrations, email/calendar sync, website/content generation, automatic agents, billing, onboarding cleanup and notifications publish or consume domain events.
+
+The agent scheduler does not start every registered specialist. It selects a bounded cross-domain team using connected systems, live workspace data, freshness, failures, rotation pressure and verified performance. See [Agent ecosystem](docs/agent-ecosystem.md).
 
 Authenticated clients can subscribe to `GET /workspaces/:workspaceId/events/stream`. The SSE `id` is the durable global event sequence; reconnect with `Last-Event-ID` to replay missed workspace events in order. Authentication, validation, reads and transaction-local invariants intentionally remain synchronous. Timed work is represented by schedulers that publish durable events instead of performing the business operation in the timer callback.
 

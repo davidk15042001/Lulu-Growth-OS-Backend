@@ -1,6 +1,6 @@
 import { logger } from '../../config/logger.js';
 import * as repo from './agent.repo.js';
-import { automaticPageProfiles, buildPageAgentGoal, startAutomaticRun } from './agent.service.js';
+import { automaticPageProfiles, buildPageAgentGoal, prepareAutomaticAgentTeam, startAutomaticRun } from './agent.service.js';
 import { startReactiveDispatcher } from './agent.reactive.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
@@ -29,10 +29,27 @@ export async function runAutomaticAnalysisCycle() {
   try {
     const targets = await repo.listAutomatedTargets();
     for (const target of targets) {
-      for (const page of automaticPageProfiles) {
+      const prepared = await prepareAutomaticAgentTeam(target.workspace_id, 'scheduled');
+      const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
+      for (const selected of prepared.selection.specialists) {
+        const page = automaticPageProfiles.find((profile) => profile.pageId === selected.definition.pageId);
+        if (!page) continue;
         const goal = buildPageAgentGoal(page);
-        if (await repo.getRecentPageRun(target.workspace_id, page.pageId, dedupeMinutes)) continue;
-        await startAutomaticRun(target.workspace_id, goal, 'general', page, dedupeMinutes, target.actor_user_id ?? undefined);
+        const pageDedupeMinutes = selected.reasons.includes('recovery required') ? 15 : dedupeMinutes;
+        if (await repo.getRecentPageRun(target.workspace_id, page.pageId, pageDedupeMinutes)) continue;
+        await startAutomaticRun(
+          target.workspace_id,
+          goal,
+          selected.definition.module,
+          page,
+          pageDedupeMinutes,
+          target.actor_user_id ?? undefined,
+          {
+            cycleId: prepared.cycle!.id,
+            selectedAgentIds,
+            selectionReason: selected.reasons,
+          },
+        );
       }
     }
   } catch (error) {

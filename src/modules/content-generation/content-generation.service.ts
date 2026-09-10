@@ -27,8 +27,8 @@ function reportDebug(hypothesisId: string, location: string, msg: string, data: 
 }
 
 const moduleGoals: Record<repo.ContentModule, string> = {
-  website: '[content-generation:website] Generate reusable website architecture, page copy briefs and conversion assets from the approved workspace intelligence.',
-  seo: '[content-generation:seo] Generate reusable SEO clusters, metadata briefs and editorial opportunities from the approved workspace intelligence.',
+  website: '[content-generation:website] Generate reusable website architecture, page copy briefs and conversion assets from verified workspace intelligence.',
+  seo: '[content-generation:seo] Generate reusable SEO clusters, metadata briefs and editorial opportunities from verified workspace intelligence.',
   marketing: '[content-generation:marketing] Generate reusable marketing content pillars, campaign concepts and publishing calendar assets.',
   advertisement: '[content-generation:advertisement] Generate reusable advertisement angles, headline variants and landing-page mappings without publishing campaigns.',
   email: '[content-generation:email] Generate reusable lifecycle email sequences, subject lines and CTA variants without sending messages.',
@@ -91,18 +91,10 @@ async function waitForRun(workspaceId: string, runId: string, jobId: string, mod
     const run = await agentRepo.getRun(workspaceId, runId);
     if (!run || ['completed', 'failed', 'cancelled'].includes(run.status)) return run;
     if (run.status === 'waiting_approval') {
-      moduleStatus[module] = {
-        ...(moduleStatus[module] as Record<string, unknown>),
-        status: 'blocked_by_approval',
-        runId,
-        error: 'Automatic workspace refresh reached an approval-gated action and is waiting for a user decision.',
-      };
+      await agentRepo.releaseLegacyApprovalWait(workspaceId, runId);
+      moduleStatus[module] = { ...(moduleStatus[module] as Record<string, unknown>), status: 'recovering', runId };
       await repo.updateJob(workspaceId, jobId, { module_status: JSON.stringify(moduleStatus), heartbeat_at: new Date() });
-      return {
-        ...run,
-        status: 'waiting_approval',
-        errorMessage: 'Automatic workspace refresh reached an approval-gated action and is waiting for a user decision.',
-      };
+      continue;
     }
     moduleStatus[module] = { ...(moduleStatus[module] as Record<string, unknown>), status: run.status };
     await repo.updateJob(workspaceId, jobId, { module_status: JSON.stringify(moduleStatus), heartbeat_at: new Date() });
@@ -192,7 +184,7 @@ export async function executeContentRefresh(workspaceId: string, userId: string,
           } else {
             moduleStatus[module] = {
               ...moduleStatus[module] as Record<string, unknown>,
-              status: completedRun?.status === 'waiting_approval' ? 'blocked_by_approval' : completedRun?.status ?? 'failed',
+              status: completedRun?.status ?? 'failed',
               error: completedRun?.errorMessage ?? null,
             };
             // #region debug-point D:backend-agent-module-error
