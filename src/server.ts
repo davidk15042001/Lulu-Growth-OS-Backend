@@ -21,6 +21,7 @@ import { startProviderControlWorkers, stopProviderControlWorkers } from './modul
 import { startAssistantActionWorker, stopAssistantActionWorker } from './modules/ai/assistant-action.worker.js';
 import { startCommercialDocumentDeliveryWorker, stopCommercialDocumentDeliveryWorker } from './modules/commercial-documents/commercial-document.delivery.service.js';
 import { startPremiumMediaWorker, stopPremiumMediaWorker } from './modules/premium-media/premium-media.worker.js';
+import { startCompanyIntelligenceWorker } from './modules/crm-company/company-intelligence.worker.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -50,6 +51,7 @@ async function bootstrap() {
       startProviderControlWorkers();
       startCommercialDocumentDeliveryWorker();
       startPremiumMediaWorker();
+      startCompanyIntelligenceWorker();
     }
   }
 

@@ -1,6 +1,7 @@
 import type { NextFunction, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
+import { badRequest } from '../../utils/app-error.js';
 import * as service from './record.service.js';
 import {
   createRecordSchema,
@@ -91,6 +92,18 @@ export async function restore(req: WorkspaceRequest, res: Response, next: NextFu
     const params = recordParamsSchema.parse(req.params);
     const record = await service.restoreRecord(params.workspaceId, params.resourceType, params.recordId!, req.user!.id);
     return successResponse(res, 'Record restored', record);
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function enrichCompany(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = recordParamsSchema.parse(req.params);
+    if (params.resourceType !== 'crm_companies') throw badRequest('Company enrichment is available only for CRM companies');
+    const { requestCompanyIntelligence } = await import('../crm-company/company-intelligence.service.js');
+    const record = await requestCompanyIntelligence(params.workspaceId, params.recordId!, req.user!.id);
+    return successResponse(res, 'Company intelligence queued', record);
   } catch (error) {
     next(error);
   }

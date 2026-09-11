@@ -85,7 +85,8 @@ function listConditions(
 
   if (filters.search) {
     add(
-      (parameter) => `(name ILIKE '%' || ${parameter} || '%' OR description ILIKE '%' || ${parameter} || '%')`,
+      (parameter) =>
+        `(name ILIKE '%' || ${parameter} || '%' OR description ILIKE '%' || ${parameter} || '%' OR data::text ILIKE '%' || ${parameter} || '%')`,
       filters.search
     );
   }

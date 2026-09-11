@@ -6,6 +6,11 @@ import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describeImage } from '../ai/openai.service.js';
 import ExcelJS from 'exceljs';
 import * as productService from '../products/product.service.js';
+import {
+  companyResearchInputsChanged,
+  normalizeCompanyData,
+  queueCompanyResearch,
+} from '../crm-company/company-intelligence.model.js';
 import type {
   CreateRecordInput,
   ListRecordsQuery,
@@ -83,6 +88,12 @@ export function createRecord(
   userId: string,
   input: CreateRecordInput
 ) {
+  if (resourceType === 'crm_companies') {
+    return repo.createRecord(workspaceId, resourceType, userId, {
+      ...input,
+      data: queueCompanyResearch(input.name, input.data ?? {}, 'company_created'),
+    });
+  }
   if (resourceType.startsWith('ad_')) {
     const requestedProvider = typeof input.data?.provider === 'string' ? input.data.provider.trim() : '';
     if (!adminOAuthRepo.isLuluManagedProvider(requestedProvider)) {
@@ -290,6 +301,18 @@ export async function updateRecord(
   userId: string,
   input: UpdateRecordInput
 ) {
+  if (resourceType === 'crm_companies') {
+    const existing = await repo.findRecord(workspaceId, resourceType, recordId);
+    if (!existing) throw notFoundError('Record not found');
+    const mergedData = normalizeCompanyData({ ...(existing.data ?? {}), ...(input.data ?? {}) });
+    const nextName = input.name ?? existing.name;
+    input = {
+      ...input,
+      data: companyResearchInputsChanged(existing.name, existing.data ?? {}, nextName, mergedData)
+        ? queueCompanyResearch(nextName, mergedData, 'company_profile_changed')
+        : mergedData,
+    };
+  }
   if (resourceType.startsWith('ad_')) {
     const existing = await repo.findRecord(workspaceId, resourceType, recordId);
     if (!existing) throw notFoundError('Record not found');

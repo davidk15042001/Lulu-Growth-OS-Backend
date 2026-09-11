@@ -31,4 +31,8 @@ router.route('/:resourceType/:recordId/restore')
   .post(requireWorkspaceAdmin, controller.restore)
   .all(methodNotAllowed);
 
+router.route('/:resourceType/:recordId/enrich')
+  .post(requireWorkspaceEditor, controller.enrichCompany)
+  .all(methodNotAllowed);
+
 export default router;
