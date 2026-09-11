@@ -164,7 +164,7 @@ Set `AI_PROVIDER=alibaba`, `AI_PROVIDER=openai`, or `AI_PROVIDER=groq` with the 
 
 ## Prepaid execution and storage billing
 
-AI and premium-media execution use a CNY prepaid wallet with fixed customer packages of ¥1,000, ¥2,500, ¥5,000 and ¥9,000. Advertising uses a separate prepaid wallet with fixed packages of ¥10,000, ¥25,000, ¥50,000 and ¥90,000; Lulu adds a 4% service fee to the charge without reducing the advertising balance. Both wallets support hosted card payments and Airwallex Alipay/WeChat Pay QR payments. Provider callbacks credit each payment exactly once, and refunds or chargebacks cannot be replayed into available funds.
+AI and premium-media execution use a CNY prepaid wallet with fixed customer packages of ¥1,000, ¥2,500, ¥5,000 and ¥9,000, plus a ¥1 payment-test package. Advertising uses a separate prepaid wallet with fixed packages of ¥10,000, ¥25,000, ¥50,000 and ¥90,000, plus a ¥1 payment-test package; Lulu adds a 4% service fee to the charge without reducing the advertising balance. Both wallets support hosted card payments and Airwallex Alipay/WeChat Pay QR payments. Provider callbacks credit each payment exactly once, and refunds or chargebacks cannot be replayed into available funds.
 
 Only Cloudflare R2 storage is PAYG. Lulu does not deduct Cloudflare's free tier. R2 Standard storage and operation rates receive a 10% margin, and storage additionally includes USD 0.20 per GB-month. The worker performs a daily object-inventory reconciliation and creates weekly storage-only invoices; AI execution is never blocked by a storage invoice.
 

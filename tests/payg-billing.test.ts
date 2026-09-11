@@ -218,6 +218,7 @@ describe('prepaid API and transparent usage reporting', () => {
   });
 
   it('credits and debits a fixed AI package exactly once', async () => {
+    assert.equal(createApiTopupSchema.safeParse({ amount: 1, currency: 'CNY', paymentMethod: 'card', returnUrl: 'https://lulu-ai.cn/app' }).success, true);
     assert.equal(createApiTopupSchema.safeParse({ amount: 1200, currency: 'CNY', paymentMethod: 'card', returnUrl: 'https://lulu-ai.cn/app' }).success, false);
     const user = (await db.query<{ id: string }>(
       `INSERT INTO users(email, password_hash) VALUES($1, 'hash') RETURNING id`,

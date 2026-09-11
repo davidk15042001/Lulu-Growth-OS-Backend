@@ -11,7 +11,7 @@ import {
 } from './adspend.repo.js';
 
 export function calculateAdSpendCharge(amount: number) {
-  if (![10_000, 25_000, 50_000, 90_000].includes(amount)) {
+  if (![1, 10_000, 25_000, 50_000, 90_000].includes(amount)) {
     throw new AppError(422, 'AD_SPEND_PACKAGE_INVALID', 'Choose an available advertising package.');
   }
   const netMinor = Math.round(amount * 100);

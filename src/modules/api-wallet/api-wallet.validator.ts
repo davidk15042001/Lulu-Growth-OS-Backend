@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const API_TOPUP_PACKAGES = [1000, 2500, 5000, 9000] as const;
+export const API_TOPUP_PACKAGES = [1, 1000, 2500, 5000, 9000] as const;
 export const apiWalletParamsSchema = z.object({ workspaceId: z.string().uuid() });
 export const apiTopupParamsSchema = apiWalletParamsSchema.extend({ topupId: z.string().uuid() });
 export const createApiTopupSchema = z.object({

@@ -616,8 +616,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     apiWallet: apiWallet.rows[0] ? {
       availableAmount: Number(apiWallet.rows[0].availableAmount), spentAmount: Number(apiWallet.rows[0].spentAmount),
       totalFundedAmount: Number(apiWallet.rows[0].totalFundedAmount), currency: apiWallet.rows[0].currency,
-      packages: [1000, 2500, 5000, 9000], enabled: Number(apiWallet.rows[0].availableAmount) > 0,
-    } : { availableAmount: 0, spentAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [1000,2500,5000,9000], enabled: false },
+      packages: [1, 1000, 2500, 5000, 9000], enabled: Number(apiWallet.rows[0].availableAmount) > 0,
+    } : { availableAmount: 0, spentAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [1,1000,2500,5000,9000], enabled: false },
     storagePricing: {
       currency: 'USD', freeTierDeduction: false, providerMarkupPercent: 10,
       additionalStoragePerGbMonthUsd: 0.2,
