@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import * as crypto from 'crypto';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 const booleanString = z
   .enum(['true', 'false'])
@@ -44,6 +46,7 @@ const EnvSchema = z
     ACCESS_TOKEN_TTL: z.string().regex(/^([1-9]\d*)(s|m|h|d)$/).default('15m'),
     REFRESH_TOKEN_TTL_DAYS: z.coerce.number().int().min(1).max(3650).default(30).transform(days => Math.min(days, 90)),
     PROVIDER_CREDENTIAL_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
+    PROVIDER_CREDENTIAL_KEY_FILE: optionalNonEmptyString,
     PROVIDER_CREDENTIAL_KEY_VERSION: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/).default('1'),
     PROVIDER_CREDENTIAL_PREVIOUS_KEYS: z.string().optional(),
     PROVIDER_CREDENTIAL_LEGACY_KEY: z.string().min(32).optional(),
@@ -281,6 +284,34 @@ const raw = { ...process.env } as Record<string, string | undefined>;
 // whether a variable is omitted or copied as `NAME=`.
 for (const [name, value] of Object.entries(raw)) {
   if (typeof value === 'string' && value.trim() === '') delete raw[name];
+}
+
+// Production hosts may keep the dedicated provider key in a deployment-stable
+// local file instead of a root-owned environment file. The file is created
+// atomically with owner-only permissions and never enters the repository.
+if ((raw.NODE_ENV ?? 'development') === 'production' && !raw.PROVIDER_CREDENTIAL_KEY) {
+  const keyFile = path.resolve(raw.PROVIDER_CREDENTIAL_KEY_FILE ?? path.join(process.cwd(), '.runtime-secrets', 'provider-credential-key'));
+  try {
+    let key: string;
+    try {
+      key = fs.readFileSync(keyFile, 'utf8').trim();
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      fs.mkdirSync(path.dirname(keyFile), { recursive: true, mode: 0o700 });
+      const generated = crypto.randomBytes(32).toString('hex');
+      try {
+        fs.writeFileSync(keyFile, `${generated}\n`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+        key = generated;
+      } catch (writeError) {
+        if ((writeError as NodeJS.ErrnoException).code !== 'EEXIST') throw writeError;
+        key = fs.readFileSync(keyFile, 'utf8').trim();
+      }
+    }
+    if (!/^[a-fA-F0-9]{64}$/.test(key)) throw new Error('Provider credential key file must contain exactly 64 hexadecimal characters');
+    raw.PROVIDER_CREDENTIAL_KEY = key;
+  } catch (error) {
+    console.warn(`[env] Provider credential key file is unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
 }
 
 if (!raw.JWT_SECRET && (raw.NODE_ENV ?? 'development') !== 'production') {

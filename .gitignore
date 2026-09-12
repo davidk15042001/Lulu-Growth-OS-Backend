@@ -5,6 +5,7 @@ dist
 coverage
 *.log
 .codex-build/
+.runtime-secrets/
 output/
 outputs/
 tmp/
