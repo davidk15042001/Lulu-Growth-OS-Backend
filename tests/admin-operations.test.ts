@@ -10,6 +10,8 @@ const {pool}=await import('../src/db/pool.js');
 const repo=await import('../src/modules/admin/admin.repo.js');
 const adminOAuthRepo=await import('../src/modules/admin/admin-oauth.repo.js');
 const contentRepo=await import('../src/modules/content-generation/content-generation.repo.js');
+const omniRepo=await import('../src/modules/omnichannel/omnichannel.repo.js');
+const whatsappWorkspace=await import('../src/modules/provider-control/twilio-workspace.service.js');
 const support=await import('../src/modules/support/support.repo.js');
 const {capabilitiesForRoles}=await import('../src/modules/admin/admin.authorization.js');
 const db=new PGlite();
@@ -89,6 +91,17 @@ it('grants workspace-owned OAuth per provider and wipes its token when revoked',
   assert.equal(connection?.status,'CONNECTING');
   assert.equal(connection?.health_status,'UNKNOWN');
   assert.equal((await db.query(`SELECT 1 FROM audit_log WHERE action='workspace.oauth_self_service_changed' AND workspace_id=$1`,[workspaceId])).rows.length,3);
+});
+it('exposes the active UnifyPort sender as the WhatsApp fallback after workspace approval',async()=>{
+  const approvedWorkspace=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Approved WhatsApp',$1) RETURNING id`,[userId])).rows[0]!.id;
+  await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,[approvedWorkspace,userId]);
+  await adminOAuthRepo.setWorkspaceOAuthSelfServicePermission({workspaceId:approvedWorkspace,provider:'whatsapp',allowed:true,actorId:userId});
+  await omniRepo.registerUnifyPortIdentity({workspaceId:null,accountId:'acc_admin_whatsapp_test',displayName:'Lulu Admin WhatsApp',phone:'+4917641474606',configuredBy:userId});
+  const connection=await whatsappWorkspace.getWorkspaceWhatsAppConnection(approvedWorkspace);
+  assert.equal(connection.selfServiceAllowed,true);
+  assert.equal(connection.adminFallback.configured,true);
+  assert.equal(connection.adminFallback.displayName,'Lulu Admin WhatsApp');
+  assert.equal(connection.adminFallback.address,'+4917641474606');
 });
 it('shows real sites, runs, approvals, jobs and audit entries',async()=>{
   await db.query(`INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name) VALUES($1,'managed','managed','Customer site')`,[workspaceId]);

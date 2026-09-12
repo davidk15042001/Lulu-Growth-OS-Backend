@@ -256,9 +256,12 @@ export async function getWorkspaceWhatsAppConnection(workspaceId: string) {
     query<{ allowed: boolean }>(`SELECT allowed FROM workspace_oauth_self_service_permissions WHERE workspace_id=$1 AND provider='whatsapp'`, [workspaceId]),
     loadWorkspaceAccount(workspaceId),
     query<{ address: string; displayName: string; status: string }>(
-      `SELECT i.external_identity_id AS address,i.display_name AS "displayName",i.status
-       FROM twilio_platform_configuration c JOIN omni_channel_identities i ON i.id=c.admin_whatsapp_identity_id
-       WHERE c.singleton=TRUE`,
+      `SELECT COALESCE(NULLIF(i.metadata->>'phone',''),i.external_identity_id) AS address,
+              i.display_name AS "displayName",i.status
+       FROM unifyport_platform_configuration c
+       JOIN omni_channel_identities i ON i.id=c.admin_whatsapp_identity_id
+       JOIN omni_channels channel ON channel.id=i.channel_id
+       WHERE c.singleton=TRUE AND channel.provider='unifyport' AND channel.channel_type='WHATSAPP'`,
     ),
   ]);
   const allowed = permission.rows[0]?.allowed === true;
