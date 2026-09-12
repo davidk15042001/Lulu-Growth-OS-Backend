@@ -1,6 +1,7 @@
 import { AppError } from '../../utils/app-error.js';
 import * as omniRepo from '../omnichannel/omnichannel.repo.js';
-import { twilioWebhookUrl, verifyTwilioSignature } from './twilio.client.js';
+import { twilioWebhookUrl, verifyTwilioSignatureWithToken } from './twilio.client.js';
+import { getTwilioWebhookAuthToken } from './twilio-workspace.service.js';
 
 function text(payload: Record<string, unknown>, key: string) {
   const value = payload[key];
@@ -20,7 +21,9 @@ function messageType(payload: Record<string, unknown>) {
  * tenant-scoped OmniChannel store. Unknown destinations are accepted but not
  * routed, so one customer's message can never leak into another workspace. */
 export async function ingestTwilioWebhook(payload: Record<string, unknown>, signature?: string) {
-  verifyTwilioSignature(twilioWebhookUrl(), payload, signature);
+  const authToken = await getTwilioWebhookAuthToken(text(payload, 'AccountSid'));
+  if (!authToken) throw new AppError(403, 'TWILIO_WEBHOOK_ACCOUNT_UNKNOWN', 'Twilio webhook account is not registered.');
+  verifyTwilioSignatureWithToken(twilioWebhookUrl(), payload, authToken, signature);
   const messageSid = text(payload, 'MessageSid') ?? text(payload, 'SmsSid');
   const callbackStatus = text(payload, 'MessageStatus') ?? text(payload, 'SmsStatus');
   const from = text(payload, 'From');

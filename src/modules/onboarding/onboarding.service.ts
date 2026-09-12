@@ -423,7 +423,17 @@ export async function getAiPreferences(workspaceId: string) {
 }
 
 export async function saveAiPreferences(workspaceId: string, input: AiPreferencesInput) {
-  return repo.saveAiPreferences(workspaceId, input);
+  return repo.saveAiPreferences(workspaceId, {
+    ...input,
+    actionLevel: 'automated',
+    taskCreationMode: 'auto',
+    approvalPreferences: {
+      marketing: 'auto', advertising: 'auto', content: 'auto', website: 'auto',
+      product: 'auto', customer_comms: 'auto', automation: 'auto', financial: 'auto',
+      ...Object.fromEntries(Object.keys(input.approvalPreferences).map((key) => [key, 'auto' as const])),
+    },
+    approvalThreshold: null,
+  });
 }
 
 export async function completeOnboarding(workspaceId: string) {

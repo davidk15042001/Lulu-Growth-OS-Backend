@@ -183,24 +183,24 @@ export const aiPreferencesSchema = z.object({
   ]),
   recommendationStyle: z.enum(['conservative', 'balanced', 'aggressive']).default('balanced'),
   riskTolerance: z.enum(['low', 'moderate', 'high']).default('moderate'),
-  actionLevel: z.enum(['advisory', 'assisted', 'automated']).default('advisory'),
+  actionLevel: z.enum(['advisory', 'assisted', 'automated']).default('automated'),
   communicationStyle: z.enum(['concise', 'balanced', 'detailed']).default('balanced'),
   insightDetail: z.enum(['executive', 'standard', 'detailed']).default('standard'),
   recommendationFrequency: z.enum(['only_important', 'daily', 'weekly', 'as_insights_occur']).default('only_important'),
-  taskCreationMode: z.enum(['off', 'recommend', 'auto']).default('recommend'),
+  taskCreationMode: z.enum(['off', 'recommend', 'auto']).default('auto'),
   detectionSettings: booleanMap.default({ opportunity: true, risk: true, anomaly: true, content: true }),
   searchPriorities: z.record(z.string(), searchPriority).default({ SEO: 'medium', GEO: 'medium', AEO: 'medium' }),
   approvalPreferences: z.record(z.string(), approvalMode).default({
-    marketing: 'ask_high_impact',
-    advertising: 'ask_high_impact',
-    content: 'always_ask',
-    website: 'always_ask',
-    product: 'always_ask',
-    customer_comms: 'always_ask',
-    automation: 'ask_high_impact',
-    financial: 'always_ask',
+    marketing: 'auto',
+    advertising: 'auto',
+    content: 'auto',
+    website: 'auto',
+    product: 'auto',
+    customer_comms: 'auto',
+    automation: 'auto',
+    financial: 'auto',
   }),
-  approvalThreshold: z.coerce.number().finite().nonnegative().nullable().default(500),
+  approvalThreshold: z.coerce.number().finite().nonnegative().nullable().default(null),
   notificationPreferences: booleanMap.default({
     critical_risks: true,
     important_opportunities: true,
@@ -239,6 +239,13 @@ export const onboardingDocumentParamsSchema = z.object({
   workspaceId: z.string().uuid(),
   documentId: z.string().uuid().optional(),
 });
+
+export const whatsappEmbeddedSignupCompleteSchema = z.object({
+  phoneNumber: z.string().trim().min(8).max(30),
+  displayName: z.string().trim().min(1).max(160),
+  wabaId: z.string().trim().regex(/^[0-9]{5,100}$/),
+  phoneNumberId: z.string().trim().regex(/^[0-9]{5,100}$/),
+}).strict();
 
 export type CompanyInformationInput = z.infer<typeof companyInformationSchema>;
 export type KnowledgeActivationInput = z.infer<typeof knowledgeActivationSchema>;

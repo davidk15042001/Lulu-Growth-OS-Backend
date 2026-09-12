@@ -77,7 +77,18 @@ it('grants workspace-owned OAuth per provider and wipes its token when revoked',
   assert.equal(await adminOAuthRepo.isWorkspaceOAuthSelfServiceAllowed(workspaceId,'whatsapp'),false);
   assert.equal((await db.query(`SELECT 1 FROM workspace_platform_oauth_credentials WHERE platform_id=$1`,[platform.id])).rows.length,0);
   assert.equal((await db.query<{connection_status:string}>(`SELECT connection_status FROM workspace_platforms WHERE id=$1`,[platform.id])).rows[0]?.connection_status,'disconnected');
-  assert.equal((await db.query(`SELECT 1 FROM audit_log WHERE action='workspace.oauth_self_service_changed' AND workspace_id=$1`,[workspaceId])).rows.length,2);
+  await db.query(`INSERT INTO twilio_workspace_accounts(
+    workspace_id,twilio_account_sid,encrypted_auth_token,waba_id,phone_number_id,sender_address,display_name,sender_status,status
+  ) VALUES($1,'AC00000000000000000000000000000001','encrypted-token','12345','67890','whatsapp:+491701234567','Customer WhatsApp','CREATING','DISABLED')`,[workspaceId]);
+  await db.query(`INSERT INTO provider_connections(
+    scope_type,workspace_id,provider_key,mode,status,authorization_state,health_status
+  ) VALUES('WORKSPACE',$1,'whatsapp','CUSTOMER_OWNED','DISCONNECTED','NOT_AUTHORIZED','DISCONNECTED')`,[workspaceId]);
+  await adminOAuthRepo.setWorkspaceOAuthSelfServicePermission({workspaceId,provider:'whatsapp',allowed:true,actorId:userId});
+  assert.equal((await db.query<{status:string}>(`SELECT status FROM twilio_workspace_accounts WHERE workspace_id=$1`,[workspaceId])).rows[0]?.status,'PROVISIONING');
+  const connection=(await db.query<{status:string;health_status:string}>(`SELECT status,health_status FROM provider_connections WHERE workspace_id=$1 AND provider_key='whatsapp'`,[workspaceId])).rows[0];
+  assert.equal(connection?.status,'CONNECTING');
+  assert.equal(connection?.health_status,'UNKNOWN');
+  assert.equal((await db.query(`SELECT 1 FROM audit_log WHERE action='workspace.oauth_self_service_changed' AND workspace_id=$1`,[workspaceId])).rows.length,3);
 });
 it('shows real sites, runs, approvals, jobs and audit entries',async()=>{
   await db.query(`INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name) VALUES($1,'managed','managed','Customer site')`,[workspaceId]);

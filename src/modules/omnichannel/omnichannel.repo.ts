@@ -12,7 +12,7 @@ export function hashToken(token:string) { return createHash('sha256').update(tok
 export async function listChannels(workspaceId:string) {
   const {rows}=await query(`SELECT c.id,c.channel_type,c.provider,c.status,c.display_name,c.capabilities,
     COALESCE(jsonb_agg(jsonb_build_object('id',ci.id,'workspaceId',ci.workspace_id,'websiteId',ci.website_id,'identityType',ci.identity_type,'externalIdentityId',ci.external_identity_id,'displayName',ci.display_name,'mode',ci.mode,'status',ci.status,'defaultLanguage',ci.default_language,'capabilities',ci.capabilities)) FILTER (WHERE ci.id IS NOT NULL),'[]'::jsonb) AS identities
-    FROM omni_channels c LEFT JOIN omni_channel_identities ci ON ci.channel_id=c.id AND ${workspaceId==='__ADMIN__'?'TRUE':'ci.workspace_id=$1'}
+    FROM omni_channels c LEFT JOIN omni_channel_identities ci ON ci.channel_id=c.id AND ${workspaceId==='__ADMIN__'?'TRUE':`(ci.workspace_id=$1 OR (ci.workspace_id IS NULL AND ci.id=(SELECT admin_whatsapp_identity_id FROM twilio_platform_configuration WHERE singleton=TRUE)))`}
     WHERE c.channel_type NOT IN ('WECHAT','SMS')
       AND NOT (c.channel_type IN ('WHATSAPP','FACEBOOK_MESSENGER') AND c.provider <> 'twilio')
     GROUP BY c.id ORDER BY c.display_name`,workspaceId==='__ADMIN__'?[]:[workspaceId]);
@@ -23,6 +23,24 @@ export async function listChannels(workspaceId:string) {
     if(email && accounts.rows.length){email.status='ACTIVE'; email.identities.push(...accounts.rows.map((account:any)=>({id:`email-account:${account.id}`,workspaceId,websiteId:null,identityType:'MAILBOX',externalIdentityId:account.email_address,displayName:account.display_name||account.email_address,mode:'CUSTOMER_OWNED',status:account.status==='reauth_required'?'AUTHORIZATION_REQUIRED':'ACTIVE',defaultLanguage:null,capabilities:{'messages.read':true,'messages.send':account.status==='connected'}})));}
   }
   return result;
+}
+
+export async function resolvePreferredOutboundIdentity(workspaceId:string,channelType:string) {
+  const {rows}=await query<{channelId:string;channelIdentityId:string;mode:string}>(
+    `SELECT ch.id AS "channelId",ci.id AS "channelIdentityId",ci.mode
+       FROM omni_channel_identities ci JOIN omni_channels ch ON ch.id=ci.channel_id
+      WHERE ci.status='ACTIVE' AND ch.status='ACTIVE' AND ch.channel_type=$2
+        AND (ci.workspace_id=$1 OR (
+          ci.workspace_id IS NULL AND ci.id=(
+            SELECT admin_whatsapp_identity_id FROM twilio_platform_configuration WHERE singleton=TRUE
+          )
+        ))
+        AND COALESCE((ci.capabilities->>'messages.send')::boolean,FALSE)=TRUE
+      ORDER BY CASE WHEN ci.workspace_id=$1 THEN 0 ELSE 1 END,ci.updated_at DESC
+      LIMIT 1`,
+    [workspaceId,channelType],
+  );
+  return rows[0]??null;
 }
 
 export async function listConversations(workspaceId:string, filters:{page:number;limit:number;status?:string;handlingMode?:string;channelId?:string;assignedUserId?:string;search?:string}) {
@@ -171,23 +189,69 @@ export async function registerTwilioIdentity(input:{workspaceId:string;channelTy
 }
 
 export async function ingestTwilioInbound(input:{messageSid:string;from:string;to:string;body:string;messageType:string;metadata:Record<string,unknown>}) {
-  const identity=await query<{id:string;workspaceId:string;channelId:string;defaultLanguage:string|null}>(`SELECT ci.id,ci.workspace_id AS "workspaceId",ci.channel_id AS "channelId",ci.default_language AS "defaultLanguage"
+  const identity=await query<{id:string;workspaceId:string|null;channelId:string;defaultLanguage:string|null}>(`SELECT ci.id,ci.workspace_id AS "workspaceId",ci.channel_id AS "channelId",ci.default_language AS "defaultLanguage"
     FROM omni_channel_identities ci JOIN omni_channels ch ON ch.id=ci.channel_id
-    WHERE ch.provider='twilio' AND lower(ci.external_identity_id)=lower($1) AND ci.workspace_id IS NOT NULL AND ci.status='ACTIVE'
+    WHERE ch.provider='twilio' AND lower(ci.external_identity_id)=lower($1) AND ci.status='ACTIVE'
     LIMIT 1`,[input.to]);
   const route=identity.rows[0];
   if(!route)return {routed:false,reason:'TWILIO_IDENTITY_NOT_REGISTERED'} as const;
-  const conversation=await query(`INSERT INTO omni_conversations(workspace_id,channel_id,channel_identity_id,handling_mode,language,subject,provider_thread_key,metadata)
-    VALUES($1,$2,$3,'AI_AUTO',$4,'Twilio conversation',$5,$6)
-    ON CONFLICT(channel_identity_id,provider_thread_key) WHERE provider_thread_key IS NOT NULL
-    DO UPDATE SET updated_at=NOW() RETURNING *`,[route.workspaceId,route.channelId,route.id,route.defaultLanguage,input.from,JSON.stringify({externalSenderKey:input.from,provider:'twilio'})]);
-  const conversationId=String(conversation.rows[0]!.id);
+  let routedWorkspaceId=route.workspaceId;
+  let conversationId:string|null=null;
+  if(route.workspaceId===null){
+    const repliedToSid=typeof input.metadata.OriginalRepliedMessageSid==='string'?input.metadata.OriginalRepliedMessageSid.trim():'';
+    const replyCandidate=repliedToSid?(await query<{conversationId:string;workspaceId:string}>(`SELECT c.id AS "conversationId",c.workspace_id AS "workspaceId"
+      FROM omni_messages m JOIN omni_conversations c ON c.id=m.conversation_id AND c.workspace_id=m.workspace_id
+      WHERE m.channel_identity_id=$1 AND m.provider_message_id=$2 AND m.direction='OUTBOUND'
+      ORDER BY m.created_at DESC LIMIT 2`,[route.id,repliedToSid])).rows:[];
+    const candidates=replyCandidate.length?replyCandidate:await query<{conversationId:string;workspaceId:string}>(`SELECT c.id AS "conversationId",c.workspace_id AS "workspaceId"
+      FROM omni_conversations c JOIN omni_conversation_participants p ON p.conversation_id=c.id AND p.workspace_id=c.workspace_id
+      WHERE c.channel_identity_id=$1 AND c.status NOT IN ('CLOSED','SPAM')
+        AND lower(COALESCE(p.metadata->>'externalId',p.participant_key))=lower($2)
+      ORDER BY c.updated_at DESC LIMIT 3`,[route.id,input.from]);
+    let candidateRows=Array.isArray(candidates)?candidates:candidates.rows;
+    if(!candidateRows.length){
+      const crmCandidates=await query<{workspaceId:string}>(`SELECT DISTINCT r.workspace_id AS "workspaceId"
+        FROM workspace_records r JOIN workspaces w ON w.id=r.workspace_id AND w.deleted_at IS NULL
+        WHERE r.deleted_at IS NULL AND r.resource_type IN ('crm_companies','crm_contacts','customers','ecommerce_customers')
+          AND (
+            regexp_replace(COALESCE(r.data->>'phone',r.data->>'phoneNumber',r.data->>'mobile',r.external_id,''),'[^0-9]','','g')=regexp_replace($1,'[^0-9]','','g')
+            OR (char_length(trim(w.name))>=3 AND position(lower(w.name) in lower($2))>0)
+          ) LIMIT 3`,[input.from,input.body]);
+      candidateRows=crmCandidates.rows.map((item)=>({workspaceId:item.workspaceId,conversationId:''}));
+    }
+    const workspaceIds=[...new Set(candidateRows.map(item=>item.workspaceId))];
+    if(workspaceIds.length===1){routedWorkspaceId=workspaceIds[0]!;conversationId=candidateRows.find((item)=>item.conversationId)?.conversationId||null;}
+    else{
+      await query(`INSERT INTO omni_routing_queue(channel_identity_id,provider_event_id,provider_message_id,external_sender_key,message_preview,context,confidence,reason,evidence)
+        VALUES($1,$2,$2,$3,$4,$5::jsonb,'UNRESOLVED',$6,$7::jsonb)
+        ON CONFLICT(channel_identity_id,provider_message_id) DO NOTHING`,[
+          route.id,input.messageSid,input.from,input.body.slice(0,8000),JSON.stringify({
+            to:input.to,
+            messageType:input.messageType,
+            mediaCount:input.metadata.NumMedia??'0',
+            mediaUrl:input.metadata.MediaUrl0??null,
+            mediaContentType:input.metadata.MediaContentType0??null,
+          }),
+          workspaceIds.length>1?'Shared sender has multiple active workspace matches':'Shared sender has no deterministic workspace match',
+          JSON.stringify({candidateWorkspaceCount:workspaceIds.length}),
+        ]);
+      return {routed:false,reason:workspaceIds.length>1?'TWILIO_SHARED_SENDER_AMBIGUOUS':'TWILIO_SHARED_SENDER_UNROUTED'} as const;
+    }
+  }
+  if(!routedWorkspaceId)return {routed:false,reason:'TWILIO_WORKSPACE_ROUTE_MISSING'} as const;
+  if(!conversationId){
+    const conversation=await query(`INSERT INTO omni_conversations(workspace_id,channel_id,channel_identity_id,handling_mode,language,subject,provider_thread_key,metadata)
+      VALUES($1,$2,$3,'AI_AUTO',$4,'Twilio conversation',$5,$6)
+      ON CONFLICT(workspace_id,channel_identity_id,provider_thread_key) WHERE provider_thread_key IS NOT NULL
+      DO UPDATE SET updated_at=NOW() RETURNING *`,[routedWorkspaceId,route.channelId,route.id,route.defaultLanguage,input.from,JSON.stringify({externalSenderKey:input.from,provider:'twilio'})]);
+    conversationId=String(conversation.rows[0]!.id);
+  }
   await query(`INSERT INTO omni_conversation_participants(workspace_id,conversation_id,participant_type,participant_key,metadata)
-    VALUES($1,$2,'PARTY',$3,$4) ON CONFLICT(conversation_id,participant_type,participant_key) DO NOTHING`,[route.workspaceId,conversationId,input.from,JSON.stringify({externalId:input.from,provider:'twilio',recipientType:'user'})]);
+    VALUES($1,$2,'PARTY',$3,$4) ON CONFLICT(conversation_id,participant_type,participant_key) DO NOTHING`,[routedWorkspaceId,conversationId,input.from,JSON.stringify({externalId:input.from,provider:'twilio',recipientType:'user'})]);
   const existing=await query(`SELECT * FROM omni_messages WHERE channel_identity_id=$1 AND provider_message_id=$2`,[route.id,input.messageSid]);
-  if(existing.rows[0])return {routed:true,duplicate:true,workspaceId:route.workspaceId,conversationId,message:mapMessage(existing.rows[0])} as const;
-  const message=await createMessage({workspaceId:route.workspaceId,conversationId,channelId:route.channelId,channelIdentityId:route.id,direction:'INBOUND',senderType:'BUYER',messageType:input.messageType,text:input.body,status:'RECEIVED',clientMessageId:`twilio:${input.messageSid}`,providerMessageId:input.messageSid,metadata:{provider:'twilio',mediaCount:input.metadata.NumMedia??'0',mediaUrl:input.metadata.MediaUrl0??null,mediaContentType:input.metadata.MediaContentType0??null}});
-  return {routed:true,duplicate:false,workspaceId:route.workspaceId,conversationId,message} as const;
+  if(existing.rows[0])return {routed:true,duplicate:true,workspaceId:routedWorkspaceId,conversationId,message:mapMessage(existing.rows[0])} as const;
+  const message=await createMessage({workspaceId:routedWorkspaceId,conversationId,channelId:route.channelId,channelIdentityId:route.id,direction:'INBOUND',senderType:'BUYER',messageType:input.messageType,text:input.body,status:'RECEIVED',clientMessageId:`twilio:${input.messageSid}`,providerMessageId:input.messageSid,metadata:{provider:'twilio',mediaCount:input.metadata.NumMedia??'0',mediaUrl:input.metadata.MediaUrl0??null,mediaContentType:input.metadata.MediaContentType0??null}});
+  return {routed:true,duplicate:false,workspaceId:routedWorkspaceId,conversationId,message} as const;
 }
 
 export async function updateTwilioMessageStatus(messageSid:string,status:string,errorCode?:string|null) {
@@ -231,5 +295,45 @@ export async function createPublicSession(widgetId:string, origin?:string, visit
 export async function getPublicSession(token:string) { const r=await query(`SELECT s.*,w.welcome_message,w.default_language,w.supported_languages FROM omni_website_chat_sessions s JOIN omni_website_chat_identities w ON w.id=s.website_chat_identity_id JOIN omni_channel_identities ci ON ci.id=w.channel_identity_id WHERE s.token_hash=$1 AND s.expires_at>NOW() AND w.status='ACTIVE' AND ci.status='ACTIVE'`,[hashToken(token)]); return r.rows[0]??null; }
 export async function listRoutingQueue() { const r=await query(`SELECT q.*,ci.display_name identity_display_name,c.channel_type FROM omni_routing_queue q JOIN omni_channel_identities ci ON ci.id=q.channel_identity_id JOIN omni_channels c ON c.id=ci.channel_id WHERE q.status='UNRESOLVED' ORDER BY q.created_at ASC LIMIT 200`); return r.rows; }
 export async function listAdminConversations(filters:{workspaceId?:string;status?:string;limit?:number;search?:string}) { const params:any[]=[]; const where:string[]=[]; if(filters.workspaceId){params.push(filters.workspaceId);where.push(`c.workspace_id=$${params.length}`);} if(filters.status){params.push(filters.status);where.push(`c.status=$${params.length}`);} if(filters.search){params.push(`%${filters.search}%`);where.push(`(c.subject ILIKE $${params.length} OR w.name ILIKE $${params.length} OR ch.display_name ILIKE $${params.length} OR EXISTS(SELECT 1 FROM omni_messages sm WHERE sm.conversation_id=c.id AND sm.text_content ILIKE $${params.length}))`);} params.push(Math.min(filters.limit??100,200)); const r=await query(`SELECT c.*,ch.display_name channel_display_name,ci.display_name identity_display_name,w.name workspace_name FROM omni_conversations c JOIN omni_channels ch ON ch.id=c.channel_id JOIN omni_channel_identities ci ON ci.id=c.channel_identity_id JOIN workspaces w ON w.id=c.workspace_id ${where.length?`WHERE ${where.join(' AND ')}`:''} ORDER BY c.last_message_at DESC NULLS LAST LIMIT $${params.length}`,params); return r.rows.map(mapConversation).map((v:any,i:number)=>({...v,workspaceName:r.rows[i]!.workspace_name})); }
-export async function adminResolveRouting(id:string,workspaceId:string,adminId:string,reason:string) { const r=await query(`UPDATE omni_routing_queue SET status='ASSIGNED',resolved_workspace_id=$2,resolved_by=$3,resolved_at=NOW() WHERE id=$1 AND status='UNRESOLVED' RETURNING *`,[id,workspaceId,adminId]); if(!r.rows[0]) return null; await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.ROUTING_DECISION_RESOLVED,aggregateType:'routing_queue',aggregateId:id,payload:{reason},metadata:{actorId:adminId,source:'admin'}}); return r.rows[0]; }
+export async function adminResolveRouting(id:string,workspaceId:string,adminId:string,reason:string) {
+  const item=await query<{
+    id:string;channelIdentityId:string;channelId:string;providerMessageId:string|null;
+    externalSenderKey:string|null;messagePreview:string|null;context:Record<string,unknown>;
+  }>(`SELECT q.id,q.channel_identity_id AS "channelIdentityId",ci.channel_id AS "channelId",
+      q.provider_message_id AS "providerMessageId",q.external_sender_key AS "externalSenderKey",
+      q.message_preview AS "messagePreview",q.context
+    FROM omni_routing_queue q JOIN omni_channel_identities ci ON ci.id=q.channel_identity_id
+    JOIN workspaces w ON w.id=$2 AND w.deleted_at IS NULL
+    WHERE q.id=$1 AND q.status='UNRESOLVED' AND ci.status='ACTIVE'`,[id,workspaceId]);
+  const route=item.rows[0];
+  if(!route?.providerMessageId||!route.externalSenderKey)return null;
+  const conversation=await query<{id:string}>(`INSERT INTO omni_conversations(
+      workspace_id,channel_id,channel_identity_id,handling_mode,subject,provider_thread_key,metadata
+    ) VALUES($1,$2,$3,'AI_AUTO','Twilio conversation',$4,$5::jsonb)
+    ON CONFLICT(workspace_id,channel_identity_id,provider_thread_key) WHERE provider_thread_key IS NOT NULL
+    DO UPDATE SET updated_at=NOW() RETURNING id`,[
+      workspaceId,route.channelId,route.channelIdentityId,route.externalSenderKey,
+      JSON.stringify({externalSenderKey:route.externalSenderKey,provider:'twilio',routingQueueId:id}),
+    ]);
+  const conversationId=conversation.rows[0]!.id;
+  await query(`INSERT INTO omni_conversation_participants(workspace_id,conversation_id,participant_type,participant_key,metadata)
+    VALUES($1,$2,'PARTY',$3,$4::jsonb) ON CONFLICT(conversation_id,participant_type,participant_key) DO NOTHING`,[
+      workspaceId,conversationId,route.externalSenderKey,JSON.stringify({externalId:route.externalSenderKey,provider:'twilio',recipientType:'user'}),
+    ]);
+  const context=route.context??{};
+  const message=await createMessage({
+    workspaceId,conversationId,channelId:route.channelId,channelIdentityId:route.channelIdentityId,
+    direction:'INBOUND',senderType:'BUYER',messageType:typeof context.messageType==='string'?context.messageType:'TEXT',
+    text:route.messagePreview??'',status:'RECEIVED',clientMessageId:`twilio:${route.providerMessageId}`,
+    providerMessageId:route.providerMessageId,metadata:{provider:'twilio',routedByAdmin:true,routingReason:reason,
+      mediaCount:context.mediaCount??'0',mediaUrl:context.mediaUrl??null,mediaContentType:context.mediaContentType??null},
+  });
+  const resolved=await query(`UPDATE omni_routing_queue SET status='ASSIGNED',resolved_workspace_id=$2,
+    resolved_by=$3,resolved_at=NOW(),evidence=evidence||$4::jsonb WHERE id=$1 AND status='UNRESOLVED' RETURNING *`,[
+      id,workspaceId,adminId,JSON.stringify({reason,conversationId,messageId:message.id}),
+    ]);
+  if(!resolved.rows[0])return null;
+  await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.ROUTING_DECISION_RESOLVED,aggregateType:'routing_queue',aggregateId:id,payload:{reason,conversationId,messageId:message.id},metadata:{actorId:adminId,source:'admin'}});
+  return {...resolved.rows[0],conversationId,messageId:message.id};
+}
 export async function analytics(workspaceId:string) { const r=await query(`SELECT count(*)::int total_conversations,count(*) FILTER(WHERE created_at>=NOW()-INTERVAL '30 days')::int new_conversations,count(*) FILTER(WHERE handling_mode IN ('AI_AUTO','AI_ASSISTED'))::int ai_handled,count(*) FILTER(WHERE handling_mode IN ('HUMAN','ESCALATED'))::int human_handled,count(*) FILTER(WHERE status='RESOLVED')::int resolved FROM omni_conversations WHERE workspace_id=$1`,[workspaceId]); return r.rows[0]??{total_conversations:0,new_conversations:0,ai_handled:0,human_handled:0,resolved:0}; }

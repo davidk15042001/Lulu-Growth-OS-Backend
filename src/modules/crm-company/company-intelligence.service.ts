@@ -328,14 +328,7 @@ async function findOrCreateOutboundConversation(record: NonNullable<CompanyRecor
     { channelType: 'FACEBOOK_MESSENGER', recipient: data.socialProfiles?.facebook },
   ].filter((item): item is { channelType: string; recipient: string } => Boolean(item.recipient));
   for (const candidate of candidates) {
-    const identity = (await query<{ channelId: string; channelIdentityId: string }>(
-      `SELECT ch.id AS "channelId", ci.id AS "channelIdentityId"
-         FROM omni_channel_identities ci JOIN omni_channels ch ON ch.id=ci.channel_id
-        WHERE ci.workspace_id=$1 AND ci.status='ACTIVE' AND ch.status='ACTIVE'
-          AND ch.channel_type=$2 AND COALESCE((ci.capabilities->>'messages.send')::boolean,FALSE)=TRUE
-        ORDER BY ci.updated_at DESC LIMIT 1`,
-      [record.workspaceId, candidate.channelType],
-    )).rows[0];
+    const identity = await omniRepo.resolvePreferredOutboundIdentity(record.workspaceId, candidate.channelType);
     if (!identity) continue;
     const conversation = await omniRepo.createConversation({
       workspaceId: record.workspaceId,

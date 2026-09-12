@@ -4,6 +4,16 @@ import { env } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 
 export type TwilioAddress = `whatsapp:${string}` | `messenger:${string}`;
+export type TwilioRestCredentials = { accountSid: string; username: string; password: string };
+
+export type TwilioWhatsAppSender = {
+  sid: string;
+  status: string;
+  senderId: string;
+  wabaId: string | null;
+  callbackUrl: string | null;
+  displayName: string | null;
+};
 
 type TwilioMessageResponse = {
   sid?: string;
@@ -12,7 +22,7 @@ type TwilioMessageResponse = {
   error_message?: string | null;
 };
 
-function credentials() {
+function credentials(): TwilioRestCredentials {
   if (!env.TWILIO_ACCOUNT_SID) {
     throw new AppError(503, 'TWILIO_NOT_CONFIGURED', 'Twilio is not configured on this server.');
   }
@@ -29,11 +39,11 @@ function authorization(username: string, password: string) {
   return `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`;
 }
 
-async function twilioRequest<T>(path: string, init: RequestInit = {}) {
-  const auth = credentials();
+async function twilioRequest<T>(path: string, init: RequestInit = {}, options?: { auth?: TwilioRestCredentials; baseUrl?: string }) {
+  const auth = options?.auth ?? credentials();
   let response: Response;
   try {
-    response = await fetch(`${env.TWILIO_BASE_URL.replace(/\/$/, '')}${path}`, {
+    response = await fetch(`${(options?.baseUrl ?? env.TWILIO_BASE_URL).replace(/\/$/, '')}${path}`, {
       ...init,
       headers: { Authorization: authorization(auth.username, auth.password), ...(init.headers ?? {}) },
       signal: AbortSignal.timeout(20_000),
@@ -63,6 +73,100 @@ export async function getTwilioAccount() {
   return twilioRequest<Record<string, unknown>>(`/2010-04-01/Accounts/${encodeURIComponent(auth.accountSid)}.json`);
 }
 
+export async function createTwilioSubaccount(friendlyName: string) {
+  const body = new URLSearchParams({ FriendlyName: friendlyName.trim().slice(0, 64) });
+  const account = await twilioRequest<{ sid?: string; auth_token?: string; status?: string }>(
+    '/2010-04-01/Accounts.json',
+    { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() },
+  );
+  if (!account.sid || !account.auth_token) {
+    throw new AppError(502, 'TWILIO_SUBACCOUNT_CREDENTIALS_MISSING', 'Twilio created a subaccount without returning usable credentials.');
+  }
+  return { accountSid: account.sid, authToken: account.auth_token, status: account.status ?? 'active' };
+}
+
+function normalizeWhatsAppSender(value: Record<string, unknown>): TwilioWhatsAppSender | null {
+  const sid = typeof value.sid === 'string' ? value.sid : '';
+  const senderId = typeof value.sender_id === 'string' ? value.sender_id : typeof value.senderId === 'string' ? value.senderId : '';
+  if (!sid || !senderId) return null;
+  const configuration = value.configuration && typeof value.configuration === 'object' ? value.configuration as Record<string, unknown> : {};
+  const webhook = value.webhook && typeof value.webhook === 'object' ? value.webhook as Record<string, unknown> : {};
+  const profile = value.profile && typeof value.profile === 'object' ? value.profile as Record<string, unknown> : {};
+  return {
+    sid,
+    status: typeof value.status === 'string' ? value.status : 'UNKNOWN',
+    senderId,
+    wabaId: typeof configuration.waba_id === 'string' ? configuration.waba_id : typeof configuration.wabaId === 'string' ? configuration.wabaId : null,
+    callbackUrl: typeof webhook.callback_url === 'string' ? webhook.callback_url : typeof webhook.callbackUrl === 'string' ? webhook.callbackUrl : null,
+    displayName: typeof profile.name === 'string' ? profile.name : null,
+  };
+}
+
+export async function listWhatsAppSenders(auth?: TwilioRestCredentials) {
+  const payload = await twilioRequest<Record<string, unknown>>(
+    '/v2/Channels/Senders?Channel=whatsapp&PageSize=100',
+    {},
+    { ...(auth ? { auth } : {}), baseUrl: env.TWILIO_MESSAGING_BASE_URL },
+  );
+  const values = Array.isArray(payload.senders)
+    ? payload.senders
+    : Array.isArray(payload.channel_senders)
+      ? payload.channel_senders
+      : [];
+  return values
+    .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object' && !Array.isArray(item)))
+    .map(normalizeWhatsAppSender)
+    .filter((item): item is TwilioWhatsAppSender => Boolean(item));
+}
+
+export async function createWhatsAppSender(input: {
+  auth: TwilioRestCredentials;
+  address: TwilioAddress;
+  wabaId: string;
+  displayName: string;
+}) {
+  const payload = await twilioRequest<Record<string, unknown>>(
+    '/v2/Channels/Senders',
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sender_id: input.address,
+        configuration: { waba_id: input.wabaId },
+        webhook: {
+          callback_url: env.TWILIO_WEBHOOK_URL,
+          callback_method: 'POST',
+          status_callback_url: env.TWILIO_STATUS_CALLBACK_URL ?? env.TWILIO_WEBHOOK_URL,
+          status_callback_method: 'POST',
+        },
+        profile: { name: input.displayName },
+      }),
+    },
+    { auth: input.auth, baseUrl: env.TWILIO_MESSAGING_BASE_URL },
+  );
+  const sender = normalizeWhatsAppSender(payload);
+  if (!sender) throw new AppError(502, 'TWILIO_SENDER_RESPONSE_INVALID', 'Twilio did not return a valid WhatsApp sender.');
+  return sender;
+}
+
+export async function getWhatsAppContentTemplateApproval(contentSid: string, auth: TwilioRestCredentials) {
+  const sid = contentSid.trim();
+  const [content, approvals] = await Promise.all([
+    twilioRequest<Record<string, unknown>>(`/v1/Content/${encodeURIComponent(sid)}`, {}, { auth, baseUrl: env.TWILIO_CONTENT_BASE_URL }),
+    twilioRequest<Record<string, unknown>>(`/v1/Content/${encodeURIComponent(sid)}/ApprovalRequests`, {}, { auth, baseUrl: env.TWILIO_CONTENT_BASE_URL }),
+  ]);
+  const whatsapp = approvals.whatsapp && typeof approvals.whatsapp === 'object'
+    ? approvals.whatsapp as Record<string, unknown>
+    : null;
+  return {
+    sid: typeof content.sid === 'string' ? content.sid : sid,
+    accountSid: typeof content.account_sid === 'string' ? content.account_sid : typeof content.accountSid === 'string' ? content.accountSid : null,
+    friendlyName: typeof content.friendly_name === 'string' ? content.friendly_name : typeof content.friendlyName === 'string' ? content.friendlyName : null,
+    approvalStatus: typeof whatsapp?.status === 'string' ? whatsapp.status.toUpperCase() : 'UNSUBMITTED',
+    rejectionReason: typeof whatsapp?.rejection_reason === 'string' ? whatsapp.rejection_reason : null,
+  };
+}
+
 export function twilioMessageForm(input: { from: TwilioAddress; to: TwilioAddress; body?: string; contentSid?: string; contentVariables?: Record<string,string> }) {
   if (input.contentSid) {
     return new URLSearchParams({
@@ -76,13 +180,14 @@ export function twilioMessageForm(input: { from: TwilioAddress; to: TwilioAddres
   return new URLSearchParams({ From: input.from, To: input.to, Body: input.body });
 }
 
-export async function sendTwilioMessage(input: { from: TwilioAddress; to: TwilioAddress; body?: string; contentSid?: string; contentVariables?: Record<string,string> }) {
-  const auth = credentials();
+export async function sendTwilioMessage(input: { from: TwilioAddress; to: TwilioAddress; body?: string; contentSid?: string; contentVariables?: Record<string,string> }, overrideAuth?: TwilioRestCredentials) {
+  const auth = overrideAuth ?? credentials();
   const body = twilioMessageForm(input);
   if (env.TWILIO_STATUS_CALLBACK_URL) body.set('StatusCallback', env.TWILIO_STATUS_CALLBACK_URL);
   const result = await twilioRequest<TwilioMessageResponse>(
     `/2010-04-01/Accounts/${encodeURIComponent(auth.accountSid)}/Messages.json`,
     { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() },
+    { auth },
   );
   if (!result.sid) throw new AppError(502, 'TWILIO_MESSAGE_ID_MISSING', 'Twilio accepted the request without returning a message SID.');
   return { sid: result.sid, status: result.status ?? 'queued' };
@@ -102,10 +207,14 @@ export function computeTwilioSignature(url: string, params: Record<string, unkno
 
 export function verifyTwilioSignature(url: string, params: Record<string, unknown>, signature?: string) {
   if (!env.TWILIO_AUTH_TOKEN) throw new AppError(503, 'TWILIO_WEBHOOK_VERIFICATION_UNAVAILABLE', 'TWILIO_AUTH_TOKEN is required to verify Twilio webhooks.');
+  return verifyTwilioSignatureWithToken(url, params, env.TWILIO_AUTH_TOKEN, signature);
+}
+
+export function verifyTwilioSignatureWithToken(url: string, params: Record<string, unknown>, authToken: string, signature?: string) {
   if (!signature) throw new AppError(403, 'TWILIO_WEBHOOK_SIGNATURE_MISSING', 'Twilio webhook signature is required.');
   // Use Twilio's maintained validator so newly introduced webhook parameters
   // continue to be included exactly as required by their signing contract.
-  if (!twilio.validateRequest(env.TWILIO_AUTH_TOKEN, signature, url, params)) {
+  if (!twilio.validateRequest(authToken, signature, url, params)) {
     throw new AppError(403, 'TWILIO_WEBHOOK_SIGNATURE_INVALID', 'Twilio webhook signature could not be verified.');
   }
   return true;

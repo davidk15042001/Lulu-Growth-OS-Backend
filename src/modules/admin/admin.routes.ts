@@ -47,6 +47,9 @@ router.route('/unifyport/accounts/:accountId').get(requireAuth, requireAdminCapa
 router.route('/unifyport/accounts/:accountId/auth').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortAuth).all(methodNotAllowed);
 router.route('/unifyport/accounts/:accountId/auth/qr').post(requireAuth, requireAdminCapabilities('providers.manage'), providerController.unifyPortStartQr).all(methodNotAllowed);
 router.route('/twilio/status').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.twilioStatus).all(methodNotAllowed);
+router.route('/twilio/admin-whatsapp-sender').put(requireAuth, requireAdminCapabilities('providers.manage'), providerController.twilioConfigureAdminWhatsAppSender).all(methodNotAllowed);
+router.route('/twilio/workspace-accounts').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.twilioWorkspaceAccounts).all(methodNotAllowed);
+router.route('/twilio/workspace-accounts/:workspaceId/content-template').put(requireAuth, requireAdminCapabilities('providers.manage'), providerController.twilioConfigureWorkspaceTemplate).all(methodNotAllowed);
 router.route('/twilio/identities').post(requireAuth, requireAdminCapabilities('providers.manage'), providerController.twilioRegisterIdentity).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), controller.getConversations).all(methodNotAllowed);

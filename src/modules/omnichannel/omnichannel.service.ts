@@ -6,6 +6,7 @@ import { recordSecurityEvent } from '../security/security-event.service.js';
 import * as repo from './omnichannel.repo.js';
 import { asTwilioAddress, sendTwilioMessage } from '../provider-control/twilio.client.js';
 import { env } from '../../config/env.js';
+import { getWorkspaceTwilioContentSid, getWorkspaceTwilioCredentials } from '../provider-control/twilio-workspace.service.js';
 
 export async function assertWorkspace(workspaceId:string,userId:string,capability:'omnichannel.read'|'omnichannel.reply'|'omnichannel.manage') { await assertWorkspaceCapability({workspaceId,userId,capability}); }
 export async function list(workspaceId:string,userId:string,filters:any){await assertWorkspace(workspaceId,userId,'omnichannel.read');return repo.listConversations(workspaceId,filters);}
@@ -46,11 +47,21 @@ async function deliverOutboundMessage(workspaceId:string,id:string,userId:string
     await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENDING'});
     const from=asTwilioAddress(transport.channelType,input.accountId??transport.externalIdentityId);
     const to=asTwilioAddress(transport.channelType,recipientId);
+    const identityAccountSid=transportText(transport.identityMetadata?.twilioAccountSid);
+    const transportAuth=identityAccountSid
+      ? await getWorkspaceTwilioCredentials(workspaceId,identityAccountSid)
+      : null;
+    if(identityAccountSid&&!transportAuth)throw new AppError(409,'TWILIO_WORKSPACE_CREDENTIALS_UNAVAILABLE','The workspace WhatsApp sender is not authorized. Lulu will use the admin sender for new conversations.');
     const needsTemplate=transport.channelType==='WHATSAPP'&&requiresWhatsAppTemplate(detail.messages);
-    if(needsTemplate&&!env.TWILIO_WHATSAPP_CONTENT_SID)throw new AppError(409,'TWILIO_WHATSAPP_TEMPLATE_REQUIRED','An approved WhatsApp template is required outside the 24-hour customer-service window. Configure TWILIO_WHATSAPP_CONTENT_SID before sending.');
+    const contentSid=needsTemplate
+      ? identityAccountSid
+        ? await getWorkspaceTwilioContentSid(workspaceId,identityAccountSid)
+        : env.TWILIO_WHATSAPP_CONTENT_SID
+      : null;
+    if(needsTemplate&&!contentSid)throw new AppError(409,identityAccountSid?'TWILIO_WORKSPACE_TEMPLATE_REQUIRED':'TWILIO_WHATSAPP_TEMPLATE_REQUIRED','An approved WhatsApp template belonging to this sender account is required outside the 24-hour customer-service window.');
     const sent=await sendTwilioMessage(needsTemplate
-      ? {from,to,contentSid:env.TWILIO_WHATSAPP_CONTENT_SID!,contentVariables:{'1':input.text}}
-      : {from,to,body:input.text});
+      ? {from,to,contentSid:contentSid!,contentVariables:{'1':input.text}}
+      : {from,to,body:input.text},transportAuth??undefined);
     const delivered=await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENT',providerMessageId:sent.sid});
     if(!delivered)throw new AppError(500,'OMNICHANNEL_REPLY_SAVE_FAILED','The Twilio reply could not be saved.');
     return delivered;

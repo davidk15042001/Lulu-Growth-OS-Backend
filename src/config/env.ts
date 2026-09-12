@@ -166,6 +166,8 @@ const EnvSchema = z
     META_CLIENT_ID: z.string().min(1).optional(),
     META_CLIENT_SECRET: z.string().min(1).optional(),
     META_GRAPH_VERSION: z.string().regex(/^v[0-9.]+$/).default('v23.0'),
+    META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID: optionalNonEmptyString,
+    TWILIO_PARTNER_SOLUTION_ID: optionalNonEmptyString,
     LINKEDIN_CLIENT_ID: z.string().min(1).optional(),
     LINKEDIN_CLIENT_SECRET: z.string().min(1).optional(),
     TIKTOK_ADS_CLIENT_ID: z.string().min(1).optional(),
@@ -204,6 +206,8 @@ const EnvSchema = z
     TWILIO_AUTH_TOKEN: optionalNonEmptyString,
     TWILIO_RUNTIME_ENV_FILE: optionalNonEmptyString,
     TWILIO_BASE_URL: z.string().url().default('https://api.twilio.com'),
+    TWILIO_MESSAGING_BASE_URL: z.string().url().default('https://messaging.twilio.com'),
+    TWILIO_CONTENT_BASE_URL: z.string().url().default('https://content.twilio.com'),
     TWILIO_WEBHOOK_URL: z.string().url().optional(),
     TWILIO_STATUS_CALLBACK_URL: z.string().url().optional(),
     TWILIO_WHATSAPP_FROM: optionalNonEmptyString,
@@ -233,9 +237,6 @@ const EnvSchema = z
     }
     if ((data.TWILIO_API_KEY_SID || data.TWILIO_AUTH_TOKEN) && !data.TWILIO_ACCOUNT_SID) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TWILIO_ACCOUNT_SID'], message: 'TWILIO_ACCOUNT_SID is required when Twilio credentials are configured' });
-    }
-    if (data.TWILIO_WHATSAPP_CONTENT_SID && !data.TWILIO_WHATSAPP_FROM) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TWILIO_WHATSAPP_FROM'], message: 'TWILIO_WHATSAPP_FROM is required when a WhatsApp content template is configured' });
     }
     if (data.NODE_ENV !== 'production') return;
 

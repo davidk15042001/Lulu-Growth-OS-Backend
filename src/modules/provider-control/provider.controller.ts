@@ -1,13 +1,15 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
+import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import { AppError } from '../../utils/app-error.js';
 import * as service from './provider.service.js';
-import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioIdentitySchema, unifyPortAccountSchema } from './provider.validator.js';
+import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioAdminWhatsAppSenderSchema, twilioIdentitySchema, twilioWorkspaceContentTemplateSchema, twilioWorkspaceParamsSchema, unifyPortAccountSchema } from './provider.validator.js';
 import * as unifyPort from './unifyport.client.js';
 import * as twilio from './twilio.client.js';
 import { ingestTwilioWebhook } from './twilio.webhook.service.js';
 import * as omniRepo from '../omnichannel/omnichannel.repo.js';
+import * as twilioWorkspace from './twilio-workspace.service.js';
 
 function workspaceId(req: WorkspaceRequest) {
   const value = req.params.workspaceId;
@@ -104,14 +106,39 @@ export async function webhook(req: Request, res: Response, next: NextFunction) {
 export async function twilioStatus(_req: Request, res: Response, next: NextFunction) {
   try {
     if (!twilio.isTwilioConfigured()) return successResponse(res, 'Twilio is not configured', { configured: false, webhookConfigured: twilio.isTwilioWebhookConfigured(), provider: 'twilio' });
-    const account = await twilio.getTwilioAccount();
-    return successResponse(res, 'Twilio status loaded', { configured: true, webhookConfigured: twilio.isTwilioWebhookConfigured(), provider: 'twilio', account: { sid: account.sid ?? null, friendlyName: account.friendly_name ?? null, status: account.status ?? null, type: account.type ?? null } });
+    const [account, whatsapp] = await Promise.all([twilio.getTwilioAccount(), twilioWorkspace.getAdminWhatsAppConfiguration()]);
+    return successResponse(res, 'Twilio status loaded', { configured: true, webhookConfigured: twilio.isTwilioWebhookConfigured(), provider: 'twilio', account: { sid: account.sid ?? null, friendlyName: account.friendly_name ?? null, status: account.status ?? null, type: account.type ?? null }, whatsapp });
+  } catch (error) { next(error); }
+}
+
+export async function twilioConfigureAdminWhatsAppSender(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const input = twilioAdminWhatsAppSenderSchema.parse(req.body);
+    return successResponse(res, 'Lulu WhatsApp fallback sender configured', await twilioWorkspace.configureAdminWhatsAppSender({ ...input, actorId: req.user!.id }));
+  } catch (error) { next(error); }
+}
+
+export async function twilioWorkspaceAccounts(_req: AuthedRequest, res: Response, next: NextFunction) {
+  try { return successResponse(res, 'Workspace WhatsApp accounts loaded', { accounts: await twilioWorkspace.listWorkspaceWhatsAppAccounts() }); }
+  catch (error) { next(error); }
+}
+
+export async function twilioConfigureWorkspaceTemplate(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const { contentSid } = twilioWorkspaceContentTemplateSchema.parse(req.body);
+    const { workspaceId: targetWorkspaceId } = twilioWorkspaceParamsSchema.parse(req.params);
+    return successResponse(res, 'Workspace WhatsApp template configured', await twilioWorkspace.configureWorkspaceWhatsAppTemplate({
+      workspaceId: targetWorkspaceId, contentSid, actorId: req.user!.id,
+    }));
   } catch (error) { next(error); }
 }
 
 export async function twilioRegisterIdentity(req: Request, res: Response, next: NextFunction) {
   try {
     const input = twilioIdentitySchema.parse(req.body);
+    if (input.channelType === 'WHATSAPP') {
+      throw new AppError(409, 'TWILIO_WHATSAPP_LEGACY_REGISTRATION_DISABLED', 'Use the verified Lulu admin sender or workspace Embedded Signup for WhatsApp.');
+    }
     const address = twilio.asTwilioAddress(input.channelType, input.address);
     const identity = await omniRepo.registerTwilioIdentity({ workspaceId: input.workspaceId, channelType: input.channelType, address, displayName: input.displayName, ...(input.defaultLanguage === undefined ? {} : { defaultLanguage: input.defaultLanguage }) });
     if (!identity) throw new AppError(409, 'TWILIO_IDENTITY_REGISTRATION_CONFLICT', 'The Twilio channel is unavailable or this sender is already assigned to another workspace.');

@@ -34,4 +34,17 @@ export const twilioIdentitySchema = z.object({
   defaultLanguage: z.string().trim().min(2).max(20).nullable().optional(),
 }).strict();
 
+export const twilioAdminWhatsAppSenderSchema = z.object({
+  address: z.string().trim().min(8).max(30),
+  displayName: z.string().trim().min(1).max(160),
+}).strict();
+
+export const twilioWorkspaceContentTemplateSchema = z.object({
+  contentSid: z.string().trim().regex(/^HX[a-fA-F0-9]{32}$/),
+}).strict();
+
+export const twilioWorkspaceParamsSchema = z.object({
+  workspaceId: z.string().uuid(),
+});
+
 export type ProviderMappingInput = z.infer<typeof providerMappingSchema>;

@@ -23,7 +23,9 @@ import {
   updateCustomerSegmentSchema,
   updateOfferingSchema,
   updatePlatformSchema,
+  whatsappEmbeddedSignupCompleteSchema,
 } from './onboarding.validator.js';
+import * as twilioWorkspace from '../provider-control/twilio-workspace.service.js';
 
 function workspaceId(req: WorkspaceRequest) {
   return onboardingRecordParamsSchema.parse(req.params).workspaceId;
@@ -418,6 +420,29 @@ export async function oauthSelfServicePermissions(req: WorkspaceRequest, res: Re
   } catch (error) {
     next(error);
   }
+}
+
+export async function whatsappConnection(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    return successResponse(res, 'Workspace WhatsApp connection loaded', await twilioWorkspace.getWorkspaceWhatsAppConnection(workspaceId(req)));
+  } catch (error) { next(error); }
+}
+
+export async function completeWhatsAppEmbeddedSignup(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const input = whatsappEmbeddedSignupCompleteSchema.parse(req.body);
+    return successResponse(res, 'WhatsApp sender onboarding started', await twilioWorkspace.provisionWorkspaceWhatsApp({
+      workspaceId: workspaceId(req),
+      userId: req.user!.id,
+      ...input,
+    }));
+  } catch (error) { next(error); }
+}
+
+export async function disconnectWhatsApp(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    return successResponse(res, 'Workspace WhatsApp sender disconnected', await twilioWorkspace.disconnectWorkspaceWhatsApp(workspaceId(req), req.user!.id));
+  } catch (error) { next(error); }
 }
 
 function appendQuery(path: string, params: Record<string, string>) {

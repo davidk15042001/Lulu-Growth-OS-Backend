@@ -105,6 +105,15 @@ router.route('/oauth-self-service-permissions')
   .get(requireWorkspaceMember, controller.oauthSelfServicePermissions)
   .all(methodNotAllowed);
 
+router.route('/whatsapp/connection')
+  .get(requireWorkspaceMember, controller.whatsappConnection)
+  .delete(requireWorkspaceEditor, controller.disconnectWhatsApp)
+  .all(methodNotAllowed);
+
+router.route('/whatsapp/embedded-signup/complete')
+  .post(requireWorkspaceEditor, controller.completeWhatsAppEmbeddedSignup)
+  .all(methodNotAllowed);
+
 router.route('/competitors')
   .get(requireWorkspaceMember, controller.listCompetitors)
   .post(requireWorkspaceEditor, controller.createCompetitor)

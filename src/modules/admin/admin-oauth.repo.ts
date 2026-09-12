@@ -220,6 +220,73 @@ export async function setWorkspaceOAuthSelfServicePermission(input: {
       }
     }
 
+    if (input.provider === 'whatsapp') {
+      if (input.allowed) {
+        await query(
+          `UPDATE twilio_workspace_accounts SET
+             status=CASE WHEN upper(sender_status)='ONLINE' THEN 'CONNECTED' ELSE 'PROVISIONING' END,
+             last_error=NULL,updated_at=NOW()
+           WHERE workspace_id=$1 AND status='DISABLED'`,
+          [input.workspaceId],
+          client,
+        );
+        await query(
+          `UPDATE omni_channel_identities i SET
+             status=CASE WHEN upper(a.sender_status)='ONLINE' THEN 'ACTIVE' ELSE 'CONNECTING' END,
+             updated_at=NOW()
+           FROM twilio_workspace_accounts a
+           WHERE a.workspace_id=$1 AND i.workspace_id=a.workspace_id
+             AND i.external_identity_id=a.sender_address`,
+          [input.workspaceId],
+          client,
+        );
+        await query(
+          `UPDATE workspace_platforms p SET
+             connection_status=CASE WHEN upper(a.sender_status)='ONLINE' THEN 'connected' ELSE 'pending' END,
+             last_error=NULL,updated_at=NOW()
+           FROM twilio_workspace_accounts a
+           WHERE a.workspace_id=$1 AND p.workspace_id=a.workspace_id
+             AND p.integration_key='whatsapp' AND p.deleted_at IS NULL`,
+          [input.workspaceId],
+          client,
+        );
+        await query(
+          `UPDATE provider_connections c SET
+             status=CASE WHEN upper(a.sender_status)='ONLINE' THEN 'CONNECTED' ELSE 'CONNECTING' END,
+             authorization_state='AUTHORIZED',
+             health_status=CASE WHEN upper(a.sender_status)='ONLINE' THEN 'HEALTHY' ELSE 'UNKNOWN' END,
+             updated_at=NOW()
+           FROM twilio_workspace_accounts a
+           WHERE a.workspace_id=$1 AND c.workspace_id=a.workspace_id AND c.provider_key='whatsapp'`,
+          [input.workspaceId],
+          client,
+        );
+      } else {
+        await query(`UPDATE twilio_workspace_accounts SET status='DISABLED',updated_at=NOW() WHERE workspace_id=$1`, [input.workspaceId], client);
+        await query(
+          `UPDATE omni_channel_identities i SET status='DISCONNECTED',updated_at=NOW()
+           FROM twilio_workspace_accounts a
+           WHERE a.workspace_id=$1 AND i.workspace_id=a.workspace_id
+             AND i.external_identity_id=a.sender_address`,
+          [input.workspaceId],
+          client,
+        );
+        await query(
+          `UPDATE workspace_platforms SET connection_status='disconnected',last_error=NULL,updated_at=NOW()
+           WHERE workspace_id=$1 AND integration_key='whatsapp' AND deleted_at IS NULL`,
+          [input.workspaceId],
+          client,
+        );
+        await query(
+          `UPDATE provider_connections SET status='DISCONNECTED',authorization_state='NOT_AUTHORIZED',
+             health_status='DISCONNECTED',updated_at=NOW()
+           WHERE workspace_id=$1 AND provider_key='whatsapp'`,
+          [input.workspaceId],
+          client,
+        );
+      }
+    }
+
     await query(
       `INSERT INTO audit_log
         (workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data)

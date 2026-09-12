@@ -42,7 +42,10 @@ describe('request validators', () => {
     const preferences = aiPreferencesSchema.parse({});
     assert.equal(preferences.recommendationStyle, 'balanced');
     assert.equal(preferences.riskTolerance, 'moderate');
-    assert.equal(preferences.actionLevel, 'advisory');
+    assert.equal(preferences.actionLevel, 'automated');
+    assert.equal(preferences.taskCreationMode, 'auto');
+    assert.equal(preferences.approvalThreshold, null);
+    assert.equal(Object.values(preferences.approvalPreferences).every((mode) => mode === 'auto'), true);
     assert.equal(preferences.notificationChannels.in_app, true);
   });
 
