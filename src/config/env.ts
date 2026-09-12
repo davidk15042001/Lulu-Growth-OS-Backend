@@ -202,6 +202,7 @@ const EnvSchema = z
     TWILIO_API_KEY_SID: optionalNonEmptyString,
     TWILIO_API_KEY_SECRET: optionalNonEmptyString,
     TWILIO_AUTH_TOKEN: optionalNonEmptyString,
+    TWILIO_RUNTIME_ENV_FILE: optionalNonEmptyString,
     TWILIO_BASE_URL: z.string().url().default('https://api.twilio.com'),
     TWILIO_WEBHOOK_URL: z.string().url().optional(),
     TWILIO_STATUS_CALLBACK_URL: z.string().url().optional(),
@@ -284,6 +285,24 @@ const raw = { ...process.env } as Record<string, string | undefined>;
 // whether a variable is omitted or copied as `NAME=`.
 for (const [name, value] of Object.entries(raw)) {
   if (typeof value === 'string' && value.trim() === '') delete raw[name];
+}
+
+if ((raw.NODE_ENV ?? 'development') === 'production') {
+  const twilioSecretFile = path.resolve(raw.TWILIO_RUNTIME_ENV_FILE ?? path.join(process.cwd(), '.runtime-secrets', 'twilio.env'));
+  try {
+    const allowed = new Set(['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_WEBHOOK_URL', 'TWILIO_STATUS_CALLBACK_URL']);
+    for (const line of fs.readFileSync(twilioSecretFile, 'utf8').split(/\r?\n/)) {
+      if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
+      const separator = line.indexOf('=');
+      const key = line.slice(0, separator).trim();
+      const value = line.slice(separator + 1).trim();
+      if (allowed.has(key) && value && !raw[key]) raw[key] = value;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`[env] Twilio runtime secret file is unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
 }
 
 // Production hosts may keep the dedicated provider key in a deployment-stable
