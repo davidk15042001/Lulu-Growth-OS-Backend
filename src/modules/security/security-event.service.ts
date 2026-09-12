@@ -6,7 +6,7 @@ export type SecurityEventType = 'API_ERROR' | 'LOGIN_SUCCESS' | 'LOGIN_FAILURE' 
   | 'SESSION_CREATED' | 'SESSION_REVOKED' | 'REFRESH_REUSE_DETECTED' | 'ADMIN_ACTION'
   | 'AUTHORIZATION_DENIED' | 'HIGH_RISK_ACTION_BLOCKED' | 'PROVIDER_CREDENTIAL_CHANGED'
   | 'DOMAIN_VERIFIED' | 'DOMAIN_VERIFICATION_FAILED' | 'DOMAIN_VERIFICATION_ISSUED' | 'PROVIDER_ACTION'
-  | 'PASSWORD_CHANGED';
+  | 'PASSWORD_CHANGED' | 'ADMIN_MFA_CHALLENGE_ISSUED' | 'ADMIN_MFA_CHALLENGE_FAILED' | 'ADMIN_MFA_CHALLENGE_COMPLETED';
 export type ExtendedSecurityEventType = SecurityEventType | 'WORKSPACE_MEMBER_INVITED' | 'WORKSPACE_MEMBER_ACCEPTED' | 'WORKSPACE_MEMBER_ROLE_CHANGED' | 'WORKSPACE_MEMBER_REMOVED' | 'WORKSPACE_OWNERSHIP_TRANSFERRED' | 'ENTITLEMENT_OVERRIDE_ADDED' | 'ENTITLEMENT_OVERRIDE_REMOVED';
 const metadataKeys = new Set(['sessionId','action','reason','outcome','targetId','capability','role','agentId','runId','stepId','recordId','domainId','siteId','provider','keyVersion','approvalId']);
 export function safeSecurityMetadata(value: Record<string, unknown> = {}) {

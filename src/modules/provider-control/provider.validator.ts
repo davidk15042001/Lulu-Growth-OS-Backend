@@ -26,4 +26,12 @@ export const unifyPortAccountSchema = z.object({
   provider_data: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 
+export const twilioIdentitySchema = z.object({
+  workspaceId: z.string().uuid(),
+  channelType: z.enum(['WHATSAPP', 'FACEBOOK_MESSENGER']),
+  address: z.string().trim().min(3).max(300),
+  displayName: z.string().trim().min(1).max(160),
+  defaultLanguage: z.string().trim().min(2).max(20).nullable().optional(),
+}).strict();
+
 export type ProviderMappingInput = z.infer<typeof providerMappingSchema>;

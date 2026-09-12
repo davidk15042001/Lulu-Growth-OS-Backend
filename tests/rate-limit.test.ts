@@ -7,11 +7,13 @@ import { dbRateLimit } from '../src/middlewares/rateLimit.middleware.js';
 describe('weighted rate limiting', () => {
   it('enforces request cost without a database in local and test environments', async () => {
     const app = express();
+    const fixedNow = Date.now();
     app.use(express.json());
     app.post('/limited', dbRateLimit({
       keyPrefix: `weighted-test-${Date.now()}`,
       windowMs: 60_000,
       limit: 10,
+      now: () => fixedNow,
       cost(req) {
         return Number((req.body as { cost?: unknown }).cost ?? 1);
       },

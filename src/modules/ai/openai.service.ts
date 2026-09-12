@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import type { AssistantPendingAction } from './assistant-action.types.js';
-import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasOpenAI } from '../../config/env.js';
+import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasKie, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
 import { recordUsage } from '../usage/usage.service.js';
@@ -54,8 +54,9 @@ let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
 let deepSeekClient: OpenAI | undefined;
 let groqClient: OpenAI | undefined;
+let kieClient: OpenAI | undefined;
 
-type AiProviderName = 'openai' | 'alibaba' | 'deepseek' | 'groq';
+type AiProviderName = 'openai' | 'alibaba' | 'deepseek' | 'groq' | 'kie';
 
 type ProviderCircuitState = {
   failures: number;
@@ -83,16 +84,19 @@ function providerConfigured(provider: AiProviderName) {
   if (provider === 'openai') return hasOpenAI;
   if (provider === 'alibaba') return hasAlibaba;
   if (provider === 'deepseek') return hasDeepSeek;
-  return hasGroq;
+  if (provider === 'groq') return hasGroq;
+  return hasKie;
 }
 
 function configuredProviders() {
-  const allowed = new Set<AiProviderName>(['openai', 'alibaba', 'deepseek', 'groq']);
+  const allowed = new Set<AiProviderName>(['openai', 'alibaba', 'deepseek', 'groq', 'kie']);
   const fallback = env.AI_PROVIDER_FALLBACK_ORDER
     .split(',')
     .map((value) => value.trim().toLowerCase())
     .filter((value): value is AiProviderName => allowed.has(value as AiProviderName));
-  return Array.from(new Set<AiProviderName>([env.AI_PROVIDER, ...fallback])).filter(providerConfigured);
+  // Keep Kie as the final premium fallback even when a deployment still carries
+  // an older, explicitly configured fallback list from before Kie was supported.
+  return Array.from(new Set<AiProviderName>([env.AI_PROVIDER, ...fallback, 'kie'])).filter(providerConfigured);
 }
 
 function getProviderClient(provider: AiProviderName) {
@@ -112,6 +116,12 @@ function getProviderClient(provider: AiProviderName) {
     groqClient ??= new OpenAI({ apiKey: env.GROQ_API_KEY, baseURL: env.GROQ_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return groqClient;
   }
+  if (provider === 'kie' && hasKie) {
+    const compatiblePath=env.KIE_QUALITY_MODEL_PATH.replace(/\/chat\/completions$/,'');
+    const baseURL=new URL(compatiblePath,`${env.KIE_BASE_URL.replace(/\/$/,'')}/`).toString().replace(/\/$/,'');
+    kieClient ??= new OpenAI({apiKey:env.KIE_API_KEY,baseURL,timeout:env.AI_REQUEST_TIMEOUT_MS,maxRetries:env.AI_MAX_RETRIES});
+    return kieClient;
+  }
   throw new AppError(503, 'AI_PROVIDER_NOT_CONFIGURED', `AI provider ${provider} is not configured`);
 }
 
@@ -119,7 +129,8 @@ function modelForProvider(provider: AiProviderName) {
   if (provider === 'openai') return env.OPENAI_MODEL;
   if (provider === 'alibaba') return env.DASHSCOPE_MODEL;
   if (provider === 'deepseek') return env.DEEPSEEK_MODEL;
-  return env.GROQ_MODEL;
+  if (provider === 'groq') return env.GROQ_MODEL;
+  return env.KIE_QUALITY_MODEL;
 }
 
 function providerErrorStatus(error: unknown) {
@@ -172,6 +183,11 @@ function errorMessage(error: unknown) {
 
 function circuitIsOpen(provider: AiProviderName) {
   return (providerCircuits.get(provider)?.blockedUntil ?? 0) > Date.now();
+}
+
+function providerHasBlockingFailure(provider: AiProviderName) {
+  const category = providerCircuits.get(provider)?.lastFailureCategory;
+  return category === 'authentication' || category === 'insufficient_balance' || category === 'model_unavailable';
 }
 
 function markProviderFailure(provider: AiProviderName, error: unknown) {
@@ -261,13 +277,15 @@ export function configuredModel(requestedModel?: string | null) {
 }
 
 export function getAiProviderHealth() {
-  return (['openai', 'alibaba', 'deepseek', 'groq'] as const).map((provider) => {
+  return (['openai', 'alibaba', 'deepseek', 'groq', 'kie'] as const).map((provider) => {
     const state = providerCircuits.get(provider);
+    const operational = providerConfigured(provider) && !circuitIsOpen(provider) && !providerHasBlockingFailure(provider);
     return {
       provider,
       primary: provider === env.AI_PROVIDER,
       configured: providerConfigured(provider),
-      available: providerConfigured(provider) && !circuitIsOpen(provider),
+      available: operational,
+      operational,
       circuitOpenUntil: state?.blockedUntil ? new Date(state.blockedUntil).toISOString() : null,
       consecutiveFailures: state?.failures ?? 0,
       lastFailureStatus: state?.lastFailureStatus ?? null,
@@ -276,6 +294,22 @@ export function getAiProviderHealth() {
       lastError: state?.lastError ?? null,
     };
   });
+}
+
+/**
+ * Performs one minimal completion at process start. Listing models proves that
+ * a key exists, but does not prove that the account can actually execute a
+ * billed request. Failures populate the same circuit state used by readiness
+ * and normal failover, so production can never advertise a known-broken AI
+ * runtime as ready.
+ */
+export async function probeAiRuntime() {
+  const { provider } = await executeWithFailover((candidate, client) => client.chat.completions.create({
+    model: modelForProvider(candidate),
+    messages: [{ role: 'user', content: 'Reply only: OK' }],
+    max_tokens: 2,
+  } as never, { timeout: 10_000, maxRetries: 0 } as never));
+  return { provider, operational: true };
 }
 
 export function getOpenAIResponsesClient(): ResponsesClient {

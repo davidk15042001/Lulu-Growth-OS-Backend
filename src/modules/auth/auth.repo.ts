@@ -117,7 +117,7 @@ export async function ensureInitialWorkspace(
   };
   return transactionClient ? create(transactionClient) : withTransaction(create);
 }
-export async function issueOtp(userId: string, purpose: 'verify_email'|'password_reset') {
+export async function issueOtp(userId: string, purpose: 'login'|'verify_email'|'password_reset') {
   return withTransaction(async client=>{
     const user=(await query<User>(`SELECT ${userColumns} FROM users WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,[userId],client)).rows[0];
     if (!user || (purpose==='verify_email' && user.verified_at)) return null;
@@ -126,7 +126,7 @@ export async function issueOtp(userId: string, purpose: 'verify_email'|'password
     return insertOtp(userId,purpose,client);
   });
 }
-export async function consumeOtp(email: string, code: string, purpose: 'verify_email'|'password_reset', passwordHash?: string) {
+export async function consumeOtp(email: string, code: string, purpose: 'login'|'verify_email'|'password_reset', passwordHash?: string) {
   return withTransaction(async client=>{
     const user=(await query<User>(`SELECT ${userColumns} FROM users WHERE lower(email)=lower($1) AND deleted_at IS NULL FOR UPDATE`,[email],client)).rows[0];
     if(!user) return {invalid:true} as const;
@@ -151,7 +151,7 @@ export async function consumeOtp(email: string, code: string, purpose: 'verify_e
     if(purpose==='verify_email') {
       await query('UPDATE users SET verified_at=NOW() WHERE id=$1',[user.id],client);
       await recordSecurityEvent({eventType:'EMAIL_VERIFIED',userId:user.id},client);
-    } else {
+    } else if(purpose==='password_reset') {
       if(!passwordHash) throw new Error('Password hash required');
       await query('UPDATE users SET password_hash=$2,token_version=token_version+1 WHERE id=$1',[user.id,passwordHash],client);
       await revokeSessionsInTransaction(user.id,null,'password_reset',client);

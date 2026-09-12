@@ -5,8 +5,7 @@ import translationRoutes from './translations/translation.routes.js';
 import oauthRoutes from './onboarding/oauth.routes.js';
 import { RESOURCE_CATALOG, RESOURCE_DOMAINS } from '../domain/resource-catalog.js';
 import { env } from '../config/env.js';
-import { checkDatabase } from '../db/pool.js';
-import { getAiProviderHealth } from './ai/openai.service.js';
+import { getRuntimeReadiness } from '../operations/runtime-readiness.js';
 import billingRoutes from './billing/billing.routes.js';
 import adminRoutes from './admin/admin.routes.js';
 import emailOAuthRoutes from './email/email.oauth.routes.js';
@@ -39,13 +38,8 @@ router.get('/health', (_req, res) => {
 
 router.get('/ready', async (_req, res, next) => {
   try {
-    const database = await checkDatabase();
-    const ready = database.configured && database.connected;
-    const aiProviders = getAiProviderHealth().map(({ lastError: _lastError, ...provider }) => provider);
-    res.status(ready ? 200 : 503).json({
-      success: ready,
-      data: { status: ready ? (aiProviders.some((provider) => provider.available) ? 'ready' : 'degraded') : 'not_ready', database, aiProviders },
-    });
+    const readiness = await getRuntimeReadiness();
+    res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
   } catch (error) {
     next(error);
   }

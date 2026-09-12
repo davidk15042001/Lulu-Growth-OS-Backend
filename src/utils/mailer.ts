@@ -69,6 +69,11 @@ export async function sendOtpEmail(to: string, code: string) {
   await sendMail(to, 'Your Lulu AI verification code', html);
 }
 
+export async function sendAdminLoginOtpEmail(to: string, code: string) {
+  const html = `<p>A sign-in attempt needs confirmation for your Lulu AI administrator account.</p><h2>${code}</h2><p>This code expires soon. If this was not you, change your password immediately.</p>`;
+  await sendMail(to, 'Confirm your Lulu AI admin sign-in', html);
+}
+
 export async function sendResetEmail(to: string, code: string) {
   const html = `<p>Use this Lulu AI code to reset your password:</p><h2>${code}</h2><p>This code expires soon.</p>`;
   await sendMail(to, 'Reset your Lulu AI password', html);

@@ -1,13 +1,13 @@
 import bcrypt from 'bcryptjs';
 import { signToken } from '../../utils/jwt.js';
-import { sendOtpEmail, sendResetEmail } from '../../utils/mailer.js';
+import { sendAdminLoginOtpEmail, sendOtpEmail, sendResetEmail } from '../../utils/mailer.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { assertAdminCapability, getAdminCapabilities } from '../admin/admin.authorization.js';
 import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 
-export type RegisterResult = { ok: true; userId: string; verificationRequired: false } | { conflict: true };
+export type RegisterResult = { ok: true; userId: string; verificationRequired: true } | { conflict: true };
 type SessionUser = {
   id: string;
   email: string;
@@ -54,15 +54,17 @@ function signSessionToken(
   });
 }
 
-export async function registerUser(email: string, password: string, firstName: string, lastName: string): Promise<RegisterResult> {
+export async function registerUser(email: string, password: string, firstName: string, lastName: string, sendVerificationCode:typeof sendOtpEmail=sendOtpEmail): Promise<RegisterResult> {
   const existingUser = await repo.getUserByEmail(email);
   if (existingUser) return { conflict: true };
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
   let user;
-  try { user = await repo.createVerifiedUser(email, passwordHash, firstName, lastName); }
+  try { user = await repo.createUnverifiedUser(email, passwordHash, firstName, lastName); }
   catch(error) { if((error as {code?:string}).code==='23505') return {conflict:true}; throw error; }
-  return { ok: true, userId: user.id, verificationRequired: false };
+  await sendVerificationCode(email, user.code);
+  await recordSecurityEvent({eventType:'EMAIL_VERIFICATION_SENT',userId:user.id,metadata:{reason:'registration'}});
+  return { ok: true, userId: user.id, verificationRequired: true };
 }
 
 export type VerifyResult = { ok: true } | { alreadyVerified:true } | { invalid: true } | { used: true } | { expired: true };
@@ -71,9 +73,18 @@ export async function verifyEmailOtp(email: string, code: string): Promise<Verif
   return repo.consumeOtp(email,code,'verify_email');
 }
 
-export type LoginResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { unverified: true };
+export type LoginResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { unverified: true } | { mfaRequired:true; email:string };
 
-export async function loginUser(email: string, password: string, options?: { userAgent?: string | null; ipAddress?: string | null }): Promise<LoginResult> {
+type LoginOptions={userAgent?:string|null;ipAddress?:string|null;sendAdminCode?:(email:string,code:string)=>Promise<void>};
+async function createLoginSession(user: NonNullable<Awaited<ReturnType<typeof repo.getUserByEmail>>>, email:string, options?: LoginOptions):Promise<LoginResult> {
+  if (user.role === 'user') await repo.ensureInitialWorkspace(user.id, user.first_name, user.last_name, user.email);
+  const session = await repo.createAdditionalSession(user.id, {userAgent:options?.userAgent??null,ipAddress:options?.ipAddress??null});
+  const token = signSessionToken({ id: user.id, email }, session.tokenVersion, session.sessionId);
+  await recordSecurityEvent({eventType:'LOGIN_SUCCESS',userId:user.id,metadata:{sessionId:session.sessionId,mfa:user.role==='admin'}});
+  return {ok:true,token,refreshToken:session.token,user:await buildSessionUser({...user,email})};
+}
+
+export async function loginUser(email: string, password: string, options?: LoginOptions): Promise<LoginResult> {
   const user = await repo.getUserByEmail(email);
   if (!user) { await recordSecurityEvent({eventType:'LOGIN_FAILURE',metadata:{reason:'invalid_credentials'}}); return { invalid: true }; }
 
@@ -85,24 +96,27 @@ export async function loginUser(email: string, password: string, options?: { use
     return {unverified:true};
   }
 
-  if (user.role === 'user') {
-    await repo.ensureInitialWorkspace(user.id, user.first_name, user.last_name, user.email);
+  if(user.role==='admin') {
+    const code=await repo.issueOtp(user.id,'login');
+    if(!code) return {invalid:true};
+    await (options?.sendAdminCode??sendAdminLoginOtpEmail)(user.email,code);
+    await recordSecurityEvent({eventType:'ADMIN_MFA_CHALLENGE_ISSUED',userId:user.id});
+    return {mfaRequired:true,email:user.email};
   }
 
-  const session = await repo.createAdditionalSession(user.id, {
-    userAgent: options?.userAgent ?? null,
-    ipAddress: options?.ipAddress ?? null,
-  });
-  const token = signSessionToken({ id: user.id, email }, session.tokenVersion, session.sessionId);
-  await recordSecurityEvent({eventType:'LOGIN_SUCCESS',userId:user.id,metadata:{sessionId:session.sessionId}});
-  const refreshToken = session.token;
+  return createLoginSession(user,email,options);
+}
 
-  return {
-    ok: true, 
-    token, 
-    refreshToken, 
-    user: await buildSessionUser({ ...user, email })
-  };
+export async function completeAdminLogin(email:string,code:string,options?:{userAgent?:string|null;ipAddress?:string|null}):Promise<LoginResult|{invalidMfa:true}> {
+  const user=await repo.getUserByEmail(email);
+  if(!user||user.role!=='admin'||!user.verified_at)return {invalidMfa:true};
+  const result=await repo.consumeOtp(email,code,'login');
+  if(!('ok' in result)) {
+    await recordSecurityEvent({eventType:'ADMIN_MFA_CHALLENGE_FAILED',userId:user.id,metadata:{reason:'expired' in result?'expired':'invalid'}});
+    return {invalidMfa:true};
+  }
+  await recordSecurityEvent({eventType:'ADMIN_MFA_CHALLENGE_COMPLETED',userId:user.id});
+  return createLoginSession(user,user.email,options);
 }
 
 export type RefreshResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { expired: true } | {reused:true};

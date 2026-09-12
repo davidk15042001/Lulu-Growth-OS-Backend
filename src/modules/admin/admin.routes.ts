@@ -46,6 +46,8 @@ router.route('/unifyport/accounts').get(requireAuth, requireAdminCapabilities('p
 router.route('/unifyport/accounts/:accountId').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortAccount).all(methodNotAllowed);
 router.route('/unifyport/accounts/:accountId/auth').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.unifyPortAuth).all(methodNotAllowed);
 router.route('/unifyport/accounts/:accountId/auth/qr').post(requireAuth, requireAdminCapabilities('providers.manage'), providerController.unifyPortStartQr).all(methodNotAllowed);
+router.route('/twilio/status').get(requireAuth, requireAdminCapabilities('providers.read'), providerController.twilioStatus).all(methodNotAllowed);
+router.route('/twilio/identities').post(requireAuth, requireAdminCapabilities('providers.manage'), providerController.twilioRegisterIdentity).all(methodNotAllowed);
 router.route('/approvals').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getApprovals).all(methodNotAllowed);
 router.route('/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), controller.getConversations).all(methodNotAllowed);
 router.route('/omnichannel/conversations').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminList).all(methodNotAllowed);

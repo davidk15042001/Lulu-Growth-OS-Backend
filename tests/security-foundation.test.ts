@@ -62,6 +62,20 @@ async function newUser(verified=false) {
 const rotate=(token:string)=>{const [selector,validator]=token.split('.');return auth.rotateRefreshToken(selector!,validator!);};
 
 describe('email verification security',()=>{
+  it('public registration requires email ownership before the first workspace and session are created',async()=>{
+    const email=`${crypto.randomUUID()}@example.test`;
+    let code='';
+    const registered=await service.registerUser(email,'Test-password-2026!','Public','Founder',async(_email,value)=>{code=value;});
+    assert.equal('ok' in registered,true);
+    assert.match(code,/^\d{6}$/);
+    const stored=await auth.getUserByEmail(email);
+    assert.equal(stored?.verified_at,null);
+    assert.equal((await db.query(`SELECT id FROM workspaces WHERE created_by=$1`,[stored!.id])).rows.length,0);
+    assert.deepEqual(await service.verifyEmailOtp(email,code),{ok:true});
+    const login=await service.loginUser(email,'Test-password-2026!');
+    assert.equal('ok' in login,true);
+    assert.equal((await db.query(`SELECT id FROM workspaces WHERE created_by=$1`,[stored!.id])).rows.length,1);
+  });
   it('new account stays unverified and cannot log in or open a session',async()=>{
     const user=await newUser();
     assert.equal((await auth.getUserById(user.id))?.verified_at,null);
@@ -148,6 +162,19 @@ describe('company-first account bootstrap',()=>{
 });
 
 describe('sessions and refresh families',()=>{
+  it('requires and verifies an email challenge before creating an administrator session',async()=>{
+    const user=await newUser(true);
+    await db.query(`UPDATE users SET role='admin' WHERE id=$1`,[user.id]);
+    let code='';
+    const challenged=await service.loginUser(user.email,'Test-password-2026!',{sendAdminCode:async(_email,value)=>{code=value;}});
+    assert.equal('mfaRequired' in challenged,true);
+    assert.match(code,/^\d{6}$/);
+    assert.equal((await db.query(`SELECT id FROM auth_sessions WHERE user_id=$1`,[user.id])).rows.length,0);
+    assert.deepEqual(await service.completeAdminLogin(user.email,code==='000000'?'999999':'000000'),{invalidMfa:true});
+    const completed=await service.completeAdminLogin(user.email,code);
+    assert.equal('ok' in completed,true);
+    assert.equal((await db.query(`SELECT id FROM auth_sessions WHERE user_id=$1`,[user.id])).rows.length,1);
+  });
   it('login creates a short signed session without invalidating other logins',async()=>{
     const user=await newUser(true);
     const first=await service.loginUser(user.email,'Test-password-2026!',{userAgent:'Mozilla/5.0 Chrome/200 private-detail',ipAddress:'192.0.2.1'});
@@ -300,6 +327,22 @@ describe('deterministic agent execution authorization',()=>{
     await db.query(`UPDATE workspace_members SET role='viewer' WHERE workspace_id=$1 AND user_id=$2`,[f.context.workspaceId,f.user.id]);
     await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
     assert.equal(executed,1);
+  });
+  it('treats an audited admin billing skip as agent activation without granting wallet funds',async()=>{
+    const f=await agentFixture();
+    await db.query(`DELETE FROM workspace_subscriptions WHERE workspace_id=$1`,[f.context.workspaceId]);
+    await db.query(`UPDATE workspaces SET billing_skipped_at=NOW(),billing_skipped_by=$2 WHERE id=$1`,[f.context.workspaceId,f.user.id]);
+    await db.query(`INSERT INTO workspace_api_wallets(workspace_id,currency,available_amount,total_funded_amount) VALUES($1,'CNY',100,100)`,[f.context.workspaceId]);
+
+    const state=await agentAuth.authorizeAgentIdentity(f.context,true);
+    assert.equal(state.plan_key,'ai');
+    assert.equal(state.subscription_status,'billing_skipped');
+    assert.equal(state.capabilities.autonomous,true);
+    await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
+    let executed=0;
+    await agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;});
+    assert.equal(executed,1);
+    assert.equal((await db.query(`SELECT workspace_id FROM workspace_subscriptions WHERE workspace_id=$1`,[f.context.workspaceId])).rows.length,0);
   });
   it('rejects unfunded budget authority without creating a human approval queue',async()=>{
     const f=await agentFixture('google_reviews.reply');

@@ -11,6 +11,7 @@ import {
   registerSchema,
   verifyOtpSchema,
   loginSchema,
+  adminMfaSchema,
   refreshSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
@@ -20,7 +21,7 @@ import {
 } from './auth.validator.js';
 
 const RT_COOKIE_NAME = 'rt';
-const refreshCookieSameSite = env.REFRESH_COOKIE_SAME_SITE ?? (isProd ? 'none' : 'lax');
+const refreshCookieSameSite = env.REFRESH_COOKIE_SAME_SITE ?? 'lax';
 export const RT_COOKIE_OPTS = {
   httpOnly: true, 
   sameSite: refreshCookieSameSite,
@@ -58,7 +59,7 @@ export async function register(req: Request, res: Response, next: NextFunction) 
       return jsonError(res, 409, 'EMAIL_IN_USE', 'Email already in use');
     }
     
-    return res.status(201).json({ success: true, message: 'Account created. You can sign in.', data: { verificationRequired: false } });
+    return res.status(201).json({ success: true, message: 'Account created. Verify your email to continue.', data: { verificationRequired: true } });
   } catch (e) {
     next(e);
   }
@@ -87,6 +88,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     
     if ('invalid' in result) return jsonError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password');
     if ('unverified' in result) return jsonError(res, 403, 'ACCOUNT_UNVERIFIED', 'Verify your email to continue');
+    if ('mfaRequired' in result) return res.status(202).json({success:true,message:'Administrator verification required',data:{mfaRequired:true,email:result.email}});
     
     setRefreshTokenCookie(res, result.refreshToken);
     
@@ -247,6 +249,17 @@ export async function stopImpersonation(req: AuthedRequest, res: Response, next:
   } catch (error) {
     next(error);
   }
+}
+
+export async function adminMfa(req:Request,res:Response,next:NextFunction){
+  try{
+    const body=adminMfaSchema.parse(req.body);
+    const userAgent=typeof req.headers['user-agent']==='string'?req.headers['user-agent']:null;
+    const result=await service.completeAdminLogin(body.email,body.code,{userAgent,ipAddress:req.ip??null});
+    if('invalidMfa' in result||'invalid' in result||'unverified' in result||'mfaRequired' in result)return jsonError(res,401,'ADMIN_MFA_INVALID','The administrator verification code is invalid or expired');
+    setRefreshTokenCookie(res,result.refreshToken);
+    return res.json({success:true,message:'Administrator verified',data:{token:result.token,user:result.user}});
+  }catch(error){next(error);}
 }
 
 export async function changePassword(req: AuthedRequest, res: Response, next: NextFunction) {

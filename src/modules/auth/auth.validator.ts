@@ -12,7 +12,7 @@ function strongPassword(minLength: number) {
 
 export const registerSchema = z.object({
   email: z.string().trim().email().transform((value) => value.toLowerCase()),
-  password: strongPassword(8),
+  password: strongPassword(12),
   first_name: z.string().trim().min(1).max(100),
   last_name: z.string().trim().min(1).max(100),
 });
@@ -56,4 +56,9 @@ export const updateProfileSchema = z
 export const changePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(128),
   newPassword: strongPassword(12),
+});
+
+export const adminMfaSchema=z.object({
+  email:z.string().trim().email().transform(value=>value.toLowerCase()),
+  code:z.string().regex(/^\d{6}$/),
 });

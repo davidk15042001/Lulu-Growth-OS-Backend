@@ -70,6 +70,10 @@ router.route('/impersonation/stop')
   .post(requireAuth, controller.stopImpersonation)
   .all(methodNotAllowed);
 
+router.route('/admin-mfa')
+  .post(otpLimiter, verificationAccountLimiter, controller.adminMfa)
+  .all(methodNotAllowed);
+
 router.route('/change-password')
   .post(requireAuth, controller.changePassword)
   .all(methodNotAllowed);

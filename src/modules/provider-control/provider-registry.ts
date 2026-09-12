@@ -10,6 +10,7 @@ import type {
   ProviderVerificationResult,
 } from './provider.types.js';
 import { UnifyPortAdapter } from './unifyport.adapter.js';
+import { TwilioAdapter } from './twilio.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -28,6 +29,7 @@ const providerAliases: Record<string, string> = {
   'imap-smtp': 'imap_smtp',
   'unify-port': 'unifyport',
   unify_port: 'unifyport',
+  'twilio-messaging': 'twilio',
 };
 
 export function canonicalProviderKey(value: string) {
@@ -50,10 +52,15 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'google_calendar', displayName: 'Google Calendar', category: 'CALENDAR', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'calendar.read', displayName: 'Read calendar', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'calendar.write', displayName: 'Write calendar', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'meta', displayName: 'Meta', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'meta.ads.manage', displayName: 'Manage Meta ads', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }, { capabilityKey: 'meta.ads.read_spend', displayName: 'Read Meta spend', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'facebook', displayName: 'Facebook', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [] },
-  { providerKey: 'facebook_messenger', displayName: 'Facebook Messenger', category: 'MESSAGING', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
+  { providerKey: 'facebook_messenger', displayName: 'Facebook Messenger', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [] },
   { providerKey: 'instagram', displayName: 'Instagram', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [] },
-  { providerKey: 'whatsapp', displayName: 'WhatsApp', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'whatsapp.messages.send', displayName: 'Send WhatsApp messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' as ProviderCapabilityStatus }] },
-  { providerKey: 'unifyport', displayName: 'UnifyPort', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [
+  { providerKey: 'whatsapp', displayName: 'WhatsApp', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'whatsapp.messages.send', displayName: 'Send WhatsApp messages', requiredScopes: [], defaultStatus: 'AVAILABLE' as ProviderCapabilityStatus }] },
+  { providerKey: 'twilio', displayName: 'Twilio', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [
+    { capabilityKey: 'twilio.messages.send', displayName: 'Send messages', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+    { capabilityKey: 'twilio.messages.receive', displayName: 'Receive messages', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+    { capabilityKey: 'twilio.messages.status', displayName: 'Receive delivery status', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+  ] },
+  { providerKey: 'unifyport', displayName: 'UnifyPort (retired)', category: 'MESSAGING', implementationStatus: 'UNAVAILABLE', defaultMode: 'LULU_MANAGED', capabilities: [
     { capabilityKey: 'unifyport.workspace.read', displayName: 'Read UnifyPort workspace', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
     { capabilityKey: 'unifyport.accounts.read', displayName: 'Read channel accounts', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
     { capabilityKey: 'unifyport.accounts.manage', displayName: 'Manage channel accounts', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
@@ -102,6 +109,7 @@ class ConservativeLegacyAdapter implements ProviderAdapter {
 
 const adapters = new Map<string, ProviderAdapter>(PROVIDER_CATALOG.map((entry) => [entry.providerKey, new ConservativeLegacyAdapter(entry.providerKey)]));
 adapters.set('unifyport', new UnifyPortAdapter());
+adapters.set('twilio', new TwilioAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));

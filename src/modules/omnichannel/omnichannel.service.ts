@@ -4,34 +4,60 @@ import { assertWorkspaceCapability } from '../workspaces/workspace-authorization
 import { query } from '../../db/pool.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import * as repo from './omnichannel.repo.js';
-import { sendMessage as sendUnifyPortMessage } from '../provider-control/unifyport.client.js';
+import { asTwilioAddress, sendTwilioMessage } from '../provider-control/twilio.client.js';
+import { env } from '../../config/env.js';
 
 export async function assertWorkspace(workspaceId:string,userId:string,capability:'omnichannel.read'|'omnichannel.reply'|'omnichannel.manage') { await assertWorkspaceCapability({workspaceId,userId,capability}); }
 export async function list(workspaceId:string,userId:string,filters:any){await assertWorkspace(workspaceId,userId,'omnichannel.read');return repo.listConversations(workspaceId,filters);}
 export async function detail(workspaceId:string,id:string,userId:string){await assertWorkspace(workspaceId,userId,'omnichannel.read');const result=await repo.getConversation(workspaceId,id);if(!result)throw notFoundError('Conversation not found');return result;}
 function transportText(value:unknown){return typeof value==='string'&&value.trim()?value.trim():null;}
-function recipientType(value:unknown):'user'|'group'|'channel'{return value==='group'||value==='channel'?value:'user';}
+export function requiresWhatsAppTemplate(messages:Array<{direction:string;receivedAt?:string|null;createdAt?:string|null}>,now=Date.now()) {
+  const latestInbound=messages
+    .filter(message=>message.direction==='INBOUND')
+    .map(message=>new Date(message.receivedAt??message.createdAt??0).getTime())
+    .filter(Number.isFinite)
+    .sort((a,b)=>b-a)[0]??0;
+  return latestInbound===0 || now-latestInbound>=24*60*60*1000;
+}
 
 async function deliverOutboundMessage(workspaceId:string,id:string,userId:string,input:{text:string;messageType:string;clientMessageId:string;accountId?:string;recipientId?:string;recipientType?:'user'|'group'|'channel';senderType:'USER'|'AI_AGENT'}) {
   const detail=await repo.getConversation(workspaceId,id);
   if(!detail)throw notFoundError('Conversation not found');
   if(detail.conversation.status==='SPAM'||detail.conversation.status==='CLOSED')throw forbiddenError('This conversation is not accepting messages');
   const existing=detail.messages.find(message=>message.clientMessageId===input.clientMessageId);
-  if(existing)return existing;
+  if(existing){
+    if(existing.status==='FAILED')throw new AppError(502,'OMNICHANNEL_DELIVERY_PREVIOUSLY_FAILED','The previous delivery attempt failed; create a new delivery request before retrying.');
+    return existing;
+  }
   const transport=await repo.getConversationTransport(workspaceId,id);
   if(!transport)throw notFoundError('Conversation transport not found');
-  let providerMessageId:string|null=null;
-  if(transport.channelType!=='WEBSITE_CHAT'){
-    const identityMetadata=transport.identityMetadata??{};
+  const queued=await repo.createMessage({workspaceId,conversationId:id,channelId:transport.channelId,channelIdentityId:transport.channelIdentityId,direction:'OUTBOUND',senderType:input.senderType,senderUserId:userId,messageType:input.messageType,text:input.text,status:'QUEUED',clientMessageId:input.clientMessageId,providerMessageId:null},userId);
+  if(transport.channelType==='WEBSITE_CHAT'){
+    const delivered=await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENT'});
+    if(!delivered)throw new AppError(500,'OMNICHANNEL_REPLY_SAVE_FAILED','The website-chat reply could not be saved.');
+    return delivered;
+  }
+  try {
     const conversationMetadata=transport.conversationMetadata??{};
     const recipientMetadata=transport.recipient?.metadata??{};
-    const accountId=input.accountId??transportText(identityMetadata.unifyportAccountId)??transport.externalIdentityId;
     const recipientId=input.recipientId??transportText(recipientMetadata.externalId)??transportText(conversationMetadata.externalSenderKey)??transport.recipient?.participantKey??null;
-    if(!accountId||!recipientId)throw new AppError(409,'OMNICHANNEL_DELIVERY_CONTEXT_MISSING','The social channel account or recipient is missing from this conversation.');
-    const sent=await sendUnifyPortMessage({account_id:accountId,to:{id:recipientId,type:recipientType(input.recipientType??recipientMetadata.recipientType)},message:{type:input.messageType.toLowerCase(),text:input.text}});
-    providerMessageId=transportText(sent.id)??transportText(sent.message_id)??transportText(sent.messageId);
+    if(!recipientId)throw new AppError(409,'OMNICHANNEL_DELIVERY_CONTEXT_MISSING','The recipient is missing from this conversation.');
+    if(transport.provider!=='twilio')throw new AppError(409,'OMNICHANNEL_PROVIDER_UNSUPPORTED',`No verified outbound adapter is enabled for ${transport.provider}.`);
+    await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENDING'});
+    const from=asTwilioAddress(transport.channelType,input.accountId??transport.externalIdentityId);
+    const to=asTwilioAddress(transport.channelType,recipientId);
+    const needsTemplate=transport.channelType==='WHATSAPP'&&requiresWhatsAppTemplate(detail.messages);
+    if(needsTemplate&&!env.TWILIO_WHATSAPP_CONTENT_SID)throw new AppError(409,'TWILIO_WHATSAPP_TEMPLATE_REQUIRED','An approved WhatsApp template is required outside the 24-hour customer-service window. Configure TWILIO_WHATSAPP_CONTENT_SID before sending.');
+    const sent=await sendTwilioMessage(needsTemplate
+      ? {from,to,contentSid:env.TWILIO_WHATSAPP_CONTENT_SID!,contentVariables:{'1':input.text}}
+      : {from,to,body:input.text});
+    const delivered=await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENT',providerMessageId:sent.sid});
+    if(!delivered)throw new AppError(500,'OMNICHANNEL_REPLY_SAVE_FAILED','The Twilio reply could not be saved.');
+    return delivered;
+  } catch(error) {
+    await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'FAILED',errorCode:error instanceof AppError?error.code:'OMNICHANNEL_DELIVERY_FAILED'});
+    throw error;
   }
-  return repo.createMessage({workspaceId,conversationId:id,channelId:transport.channelId,channelIdentityId:transport.channelIdentityId,direction:'OUTBOUND',senderType:input.senderType,senderUserId:userId,messageType:input.messageType,text:input.text,status:'SENT',clientMessageId:input.clientMessageId,providerMessageId},userId);
 }
 
 export async function send(workspaceId:string,id:string,userId:string,input:{text:string;messageType:string;clientMessageId?:string}) {
@@ -43,7 +69,7 @@ export async function send(workspaceId:string,id:string,userId:string,input:{tex
 }
 
 /** Sends an agent-authored reply through the real channel transport. Website
- * chat is delivered from the database; external social channels use UnifyPort. */
+ * chat is delivered from the database; WhatsApp and Messenger use Twilio. */
 export async function sendAutonomousMessage(workspaceId:string,id:string,userId:string,input:{text:string;messageType?:string;clientMessageId:string;accountId?:string;recipientId?:string;recipientType?:'user'|'group'|'channel'}) {
   await assertWorkspaceCapability({workspaceId,userId,capability:'omnichannel.reply',actorType:'AI_AGENT'});
   return deliverOutboundMessage(workspaceId,id,userId,{...input,messageType:input.messageType??'TEXT',senderType:'AI_AGENT'});

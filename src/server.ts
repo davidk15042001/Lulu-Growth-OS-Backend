@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import app from './app.js';
-import { env, hasDb } from './config/env.js';
+import { env, hasAiProvider, hasDb } from './config/env.js';
 import { logger } from './config/logger.js';
 import { ensureMigrations } from './database/migrate.js';
 import { pool } from './db/pool.js';
@@ -22,6 +22,8 @@ import { startAssistantActionWorker, stopAssistantActionWorker } from './modules
 import { startCommercialDocumentDeliveryWorker, stopCommercialDocumentDeliveryWorker } from './modules/commercial-documents/commercial-document.delivery.service.js';
 import { startPremiumMediaWorker, stopPremiumMediaWorker } from './modules/premium-media/premium-media.worker.js';
 import { startCompanyIntelligenceWorker } from './modules/crm-company/company-intelligence.worker.js';
+import { startOmnichannelAiReplyWorker } from './modules/omnichannel/omnichannel.ai-reply.worker.js';
+import { probeAiRuntime } from './modules/ai/openai.service.js';
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -30,6 +32,12 @@ async function bootstrap() {
 
   if (hasDb) {
     await syncResourceCatalog();
+  }
+
+  if (hasAiProvider) {
+    await probeAiRuntime().catch((error) => {
+      logger.error({ error }, 'AI startup probe failed; readiness will remain unavailable until a provider succeeds');
+    });
   }
 
   const workersEnabled = env.BACKGROUND_WORKERS_ENABLED && !process.env.VERCEL;
@@ -52,6 +60,7 @@ async function bootstrap() {
       startCommercialDocumentDeliveryWorker();
       startPremiumMediaWorker();
       startCompanyIntelligenceWorker();
+      startOmnichannelAiReplyWorker();
     }
   }
 

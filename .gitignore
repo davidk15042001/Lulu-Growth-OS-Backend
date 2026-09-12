@@ -4,3 +4,10 @@
 dist
 coverage
 *.log
+.codex-build/
+output/
+outputs/
+tmp/
+*.tgz
+*.tar.gz
+*.zip

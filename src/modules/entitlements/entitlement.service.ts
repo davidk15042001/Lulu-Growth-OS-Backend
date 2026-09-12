@@ -9,11 +9,26 @@ type EntitlementRow = { key: EntitlementKey; valueType: 'boolean' | 'limit'; ena
 export async function resolveWorkspaceEntitlements(workspaceId: string, client?: PoolClient): Promise<Record<EntitlementKey, EffectiveEntitlement>> {
   const rows = (await query<EntitlementRow>(
     `WITH plan_values AS (
-       SELECT d.key, d.value_type AS "valueType", COALESCE(pe.enabled, FALSE) AS enabled,
+       SELECT d.key, d.value_type AS "valueType",
+              CASE
+                WHEN w.billing_skipped_at IS NOT NULL AND d.key IN ('ai.enabled','ai.autonomous_agents') THEN TRUE
+                ELSE COALESCE(pe.enabled, FALSE)
+              END AS enabled,
               pe.limit_value AS "limitValue", 'plan'::text AS source,
-              'Subscription plan'::text AS reason
+              CASE
+                WHEN w.billing_skipped_at IS NOT NULL AND d.key IN ('ai.enabled','ai.autonomous_agents')
+                  THEN 'Audited administrator billing skip'
+                ELSE 'Subscription plan'
+              END::text AS reason
          FROM entitlement_definitions d
-         LEFT JOIN workspace_subscriptions ws ON ws.workspace_id = $1
+         LEFT JOIN workspaces w ON w.id = $1 AND w.deleted_at IS NULL
+         LEFT JOIN LATERAL (
+           SELECT subscription.plan_key
+           FROM workspace_subscriptions subscription
+           WHERE subscription.workspace_id = $1
+           ORDER BY subscription.updated_at DESC
+           LIMIT 1
+         ) ws ON TRUE
          LEFT JOIN plan_entitlements pe ON pe.plan_key = COALESCE(ws.plan_key, 'starter') AND pe.entitlement_key = d.key
      ), overrides AS (
        SELECT DISTINCT ON (entitlement_key) entitlement_key AS key, NULL::text AS "valueType",

@@ -56,8 +56,8 @@ const EnvSchema = z
     MAILCOW_SMTP_SECURE: booleanString.default(false),
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
-    AI_PROVIDER: z.enum(['openai', 'alibaba', 'deepseek', 'groq']).default('deepseek'),
-    AI_PROVIDER_FALLBACK_ORDER: z.string().default('openai,alibaba,deepseek,groq'),
+    AI_PROVIDER: z.enum(['openai', 'alibaba', 'deepseek', 'groq', 'kie']).default('deepseek'),
+    AI_PROVIDER_FALLBACK_ORDER: z.string().default('openai,alibaba,deepseek,groq,kie'),
     AI_CIRCUIT_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
@@ -193,8 +193,23 @@ const EnvSchema = z
     AIRWALLEX_WEBHOOK_SECRET: z.string().min(1).optional(),
     AIRWALLEX_LOGIN_AS: z.string().min(1).optional(),
     AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS: z.coerce.number().int().positive().default(300),
-    // Platform-scoped UnifyPort messaging transport. The API key is never
-    // returned to clients or persisted in provider metadata.
+    // Platform-scoped Twilio transport. Prefer a restricted API key for REST
+    // calls; the auth token is also required to validate Twilio webhooks.
+    TWILIO_ACCOUNT_SID: optionalNonEmptyString,
+    TWILIO_API_KEY_SID: optionalNonEmptyString,
+    TWILIO_API_KEY_SECRET: optionalNonEmptyString,
+    TWILIO_AUTH_TOKEN: optionalNonEmptyString,
+    TWILIO_BASE_URL: z.string().url().default('https://api.twilio.com'),
+    TWILIO_WEBHOOK_URL: z.string().url().optional(),
+    TWILIO_STATUS_CALLBACK_URL: z.string().url().optional(),
+    TWILIO_WHATSAPP_FROM: optionalNonEmptyString,
+    TWILIO_MESSENGER_FROM: optionalNonEmptyString,
+    // Approved WhatsApp template used when Lulu must contact a customer
+    // outside Meta's 24-hour free-form service window. The template should
+    // contain one {{1}} variable for the generated message text.
+    TWILIO_WHATSAPP_CONTENT_SID: z.string().regex(/^HX[a-fA-F0-9]{32}$/).optional(),
+    // Deprecated compatibility variables. No new OmniChannel delivery uses
+    // UnifyPort, but the old adapter remains readable during migration.
     UNIFYPORT_API_KEY: optionalNonEmptyString,
     UNIFYPORT_BASE_URL: z.string().url().default('https://api.unifyport.ai'),
     UNIFYPORT_WEBHOOK_SIGNING_SECRET: optionalNonEmptyString,
@@ -209,6 +224,15 @@ const EnvSchema = z
     PROVIDER_WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
   })
   .superRefine((data, ctx) => {
+    if (Boolean(data.TWILIO_API_KEY_SID) !== Boolean(data.TWILIO_API_KEY_SECRET)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TWILIO_API_KEY_SECRET'], message: 'TWILIO_API_KEY_SID and TWILIO_API_KEY_SECRET must be configured together' });
+    }
+    if ((data.TWILIO_API_KEY_SID || data.TWILIO_AUTH_TOKEN) && !data.TWILIO_ACCOUNT_SID) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TWILIO_ACCOUNT_SID'], message: 'TWILIO_ACCOUNT_SID is required when Twilio credentials are configured' });
+    }
+    if (data.TWILIO_WHATSAPP_CONTENT_SID && !data.TWILIO_WHATSAPP_FROM) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TWILIO_WHATSAPP_FROM'], message: 'TWILIO_WHATSAPP_FROM is required when a WhatsApp content template is configured' });
+    }
     if (data.NODE_ENV !== 'production') return;
 
     if (data.AI_PROVIDER === 'openai' && !data.OPENAI_API_KEY) {
@@ -222,6 +246,9 @@ const EnvSchema = z
     }
     if (data.AI_PROVIDER === 'groq' && !data.GROQ_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['GROQ_API_KEY'], message: 'GROQ_API_KEY is required when AI_PROVIDER=groq in production' });
+    }
+    if (data.AI_PROVIDER === 'kie' && !data.KIE_API_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['KIE_API_KEY'], message: 'KIE_API_KEY is required when AI_PROVIDER=kie in production' });
     }
     // Provider credentials may predate the dedicated encryption key.  Keeping
     // the key optional lets those legacy v1 credentials remain readable while
@@ -273,5 +300,5 @@ export const hasOpenAI = !!env.OPENAI_API_KEY;
 export const hasAlibaba = !!env.DASHSCOPE_API_KEY;
 export const hasDeepSeek = !!env.DEEPSEEK_API_KEY;
 export const hasGroq = !!env.GROQ_API_KEY;
-export const hasAiProvider = hasOpenAI || hasAlibaba || hasDeepSeek || hasGroq;
 export const hasKie = !!env.KIE_API_KEY;
+export const hasAiProvider = hasOpenAI || hasAlibaba || hasDeepSeek || hasGroq || hasKie;

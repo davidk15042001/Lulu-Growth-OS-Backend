@@ -27,6 +27,8 @@ describe('HTTP application', () => {
     assert.equal(response.status, 503);
     assert.equal(response.body.success, false);
     assert.equal(response.body.data.database.configured, false);
+    assert.ok(response.body.data.blockers.includes('database'));
+    assert.ok(response.body.data.blockers.includes('ai'));
   });
 
   it('reports not ready when DATABASE_URL is not configured', async () => {

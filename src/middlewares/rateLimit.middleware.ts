@@ -12,6 +12,8 @@ type DbRateLimitOptions = {
   message?: string;
   identifier?: (req: Request) => string | null | undefined;
   cost?: (req: Request) => number;
+  /** Injectable clock keeps boundary-sensitive tests deterministic. */
+  now?: () => number;
 };
 
 function defaultIdentifier(req: Request) {
@@ -20,7 +22,7 @@ function defaultIdentifier(req: Request) {
 }
 
 export function dbRateLimit(opts: DbRateLimitOptions) {
-  const { keyPrefix, windowMs, limit, message, identifier, cost } = opts;
+  const { keyPrefix, windowMs, limit, message, identifier, cost, now = Date.now } = opts;
   const memoryWindows = new Map<string, { count: number; expiresAt: number }>();
 
   return async function dbRateLimitMiddleware(req: Request, res: Response, next: NextFunction) {
@@ -31,7 +33,8 @@ export function dbRateLimit(opts: DbRateLimitOptions) {
       const increment = Number.isFinite(rawIncrement)
         ? Math.max(1, Math.min(1_000_000, Math.trunc(rawIncrement)))
         : 1;
-      const windowStartMs = Math.floor(Date.now() / windowMs) * windowMs;
+      const requestNow = now();
+      const windowStartMs = Math.floor(requestNow / windowMs) * windowMs;
 
       if (!hasDb) {
         const memoryKey = `${key}:${windowStartMs}`;
@@ -39,9 +42,9 @@ export function dbRateLimit(opts: DbRateLimitOptions) {
         const count = (current?.count ?? 0) + increment;
         memoryWindows.set(memoryKey, { count, expiresAt: windowStartMs + windowMs });
         if (memoryWindows.size > 10_000) {
-          const now = Date.now();
+          const cleanupNow = now();
           for (const [entryKey, entry] of memoryWindows) {
-            if (entry.expiresAt <= now) memoryWindows.delete(entryKey);
+            if (entry.expiresAt <= cleanupNow) memoryWindows.delete(entryKey);
           }
         }
         if (count > limit) return tooManyRequests(res, message);

@@ -34,16 +34,26 @@ async function deny(context:Partial<AgentExecutionIdentity>,reason:string):Promi
 export async function authorizeAgentIdentity(context:AgentExecutionIdentity,write=false) {
   if(![context.workspaceId,context.userId,context.runId,context.stepId].every(value=>/^[a-f\d-]{36}$/i.test(value))) return deny(context,'invalid_identity');
   const state=(await query<{module:unknown;tool_name:string|null;agent_role:string;tool_input:unknown;approval_id:string|null;plan_key:SubscriptionPlan;subscription_status:string;role:string}>(
-    `SELECT r.plan->>'module' AS module,s.tool_name,s.agent_role,s.tool_input,s.approval_id,p.plan_key,p.status AS subscription_status,m.role
+    `SELECT r.plan->>'module' AS module,s.tool_name,s.agent_role,s.tool_input,s.approval_id,
+            CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'ai' ELSE p.plan_key END AS plan_key,
+            CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'billing_skipped' ELSE p.status END AS subscription_status,
+            m.role
       FROM agent_runs r JOIN agent_run_steps s ON s.run_id=r.id AND s.workspace_id=r.workspace_id
       JOIN workspaces w ON w.id=r.workspace_id AND w.deleted_at IS NULL
       JOIN workspace_members m ON m.workspace_id=w.id AND m.user_id=$2
       JOIN users u ON u.id=m.user_id AND u.deleted_at IS NULL AND u.verified_at IS NOT NULL
-      JOIN workspace_subscriptions p ON p.workspace_id=w.id
+      LEFT JOIN LATERAL (
+        SELECT subscription.plan_key,subscription.status
+        FROM workspace_subscriptions subscription
+        WHERE subscription.workspace_id=w.id
+        ORDER BY subscription.updated_at DESC
+        LIMIT 1
+      ) p ON TRUE
       WHERE r.workspace_id=$1 AND r.id=$3 AND s.id=$4 AND COALESCE(r.created_by,w.created_by)=$2
+        AND (w.billing_skipped_at IS NOT NULL OR p.plan_key IS NOT NULL)
         AND r.status NOT IN ('failed','cancelled')`,[context.workspaceId,context.userId,context.runId,context.stepId])).rows[0];
   if(!state || !roleCan(state.role, 'agents.execute') || !['planner','analyst','strategist','executor','reviewer'].includes(state.agent_role)) return deny(context,'tenant_or_actor_permission');
-  if(!isAgentModule(state.module) || !['active','trialing'].includes(state.subscription_status)) return deny(context,'inactive_entitlement');
+  if(!isAgentModule(state.module) || !['active','trialing','billing_skipped'].includes(state.subscription_status)) return deny(context,'inactive_entitlement');
   const effectiveEntitlements = await resolveWorkspaceEntitlements(context.workspaceId);
   if (!effectiveEntitlements['ai.enabled'].enabled) return deny(context, 'ai_entitlement_disabled');
   // Plan-specific agent behavior is retained for compatibility, but it may

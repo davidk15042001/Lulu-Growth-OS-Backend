@@ -3,8 +3,11 @@ import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js
 import { createdResponse, successResponse } from '../../utils/response.js';
 import { AppError } from '../../utils/app-error.js';
 import * as service from './provider.service.js';
-import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, unifyPortAccountSchema } from './provider.validator.js';
+import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioIdentitySchema, unifyPortAccountSchema } from './provider.validator.js';
 import * as unifyPort from './unifyport.client.js';
+import * as twilio from './twilio.client.js';
+import { ingestTwilioWebhook } from './twilio.webhook.service.js';
+import * as omniRepo from '../omnichannel/omnichannel.repo.js';
 
 function workspaceId(req: WorkspaceRequest) {
   const value = req.params.workspaceId;
@@ -77,6 +80,11 @@ export async function createMapping(req: WorkspaceRequest, res: Response, next: 
 export async function webhook(req: Request, res: Response, next: NextFunction) {
   try {
     const { provider } = providerParamsSchema.parse(req.params);
+    if (provider.trim().toLowerCase().replaceAll('-', '_') === 'twilio') {
+      const payload = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>;
+      await ingestTwilioWebhook(payload, req.header('x-twilio-signature') ?? undefined);
+      return res.status(200).type('text/xml').send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+    }
     const rawBody = (req as Request & { rawBody?: string }).rawBody;
     if (!rawBody) throw new AppError(400, 'PROVIDER_WEBHOOK_RAW_BODY_MISSING', 'Provider webhook raw body is missing');
     const payload = (req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {}) as Record<string, unknown>;
@@ -90,6 +98,24 @@ export async function webhook(req: Request, res: Response, next: NextFunction) {
     const eventId = isUnifyPort ? req.header('x-device-event-id') ?? req.header('x-device-delivery-id') ?? undefined : req.header('x-provider-event-id') ?? req.header('x-event-id') ?? undefined;
     const result = await service.ingestProviderWebhook({ provider, rawBody, payload, ...(signature ? { signature } : {}), ...(timestamp ? { timestamp } : {}), ...(nonce ? { nonce } : {}), ...(connectionId ? { connectionId } : {}), ...(accountId ? { accountId } : {}), ...(correlationId ? { correlationId } : {}), ...(eventId ? { eventId } : {}) });
     return successResponse(res, result.duplicate ? 'Provider webhook was already processed' : 'Provider webhook accepted', result);
+  } catch (error) { next(error); }
+}
+
+export async function twilioStatus(_req: Request, res: Response, next: NextFunction) {
+  try {
+    if (!twilio.isTwilioConfigured()) return successResponse(res, 'Twilio is not configured', { configured: false, webhookConfigured: twilio.isTwilioWebhookConfigured(), provider: 'twilio' });
+    const account = await twilio.getTwilioAccount();
+    return successResponse(res, 'Twilio status loaded', { configured: true, webhookConfigured: twilio.isTwilioWebhookConfigured(), provider: 'twilio', account: { sid: account.sid ?? null, friendlyName: account.friendly_name ?? null, status: account.status ?? null, type: account.type ?? null } });
+  } catch (error) { next(error); }
+}
+
+export async function twilioRegisterIdentity(req: Request, res: Response, next: NextFunction) {
+  try {
+    const input = twilioIdentitySchema.parse(req.body);
+    const address = twilio.asTwilioAddress(input.channelType, input.address);
+    const identity = await omniRepo.registerTwilioIdentity({ workspaceId: input.workspaceId, channelType: input.channelType, address, displayName: input.displayName, ...(input.defaultLanguage === undefined ? {} : { defaultLanguage: input.defaultLanguage }) });
+    if (!identity) throw new AppError(409, 'TWILIO_IDENTITY_REGISTRATION_CONFLICT', 'The Twilio channel is unavailable or this sender is already assigned to another workspace.');
+    return createdResponse(res, 'Twilio channel identity registered', identity);
   } catch (error) { next(error); }
 }
 

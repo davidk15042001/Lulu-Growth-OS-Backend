@@ -14,6 +14,7 @@ export async function listChannels(workspaceId:string) {
     COALESCE(jsonb_agg(jsonb_build_object('id',ci.id,'workspaceId',ci.workspace_id,'websiteId',ci.website_id,'identityType',ci.identity_type,'externalIdentityId',ci.external_identity_id,'displayName',ci.display_name,'mode',ci.mode,'status',ci.status,'defaultLanguage',ci.default_language,'capabilities',ci.capabilities)) FILTER (WHERE ci.id IS NOT NULL),'[]'::jsonb) AS identities
     FROM omni_channels c LEFT JOIN omni_channel_identities ci ON ci.channel_id=c.id AND ${workspaceId==='__ADMIN__'?'TRUE':'ci.workspace_id=$1'}
     WHERE c.channel_type NOT IN ('WECHAT','SMS')
+      AND NOT (c.channel_type IN ('WHATSAPP','FACEBOOK_MESSENGER') AND c.provider <> 'twilio')
     GROUP BY c.id ORDER BY c.display_name`,workspaceId==='__ADMIN__'?[]:[workspaceId]);
   const result=rows.map((r:any)=>({id:r.id,channelType:r.channel_type,provider:r.provider,status:r.status,displayName:r.display_name,capabilities:r.capabilities,identities:r.identities}));
   if(workspaceId!=='__ADMIN__') {
@@ -106,12 +107,99 @@ export async function createConversation(input:{workspaceId:string;channelId:str
   const result=mapConversation(r.rows[0]); await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.CONVERSATION_CREATED,aggregateType:'conversation',aggregateId:result.id,payload:{channelId:input.channelId,channelIdentityId:input.channelIdentityId},metadata:{actorId:actorId??null,source:'omnichannel'}}); return result;
 }
 
-export async function createMessage(input:{workspaceId:string;conversationId:string;channelId:string;channelIdentityId:string;direction:'INBOUND'|'OUTBOUND'|'INTERNAL';senderType:string;senderUserId?:string|null;messageType:string;text:string;status?:string;clientMessageId?:string;providerMessageId?:string|null}, actorId?:string|null) {
+export async function createMessage(input:{workspaceId:string;conversationId:string;channelId:string;channelIdentityId:string;direction:'INBOUND'|'OUTBOUND'|'INTERNAL';senderType:string;senderUserId?:string|null;messageType:string;text:string;status?:string;clientMessageId?:string;providerMessageId?:string|null;metadata?:Record<string,unknown>}, actorId?:string|null) {
   const existing=input.clientMessageId?await query(`SELECT * FROM omni_messages WHERE workspace_id=$1 AND conversation_id=$2 AND client_message_id=$3`,[input.workspaceId,input.conversationId,input.clientMessageId]):{rows:[]};
   if(existing.rows[0]) return mapMessage(existing.rows[0]);
-  const r=await query(`INSERT INTO omni_messages(workspace_id,conversation_id,channel_id,channel_identity_id,direction,sender_type,sender_user_id,message_type,text_content,status,client_message_id,provider_message_id,sent_at,received_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,CASE WHEN $5='OUTBOUND' THEN NOW() END,CASE WHEN $5='INBOUND' THEN NOW() END) RETURNING *`,[input.workspaceId,input.conversationId,input.channelId,input.channelIdentityId,input.direction,input.senderType,input.senderUserId??null,input.messageType,input.text,input.status??(input.direction==='INBOUND'?'RECEIVED':'QUEUED'),input.clientMessageId??null,input.providerMessageId??null]);
+  const r=await query(`INSERT INTO omni_messages(workspace_id,conversation_id,channel_id,channel_identity_id,direction,sender_type,sender_user_id,message_type,text_content,status,client_message_id,provider_message_id,metadata,sent_at,received_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,CASE WHEN $5='OUTBOUND' THEN NOW() END,CASE WHEN $5='INBOUND' THEN NOW() END) ON CONFLICT DO NOTHING RETURNING *`,[input.workspaceId,input.conversationId,input.channelId,input.channelIdentityId,input.direction,input.senderType,input.senderUserId??null,input.messageType,input.text,input.status??(input.direction==='INBOUND'?'RECEIVED':'QUEUED'),input.clientMessageId??null,input.providerMessageId??null,input.metadata??{}]);
+  if(!r.rows[0]) {
+    const raced=input.clientMessageId
+      ? await query(`SELECT * FROM omni_messages WHERE workspace_id=$1 AND conversation_id=$2 AND client_message_id=$3`,[input.workspaceId,input.conversationId,input.clientMessageId])
+      : input.providerMessageId
+        ? await query(`SELECT * FROM omni_messages WHERE channel_identity_id=$1 AND provider_message_id=$2`,[input.channelIdentityId,input.providerMessageId])
+        : {rows:[]};
+    if(raced.rows[0])return mapMessage(raced.rows[0]);
+    throw new Error('OmniChannel message could not be persisted.');
+  }
   await query(`UPDATE omni_conversations SET last_message_at=NOW(),first_message_at=COALESCE(first_message_at,NOW()),updated_at=NOW(),version=version+1 WHERE workspace_id=$1 AND id=$2`,[input.workspaceId,input.conversationId]);
-  const msg=mapMessage(r.rows[0]); await appendDomainEvent({workspaceId:input.workspaceId,type:input.direction==='INBOUND'?DOMAIN_EVENT_TYPES.MESSAGE_RECEIVED:input.direction==='INTERNAL'?DOMAIN_EVENT_TYPES.MESSAGE_QUEUED:DOMAIN_EVENT_TYPES.MESSAGE_QUEUED,aggregateType:'message',aggregateId:msg.id,payload:{conversationId:input.conversationId,status:msg.status,direction:input.direction},metadata:{actorId:actorId??null,source:'omnichannel'}}); return msg;
+  const msg=mapMessage(r.rows[0]);
+  if(input.direction==='INBOUND')await query(`INSERT INTO omni_ai_reply_jobs(message_id,workspace_id,conversation_id) VALUES($1,$2,$3) ON CONFLICT(message_id) DO NOTHING`,[msg.id,input.workspaceId,input.conversationId]);
+  await appendDomainEvent({workspaceId:input.workspaceId,type:input.direction==='INBOUND'?DOMAIN_EVENT_TYPES.MESSAGE_RECEIVED:input.direction==='INTERNAL'?DOMAIN_EVENT_TYPES.MESSAGE_QUEUED:DOMAIN_EVENT_TYPES.MESSAGE_QUEUED,aggregateType:'message',aggregateId:msg.id,payload:{conversationId:input.conversationId,status:msg.status,direction:input.direction},metadata:{actorId:actorId??null,source:'omnichannel'}}); return msg;
+}
+
+export async function claimAiReplyJob(messageId:string) {
+  const {rows}=await query<{messageId:string;workspaceId:string;conversationId:string}>(`UPDATE omni_ai_reply_jobs SET status='PROCESSING',attempts=attempts+1,locked_at=NOW(),updated_at=NOW()
+    WHERE message_id=$1 AND (status IN ('PENDING','WAITING_FUNDS') OR (status='PROCESSING' AND locked_at<NOW()-INTERVAL '5 minutes'))
+    RETURNING message_id AS "messageId",workspace_id AS "workspaceId",conversation_id AS "conversationId"`,[messageId]);
+  return rows[0]??null;
+}
+
+export async function markAiReplyJob(messageId:string,status:'PENDING'|'WAITING_FUNDS'|'SUCCEEDED'|'FAILED',error?:string|null) {
+  await query(`UPDATE omni_ai_reply_jobs SET status=$2,last_error=$3,locked_at=NULL,updated_at=NOW() WHERE message_id=$1`,[messageId,status,error??null]);
+}
+
+export async function listWaitingAiReplyMessageIds(workspaceId:string,limit=100) {
+  const {rows}=await query<{messageId:string}>(`SELECT message_id AS "messageId" FROM omni_ai_reply_jobs
+    WHERE workspace_id=$1 AND status IN ('PENDING','WAITING_FUNDS') ORDER BY created_at LIMIT $2`,[workspaceId,limit]);
+  return rows.map(row=>row.messageId);
+}
+
+export async function updateMessageDeliveryState(workspaceId:string,messageId:string,input:{status:'SENDING'|'SENT'|'DELIVERED'|'READ'|'FAILED';providerMessageId?:string|null;errorCode?:string|null}) {
+  const {rows}=await query(`UPDATE omni_messages SET
+    status=$3,
+    provider_message_id=COALESCE($4,provider_message_id),
+    error_code=$5,
+    sent_at=CASE WHEN $3 IN ('SENT','DELIVERED','READ') THEN COALESCE(sent_at,NOW()) ELSE sent_at END,
+    delivered_at=CASE WHEN $3 IN ('DELIVERED','READ') THEN COALESCE(delivered_at,NOW()) ELSE delivered_at END,
+    read_at=CASE WHEN $3='READ' THEN COALESCE(read_at,NOW()) ELSE read_at END,
+    failed_at=CASE WHEN $3='FAILED' THEN COALESCE(failed_at,NOW()) ELSE failed_at END
+    WHERE workspace_id=$1 AND id=$2 RETURNING *`,[workspaceId,messageId,input.status,input.providerMessageId??null,input.errorCode??null]);
+  return rows[0]?mapMessage(rows[0]):null;
+}
+
+export async function registerTwilioIdentity(input:{workspaceId:string;channelType:'WHATSAPP'|'FACEBOOK_MESSENGER';address:string;displayName:string;defaultLanguage?:string|null}) {
+  const {rows}=await query(`INSERT INTO omni_channel_identities(
+      channel_id,workspace_id,identity_type,external_identity_id,display_name,mode,status,default_language,capabilities,metadata
+    ) SELECT id,$1,$2,$3,$4,'LULU_MANAGED','ACTIVE',$5,
+      '{"messages.read":true,"messages.send":true,"messages.inbound_webhook":true,"messages.delivery_status":true}'::jsonb,
+      '{"provider":"twilio"}'::jsonb
+    FROM omni_channels WHERE channel_type=$2 AND provider='twilio' AND status='ACTIVE'
+    ON CONFLICT(channel_id,external_identity_id) DO UPDATE SET
+      display_name=EXCLUDED.display_name,status='ACTIVE',default_language=EXCLUDED.default_language,updated_at=NOW()
+    WHERE omni_channel_identities.workspace_id=EXCLUDED.workspace_id
+    RETURNING *`,[input.workspaceId,input.channelType,input.address,input.displayName,input.defaultLanguage??null]);
+  return rows[0]??null;
+}
+
+export async function ingestTwilioInbound(input:{messageSid:string;from:string;to:string;body:string;messageType:string;metadata:Record<string,unknown>}) {
+  const identity=await query<{id:string;workspaceId:string;channelId:string;defaultLanguage:string|null}>(`SELECT ci.id,ci.workspace_id AS "workspaceId",ci.channel_id AS "channelId",ci.default_language AS "defaultLanguage"
+    FROM omni_channel_identities ci JOIN omni_channels ch ON ch.id=ci.channel_id
+    WHERE ch.provider='twilio' AND lower(ci.external_identity_id)=lower($1) AND ci.workspace_id IS NOT NULL AND ci.status='ACTIVE'
+    LIMIT 1`,[input.to]);
+  const route=identity.rows[0];
+  if(!route)return {routed:false,reason:'TWILIO_IDENTITY_NOT_REGISTERED'} as const;
+  const conversation=await query(`INSERT INTO omni_conversations(workspace_id,channel_id,channel_identity_id,handling_mode,language,subject,provider_thread_key,metadata)
+    VALUES($1,$2,$3,'AI_AUTO',$4,'Twilio conversation',$5,$6)
+    ON CONFLICT(channel_identity_id,provider_thread_key) WHERE provider_thread_key IS NOT NULL
+    DO UPDATE SET updated_at=NOW() RETURNING *`,[route.workspaceId,route.channelId,route.id,route.defaultLanguage,input.from,JSON.stringify({externalSenderKey:input.from,provider:'twilio'})]);
+  const conversationId=String(conversation.rows[0]!.id);
+  await query(`INSERT INTO omni_conversation_participants(workspace_id,conversation_id,participant_type,participant_key,metadata)
+    VALUES($1,$2,'PARTY',$3,$4) ON CONFLICT(conversation_id,participant_type,participant_key) DO NOTHING`,[route.workspaceId,conversationId,input.from,JSON.stringify({externalId:input.from,provider:'twilio',recipientType:'user'})]);
+  const existing=await query(`SELECT * FROM omni_messages WHERE channel_identity_id=$1 AND provider_message_id=$2`,[route.id,input.messageSid]);
+  if(existing.rows[0])return {routed:true,duplicate:true,workspaceId:route.workspaceId,conversationId,message:mapMessage(existing.rows[0])} as const;
+  const message=await createMessage({workspaceId:route.workspaceId,conversationId,channelId:route.channelId,channelIdentityId:route.id,direction:'INBOUND',senderType:'BUYER',messageType:input.messageType,text:input.body,status:'RECEIVED',clientMessageId:`twilio:${input.messageSid}`,providerMessageId:input.messageSid,metadata:{provider:'twilio',mediaCount:input.metadata.NumMedia??'0',mediaUrl:input.metadata.MediaUrl0??null,mediaContentType:input.metadata.MediaContentType0??null}});
+  return {routed:true,duplicate:false,workspaceId:route.workspaceId,conversationId,message} as const;
+}
+
+export async function updateTwilioMessageStatus(messageSid:string,status:string,errorCode?:string|null) {
+  const mapped=status==='read'?'READ':status==='delivered'?'DELIVERED':status==='sent'?'SENT':status==='failed'||status==='undelivered'?'FAILED':status==='sending'?'SENDING':null;
+  if(!mapped)return null;
+  const {rows}=await query(`UPDATE omni_messages SET status=$2,error_code=$3,
+      sent_at=CASE WHEN $2 IN ('SENT','DELIVERED','READ') THEN COALESCE(sent_at,NOW()) ELSE sent_at END,
+      delivered_at=CASE WHEN $2 IN ('DELIVERED','READ') THEN COALESCE(delivered_at,NOW()) ELSE delivered_at END,
+      read_at=CASE WHEN $2='READ' THEN COALESCE(read_at,NOW()) ELSE read_at END,
+      failed_at=CASE WHEN $2='FAILED' THEN COALESCE(failed_at,NOW()) ELSE failed_at END
+    WHERE provider_message_id=$1 RETURNING *`,[messageSid,mapped,errorCode??null]);
+  return rows[0]?mapMessage(rows[0]):null;
 }
 
 export async function updateConversation(workspaceId:string,id:string,input:Record<string,unknown>,actorId:string) {

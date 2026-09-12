@@ -4,11 +4,10 @@ import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
 import { env } from './config/env.js';
 import { requestLogger } from './config/logger.js';
-import { checkDatabase } from './db/pool.js';
 import { notFound } from './middlewares/notFound.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import v1Routes from './modules/v1.routes.js';
-import { getAiProviderHealth } from './modules/ai/openai.service.js';
+import { getRuntimeReadiness } from './operations/runtime-readiness.js';
 
 export function createApp() {
   const app = express();
@@ -60,7 +59,13 @@ export function createApp() {
       (req as Request & { rawBody?: string }).rawBody = buffer.toString('utf8');
     },
   }));
-  app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+  app.use(express.urlencoded({
+    extended: true,
+    limit: '10mb',
+    verify(req, _res, buffer) {
+      (req as Request & { rawBody?: string }).rawBody = buffer.toString('utf8');
+    },
+  }));
 
   app.use(cookieParser());
 
@@ -77,13 +82,8 @@ export function createApp() {
 
   app.get('/ready', async (_req: Request, res: Response, next) => {
     try {
-      const database = await checkDatabase();
-      const ready = database.configured && database.connected;
-      const aiProviders = getAiProviderHealth().map(({ lastError: _lastError, ...provider }) => provider);
-      res.status(ready ? 200 : 503).json({
-        success: ready,
-        data: { status: ready ? (aiProviders.some((provider) => provider.available) ? 'ready' : 'degraded') : 'not_ready', database, aiProviders },
-      });
+      const readiness = await getRuntimeReadiness();
+      res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
     } catch (error) {
       next(error);
     }
