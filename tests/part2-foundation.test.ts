@@ -110,4 +110,24 @@ describe('Part 2 tenant and authorization foundation', () => {
     )).rows[0];
     assert.deepEqual(persisted, { name: 'Workspace A International', taxId: 'CN-TAX-1', bankCode: 'EXAMPLECN' });
   });
+
+  it('completes the profile gate with company name and industry only', async () => {
+    const f = await fixture();
+    await db.query(
+      `UPDATE workspaces SET onboarding_step='profile_completion',profile_completed_at=NULL,
+        country_region=NULL,tax_id=NULL,address=NULL,legal_form=NULL,legal_representative=NULL,
+        phone_number=NULL,bank_account_number=NULL,bank_opening_bank=NULL,bank_branch=NULL,bank_code=NULL
+       WHERE id=$1`,
+      [f.a],
+    );
+
+    const saved = await workspaceRepo.updateWorkspaceProfile(f.a, f.owner, {
+      companyName: 'Minimum Identity Company',
+      industry: 'Software',
+    });
+
+    assert.equal(saved?.onboardingStep, 'knowledge_base');
+    assert.ok(saved?.profileCompletedAt);
+    assert.deepEqual(saved?.missingRequiredFields, []);
+  });
 });

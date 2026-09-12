@@ -136,17 +136,7 @@ const workspaceProfileSelect = `
   w.profile_completed_at AS "profileCompletedAt",
   ARRAY_REMOVE(ARRAY[
     CASE WHEN NULLIF(trim(w.name),'') IS NULL THEN 'companyName' END,
-    CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END,
-    CASE WHEN NULLIF(trim(w.country_region),'') IS NULL THEN 'countryRegion' END,
-    CASE WHEN NULLIF(trim(w.tax_id),'') IS NULL THEN 'taxId' END,
-    CASE WHEN NULLIF(trim(w.address),'') IS NULL THEN 'address' END,
-    CASE WHEN NULLIF(trim(w.legal_form),'') IS NULL THEN 'legalForm' END,
-    CASE WHEN NULLIF(trim(w.legal_representative),'') IS NULL THEN 'legalRepresentative' END,
-    CASE WHEN NULLIF(trim(w.phone_number),'') IS NULL THEN 'phoneNumber' END,
-    CASE WHEN NULLIF(trim(w.bank_account_number),'') IS NULL THEN 'bankAccountNumber' END,
-    CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankOpeningBank' END,
-    CASE WHEN NULLIF(trim(w.bank_branch),'') IS NULL THEN 'bankBranch' END,
-    CASE WHEN NULLIF(trim(w.bank_code),'') IS NULL THEN 'bankCode' END
+    CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END
   ],NULL) AS "missingRequiredFields"
 `;
 
@@ -425,12 +415,8 @@ export async function updateWorkspaceProfile(
       `UPDATE workspaces SET profile_completed_at=COALESCE(profile_completed_at,NOW()),
           onboarding_step=CASE WHEN onboarding_step='profile_completion' THEN 'knowledge_base' ELSE onboarding_step END
        WHERE id=$1 AND onboarding_completed_at IS NULL
-         AND NULLIF(trim(name),'') IS NOT NULL AND NULLIF(trim(industry),'') IS NOT NULL
-         AND NULLIF(trim(country_region),'') IS NOT NULL AND NULLIF(trim(tax_id),'') IS NOT NULL
-         AND NULLIF(trim(address),'') IS NOT NULL AND NULLIF(trim(legal_form),'') IS NOT NULL
-         AND NULLIF(trim(legal_representative),'') IS NOT NULL AND NULLIF(trim(phone_number),'') IS NOT NULL
-         AND NULLIF(trim(bank_account_number),'') IS NOT NULL AND NULLIF(trim(bank_opening_bank),'') IS NOT NULL
-         AND NULLIF(trim(bank_branch),'') IS NOT NULL AND NULLIF(trim(bank_code),'') IS NOT NULL`,
+         AND NULLIF(trim(name),'') IS NOT NULL
+         AND NULLIF(trim(industry),'') IS NOT NULL`,
       [workspaceId], client,
     );
 
