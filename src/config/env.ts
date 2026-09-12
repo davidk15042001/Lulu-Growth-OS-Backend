@@ -216,9 +216,10 @@ const EnvSchema = z
     // outside Meta's 24-hour free-form service window. The template should
     // contain one {{1}} variable for the generated message text.
     TWILIO_WHATSAPP_CONTENT_SID: z.string().regex(/^HX[a-fA-F0-9]{32}$/).optional(),
-    // Deprecated compatibility variables. No new OmniChannel delivery uses
-    // UnifyPort, but the old adapter remains readable during migration.
+    // UnifyPort is Lulu's WhatsApp transport. Credentials may be loaded from
+    // the deployment-only runtime file and must never be committed.
     UNIFYPORT_API_KEY: optionalNonEmptyString,
+    UNIFYPORT_RUNTIME_ENV_FILE: optionalNonEmptyString,
     UNIFYPORT_BASE_URL: z.string().url().default('https://api.unifyport.ai'),
     UNIFYPORT_WEBHOOK_SIGNING_SECRET: optionalNonEmptyString,
     // JSON map of provider key -> webhook signing secret. Secrets remain
@@ -237,6 +238,9 @@ const EnvSchema = z
     }
     if ((data.TWILIO_API_KEY_SID || data.TWILIO_AUTH_TOKEN) && !data.TWILIO_ACCOUNT_SID) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['TWILIO_ACCOUNT_SID'], message: 'TWILIO_ACCOUNT_SID is required when Twilio credentials are configured' });
+    }
+    if (data.UNIFYPORT_API_KEY && (!data.UNIFYPORT_WEBHOOK_SIGNING_SECRET || data.UNIFYPORT_WEBHOOK_SIGNING_SECRET.length < 32)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['UNIFYPORT_WEBHOOK_SIGNING_SECRET'], message: 'A UnifyPort webhook signing secret of at least 32 characters is required when UnifyPort is configured' });
     }
     if (data.NODE_ENV !== 'production') return;
 
@@ -311,6 +315,22 @@ if ((raw.NODE_ENV ?? 'development') === 'production') {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       console.warn(`[env] Twilio runtime secret file is unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
+    }
+  }
+
+  const unifyPortSecretFile = path.resolve(raw.UNIFYPORT_RUNTIME_ENV_FILE ?? path.join(process.cwd(), '.runtime-secrets', 'unifyport.env'));
+  try {
+    const allowed = new Set(['UNIFYPORT_API_KEY', 'UNIFYPORT_WEBHOOK_SIGNING_SECRET']);
+    for (const line of fs.readFileSync(unifyPortSecretFile, 'utf8').split(/\r?\n/)) {
+      if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
+      const separator = line.indexOf('=');
+      const key = line.slice(0, separator).trim();
+      const value = line.slice(separator + 1).trim();
+      if (allowed.has(key) && value && !raw[key]) raw[key] = value;
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(`[env] UnifyPort runtime secret file is unavailable: ${error instanceof Error ? error.message : 'unknown error'}`);
     }
   }
 }

@@ -4,12 +4,13 @@ import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import { AppError } from '../../utils/app-error.js';
 import * as service from './provider.service.js';
-import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioAdminWhatsAppSenderSchema, twilioIdentitySchema, twilioWorkspaceContentTemplateSchema, twilioWorkspaceParamsSchema, unifyPortAccountSchema } from './provider.validator.js';
+import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioAdminWhatsAppSenderSchema, twilioIdentitySchema, twilioWorkspaceContentTemplateSchema, twilioWorkspaceParamsSchema, unifyPortAccountSchema, unifyPortIdentitySchema } from './provider.validator.js';
 import * as unifyPort from './unifyport.client.js';
 import * as twilio from './twilio.client.js';
 import { ingestTwilioWebhook } from './twilio.webhook.service.js';
 import * as omniRepo from '../omnichannel/omnichannel.repo.js';
 import * as twilioWorkspace from './twilio-workspace.service.js';
+import { recordSecurityEvent } from '../security/security-event.service.js';
 
 function workspaceId(req: WorkspaceRequest) {
   const value = req.params.workspaceId;
@@ -179,4 +180,26 @@ export async function unifyPortAuth(req: Request, res: Response, next: NextFunct
 export async function unifyPortStartQr(req: Request, res: Response, next: NextFunction) {
   try { return successResponse(res, 'UnifyPort QR authentication started', await unifyPort.startQrAuth(String(req.params.accountId))); }
   catch (error) { next(error); }
+}
+
+export async function unifyPortStartCode(req: Request, res: Response, next: NextFunction) {
+  try { return successResponse(res, 'UnifyPort pairing-code authentication started', await unifyPort.startCodeAuth(String(req.params.accountId))); }
+  catch (error) { next(error); }
+}
+
+export async function unifyPortRegisterIdentity(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const input=unifyPortIdentitySchema.parse(req.body);
+    const [account,auth]=await Promise.all([unifyPort.getAccount(input.accountId),unifyPort.getAccountAuth(input.accountId)]);
+    if(String(account.provider??'').toLowerCase()!=='whatsapp')throw new AppError(409,'UNIFYPORT_ACCOUNT_NOT_WHATSAPP','Only a WhatsApp account can be registered as Lulu\'s WhatsApp identity.');
+    const authStatus=String(auth.status??'').toLowerCase();
+    const runtimeStatus=String(account.runtime_status??'').toLowerCase();
+    if(!['authenticated','authorized','connected','succeeded','success'].includes(authStatus)&&!['running','ready','connected'].includes(runtimeStatus)){
+      throw new AppError(409,'UNIFYPORT_ACCOUNT_NOT_AUTHENTICATED','Finish linking the WhatsApp account before activating it in Lulu.',{authStatus:auth.status??null,runtimeStatus:account.runtime_status??null});
+    }
+    const identity=await omniRepo.registerUnifyPortIdentity({workspaceId:input.workspaceId??null,accountId:input.accountId,displayName:input.displayName,phone:input.phone??null,defaultLanguage:input.defaultLanguage??null,configuredBy:req.user!.id});
+    if(!identity)throw new AppError(409,'UNIFYPORT_IDENTITY_REGISTRATION_CONFLICT','The UnifyPort WhatsApp channel is unavailable.');
+    await recordSecurityEvent({eventType:'ADMIN_ACTION',userId:req.user!.id,workspaceId:input.workspaceId??null,metadata:{action:'unifyport.whatsapp.identity.configure',targetId:input.accountId,outcome:input.workspaceId?'workspace':'platform'}});
+    return successResponse(res,input.workspaceId?'Workspace WhatsApp identity configured':'Lulu WhatsApp fallback identity configured',identity);
+  } catch(error){next(error);}
 }

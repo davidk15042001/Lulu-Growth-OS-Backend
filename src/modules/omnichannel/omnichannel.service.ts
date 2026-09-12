@@ -7,11 +7,18 @@ import * as repo from './omnichannel.repo.js';
 import { asTwilioAddress, sendTwilioMessage } from '../provider-control/twilio.client.js';
 import { env } from '../../config/env.js';
 import { getWorkspaceTwilioContentSid, getWorkspaceTwilioCredentials } from '../provider-control/twilio-workspace.service.js';
+import { sendMessage as sendUnifyPortMessage } from '../provider-control/unifyport.client.js';
 
 export async function assertWorkspace(workspaceId:string,userId:string,capability:'omnichannel.read'|'omnichannel.reply'|'omnichannel.manage') { await assertWorkspaceCapability({workspaceId,userId,capability}); }
 export async function list(workspaceId:string,userId:string,filters:any){await assertWorkspace(workspaceId,userId,'omnichannel.read');return repo.listConversations(workspaceId,filters);}
 export async function detail(workspaceId:string,id:string,userId:string){await assertWorkspace(workspaceId,userId,'omnichannel.read');const result=await repo.getConversation(workspaceId,id);if(!result)throw notFoundError('Conversation not found');return result;}
 function transportText(value:unknown){return typeof value==='string'&&value.trim()?value.trim():null;}
+function unifyPortRecipient(value:string,recipientType:'user'|'group'|'channel'){
+  if(value.includes('@'))return value;
+  const digits=value.replace(/[^0-9]/g,'');
+  if(!digits)throw new AppError(409,'UNIFYPORT_RECIPIENT_INVALID','The WhatsApp recipient is invalid.');
+  return recipientType==='group'?`${digits}@g.us`:`${digits}@s.whatsapp.net`;
+}
 export function requiresWhatsAppTemplate(messages:Array<{direction:string;receivedAt?:string|null;createdAt?:string|null}>,now=Date.now()) {
   const latestInbound=messages
     .filter(message=>message.direction==='INBOUND')
@@ -43,8 +50,22 @@ async function deliverOutboundMessage(workspaceId:string,id:string,userId:string
     const recipientMetadata=transport.recipient?.metadata??{};
     const recipientId=input.recipientId??transportText(recipientMetadata.externalId)??transportText(conversationMetadata.externalSenderKey)??transport.recipient?.participantKey??null;
     if(!recipientId)throw new AppError(409,'OMNICHANNEL_DELIVERY_CONTEXT_MISSING','The recipient is missing from this conversation.');
-    if(transport.provider!=='twilio')throw new AppError(409,'OMNICHANNEL_PROVIDER_UNSUPPORTED',`No verified outbound adapter is enabled for ${transport.provider}.`);
     await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENDING'});
+    if(transport.provider==='unifyport'){
+      if(transport.channelType!=='WHATSAPP')throw new AppError(409,'UNIFYPORT_CHANNEL_UNSUPPORTED','UnifyPort is enabled only for WhatsApp.');
+      const recipientType=input.recipientType??(transportText(recipientMetadata.recipientType)==='group'?'group':'user');
+      const sent=await sendUnifyPortMessage({
+        account_id:input.accountId??transport.externalIdentityId,
+        to:{id:unifyPortRecipient(recipientId,recipientType),type:recipientType},
+        message:{type:'text',text:input.text},
+      });
+      const providerMessageId=transportText(sent.message_id)??transportText(sent.id);
+      if(!providerMessageId)throw new AppError(502,'UNIFYPORT_MESSAGE_ID_MISSING','UnifyPort accepted the message without returning a message ID.');
+      const delivered=await repo.updateMessageDeliveryState(workspaceId,queued.id,{status:'SENT',providerMessageId});
+      if(!delivered)throw new AppError(500,'OMNICHANNEL_REPLY_SAVE_FAILED','The UnifyPort reply could not be saved.');
+      return delivered;
+    }
+    if(transport.provider!=='twilio')throw new AppError(409,'OMNICHANNEL_PROVIDER_UNSUPPORTED',`No verified outbound adapter is enabled for ${transport.provider}.`);
     const from=asTwilioAddress(transport.channelType,input.accountId??transport.externalIdentityId);
     const to=asTwilioAddress(transport.channelType,recipientId);
     const identityAccountSid=transportText(transport.identityMetadata?.twilioAccountSid);
@@ -80,7 +101,8 @@ export async function send(workspaceId:string,id:string,userId:string,input:{tex
 }
 
 /** Sends an agent-authored reply through the real channel transport. Website
- * chat is delivered from the database; WhatsApp and Messenger use Twilio. */
+ * chat is delivered from the database, WhatsApp through UnifyPort, and
+ * Messenger through Twilio. */
 export async function sendAutonomousMessage(workspaceId:string,id:string,userId:string,input:{text:string;messageType?:string;clientMessageId:string;accountId?:string;recipientId?:string;recipientType?:'user'|'group'|'channel'}) {
   await assertWorkspaceCapability({workspaceId,userId,capability:'omnichannel.reply',actorType:'AI_AGENT'});
   return deliverOutboundMessage(workspaceId,id,userId,{...input,messageType:input.messageType??'TEXT',senderType:'AI_AGENT'});

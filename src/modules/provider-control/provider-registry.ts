@@ -60,7 +60,7 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     { capabilityKey: 'twilio.messages.receive', displayName: 'Receive messages', requiredScopes: [], defaultStatus: 'AVAILABLE' },
     { capabilityKey: 'twilio.messages.status', displayName: 'Receive delivery status', requiredScopes: [], defaultStatus: 'AVAILABLE' },
   ] },
-  { providerKey: 'unifyport', displayName: 'UnifyPort (retired)', category: 'MESSAGING', implementationStatus: 'UNAVAILABLE', defaultMode: 'LULU_MANAGED', capabilities: [
+  { providerKey: 'unifyport', displayName: 'UnifyPort (WhatsApp beta)', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [
     { capabilityKey: 'unifyport.workspace.read', displayName: 'Read UnifyPort workspace', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
     { capabilityKey: 'unifyport.accounts.read', displayName: 'Read channel accounts', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },
     { capabilityKey: 'unifyport.accounts.manage', displayName: 'Manage channel accounts', requiredScopes: [], defaultStatus: 'AUTHORIZATION_REQUIRED' },

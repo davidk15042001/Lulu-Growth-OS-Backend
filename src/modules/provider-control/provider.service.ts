@@ -217,6 +217,12 @@ function eventIdFromPayload(payload: Record<string, unknown>, header?: string) {
   return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : null;
 }
 
+function eventTypeFromPayload(payload: Record<string, unknown>) {
+  const nestedEvent = payload.event && typeof payload.event === 'object' ? payload.event as Record<string, unknown> : null;
+  const candidate = payload.type ?? payload.event_type ?? payload.eventType ?? nestedEvent?.type ?? nestedEvent?.event_type;
+  return typeof candidate === 'string' && candidate.trim() ? candidate.trim() : 'provider.event';
+}
+
 export async function ingestProviderWebhook(input: { provider: string; rawBody: string; payload: Record<string, unknown>; signature?: string; timestamp?: string; nonce?: string; connectionId?: string; accountId?: string; correlationId?: string; eventId?: string }) {
   const providerKey = canonicalProviderKey(input.provider);
   const verified = providerKey === 'unifyport'
@@ -224,9 +230,12 @@ export async function ingestProviderWebhook(input: { provider: string; rawBody: 
     : verifyProviderWebhookSignature(input.provider, input.rawBody, { ...(input.signature ? { signature: input.signature } : {}), ...(input.timestamp ? { timestamp: input.timestamp } : {}), ...(input.nonce ? { nonce: input.nonce } : {}) });
   const externalEventId = eventIdFromPayload(input.payload, input.eventId);
   if (!externalEventId) throw providerError('PROVIDER_WEBHOOK_EVENT_ID_MISSING', 'Provider webhook event ID is required', undefined, 400);
-  const eventType = typeof input.payload.type === 'string' ? input.payload.type : typeof input.payload.event_type === 'string' ? input.payload.event_type : 'provider.event';
+  const eventType = eventTypeFromPayload(input.payload);
   const payloadHash = crypto.createHash('sha256').update(input.rawBody).digest('hex');
-  const result = await repo.claimWebhookEvent({ providerKey: verified.providerKey, externalEventId, payloadHash, eventType, providerConnectionId: input.connectionId ?? null, providerAccountId: input.accountId ?? null, correlationId: input.correlationId ?? null, normalizedMetadata: { providerKey: verified.providerKey, eventType } });
+  const normalizedMetadata = providerKey === 'unifyport'
+    ? { providerKey: verified.providerKey, eventType, eventPayload: input.payload }
+    : { providerKey: verified.providerKey, eventType };
+  const result = await repo.claimWebhookEvent({ providerKey: verified.providerKey, externalEventId, payloadHash, eventType, providerConnectionId: input.connectionId ?? null, providerAccountId: input.accountId ?? null, correlationId: input.correlationId ?? null, normalizedMetadata });
   return { ...result, providerKey: verified.providerKey, externalEventId, verified: true };
 }
 

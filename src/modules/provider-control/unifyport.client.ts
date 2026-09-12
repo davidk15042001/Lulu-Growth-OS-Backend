@@ -96,6 +96,10 @@ export function isUnifyPortConfigured() {
   return Boolean(env.UNIFYPORT_API_KEY);
 }
 
+export function isUnifyPortWebhookConfigured() {
+  return Boolean(env.UNIFYPORT_WEBHOOK_SIGNING_SECRET);
+}
+
 export function redactUnifyPortError(error: unknown) {
   if (error instanceof AppError) {
     return { code: error.code, message: error.message, details: error.details };
@@ -140,7 +144,8 @@ export function sendMessage(input: { account_id: string; to: { id: string; type:
 }
 
 export function listProviderRegions(provider: string) {
-  return request<unknown[]>(`/v1/providers/${encodeURIComponent(provider)}/regions`);
+  return request<unknown[] | { regions?: unknown[] }>(`/v1/providers/${encodeURIComponent(provider)}/regions`)
+    .then((result) => Array.isArray(result) ? result : Array.isArray(result.regions) ? result.regions : []);
 }
 
 export function createWebhookEndpoint(input: { url: string; subscribed_events: string[]; signing_secret?: string }) {
