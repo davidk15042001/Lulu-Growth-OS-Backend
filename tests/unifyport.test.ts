@@ -17,7 +17,8 @@ describe('UnifyPort client security and compatibility',()=>{
     const body=JSON.stringify({id:'evt-1',type:'message.received'});
     const signature=crypto.createHmac('sha256','unifyport-webhook-test-secret-0123456789').update(`${timestamp}.${body}`).digest('hex');
     assert.equal(client.verifyWebhookSignature(body,{timestamp,signature}).verified,true);
-    assert.throws(()=>client.verifyWebhookSignature(body,{timestamp,signature:`${signature.slice(0,-1)}0`}),{code:'UNIFYPORT_WEBHOOK_SIGNATURE_INVALID'});
+    const invalidSignature=`${signature.slice(0,-1)}${signature.endsWith('0')?'1':'0'}`;
+    assert.throws(()=>client.verifyWebhookSignature(body,{timestamp,signature:invalidSignature}),{code:'UNIFYPORT_WEBHOOK_SIGNATURE_INVALID'});
   });
 
   it('normalizes the provider regions envelope returned by the live API',async()=>{

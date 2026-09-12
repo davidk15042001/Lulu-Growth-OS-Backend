@@ -60,8 +60,9 @@ function normalizeInbound(payload:Record<string,unknown>,fallbackEventId:string)
   const conversationId=firstText(conversation.id,chat.id,data.conversation_id,data.conversationId,senderId);
   const body=firstText(message.text,textObject.body,message.body,message.content,message.caption,data.text,data.body)??'';
   const mediaUrl=firstText(message.url,media.url,data.media_url,data.mediaUrl);
+  const direction=(firstText(message.direction,data.direction)??'').toLowerCase();
   if(!accountId||!messageId||!senderId)return null;
-  return {accountId,messageId,senderId,conversationId,body,messageType:omniMessageType(message.type??data.message_type??data.type),mediaUrl,senderName:firstText(sender.name,from.name,message.sender_name,data.sender_name)};
+  return {accountId,messageId,senderId,conversationId,body,messageType:omniMessageType(message.type??data.message_type??data.type),mediaUrl,senderName:firstText(sender.name,from.name,message.sender_name,data.sender_name),direction};
 }
 
 function lifecycleStatus(eventType:string) {
@@ -138,7 +139,9 @@ export class UnifyPortAdapter implements ProviderAdapter {
     if(input.eventType.toLowerCase()==='message.received'){
       const inbound=normalizeInbound(payload,input.externalEventId);
       if(!inbound)return {handled:false,details:{reason:'UNIFYPORT_MESSAGE_SHAPE_UNRECOGNIZED',eventType:input.eventType,externalEventId:input.externalEventId}};
-      const result=await omniRepo.ingestUnifyPortInbound({...inbound,eventId:input.externalEventId,metadata:{providerEventType:input.eventType}});
+      if(inbound.direction&&inbound.direction!=='inbound')return {handled:true,details:{reason:'UNIFYPORT_NON_INBOUND_MESSAGE_IGNORED',direction:inbound.direction,externalEventId:input.externalEventId}};
+      const {direction:_direction,...message}=inbound;
+      const result=await omniRepo.ingestUnifyPortInbound({...message,eventId:input.externalEventId,metadata:{providerEventType:input.eventType}});
       return {handled:result.routed,details:result};
     }
     const identityStatus=lifecycleStatus(input.eventType);
