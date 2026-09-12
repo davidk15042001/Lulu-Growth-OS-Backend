@@ -151,9 +151,24 @@ export async function twilioRegisterIdentity(req: Request, res: Response, next: 
  * platform-scoped UnifyPort transport. Secrets never leave the server. */
 export async function unifyPortStatus(_req: Request, res: Response, next: NextFunction) {
   try {
-    if (!unifyPort.isUnifyPortConfigured()) return successResponse(res, 'UnifyPort is not configured', { configured: false, provider: 'unifyport' });
-    const [workspace, accounts] = await Promise.all([unifyPort.getWorkspace(), unifyPort.listAccounts()]);
-    return successResponse(res, 'UnifyPort status loaded', { configured: true, provider: 'unifyport', workspace: { id: workspace.id ?? null, name: workspace.name ?? null, status: workspace.status ?? null }, accountCount: accounts.length });
+    if (!unifyPort.isUnifyPortConfigured()) return successResponse(res, 'UnifyPort is not configured', { configured: false, webhookConfigured: unifyPort.isUnifyPortWebhookConfigured(), provider: 'unifyport', whatsapp: { configured: false, identity: null, availableAccounts: [] } });
+    const [workspace, accounts, identity] = await Promise.all([unifyPort.getWorkspace(), unifyPort.listAccounts(), omniRepo.getUnifyPortPlatformConfiguration()]);
+    const availableAccounts=accounts.filter(account=>String(account.provider??'').toLowerCase()==='whatsapp').map(account=>({
+      id:account.id??null,
+      name:account.name??null,
+      region:account.region??null,
+      status:account.status??null,
+      runtimeStatus:account.runtime_status??null,
+      phone:account.provider_data&&typeof account.provider_data==='object'&&!Array.isArray(account.provider_data)&&typeof (account.provider_data as Record<string,unknown>).phone==='string'?(account.provider_data as Record<string,unknown>).phone:null,
+    }));
+    return successResponse(res, 'UnifyPort status loaded', {
+      configured: true,
+      webhookConfigured: unifyPort.isUnifyPortWebhookConfigured(),
+      provider: 'unifyport',
+      workspace: { id: workspace.id ?? null, name: workspace.name ?? null, status: workspace.status ?? null },
+      accountCount: accounts.length,
+      whatsapp:{configured:Boolean(identity&&identity.status==='ACTIVE'),identity,availableAccounts},
+    });
   } catch (error) { next(error); }
 }
 

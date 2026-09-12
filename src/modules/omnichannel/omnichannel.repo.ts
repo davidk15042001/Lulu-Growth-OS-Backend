@@ -225,6 +225,17 @@ export async function updateUnifyPortIdentityStatus(accountId:string,status:'ACT
   return rows[0]??null;
 }
 
+export async function getUnifyPortPlatformConfiguration() {
+  const {rows}=await query<{identityId:string;accountId:string;displayName:string;status:string;phone:string|null}>(`SELECT
+      ci.id AS "identityId",ci.external_identity_id AS "accountId",ci.display_name AS "displayName",ci.status,
+      ci.metadata->>'phone' AS phone
+    FROM unifyport_platform_configuration configuration
+    JOIN omni_channel_identities ci ON ci.id=configuration.admin_whatsapp_identity_id
+    JOIN omni_channels channel ON channel.id=ci.channel_id
+    WHERE configuration.singleton=TRUE AND channel.provider='unifyport' AND channel.channel_type='WHATSAPP'`);
+  return rows[0]??null;
+}
+
 export async function ingestUnifyPortInbound(input:{eventId:string;messageId:string;accountId:string;senderId:string;senderName?:string|null;conversationId?:string|null;body:string;messageType:string;mediaUrl?:string|null;metadata:Record<string,unknown>}) {
   const identity=await query<{id:string;workspaceId:string|null;channelId:string;defaultLanguage:string|null}>(`SELECT ci.id,ci.workspace_id AS "workspaceId",ci.channel_id AS "channelId",ci.default_language AS "defaultLanguage"
     FROM omni_channel_identities ci JOIN omni_channels ch ON ch.id=ci.channel_id
