@@ -291,7 +291,16 @@ for (const [name, value] of Object.entries(raw)) {
 if ((raw.NODE_ENV ?? 'development') === 'production') {
   const twilioSecretFile = path.resolve(raw.TWILIO_RUNTIME_ENV_FILE ?? path.join(process.cwd(), '.runtime-secrets', 'twilio.env'));
   try {
-    const allowed = new Set(['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_WEBHOOK_URL', 'TWILIO_STATUS_CALLBACK_URL']);
+    const allowed = new Set([
+      'TWILIO_ACCOUNT_SID',
+      'TWILIO_AUTH_TOKEN',
+      'TWILIO_WEBHOOK_URL',
+      'TWILIO_STATUS_CALLBACK_URL',
+      'META_CLIENT_ID',
+      'META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID',
+      'TWILIO_PARTNER_SOLUTION_ID',
+      'META_GRAPH_VERSION',
+    ]);
     for (const line of fs.readFileSync(twilioSecretFile, 'utf8').split(/\r?\n/)) {
       if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
       const separator = line.indexOf('=');
