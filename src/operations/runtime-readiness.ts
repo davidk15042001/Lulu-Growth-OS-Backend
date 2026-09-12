@@ -1,4 +1,4 @@
-import { env, hasAiProvider, isProd } from '../config/env.js';
+import { env, hasAiProvider, isProd, trustProxySetting } from '../config/env.js';
 import { checkDatabase } from '../db/pool.js';
 import { getAiProviderHealth } from '../modules/ai/openai.service.js';
 
@@ -13,7 +13,7 @@ export async function getRuntimeReadiness() {
     database: { required: true, ready: database.configured && database.connected },
     ai: { required: true, ready: hasAiProvider && aiProviders.some((provider) => provider.operational) },
     workers: { required: isProd, ready: !isProd || env.BACKGROUND_WORKERS_ENABLED },
-    proxyTrust: { required: isProd, ready: !isProd || env.TRUST_PROXY },
+    proxyTrust: { required: isProd, ready: !isProd || Boolean(trustProxySetting), mode: trustProxySetting || 'disabled' },
     storage: {
       required: isProd,
       ready: configured(env.AWS_S3_BUCKET, env.AWS_ACCESS_KEY_ID, env.AWS_SECRET_ACCESS_KEY),

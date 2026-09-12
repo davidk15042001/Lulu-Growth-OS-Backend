@@ -293,6 +293,10 @@ const parsedEnv = EnvSchema.parse(raw);
 export const env: Env = parsedEnv;
 
 export const isProd = env.NODE_ENV === 'production';
+// The production host terminates TLS in a local reverse proxy. Trust loopback
+// by default so client IPs and rate limits work without trusting arbitrary
+// remote forwarding headers. TRUST_PROXY=true remains an explicit one-hop mode.
+export const trustProxySetting: false | 1 | 'loopback' = env.TRUST_PROXY ? 1 : isProd ? 'loopback' : false;
 export const hasDb = !!env.DATABASE_URL;
 // Availability is intentionally independent from the preferred provider so a
 // configured secondary provider can take over when the primary is unavailable.

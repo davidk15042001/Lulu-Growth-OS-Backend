@@ -2,7 +2,7 @@ import express, { type Request, type Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
 import helmet from 'helmet';
-import { env } from './config/env.js';
+import { env, trustProxySetting } from './config/env.js';
 import { requestLogger } from './config/logger.js';
 import { notFound } from './middlewares/notFound.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
@@ -12,9 +12,7 @@ import { getRuntimeReadiness } from './operations/runtime-readiness.js';
 export function createApp() {
   const app = express();
 
-  if (env.TRUST_PROXY) {
-    app.set('trust proxy', 1);
-  }
+  if (trustProxySetting) app.set('trust proxy', trustProxySetting);
 
   app.disable('x-powered-by');
   app.use(requestLogger);
