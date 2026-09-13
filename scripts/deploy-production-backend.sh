@@ -3,6 +3,7 @@ set -eu
 
 backend_dir=/var/www/lulu-growth-os/backend
 environment_file=/etc/lulu-growth-backend.env
+migration_unit="lulu-growth-backend-migration-$$"
 
 # A migration must never leave the production process stopped if the database
 # is locked or the release runner disappears. The trap restores the service
@@ -12,7 +13,14 @@ restore_backend() {
     /usr/bin/systemctl start lulu-growth-backend 2>/dev/null || true
   fi
 }
-trap restore_backend EXIT
+
+# Keep a failed/disconnected deploy from leaving a named transient migration
+# service behind. A completed systemd-run unit may already be collected; the
+# stop is intentionally best-effort in that case.
+cleanup_migration() {
+  /usr/bin/systemctl stop "$migration_unit" 2>/dev/null || true
+}
+trap 'cleanup_migration; restore_backend' EXIT
 
 # Deployments are pushed by GitHub Actions into a release directory without a
 # .git checkout. Disable the obsolete minute-based git-poll timer so it cannot
@@ -28,8 +36,10 @@ fi
 /usr/bin/systemctl stop lulu-growth-backend
 
 systemd-run --quiet --wait --pipe --collect \
+  --unit="$migration_unit" \
   --property=Type=oneshot \
-  --property=TimeoutStartSec=15min \
+  --property=TimeoutStartSec=4h \
+  --property=RuntimeMaxSec=4h \
   --property=WorkingDirectory="$backend_dir" \
   --property=EnvironmentFile="$environment_file" \
   /usr/bin/node "$backend_dir/dist/database/run.js"
