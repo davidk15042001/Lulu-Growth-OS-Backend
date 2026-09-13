@@ -22,7 +22,6 @@ export async function withGracefulShutdownDeadline<T>(operation: Promise<T>, tim
   let timer: NodeJS.Timeout | undefined;
   const deadline = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => reject(new GracefulShutdownTimeoutError(timeoutMs)), timeoutMs);
-    timer.unref();
   });
   try {
     return await Promise.race([operation, deadline]);
