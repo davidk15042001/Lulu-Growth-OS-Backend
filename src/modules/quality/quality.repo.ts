@@ -56,10 +56,10 @@ export async function createArtifact(workspaceId: string, userId: string, input:
     }
     const artifact = await query<{ id: string }>(`INSERT INTO quality_artifacts(
       workspace_id,artifact_type,canonical_entity_type,canonical_entity_id,current_version,status,risk_class,
-      language,target_market,target_channel,release_mode,created_by
-    ) VALUES($1,$2,$3,$4,1,'DRAFT',$5,$6,$7,$8,$9,$10) RETURNING id`, [workspaceId,input.artifactType,
+      language,target_market,target_channel,release_mode,provider_status,created_by
+    ) VALUES($1,$2,$3,$4,1,'REVIEW_PENDING',$5,$6,$7,$8,$9,$10,$11) RETURNING id`, [workspaceId,input.artifactType,
       input.canonicalEntityType,input.canonicalEntityId,input.riskClass,input.language,
-      input.targetMarket ?? null,input.targetChannel ?? null,input.releaseMode,userId], client);
+      input.targetMarket ?? null,input.targetChannel ?? null,input.releaseMode,input.providerStatus,userId], client);
     const artifactId = artifact.rows[0]?.id;
     if (!artifactId) throw new Error('Quality artifact insert did not return an id');
     const version = await query<{ id: string }>(`INSERT INTO quality_artifact_versions(
@@ -85,6 +85,10 @@ export async function createArtifact(workspaceId: string, userId: string, input:
       aggregateType: 'quality_artifact', aggregateId: artifactId,
       payload: { artifactId, artifactVersionId: versionId, artifactType: input.artifactType },
       metadata: { actorId: userId, source: 'quality' }, idempotencyKey: `quality-artifact:${artifactId}:created:v1` }, client);
+    await appendDomainEvent({ workspaceId, type: DOMAIN_EVENT_TYPES.QUALITY_REVIEW_REQUESTED,
+      aggregateType: 'quality_artifact', aggregateId: artifactId,
+      payload: { artifactId, artifactVersionId: versionId, reason: 'artifact_created' },
+      metadata: { actorId: userId, source: 'quality' }, idempotencyKey: `quality-review:${artifactId}:requested:v1` }, client);
     return { artifactId, artifactVersionId: versionId };
   });
 }
@@ -132,6 +136,7 @@ export async function createReview(workspaceId: string, userId: string, input: C
       VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9::jsonb,$10::jsonb,$11,$12::jsonb,$13,$14) RETURNING id`,[workspaceId,input.artifactVersionId,input.reviewerAgentId,input.reviewerVersion,input.reviewerKind,input.verdict,input.overallScore ?? null,json(input.dimensions),json(input.findings),json(input.checkedClaims),input.confidence,json(input.limitations),input.nextAction,userId],client);
     const reviewId=review.rows[0]?.id; if (!reviewId) throw new Error('Quality review insert did not return an id');
     for (const finding of input.findings) await query(`INSERT INTO quality_findings(workspace_id,review_id,artifact_version_id,severity,category,location,message,evidence_refs,suggested_fix) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)`,[workspaceId,reviewId,input.artifactVersionId,finding.severity,finding.category,finding.location ?? null,finding.message,json(finding.evidenceRefs),finding.suggestedFix ?? null],client);
+    for (const claim of input.checkedClaims) await query(`UPDATE quality_claims SET verdict=$4 WHERE workspace_id=$1 AND artifact_version_id=$2 AND id=$3`,[workspaceId,input.artifactVersionId,claim.claimId,claim.verdict],client);
     const nextStatus = input.verdict === 'passed' ? (input.reviewerKind === 'final_gate' ? 'APPROVED' : 'FINAL_REVIEW') : input.verdict === 'needs_repair' ? 'REPAIR_REQUIRED' : input.verdict === 'unavailable' ? 'WITHHELD' : 'REJECTED';
     await query(`UPDATE quality_artifacts SET status=$3,updated_at=NOW() WHERE workspace_id=$1 AND id=$2`,[workspaceId,row.artifactId,nextStatus],client);
     await appendDomainEvent({ workspaceId, type: DOMAIN_EVENT_TYPES.QUALITY_REVIEW_COMPLETED, aggregateType:'quality_artifact', aggregateId:row.artifactId, payload:{ artifactId:row.artifactId, artifactVersionId:input.artifactVersionId, reviewId, verdict:input.verdict, reviewerKind:input.reviewerKind }, metadata:{ actorId:userId, source:'quality' }, idempotencyKey:`quality-review:${reviewId}:completed:v1` },client);
@@ -145,6 +150,11 @@ export async function createRepair(workspaceId: string, userId: string, artifact
   await query(`UPDATE quality_artifacts SET status='REPAIRING',updated_at=NOW() WHERE workspace_id=$1 AND id=$2`,[workspaceId,artifactId]);
   await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.QUALITY_REPAIR_REQUESTED,aggregateType:'quality_artifact',aggregateId:artifactId,payload:{artifactId,artifactVersionId:input.artifactVersionId,repairAttemptId:row.rows[0]?.id,findingIds:input.findingIds},metadata:{actorId:userId,source:'quality'},idempotencyKey:`quality-repair:${row.rows[0]?.id}:requested:v1`});
   return row.rows[0]?.id ?? null;
+}
+
+export async function countRepairAttempts(workspaceId: string, artifactId: string) {
+  const { rows } = await query<{ count: number }>(`SELECT count(*)::int AS count FROM quality_repair_attempts WHERE workspace_id=$1 AND artifact_id=$2`, [workspaceId, artifactId]);
+  return Number(rows[0]?.count ?? 0);
 }
 
 export async function createReleaseDecision(workspaceId: string, userId: string | null, actorType: string, artifactId: string, input: ReleaseDecisionInput) {

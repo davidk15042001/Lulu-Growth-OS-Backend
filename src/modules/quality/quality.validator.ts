@@ -16,6 +16,7 @@ export const createArtifactSchema = z.object({
   modelProvider: z.string().trim().max(120).nullable().optional(),
   modelName: z.string().trim().max(160).nullable().optional(),
   modelMetadata: jsonObject.default({}),
+  providerStatus: z.enum(['not_started','queued','submitted','running','completed','failed','ambiguous']).default('completed'),
   sourceSnapshot: z.object({
     sourceType: z.string().trim().min(1).max(120),
     sourceRef: z.string().trim().max(500).nullable().optional(),

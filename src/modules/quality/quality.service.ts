@@ -57,7 +57,7 @@ export async function requestRepair(workspaceId: string, userId: string, artifac
   const artifact = await getArtifact(workspaceId, artifactId);
   if (!artifact.versions.some((version) => version.id === input.artifactVersionId)) throw notFoundError('Quality artifact version not found');
   const config = await repo.getConfig(workspaceId);
-  const attemptCount = artifact.reviews.length ? artifact.reviews.filter((review) => review.artifactVersionId === input.artifactVersionId).length : 0;
+  const attemptCount = await repo.countRepairAttempts(workspaceId, artifactId);
   if (attemptCount >= Number(config.maxRepairRounds ?? 3)) throw conflictError('Maximum quality repair rounds reached');
   const repairId = await repo.createRepair(workspaceId, userId, artifactId, input);
   if (!repairId) throw notFoundError('Quality artifact not found');
@@ -81,7 +81,7 @@ export async function decideRelease(workspaceId: string, userId: string, artifac
     throw conflictError(`Release is blocked: ${blockers.join(', ')}`);
   }
   if (isOverride && !input.overrideReason) throw conflictError('An audited override requires an explicit reason');
-  const id = await repo.createReleaseDecision(workspaceId, userId, isOverride ? 'USER' : 'SYSTEM', artifactId, input);
+  const id = await repo.createReleaseDecision(workspaceId, userId, 'USER', artifactId, input);
   if (!id) throw notFoundError('Quality artifact version not found');
   return getArtifact(workspaceId, artifactId);
 }
