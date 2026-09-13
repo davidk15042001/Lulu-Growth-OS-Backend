@@ -48,7 +48,7 @@ describe('per-worker runtime readiness', () => {
       'website-generation', 'payg-billing', 'admin-user-deletion', 'provider-control',
       'commercial-document-delivery', 'premium-media', 'omnichannel-ai-reply',
       'social-publishing', 'company-intelligence',
-      'google-ads-spend-reconciliation',
+      'google-ads-spend-reconciliation', 'quality-intelligence',
     ]) {
       assert.equal(required.has(worker), true, `${worker} must block readiness when unhealthy`);
     }

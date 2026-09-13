@@ -3,7 +3,7 @@ import * as repo from './quality.repo.js';
 import { releaseBlockers } from './quality.policy.js';
 import type {
   CreateArtifactInput, CreateEvidenceInput, CreateReviewInput, FeedbackInput, ListArtifactsQuery,
-  OutcomeInput, RepairInput, ReleaseDecisionInput,
+  OutcomeInput, ProviderStatusInput, RepairInput, ReleaseDecisionInput,
 } from './quality.validator.js';
 
 export async function createArtifact(workspaceId: string, userId: string, input: CreateArtifactInput) {
@@ -33,12 +33,15 @@ export async function createReview(workspaceId: string, userId: string, input: C
   const version = artifact.versions.find((item) => item.id === input.artifactVersionId) as { producerAgentId?: string } | undefined;
   if (version?.producerAgentId === input.reviewerAgentId) throw forbiddenError('The producer cannot approve or review its own artifact');
   if (input.reviewerKind === 'final_gate' && input.verdict === 'passed') {
+    if (String((artifact.artifact as { providerStatus?: string }).providerStatus ?? 'not_started') !== 'completed') {
+      throw conflictError('A final quality gate cannot pass before the provider result is completed');
+    }
     const hardBlock = input.findings.some((finding) => finding.severity === 'hard_block');
     const dimensionFailure = input.dimensions.some((dimension) => dimension.required && (dimension.status !== 'passed' || dimension.score < 85));
     if (hardBlock || dimensionFailure || (input.overallScore ?? 0) < 90) {
       throw conflictError('A final quality gate cannot pass with an open hard block or below-threshold dimension');
     }
-    const factualClaims = artifact.claims.filter((claim) =>
+    const factualClaims = artifact.claims.filter((claim) => claim.artifactVersionId === input.artifactVersionId &&
       ['factual', 'numeric', 'comparative', 'testimonial'].includes(String((claim as { claimType?: string }).claimType)),
     ) as Array<{ id: string }>;
     const checked = new Map(input.checkedClaims.map((claim) => [claim.claimId, claim]));
@@ -90,6 +93,12 @@ export const getOverview = repo.getOverview;
 export const getConfig = repo.getConfig;
 export const updateConfig = repo.updateConfig;
 export const listRubrics = repo.listRubrics;
+
+export async function updateProviderStatus(workspaceId: string, userId: string, artifactId: string, input: ProviderStatusInput) {
+  const artifact = await repo.updateProviderStatus(workspaceId, artifactId, input.providerStatus, userId);
+  if (!artifact) throw notFoundError('Quality artifact not found');
+  return artifact;
+}
 
 export async function addFeedback(workspaceId: string, userId: string, artifactId: string, input: FeedbackInput) {
   const artifact = await getArtifact(workspaceId, artifactId);

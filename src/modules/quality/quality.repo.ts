@@ -4,7 +4,7 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import type {
   CreateArtifactInput, CreateEvidenceInput, CreateReviewInput, FeedbackInput, ListArtifactsQuery,
-  OutcomeInput, QualityConfigInput, RepairInput, ReleaseDecisionInput,
+  OutcomeInput, ProviderStatusInput, QualityConfigInput, RepairInput, ReleaseDecisionInput,
 } from './quality.validator.js';
 
 const artifactSelect = `a.id,a.workspace_id AS "workspaceId",a.artifact_type AS "artifactType",
@@ -102,7 +102,9 @@ export async function findArtifact(workspaceId: string, artifactId: string, clie
       FROM quality_artifact_versions v WHERE v.workspace_id=$1 AND v.artifact_id=$2 ORDER BY v.version DESC`, [workspaceId,artifactId], client);
   const current = versions.rows[0] as { id?: string } | undefined;
   const [claims,reviews,findings,decisions,feedback,outcomes] = await Promise.all([
-    query(`SELECT c.id,c.artifact_version_id AS "artifactVersionId",c.claim_text AS "claimText",c.position,c.claim_type AS "claimType",c.source_status AS "sourceStatus",c.freshness,c.confidence,c.verdict,c.created_at AS "createdAt" FROM quality_claims c WHERE c.workspace_id=$1 AND c.artifact_version_id IN (SELECT id FROM quality_artifact_versions WHERE workspace_id=$1 AND artifact_id=$2) ORDER BY c.created_at`,[workspaceId,artifactId],client),
+    query(`SELECT c.id,c.artifact_version_id AS "artifactVersionId",c.claim_text AS "claimText",c.position,c.claim_type AS "claimType",c.source_status AS "sourceStatus",c.freshness,c.confidence,c.verdict,c.created_at AS "createdAt",
+      COALESCE((SELECT json_agg(ce.evidence_id) FROM quality_claim_evidence ce WHERE ce.workspace_id=c.workspace_id AND ce.claim_id=c.id),'[]'::json) AS "evidenceIds"
+      FROM quality_claims c WHERE c.workspace_id=$1 AND c.artifact_version_id IN (SELECT id FROM quality_artifact_versions WHERE workspace_id=$1 AND artifact_id=$2) ORDER BY c.created_at`,[workspaceId,artifactId],client),
     query(`SELECT r.id,r.artifact_version_id AS "artifactVersionId",r.reviewer_agent_id AS "reviewerAgentId",r.reviewer_version AS "reviewerVersion",r.reviewer_kind AS "reviewerKind",r.verdict,r.overall_score AS "overallScore",r.dimensions,r.findings,r.checked_claims AS "checkedClaims",r.confidence,r.limitations,r.next_action AS "nextAction",r.created_at AS "createdAt" FROM quality_reviews r WHERE r.workspace_id=$1 AND r.artifact_version_id IN (SELECT id FROM quality_artifact_versions WHERE workspace_id=$1 AND artifact_id=$2) ORDER BY r.created_at DESC`,[workspaceId,artifactId],client),
     query(`SELECT f.id,f.review_id AS "reviewId",f.artifact_version_id AS "artifactVersionId",f.severity,f.category,f.location,f.message,f.evidence_refs AS "evidenceRefs",f.suggested_fix AS "suggestedFix",f.resolved_at AS "resolvedAt",f.created_at AS "createdAt" FROM quality_findings f WHERE f.workspace_id=$1 AND f.artifact_version_id IN (SELECT id FROM quality_artifact_versions WHERE workspace_id=$1 AND artifact_id=$2) ORDER BY f.created_at DESC`,[workspaceId,artifactId],client),
     query(`SELECT d.id,d.artifact_version_id AS "artifactVersionId",d.decision,d.reason,d.actor_type AS "actorType",d.actor_id AS "actorId",d.override_reason AS "overrideReason",d.created_at AS "createdAt" FROM quality_release_decisions d WHERE d.workspace_id=$1 AND d.artifact_id=$2 ORDER BY d.created_at DESC`,[workspaceId,artifactId],client),
@@ -155,6 +157,59 @@ export async function createRepair(workspaceId: string, userId: string, artifact
 export async function countRepairAttempts(workspaceId: string, artifactId: string) {
   const { rows } = await query<{ count: number }>(`SELECT count(*)::int AS count FROM quality_repair_attempts WHERE workspace_id=$1 AND artifact_id=$2`, [workspaceId, artifactId]);
   return Number(rows[0]?.count ?? 0);
+}
+
+export async function findRepairAttempt(workspaceId: string, repairAttemptId: string) {
+  const { rows } = await query(`SELECT id,workspace_id AS "workspaceId",artifact_id AS "artifactId",input_version_id AS "inputVersionId",
+      output_version_id AS "outputVersionId",round_number AS "roundNumber",status,finding_ids AS "findingIds",created_by AS "createdBy"
+    FROM quality_repair_attempts WHERE workspace_id=$1 AND id=$2`, [workspaceId, repairAttemptId]);
+  return rows[0] ?? null;
+}
+
+export async function markRepairFailed(workspaceId: string, repairAttemptId: string, message: string) {
+  await query(`UPDATE quality_repair_attempts SET status='failed',error_message=$3,finished_at=NOW() WHERE workspace_id=$1 AND id=$2 AND status IN ('queued','running')`, [workspaceId, repairAttemptId, message.slice(0, 4000)]);
+}
+
+export async function createRepairVersion(workspaceId: string, repairAttemptId: string, content: Record<string, unknown>, producerAgentId: string, producerVersion: string) {
+  return withTransaction(async (client) => {
+    const attempt = await query<{ artifactId: string; inputVersionId: string; createdBy: string | null }>(`SELECT artifact_id AS "artifactId",input_version_id AS "inputVersionId",created_by AS "createdBy" FROM quality_repair_attempts WHERE workspace_id=$1 AND id=$2 AND status IN ('queued','running') FOR UPDATE`, [workspaceId, repairAttemptId], client);
+    const row = attempt.rows[0];
+    if (!row) return null;
+    await query(`UPDATE quality_repair_attempts SET status='running' WHERE workspace_id=$1 AND id=$2`, [workspaceId, repairAttemptId], client);
+    const version = await query<{ version: number; sourceSnapshotId: string | null }>(`SELECT COALESCE(MAX(version),0)+1 AS version,
+      (SELECT source_snapshot_id FROM quality_artifact_versions WHERE workspace_id=$1 AND artifact_id=$2 ORDER BY version DESC LIMIT 1) AS "sourceSnapshotId"
+      FROM quality_artifact_versions WHERE workspace_id=$1 AND artifact_id=$2`, [workspaceId, row.artifactId], client);
+    const nextVersion = Number(version.rows[0]?.version ?? 1);
+    const inserted = await query<{ id: string }>(`INSERT INTO quality_artifact_versions(workspace_id,artifact_id,version,content,producer_agent_id,producer_version,source_snapshot_id)
+      VALUES($1,$2,$3,$4::jsonb,$5,$6,$7) RETURNING id`, [workspaceId,row.artifactId,nextVersion,json(content),producerAgentId,producerVersion,version.rows[0]?.sourceSnapshotId ?? null], client);
+    const versionId = inserted.rows[0]?.id;
+    if (!versionId) throw new Error('Quality repair version insert did not return an id');
+    await query(`INSERT INTO quality_claims(workspace_id,artifact_version_id,claim_text,position,claim_type,source_status,freshness,confidence,verdict)
+      SELECT workspace_id,$3,claim_text,position,claim_type,source_status,freshness,confidence,'unchecked' FROM quality_claims WHERE workspace_id=$1 AND artifact_version_id=$2`, [workspaceId,row.inputVersionId,versionId], client);
+    await query(`INSERT INTO quality_claim_evidence(workspace_id,claim_id,evidence_id)
+      SELECT $1,new_claim.id,old_link.evidence_id
+      FROM quality_claims old_claim JOIN quality_claims new_claim ON new_claim.workspace_id=old_claim.workspace_id AND new_claim.artifact_version_id=$3 AND new_claim.claim_text=old_claim.claim_text
+      JOIN quality_claim_evidence old_link ON old_link.workspace_id=old_claim.workspace_id AND old_link.claim_id=old_claim.id
+      WHERE old_claim.workspace_id=$1 AND old_claim.artifact_version_id=$2 ON CONFLICT DO NOTHING`, [workspaceId,row.inputVersionId,versionId], client);
+    await query(`UPDATE quality_artifacts SET current_version=$3,status='REVIEW_PENDING',provider_status='completed',updated_at=NOW() WHERE workspace_id=$1 AND id=$2`, [workspaceId,row.artifactId,nextVersion], client);
+    await query(`UPDATE quality_repair_attempts SET status='completed',output_version_id=$3,finished_at=NOW() WHERE workspace_id=$1 AND id=$2`, [workspaceId,repairAttemptId,versionId], client);
+    await appendDomainEvent({ workspaceId, type: DOMAIN_EVENT_TYPES.QUALITY_REPAIR_COMPLETED, aggregateType:'quality_artifact', aggregateId:row.artifactId,
+      payload:{ artifactId:row.artifactId, repairAttemptId, artifactVersionId:versionId }, metadata:{ actorId:row.createdBy, source:'quality.repair' }, idempotencyKey:`quality-repair:${repairAttemptId}:completed:v1` }, client);
+    await appendDomainEvent({ workspaceId, type: DOMAIN_EVENT_TYPES.QUALITY_REVIEW_REQUESTED, aggregateType:'quality_artifact', aggregateId:row.artifactId,
+      payload:{ artifactId:row.artifactId, artifactVersionId:versionId, reason:'repair_completed' }, metadata:{ actorId:row.createdBy, source:'quality.repair' }, idempotencyKey:`quality-review:${row.artifactId}:version:${versionId}:requested:v1` }, client);
+    return { artifactId: row.artifactId, artifactVersionId: versionId };
+  });
+}
+
+export async function updateProviderStatus(workspaceId: string, artifactId: string, providerStatus: ProviderStatusInput['providerStatus'], userId: string) {
+  const { rows } = await query(`UPDATE quality_artifacts SET provider_status=$3,updated_at=NOW() WHERE workspace_id=$1 AND id=$2 RETURNING ${artifactSelect}`,[workspaceId,artifactId,providerStatus]);
+  const artifact = rows[0];
+  if (!artifact) return null;
+  await appendDomainEvent({ workspaceId, type: DOMAIN_EVENT_TYPES.QUALITY_PROVIDER_STATUS_CHANGED, aggregateType:'quality_artifact', aggregateId:artifactId,
+    payload:{ artifactId, providerStatus }, metadata:{ actorId:userId, source:'quality' }, idempotencyKey:`quality-provider-status:${artifactId}:${providerStatus}` });
+  if (providerStatus === 'completed') await appendDomainEvent({ workspaceId, type: DOMAIN_EVENT_TYPES.QUALITY_REVIEW_REQUESTED, aggregateType:'quality_artifact', aggregateId:artifactId,
+    payload:{ artifactId, reason:'provider_completed' }, metadata:{ actorId:userId, source:'quality' }, idempotencyKey:`quality-review:${artifactId}:provider-completed:v1` });
+  return artifact;
 }
 
 export async function createReleaseDecision(workspaceId: string, userId: string | null, actorType: string, artifactId: string, input: ReleaseDecisionInput) {

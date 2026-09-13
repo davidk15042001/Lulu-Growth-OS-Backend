@@ -18,6 +18,7 @@ router.route('/config').get(read, controller.config).patch(admin, controller.upd
 router.route('/artifacts').get(read, controller.list).post(review, controller.create).all(methodNotAllowed);
 router.route('/artifacts/:artifactId').get(read, controller.get).all(methodNotAllowed);
 router.route('/artifacts/:artifactId/reviews').post(review, controller.review).all(methodNotAllowed);
+router.route('/artifacts/:artifactId/provider-status').patch(review, controller.providerStatus).all(methodNotAllowed);
 router.route('/artifacts/:artifactId/repair').post(repair, controller.repair).all(methodNotAllowed);
 router.route('/artifacts/:artifactId/release').post(release, controller.release).all(methodNotAllowed);
 router.route('/artifacts/:artifactId/override').post(override, controller.override).all(methodNotAllowed);

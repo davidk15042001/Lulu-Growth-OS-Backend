@@ -5,6 +5,7 @@ const jsonObject = z.record(z.string(), z.unknown());
 
 export const workspaceParamsSchema = z.object({ workspaceId: z.string().uuid() });
 export const artifactParamsSchema = workspaceParamsSchema.extend({ artifactId: z.string().uuid() });
+export const artifactVersionParamsSchema = artifactParamsSchema.extend({ versionId: z.string().uuid() });
 
 export const createArtifactSchema = z.object({
   artifactType: z.string().trim().min(1).max(120),
@@ -99,6 +100,10 @@ export const repairSchema = z.object({
   findingIds: z.array(z.string().uuid()).min(1).max(500),
 });
 
+export const providerStatusSchema = z.object({
+  providerStatus: z.enum(['not_started','queued','submitted','running','completed','failed','ambiguous']),
+});
+
 export const releaseDecisionSchema = z.object({
   artifactVersionId: z.string().uuid(),
   decision: z.enum(['approved','rejected','withheld','escalated','queued','released']),
@@ -135,6 +140,7 @@ export type CreateEvidenceInput = z.infer<typeof createEvidenceSchema>;
 export type ListArtifactsQuery = z.infer<typeof listArtifactsQuerySchema>;
 export type CreateReviewInput = z.infer<typeof createReviewSchema>;
 export type RepairInput = z.infer<typeof repairSchema>;
+export type ProviderStatusInput = z.infer<typeof providerStatusSchema>;
 export type ReleaseDecisionInput = z.infer<typeof releaseDecisionSchema>;
 export type FeedbackInput = z.infer<typeof feedbackSchema>;
 export type OutcomeInput = z.infer<typeof outcomeSchema>;

@@ -27,6 +27,7 @@ import { probeAiRuntime } from './modules/ai/openai.service.js';
 import { startWorkerSupervisorHeartbeat, stopWorkerSupervisorHeartbeat } from './operations/worker-liveness.js';
 import { startSocialPublishingWorker, stopSocialPublishingWorker } from './modules/social-publishing/social-publishing.worker.js';
 import { startGoogleAdsSpendReconciliationWorker, stopGoogleAdsSpendReconciliationWorker } from './modules/adspend/google-ads-spend.worker.js';
+import { startQualityIntelligenceWorker, stopQualityIntelligenceWorker } from './modules/quality/quality.worker.js';
 import { autonomousWorkerManifest } from './operations/autonomous-worker-manifest.js';
 import {
   createIdempotentShutdown,
@@ -61,6 +62,7 @@ async function stopBackgroundWorkers() {
       stopOmnichannelAiReplyWorker(),
       stopSocialPublishingWorker(),
       stopGoogleAdsSpendReconciliationWorker(),
+      stopQualityIntelligenceWorker(),
     ] : []),
   ]);
   const failures = results
@@ -105,6 +107,7 @@ async function bootstrap() {
       startOmnichannelAiReplyWorker();
       startSocialPublishingWorker();
       startGoogleAdsSpendReconciliationWorker();
+      startQualityIntelligenceWorker();
       await startWorkerSupervisorHeartbeat(autonomousWorkerManifest);
     }
   }

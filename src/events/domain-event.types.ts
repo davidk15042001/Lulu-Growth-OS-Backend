@@ -148,6 +148,7 @@ export const DOMAIN_EVENT_TYPES = {
   NOTIFICATION_CREATED: 'notification.created',
   QUALITY_ARTIFACT_CREATED: 'quality.artifact.created',
   QUALITY_EVIDENCE_RECORDED: 'quality.evidence.recorded',
+  QUALITY_PROVIDER_STATUS_CHANGED: 'quality.provider.status.changed',
   QUALITY_REVIEW_REQUESTED: 'quality.review.requested',
   QUALITY_REVIEW_COMPLETED: 'quality.review.completed',
   QUALITY_REPAIR_REQUESTED: 'quality.repair.requested',

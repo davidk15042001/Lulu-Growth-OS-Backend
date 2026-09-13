@@ -5,7 +5,7 @@ import * as service from './quality.service.js';
 import {
   artifactParamsSchema, createArtifactSchema, createReviewSchema, feedbackSchema,
   createEvidenceSchema, listArtifactsQuerySchema, outcomeSchema, qualityConfigSchema, repairSchema,
-  releaseDecisionSchema, workspaceParamsSchema,
+  providerStatusSchema, releaseDecisionSchema, workspaceParamsSchema,
 } from './quality.validator.js';
 
 export async function overview(req: WorkspaceRequest, res: Response, next: NextFunction) {
@@ -31,6 +31,9 @@ export async function review(req: WorkspaceRequest, res: Response, next: NextFun
 }
 export async function repair(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try { const p=artifactParamsSchema.parse(req.params); return createdResponse(res,'Quality repair requested',await service.requestRepair(p.workspaceId,req.user!.id,p.artifactId,repairSchema.parse(req.body))); } catch (error) { next(error); }
+}
+export async function providerStatus(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const p=artifactParamsSchema.parse(req.params); return successResponse(res,'Quality provider status updated',await service.updateProviderStatus(p.workspaceId,req.user!.id,p.artifactId,providerStatusSchema.parse(req.body))); } catch (error) { next(error); }
 }
 export async function release(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try { const p=artifactParamsSchema.parse(req.params); return successResponse(res,'Quality release decision recorded',await service.decideRelease(p.workspaceId,req.user!.id,p.artifactId,releaseDecisionSchema.parse(req.body),false)); } catch (error) { next(error); }
