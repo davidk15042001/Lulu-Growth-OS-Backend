@@ -75,9 +75,9 @@ export async function listAutomatedTargets() {
     plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
     status: string;
     ad_spend_funded: boolean;
-  }>(`SELECT w.id AS workspace_id, w.created_by AS actor_user_id,
-             COALESCE(ws.plan_key,'starter') AS plan_key,
-             COALESCE(ws.status,'billing_skipped') AS status,
+      }>(`SELECT w.id AS workspace_id, w.created_by AS actor_user_id,
+             CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'ai' ELSE COALESCE(ws.plan_key,'starter') END AS plan_key,
+             CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'billing_skipped' ELSE COALESCE(ws.status,'inactive') END AS status,
              (COALESCE(ad.available_amount,0)>0 AND COALESCE(ad.reversal_debt_amount,0)=0) AS ad_spend_funded
       FROM workspaces w
       LEFT JOIN LATERAL (
@@ -92,14 +92,29 @@ export async function listAutomatedTargets() {
       WHERE w.deleted_at IS NULL
         AND (
           (ws.status IN ('active','trialing') AND ws.plan_key IN ('starter','ai','test'))
-          OR (ws.plan_key IS NULL AND w.billing_skipped_at IS NOT NULL)
+          OR w.billing_skipped_at IS NOT NULL
         )
         AND w.onboarding_completed_at IS NOT NULL
         AND w.profile_completed_at IS NOT NULL
         AND w.knowledge_base_completed_at IS NOT NULL
-        AND (ws.plan_key='test' OR ws.provider='internal' OR (
-          COALESCE(api.available_amount,0)>0 AND COALESCE(api.reversal_debt_amount,0)=0
-        ))`);
+        AND (
+          (
+            w.billing_skipped_at IS NOT NULL
+            AND COALESCE(api.available_amount,0)>0
+            AND COALESCE(api.reversal_debt_amount,0)=0
+          )
+          OR (
+            w.billing_skipped_at IS NULL
+            AND (
+              ws.plan_key='test'
+              OR ws.provider='internal'
+              OR (
+                COALESCE(api.available_amount,0)>0
+                AND COALESCE(api.reversal_debt_amount,0)=0
+              )
+            )
+          )
+        )`);
   return rows;
 }
 

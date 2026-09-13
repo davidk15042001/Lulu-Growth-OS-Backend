@@ -105,8 +105,14 @@ export async function updateMessageState(workspaceId: string, messageId: string,
   return repo.updateLocalMessageState(workspaceId, messageId, cleanState);
 }
 
-export async function createDraft(workspaceId: string, userId: string, input: CreateDraftInput) {
-  const draft = await repo.createDraft(workspaceId, userId, input);
+export async function createDraft(
+  workspaceId: string,
+  userId: string,
+  input: CreateDraftInput,
+  source: 'manual' | 'ai' | 'automation' = 'manual',
+  metadata: Record<string, unknown> = {},
+) {
+  const draft = await repo.createDraft(workspaceId, userId, input, source, metadata);
   if (!draft) throw notFoundError('Email account not found');
   return draft;
 }
@@ -219,6 +225,24 @@ function trackEmailSyncExecution<T>(operation: () => Promise<T>): Promise<T> | n
     () => activeSyncExecutions.delete(task),
   );
   return task;
+}
+
+/**
+ * Autonomous email delivery is deliberately narrower than the manual send
+ * endpoint. Only drafts created by Lulu's AI/automation pipeline may be sent
+ * by an agent; a human-authored draft always remains under explicit human
+ * control. The normal draft state transition still provides idempotency.
+ */
+export async function sendAutonomousDraft(workspaceId: string, draftId: string) {
+  const draft = await repo.getDraft(workspaceId, draftId) as Record<string, unknown> | null;
+  if (!draft) throw notFoundError('Email draft not found');
+  const source = String(draft.source ?? '');
+  const metadata = (draft.aiMetadata && typeof draft.aiMetadata === 'object') ? draft.aiMetadata as Record<string, unknown> : {};
+  const agentGenerated = metadata.generatedBy === 'agent_executor';
+  if (source !== 'automation' && !agentGenerated) {
+    throw new AppError(403, 'EMAIL_AUTONOMOUS_SEND_FORBIDDEN', 'Only AI-generated or automation drafts can be sent autonomously');
+  }
+  return sendDraft(workspaceId, draftId);
 }
 
 export function runEmailSyncCycle(): Promise<void> {

@@ -7,6 +7,17 @@ export type OfficeActorAccess = {
 };
 
 const aggregateCapabilities: ReadonlyArray<[RegExp, WorkspaceCapability]> = [
+  [/^agent_run_finance$/i, 'finance.read'],
+  [/^agent_run_sales$/i, 'leads.read'],
+  [/^agent_run_crm$/i, 'crm.read'],
+  [/^agent_run_(email|reputation)$/i, 'omnichannel.read'],
+  [/^agent_run_calendar$/i, 'workspace.read'],
+  [/^agent_run_marketing$/i, 'social.read'],
+  [/^agent_run_ads$/i, 'advertising.read'],
+  [/^agent_run_(website|seo|geo|aeo)$/i, 'website.read'],
+  [/^agent_run_commerce$/i, 'products.read'],
+  [/^agent_run_settings$/i, 'providers.read'],
+  [/^agent_run_(general|dashboard|intelligence|ai)$/i, 'agents.read'],
   [/^(invoice|invoice_payment)$/i, 'invoices.read'],
   [/^(quote|quotation)$/i, 'quotes.read'],
   [/^(journal|journal_entry|ledger|finance|billing|api_wallet|workspace_subscription|billing_scheduler)$/i, 'finance.read'],
@@ -88,6 +99,7 @@ export function canSeeTimelineItem(item: OfficeTimelineItem, access: OfficeActor
 const safePayloadKeys = new Set(['status', 'direction', 'action', 'sourceType', 'trigger']);
 const safeTextPayloadKeys = new Set(['status', 'direction', 'action', 'sourceType', 'trigger']);
 const safeSummaryToken = /^[A-Za-z0-9_.:-]{1,80}$/;
+const safeContextKeys = new Set(['pageId', 'module', 'surface']);
 
 export function redactTimelineItem(item: OfficeTimelineItem): OfficeTimelineItem {
   const payload: Record<string, unknown> = {};
@@ -100,9 +112,17 @@ export function redactTimelineItem(item: OfficeTimelineItem): OfficeTimelineItem
 }
 
 export function redactWorkItem<T extends OfficeWorkItem>(item: T): T {
+  const context: Record<string, unknown> = {};
+  for (const key of safeContextKeys) {
+    const value = item.context?.[key];
+    if (typeof value === 'string' && safeSummaryToken.test(value)) context[key] = value;
+  }
   return {
     ...item,
-    context: {},
+    // Keep only non-sensitive routing hints. The office uses pageId to open
+    // the canonical Workspace without exposing provider payloads or private
+    // customer context in a cross-domain employee panel.
+    context,
     result: null,
     errorMessage: item.errorCode ? 'Operation failed; inspect the canonical workspace object for details.' : null,
   };

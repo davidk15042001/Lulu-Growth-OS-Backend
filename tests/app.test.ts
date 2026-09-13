@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
 import { RESOURCE_CATALOG } from '../src/domain/resource-catalog.js';
+import { getAiSpendReservationReadiness, toPublicRuntimeReadiness } from '../src/operations/runtime-readiness.js';
 
 describe('HTTP application', () => {
   it('reports process health without requiring a database', async () => {
@@ -26,11 +27,10 @@ describe('HTTP application', () => {
 
     assert.equal(response.status, 503);
     assert.equal(response.body.success, false);
-    assert.equal(response.body.data.database.configured, false);
-    assert.ok(response.body.data.blockers.includes('database'));
-    assert.ok(response.body.data.blockers.includes('ai'));
-    assert.equal(response.body.data.components.ai.kind, 'text');
-    assert.equal(typeof response.body.data.components.primaryTextAi.ready, 'boolean');
+    assert.equal(response.body.data.ready, false);
+    assert.equal(response.body.data.status, 'not_ready');
+    assert.equal(typeof response.body.data.checkedAt, 'string');
+    assert.deepEqual(Object.keys(response.body.data).sort(), ['checkedAt', 'ready', 'status']);
   });
 
   it('reports not ready when DATABASE_URL is not configured', async () => {
@@ -38,7 +38,44 @@ describe('HTTP application', () => {
 
     assert.equal(response.status, 503);
     assert.equal(response.body.success, false);
-    assert.equal(response.body.data.database.configured, false);
+    assert.equal(response.body.data.ready, false);
+    assert.equal(response.body.data.status, 'not_ready');
+    assert.deepEqual(Object.keys(response.body.data).sort(), ['checkedAt', 'ready', 'status']);
+  });
+
+  it('blocks readiness for stale AI spend holds and wallet hold mismatches', () => {
+    const healthy = {
+      reservedCount: 1,
+      ambiguousCount: 0,
+      submittingCount: 0,
+      submittedCount: 0,
+      unresolvedCount: 1,
+      staleUnresolvedCount: 0,
+      walletHoldMismatchCount: 0,
+      walletHoldMismatchAmount: 0,
+      oldestUnresolvedAt: new Date().toISOString(),
+    };
+
+    assert.deepEqual(
+      getAiSpendReservationReadiness(healthy),
+      { required: true, ready: true, healthy: true, ...healthy },
+    );
+    assert.equal(getAiSpendReservationReadiness({ ...healthy, staleUnresolvedCount: 1 }).ready, false);
+    assert.equal(getAiSpendReservationReadiness({ ...healthy, walletHoldMismatchCount: 1 }).ready, false);
+    assert.equal(getAiSpendReservationReadiness(null).ready, false);
+  });
+
+  it('keeps public readiness details privacy safe', () => {
+    const summary = toPublicRuntimeReadiness({
+      ready: false,
+      status: 'not_ready',
+      checkedAt: '2026-09-13T00:00:00.000Z',
+    });
+    assert.deepEqual(summary, {
+      ready: false,
+      status: 'not_ready',
+      checkedAt: '2026-09-13T00:00:00.000Z',
+    });
   });
 
   it('exposes the API descriptor and complete resource catalog', async () => {

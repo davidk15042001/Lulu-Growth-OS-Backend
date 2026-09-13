@@ -38,6 +38,9 @@ const workItemSelect = (alias = 'wi') => `${alias}.id,
     WHERE child.workspace_id=${alias}.workspace_id AND child.parent_work_item_id=${alias}.id) AS "hasChildren",
   EXISTS(SELECT 1 FROM office_work_items child
     WHERE child.workspace_id=${alias}.workspace_id AND child.parent_work_item_id=${alias}.id
+      AND child.status IN ('queued','running','waiting','paused','waiting_for_approval','human_controlled')) AS "hasActiveChildren",
+  EXISTS(SELECT 1 FROM office_work_items child
+    WHERE child.workspace_id=${alias}.workspace_id AND child.parent_work_item_id=${alias}.id
       AND child.status='running') AS "hasRunningChildren"`;
 
 function availableControls(item: OfficeWorkItem): OfficeControlAction[] {
@@ -45,6 +48,7 @@ function availableControls(item: OfficeWorkItem): OfficeControlAction[] {
   const terminal = item.status === 'completed' || item.status === 'cancelled';
   const sourceBusy = Boolean(item.sourceWorkerId);
   const downstream = Boolean(item.hasChildren);
+  const activeDownstream = Boolean(item.hasActiveChildren);
   const runningDownstream = Boolean(item.hasRunningChildren);
 
   const providerWaitingPacket = item.sourceType === 'agent_action_packet' && item.status === 'waiting';
@@ -54,7 +58,7 @@ function availableControls(item: OfficeWorkItem): OfficeControlAction[] {
   // A leased agent run may currently be inside an irreversible provider/tool
   // call.  Do not advertise cancellation until that step has yielded its
   // lease; the control endpoint repeats this check under a row lock below.
-  if (!terminal && !sourceBusy && !runningDownstream
+  if (!terminal && !sourceBusy && !activeDownstream
       && !(item.sourceType === 'agent_action_packet' && item.status === 'running')) {
     controls.push('cancel');
   }
@@ -73,6 +77,7 @@ function hydrateWorkItem(row: OfficeWorkItem): OfficeWorkItem {
     maxAttempts: Number(row.maxAttempts),
     version: Number(row.version),
     hasChildren: Boolean(row.hasChildren),
+    hasActiveChildren: Boolean(row.hasActiveChildren),
     hasRunningChildren: Boolean(row.hasRunningChildren),
   };
   item.availableControls = availableControls(item);
@@ -388,13 +393,15 @@ async function applyAgentRunControl(
       item.workspaceId, run.id, action === 'pause' ? 'OFFICE_PAUSED' : action === 'takeover' ? 'OFFICE_HUMAN_TAKEOVER' : 'AGENT_RUN_CANCELLED',
       action === 'pause' ? 'Paused by a workspace user' : action === 'takeover' ? 'Handed over to a workspace user' : 'Cancelled by a workspace user',
     ], client);
-    await appendDomainEvent({
-      workspaceId: item.workspaceId, type: DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED,
-      aggregateType: 'agent_run', aggregateId: run.id,
-      payload: { runId: run.id, reason: `office_${action}` },
-      metadata: { actorId, source: 'office' },
-      idempotencyKey: `office:${idempotencyKey}:agent-run-cancel`,
-    }, client);
+    if (action === 'cancel') {
+      await appendDomainEvent({
+        workspaceId: item.workspaceId, type: DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED,
+        aggregateType: 'agent_run', aggregateId: run.id,
+        payload: { runId: run.id, reason: `office_${action}` },
+        metadata: { actorId, source: 'office' },
+        idempotencyKey: `office:${idempotencyKey}:agent-run-cancel`,
+      }, client);
+    }
   }
 }
 
@@ -543,8 +550,8 @@ export async function controlWorkItem(input: {
         human_controller_id=CASE WHEN $3='human_controlled' THEN $4::uuid ELSE NULL END,
         paused_at=CASE WHEN $3='paused' THEN NOW() ELSE NULL END,
         finished_at=CASE WHEN $3='cancelled' THEN NOW() ELSE NULL END,
-        error_code=CASE WHEN $3='queued' THEN NULL ELSE error_code END,
-        error_message=CASE WHEN $3='queued' THEN NULL ELSE error_message END,
+        error_code=CASE WHEN $3 IN ('queued','paused','human_controlled') THEN NULL ELSE error_code END,
+        error_message=CASE WHEN $3 IN ('queued','paused','human_controlled') THEN NULL ELSE error_message END,
         attempt_count=$5,version=version+1,updated_at=NOW()
       WHERE workspace_id=$1 AND id=$2`, [input.workspaceId,input.workItemId,target,input.actorId,nextAttemptCount],client);
 

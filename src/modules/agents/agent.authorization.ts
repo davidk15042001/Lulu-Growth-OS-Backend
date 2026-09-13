@@ -23,7 +23,7 @@ type AgentIdentityState = {
   approval_id: string | null;
   plan_key: SubscriptionPlan;
   subscription_status: string;
-  role: string;
+  role: string | null;
   execution_actor_type: 'USER' | 'WORKFLOW';
   execution_actor_ref: string | null;
   execution_capability_scope: unknown;
@@ -83,8 +83,8 @@ export async function authorizeAgentIdentity(context:AgentExecutionIdentity,writ
             m.role,r.execution_actor_type,r.execution_actor_ref,r.execution_capability_scope
       FROM agent_runs r JOIN agent_run_steps s ON s.run_id=r.id AND s.workspace_id=r.workspace_id
       JOIN workspaces w ON w.id=r.workspace_id AND w.deleted_at IS NULL
-      JOIN workspace_members m ON m.workspace_id=w.id AND m.user_id=$2
-      JOIN users u ON u.id=m.user_id AND u.deleted_at IS NULL AND u.verified_at IS NOT NULL
+      LEFT JOIN workspace_members m ON m.workspace_id=w.id AND m.user_id=$2
+      LEFT JOIN users u ON u.id=$2 AND u.deleted_at IS NULL AND u.verified_at IS NOT NULL
       LEFT JOIN LATERAL (
         SELECT subscription.plan_key,subscription.status
         FROM workspace_subscriptions subscription
@@ -94,7 +94,7 @@ export async function authorizeAgentIdentity(context:AgentExecutionIdentity,writ
       ) p ON TRUE
       WHERE r.workspace_id=$1 AND r.id=$3 AND s.id=$4
         AND (
-          (r.execution_actor_type='USER' AND r.created_by=$2)
+          (r.execution_actor_type='USER' AND r.created_by=$2 AND m.user_id IS NOT NULL AND u.id IS NOT NULL)
           OR (
             r.execution_actor_type='WORKFLOW'
             AND COALESCE(r.created_by,w.created_by)=$2

@@ -2,7 +2,7 @@ import { logger } from '../../config/logger.js';
 import { executeAuthorizedAgentPacket } from './agent.authorization.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as recordRepo from '../records/record.repo.js';
-import { createAiDraft, createDraft } from '../email/email.service.js';
+import { createAiDraft, createDraft, sendAutonomousDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
 import { generateProductImagesFromText } from '../product-images/product-image.service.js';
@@ -366,7 +366,7 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       subject: textValue(payload.subject, 998),
       bodyText: textValue(payload.bodyText, 100_000),
       replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
-    });
+    }, 'automation', { sourceActionRecordId: record.id, generatedBy: 'agent_executor' });
     const stored = await persistCommandExecutionResult(record, command, {
       draftId: draft.id,
       threadId: draft.threadId,
@@ -411,6 +411,24 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       provider: command.provider,
       resultRecordId: stored.id,
       result: { draftId: draft.id, threadId: draft.threadId, status: 'drafted', source: draft.source },
+    };
+  }
+
+  if (command.type === 'email.send_draft') {
+    const draftId = textValue(payload.draftId || command.targetEntityId);
+    if (!draftId) throw new Error('email.send_draft requires draftId');
+    const draft = await sendAutonomousDraft(record.workspaceId, draftId);
+    const stored = await persistCommandExecutionResult(record, command, {
+      draftId,
+      status: 'sent',
+      providerMessageId: draft && typeof draft === 'object' && 'providerMessageId' in draft ? (draft as { providerMessageId?: string | null }).providerMessageId ?? null : null,
+    });
+    return {
+      type: command.type,
+      targetEntityId: draftId,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: { draftId, status: 'sent' },
     };
   }
 

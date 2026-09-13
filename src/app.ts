@@ -7,7 +7,7 @@ import { requestLogger } from './config/logger.js';
 import { notFound } from './middlewares/notFound.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import v1Routes from './modules/v1.routes.js';
-import { getRuntimeReadiness } from './operations/runtime-readiness.js';
+import { getRuntimeReadiness, toPublicRuntimeReadiness } from './operations/runtime-readiness.js';
 
 export function createApp() {
   const app = express();
@@ -81,7 +81,10 @@ export function createApp() {
   app.get('/ready', async (_req: Request, res: Response, next) => {
     try {
       const readiness = await getRuntimeReadiness();
-      res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
+      res.status(readiness.ready ? 200 : 503).json({
+        success: readiness.ready,
+        data: toPublicRuntimeReadiness(readiness),
+      });
     } catch (error) {
       next(error);
     }

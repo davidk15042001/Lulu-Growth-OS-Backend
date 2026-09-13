@@ -11,6 +11,7 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'record.create_artifact':'AUTONOMOUS', 'crm.create_followup_task':'AUTONOMOUS',
   'sales.create_followup_task':'AUTONOMOUS', 'email.create_draft':'AUTONOMOUS',
   'email.create_ai_draft':'AUTONOMOUS', 'ecommerce.generate_product_images':'AUTONOMOUS',
+  'email.send_draft':'AUTONOMOUS',
   'finance.create_automation':'AUTONOMOUS', 'advertising.create_optimization':'AUTONOMOUS',
   'finance.invoice.create_from_order':'AUTONOMOUS',
   'google_reviews.reply':'AUTONOMOUS', 'website.publish_job':'AUTONOMOUS',

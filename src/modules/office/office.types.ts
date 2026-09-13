@@ -60,6 +60,7 @@ export type OfficeWorkItem = {
   updatedAt: string;
   sourceWorkerId?: string | null;
   hasChildren?: boolean;
+  hasActiveChildren?: boolean;
   hasRunningChildren?: boolean;
   availableControls?: OfficeControlAction[];
   dependencies?: Array<Record<string, unknown>>;

@@ -10,6 +10,32 @@ function configured(...values: Array<string | undefined>) {
   return values.every((value) => Boolean(value?.trim()));
 }
 
+type AiReservationHealth = Awaited<ReturnType<typeof getAiReservationHealth>>;
+
+export function getAiSpendReservationReadiness(health: AiReservationHealth | null) {
+  const healthy = health !== null
+    && health.staleUnresolvedCount === 0
+    && health.walletHoldMismatchCount === 0;
+  return {
+    required: true,
+    ready: healthy,
+    healthy,
+    ...(health ?? {}),
+  };
+}
+
+export function toPublicRuntimeReadiness(readiness: {
+  ready: boolean;
+  status: string;
+  checkedAt: string;
+}) {
+  return {
+    ready: readiness.ready,
+    status: readiness.status,
+    checkedAt: readiness.checkedAt,
+  };
+}
+
 export async function getRuntimeReadiness() {
   const database = await checkDatabase();
   const aiProviders = getAiProviderHealth().map(({ lastError: _lastError, ...provider }) => provider);
@@ -31,14 +57,7 @@ export async function getRuntimeReadiness() {
   const components = {
     database: { required: true, ready: database.configured && database.connected },
     ai: { required: true, ready: textAiReady, kind: 'text', operationalProviders: textProviders.filter((provider) => provider.operational).map((provider) => provider.provider) },
-    aiSpendReservations: {
-      required: false,
-      ready: aiSpendReservations !== null,
-      healthy: aiSpendReservations !== null
-        && aiSpendReservations.staleUnresolvedCount === 0
-        && aiSpendReservations.walletHoldMismatchCount === 0,
-      ...(aiSpendReservations ?? {}),
-    },
+    aiSpendReservations: getAiSpendReservationReadiness(aiSpendReservations),
     primaryTextAi: { required: false, ready: Boolean(primaryTextProvider?.operational), provider: primaryTextProvider?.provider ?? env.AI_PROVIDER, configured: Boolean(primaryTextProvider?.configured), fallbackActive: textAiReady && !primaryTextProvider?.operational },
     workers: { required: isProd, ready: !isProd || (env.BACKGROUND_WORKERS_ENABLED && workerSupervisor.live), configured: env.BACKGROUND_WORKERS_ENABLED, supervisor: workerSupervisor },
     proxyTrust: { required: isProd, ready: !isProd || Boolean(trustProxySetting), mode: trustProxySetting || 'disabled' },

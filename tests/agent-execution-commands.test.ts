@@ -87,6 +87,38 @@ describe('agent execution commands', () => {
     assert.match(command.idempotencyKey, /^[a-f0-9]{40}$/);
   });
 
+  it('allows an agent to send only an explicitly generated email draft', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'email.send_draft',
+      summary: 'Send the verified customer reply',
+      targetSystem: 'unknown',
+      provider: 'email',
+      riskLevel: 'low',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'email_draft',
+      targetEntityId: 'draft-1',
+      payload: { draftId: 'draft-1' },
+      idempotencyKey: 'model-send-key',
+    }], {
+      module: 'email',
+      targetSystem: 'communication',
+      actionResourceType: 'ai_tasks',
+      pageId: 'email-page',
+      pageLabel: 'Email',
+      goal: 'Send a verified reply',
+      jobs: ['Deliver reply'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'email.send_draft');
+    assert.equal(command.targetSystem, 'communication');
+    assert.equal(command.riskLevel, 'high');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('cannot be tricked into removing the customer budget boundary from advertising', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'advertising.create_optimization',

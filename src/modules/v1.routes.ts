@@ -5,7 +5,7 @@ import translationRoutes from './translations/translation.routes.js';
 import oauthRoutes from './onboarding/oauth.routes.js';
 import { RESOURCE_CATALOG, RESOURCE_DOMAINS } from '../domain/resource-catalog.js';
 import { env } from '../config/env.js';
-import { getRuntimeReadiness } from '../operations/runtime-readiness.js';
+import { getRuntimeReadiness, toPublicRuntimeReadiness } from '../operations/runtime-readiness.js';
 import billingRoutes from './billing/billing.routes.js';
 import adminRoutes from './admin/admin.routes.js';
 import emailOAuthRoutes from './email/email.oauth.routes.js';
@@ -39,7 +39,10 @@ router.get('/health', (_req, res) => {
 router.get('/ready', async (_req, res, next) => {
   try {
     const readiness = await getRuntimeReadiness();
-    res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
+    res.status(readiness.ready ? 200 : 503).json({
+      success: readiness.ready,
+      data: toPublicRuntimeReadiness(readiness),
+    });
   } catch (error) {
     next(error);
   }

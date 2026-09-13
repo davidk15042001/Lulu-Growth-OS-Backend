@@ -176,11 +176,48 @@ describe('Digital Company Office foundation', () => {
       { key:'security-policy-auditor',state:'COLLABORATING' },
     ]);
     await db.query(`UPDATE agent_run_steps SET status='completed',finished_at=NOW() WHERE id=$1`, [stepId]);
-    const reviewer = (await db.query<{ state: string }>(`SELECT p.display_state AS state
+    const reviewerProjection = (await db.query<{ state: string; active: number }>(`SELECT p.display_state AS state,
+        p.active_work_count::int AS active
       FROM digital_employees e JOIN office_employee_state_projection p
         ON p.workspace_id=e.workspace_id AND p.employee_id=e.id
-      WHERE e.workspace_id=$1 AND e.employee_key='security-policy-auditor'`, [f.workspaceId])).rows[0]!.state;
-    assert.equal(reviewer,'IDLE');
+      WHERE e.workspace_id=$1 AND e.employee_key='security-policy-auditor'`, [f.workspaceId])).rows[0]!;
+    assert.deepEqual(reviewerProjection,{state:'IDLE',active:0});
+  });
+
+  it('attributes a delegated specialist to its own Digital Employee instead of the parent page role', async () => {
+    const f = await fixture();
+    const runId = (await db.query<{ id: string }>(`INSERT INTO agent_runs(workspace_id,created_by,goal,status,plan)
+      VALUES($1,$2,'Prepare a verified quote','running',$3::jsonb) RETURNING id`, [
+      f.workspaceId,
+      f.owner,
+      JSON.stringify({
+        version:5,
+        module:'sales',
+        agentDefinition:{id:'page:tender-creek-3139',name:'Quote specialist',module:'sales',tier:'specialist'},
+        page:{pageId:'tender-creek-3139',pageLabel:'Quotes'},
+      }),
+    ])).rows[0]!.id;
+    await db.query(`INSERT INTO workspace_agent_performance(
+        workspace_id,agent_id,agent_name,module,tier,selection_count
+      ) VALUES($1,'page:nicely-ocean-1051','Product specialist','commerce','specialist',1)`, [f.workspaceId]);
+    await db.query(`INSERT INTO agent_run_steps(
+        run_id,workspace_id,sequence_no,agent_role,title,instruction,status,agent_id,idempotency_key
+      ) VALUES($1,$2,1,'strategist','Product handoff','Match products','running',
+        'page:nicely-ocean-1051','delegated-commerce-specialist')`, [runId,f.workspaceId]);
+    const assignments = await db.query<{ key: string; role: string; completedAt: string | null }>(`
+      SELECT employee.employee_key AS key,assignment.assignment_role AS role,
+        assignment.completed_at AS "completedAt"
+      FROM office_work_item_assignments assignment
+      JOIN digital_employees employee
+        ON employee.workspace_id=assignment.workspace_id AND employee.id=assignment.employee_id
+      JOIN office_work_items work_item
+        ON work_item.workspace_id=assignment.workspace_id AND work_item.id=assignment.work_item_id
+      WHERE work_item.workspace_id=$1 AND work_item.source_agent_run_id=$2
+      ORDER BY assignment.assignment_role`, [f.workspaceId,runId]);
+    assert.deepEqual(assignments.rows.map((row) => ({key:row.key,role:row.role,completedAt:row.completedAt})), [
+      {key:'product-manager',role:'CONTRIBUTOR',completedAt:null},
+      {key:'follow-up-specialist',role:'PRIMARY',completedAt:null},
+    ]);
   });
 
   it('keeps a completed reasoning run active until its real action packet finishes', async () => {
@@ -209,6 +246,8 @@ describe('Digital Company Office foundation', () => {
     assert.equal(parent.status, 'waiting');
     assert.equal(child.status, 'queued');
     assert.equal(child.parentId, parent.id);
+    const parentWhileChildActive = await officeRepo.findWorkItem(f.workspaceId,parent.id);
+    assert.ok(!parentWhileChildActive?.availableControls?.includes('cancel'));
 
     await db.query(`UPDATE workspace_records SET stage='executing',
       data=data||'{"executionStatus":"executing","executionAttempts":1,"executionStartedAt":"2026-09-13T08:00:00.000Z"}'::jsonb,
@@ -231,6 +270,78 @@ describe('Digital Company Office foundation', () => {
     const attempts = await db.query<{ status: string }>(`SELECT status FROM office_work_item_attempts
       WHERE workspace_id=$1 AND work_item_id=$2`, [f.workspaceId, child.id]);
     assert.deepEqual(attempts.rows.map((row) => row.status), ['succeeded']);
+  });
+
+  it('clears a recovered downstream failure from the parent employee work item', async () => {
+    const f = await fixture();
+    await db.query(`INSERT INTO resource_types(key,domain,label) VALUES('office_action','ai','Office action') ON CONFLICT DO NOTHING`);
+    const runId = await createRun(f.workspaceId,f.owner);
+    const stepId = (await db.query<{ id: string }>(`INSERT INTO agent_run_steps(
+      run_id,workspace_id,sequence_no,agent_role,title,instruction,agent_id,idempotency_key
+    ) VALUES($1,$2,1,'executor','Execute','Execute safely','page:test-sales','office-recovery-step') RETURNING id`,
+    [runId,f.workspaceId])).rows[0]!.id;
+    const recordId = (await db.query<{ id: string }>(`INSERT INTO workspace_records(
+      workspace_id,resource_type,name,status,stage,source,data,created_by
+    ) VALUES($1,'office_action','Send customer follow-up','approved','queued_for_execution','page_agent',
+      '{"executionReady":true,"executionStatus":"queued"}'::jsonb,$2) RETURNING id`,
+    [f.workspaceId,f.owner])).rows[0]!.id;
+    await db.query(`INSERT INTO agent_action_packets(record_id,workspace_id,run_id,step_id,user_id,commands_digest)
+      VALUES($1,$2,$3,$4,$5,'digest')`, [recordId,f.workspaceId,runId,stepId,f.owner]);
+    await db.query(`UPDATE agent_runs SET status='completed',finished_at=NOW() WHERE workspace_id=$1 AND id=$2`,
+    [f.workspaceId,runId]);
+
+    await db.query(`UPDATE workspace_records SET stage='execution_failed',status='failed',
+      data=data||'{"executionStatus":"failed","executionAttempts":1,"executionError":"Provider unavailable"}'::jsonb,
+      version=version+1 WHERE workspace_id=$1 AND id=$2`,[f.workspaceId,recordId]);
+    const failedParent = (await db.query<{ status: string; errorCode: string | null }>(`SELECT status,error_code AS "errorCode"
+      FROM office_work_items WHERE workspace_id=$1 AND source_type='agent_run' AND source_agent_run_id=$2`,
+    [f.workspaceId,runId])).rows[0]!;
+    assert.deepEqual(failedParent,{status:'failed',errorCode:'AGENT_ACTION_PACKET_FAILED'});
+
+    await db.query(`UPDATE workspace_records SET stage='queued_for_execution',status='approved',
+      data=data||'{"executionStatus":"queued","executionReady":true}'::jsonb,version=version+1
+      WHERE workspace_id=$1 AND id=$2`,[f.workspaceId,recordId]);
+    const retriedParent = (await db.query<{ status: string; errorCode: string | null; errorMessage: string | null }>(`
+      SELECT status,error_code AS "errorCode",error_message AS "errorMessage" FROM office_work_items
+      WHERE workspace_id=$1 AND source_type='agent_run' AND source_agent_run_id=$2`,[f.workspaceId,runId])).rows[0]!;
+    assert.deepEqual(retriedParent,{status:'waiting',errorCode:null,errorMessage:null});
+
+    await db.query(`UPDATE workspace_records SET stage='executed',status='active',
+      data=data||'{"executionStatus":"executed","executionCompletedAt":"2026-09-13T08:00:00.000Z"}'::jsonb,
+      version=version+1 WHERE workspace_id=$1 AND id=$2`,[f.workspaceId,recordId]);
+    const completedParent = (await db.query<{ status: string; errorCode: string | null }>(`SELECT status,error_code AS "errorCode"
+      FROM office_work_items WHERE workspace_id=$1 AND source_type='agent_run' AND source_agent_run_id=$2`,
+    [f.workspaceId,runId])).rows[0]!;
+    assert.deepEqual(completedParent,{status:'completed',errorCode:null});
+  });
+
+  it('never reports a completed parent when its real downstream action was cancelled', async () => {
+    const f = await fixture();
+    await db.query(`INSERT INTO resource_types(key,domain,label) VALUES('office_action','ai','Office action') ON CONFLICT DO NOTHING`);
+    const runId = await createRun(f.workspaceId,f.owner);
+    const stepId = (await db.query<{ id: string }>(`INSERT INTO agent_run_steps(
+      run_id,workspace_id,sequence_no,agent_role,title,instruction,agent_id,idempotency_key
+    ) VALUES($1,$2,1,'executor','Execute','Execute safely','page:test-sales','office-cancelled-step') RETURNING id`,
+    [runId,f.workspaceId])).rows[0]!.id;
+    const recordId = (await db.query<{ id: string }>(`INSERT INTO workspace_records(
+      workspace_id,resource_type,name,status,stage,source,data,created_by
+    ) VALUES($1,'office_action','Send customer follow-up','approved','queued_for_execution','page_agent',
+      '{"executionReady":true,"executionStatus":"queued"}'::jsonb,$2) RETURNING id`,
+    [f.workspaceId,f.owner])).rows[0]!.id;
+    await db.query(`INSERT INTO agent_action_packets(record_id,workspace_id,run_id,step_id,user_id,commands_digest)
+      VALUES($1,$2,$3,$4,$5,'digest')`, [recordId,f.workspaceId,runId,stepId,f.owner]);
+    await db.query(`UPDATE agent_runs SET status='completed',finished_at=NOW() WHERE workspace_id=$1 AND id=$2`,
+    [f.workspaceId,runId]);
+    await db.query(`UPDATE workspace_records SET stage='execution_cancelled',status='cancelled',
+      data=data||'{"executionStatus":"cancelled"}'::jsonb,version=version+1
+      WHERE workspace_id=$1 AND id=$2`, [f.workspaceId,recordId]);
+    const states = await db.query<{ sourceType: string; status: string }>(`SELECT source_type AS "sourceType",status
+      FROM office_work_items WHERE workspace_id=$1 AND source_agent_run_id=$2 ORDER BY source_type`,
+    [f.workspaceId,runId]);
+    assert.deepEqual(states.rows,[
+      {sourceType:'agent_action_packet',status:'cancelled'},
+      {sourceType:'agent_run',status:'cancelled'},
+    ]);
   });
 
   it('enforces tenant-safe dependencies and rejects dependency cycles', async () => {
@@ -276,6 +387,47 @@ describe('Digital Company Office foundation', () => {
     const audit = await db.query<{ action: string }>(`SELECT action FROM audit_log
       WHERE workspace_id=$1 AND entity_type='office_work_item' AND entity_id=$2`, [f.workspaceId,created.item.id]);
     assert.deepEqual(audit.rows.map((row) => row.action), ['office.work_item.pause']);
+  });
+
+  it('pauses and resumes a real agent run without recording a fake cancellation', async () => {
+    const f = await fixture();
+    const runId = await createRun(f.workspaceId,f.owner);
+    const initial = (await db.query<{ id: string }>(`SELECT id FROM office_work_items
+      WHERE workspace_id=$1 AND source_type='agent_run' AND source_agent_run_id=$2`,
+    [f.workspaceId,runId])).rows[0]!;
+    const beforePause = await officeRepo.findWorkItem(f.workspaceId,initial.id);
+    assert.ok(beforePause?.availableControls?.includes('pause'));
+
+    const paused = await officeRepo.controlWorkItem({
+      workspaceId:f.workspaceId,workItemId:initial.id,action:'pause',actorId:f.owner,
+      expectedVersion:beforePause!.version,idempotencyKey:`agent-pause-${crypto.randomUUID()}`,
+    });
+    assert.equal(paused.item.status,'paused');
+    assert.equal(paused.item.errorCode,null);
+    assert.equal(paused.item.errorMessage,null);
+    const pausedRun = (await db.query<{ status: string; errorCode: string | null }>(`SELECT status,error_code AS "errorCode"
+      FROM agent_runs WHERE workspace_id=$1 AND id=$2`,[f.workspaceId,runId])).rows[0]!;
+    assert.deepEqual(pausedRun,{status:'cancelled',errorCode:'OFFICE_PAUSED'});
+
+    const visibleEvents = await db.query<{ eventType: string }>(`SELECT event_type AS "eventType"
+      FROM office_work_item_events WHERE workspace_id=$1 AND work_item_id=$2 ORDER BY sequence`,
+    [f.workspaceId,initial.id]);
+    assert.ok(visibleEvents.rows.some((event) => event.eventType === 'office.work_item.paused'));
+    assert.ok(!visibleEvents.rows.some((event) => event.eventType === 'office.work_item.cancelled'));
+    const cancellationEvents = await db.query<{ count: number }>(`SELECT count(*)::int AS count FROM domain_events
+      WHERE workspace_id=$1 AND aggregate_type='agent_run' AND aggregate_id=$2 AND event_type='run.cancelled'`,
+    [f.workspaceId,runId]);
+    assert.equal(Number(cancellationEvents.rows[0]!.count),0);
+
+    const resumed = await officeRepo.controlWorkItem({
+      workspaceId:f.workspaceId,workItemId:initial.id,action:'resume',actorId:f.owner,
+      expectedVersion:paused.item.version,idempotencyKey:`agent-resume-${crypto.randomUUID()}`,
+    });
+    assert.equal(resumed.item.status,'queued');
+    assert.equal(resumed.item.errorCode,null);
+    const resumedRun = (await db.query<{ status: string; errorCode: string | null }>(`SELECT status,error_code AS "errorCode"
+      FROM agent_runs WHERE workspace_id=$1 AND id=$2`,[f.workspaceId,runId])).rows[0]!;
+    assert.deepEqual(resumedRun,{status:'queued',errorCode:null});
   });
 
   it('never advertises or applies an unsafe Office cancel while an agent worker owns the lease', async () => {

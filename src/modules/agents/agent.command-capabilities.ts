@@ -19,6 +19,7 @@ const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCa
   'google_reviews.reply': 'omnichannel.reply',
   'email.create_draft': 'omnichannel.reply',
   'email.create_ai_draft': 'omnichannel.reply',
+  'email.send_draft': 'omnichannel.reply',
   'omnichannel.send_message': 'omnichannel.reply',
   'website.publish_job': 'website.publish',
   'ecommerce.generate_product_images': 'products.update',

@@ -537,12 +537,23 @@ describe('prepaid API and transparent usage reporting', () => {
     assert.equal((await db.query(`SELECT workspace_id FROM workspace_api_wallets WHERE workspace_id=$1`, [workspace.id])).rows.length, 0);
     assert.equal((await db.query(`SELECT id FROM audit_log WHERE workspace_id=$1 AND action='onboarding.billing_skipped'`, [workspace.id])).rows.length, 1);
 
+    await db.query(
+      `INSERT INTO workspace_subscriptions(workspace_id,provider,plan_key,status)
+       VALUES($1,'internal','starter','cancelled')`,
+      [workspace.id],
+    );
     await db.query(`UPDATE workspaces SET profile_completed_at=NOW(),knowledge_base_completed_at=NOW(),onboarding_completed_at=NOW(),onboarding_step='setup_complete' WHERE id=$1`, [workspace.id]);
+    assert.equal(
+      (await listAutomatedTargets()).some((item) => item.workspace_id === workspace.id),
+      false,
+      'billing skip never turns an internal subscription into free AI funding',
+    );
     const topup = await createApiTopup({ workspaceId: workspace.id, userId: owner.id, amount: 1000, paymentMethod: 'card' });
     await attachApiProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_skipped_workspace' });
     await applyApiProviderStatus({ providerPaymentIntentId: 'pi_skipped_workspace', providerStatus: 'SUCCEEDED' });
     const target = (await listAutomatedTargets()).find((item) => item.workspace_id === workspace.id);
     assert.equal(target?.status, 'billing_skipped');
+    assert.equal(target?.plan_key, 'ai');
   });
 
   it('journals exact partial AI refunds and idempotent dispute releases', async () => {

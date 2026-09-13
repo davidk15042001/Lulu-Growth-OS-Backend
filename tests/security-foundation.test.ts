@@ -271,8 +271,11 @@ describe('provider key separation',()=>{
 });
 
 describe('DNS ownership proof',()=>{
-  const future=new Date(Date.now()+60_000).toISOString();
   it('requires the exact TXT challenge, supports chunked TXT, and fails closed on DNS errors',async()=>{
+    // The full integration suite runs many database-backed tests in parallel;
+    // compute this at execution time with enough headroom so the fixture does
+    // not expire while unrelated suites are still draining.
+    const future=new Date(Date.now()+3_600_000).toISOString();
     assert.equal(await checkDnsChallenge('example.test','lulu-site=abc',future,async name=>{assert.equal(name,'_lulu-verification.example.test');return [['lulu-site=','abc']];}),null);
     assert.equal(await checkDnsChallenge('example.test','abc',future,async()=>[]),'DNS_CHALLENGE_NOT_FOUND');
     assert.equal(await checkDnsChallenge('example.test','abc',future,async()=>[['wrong']]),'DNS_CHALLENGE_NOT_FOUND');
@@ -375,6 +378,28 @@ describe('deterministic agent execution authorization',()=>{
     assert.equal(stored.actorType,'WORKFLOW');
     assert.equal(stored.actorRef,'lulu:test:crm');
     assert.deepEqual(stored.requiredCapabilities,['crm.manage']);
+  });
+  it('keeps a scoped Digital Employee workflow independent from the legacy audit user membership',async()=>{
+    const f=await agentFixture('crm.create_followup_task');
+    await db.query(`UPDATE agent_runs
+      SET execution_actor_type='WORKFLOW',execution_actor_ref='lulu:test:independent-employee',
+          execution_capability_scope='["agents.execute","crm.manage"]'::jsonb
+      WHERE id=$1`,[f.context.runId]);
+    const replacementOwner=await newUser(true);
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,
+    [f.context.workspaceId,replacementOwner.id]);
+    await db.query(`DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2`,
+    [f.context.workspaceId,f.user.id]);
+    await db.query(`UPDATE users SET verified_at=NULL,deleted_at=NOW() WHERE id=$1`,[f.user.id]);
+
+    const state=await agentAuth.authorizeAgentIdentity(f.context,true);
+    assert.equal(state.execution_actor_type,'WORKFLOW');
+    assert.deepEqual(state.serviceScope,['agents.execute','crm.manage']);
+    const packet=await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
+    assert.equal(packet.executionReady,true);
+    let executed=0;
+    await agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed+=1;});
+    assert.equal(executed,1);
   });
   it('treats an audited admin billing skip as agent activation without granting wallet funds',async()=>{
     const f=await agentFixture();
