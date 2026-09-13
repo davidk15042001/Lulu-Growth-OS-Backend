@@ -25,6 +25,7 @@ const WRITE_CAPABILITIES = new Set<WorkspaceCapability>([
   'crm.manage', 'leads.manage', 'opportunities.manage', 'quotes.create', 'quotes.update',
   'quotes.send', 'quotes.approve', 'invoices.create', 'invoices.issue', 'invoices.send', 'invoices.cancel', 'commercial_policy.manage', 'orders.manage', 'website.manage',
   'website.publish', 'omnichannel.reply', 'omnichannel.manage',
+  'social.manage', 'social.publish',
   'advertising.manage', 'advertising.budget_authorize', 'finance.manage',
   'payouts.request', 'payouts.manage', 'providers.connect', 'providers.manage',
   'agents.manage', 'agents.execute', 'settings.manage',

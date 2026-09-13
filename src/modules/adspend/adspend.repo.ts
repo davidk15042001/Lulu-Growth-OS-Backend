@@ -4,10 +4,12 @@ import { query, withTransaction } from '../../db/pool.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AppError } from '../../utils/app-error.js';
+import { applyPendingAirwallexWalletReversals } from '../billing/airwallex-wallet-reversal.repo.js';
 
 export const AD_SPEND_FEE_BASIS_POINTS = 400;
 export type AdSpendPaymentMethod = 'card' | 'alipaycn' | 'wechatpay';
 export type AdSpendTopupStatus = 'CREATED' | 'PENDING_PAYMENT' | 'REQUIRES_CUSTOMER_ACTION' | 'SUCCEEDED' | 'CANCELLED' | 'FAILED' | 'EXPIRED' | 'REFUNDED' | 'CHARGEBACK';
+export type AdBudgetAuthorizationStatus = 'ACTIVE' | 'REVOKED' | 'EXHAUSTED' | 'EXPIRED';
 
 type WalletRow = {
   workspaceId: string;
@@ -16,6 +18,7 @@ type WalletRow = {
   reservedAmount: string;
   spentAmount: string;
   refundedAmount: string;
+  reversalDebtAmount: string;
   totalFundedAmount: string;
   totalFeeAmount: string;
   feeBasisPoints: number;
@@ -51,8 +54,33 @@ export type AdSpendTopupRow = {
   updatedAt: string;
 };
 
+type AdBudgetAuthorizationRow = {
+  id: string;
+  workspaceId: string;
+  createdBy: string;
+  provider: string;
+  accountId: string;
+  campaignId: string;
+  currency: string;
+  authorizedAmount: string;
+  reservedAmount: string;
+  consumedAmount: string;
+  startsAt: string | Date;
+  endsAt: string | Date;
+  status: AdBudgetAuthorizationStatus;
+  idempotencyKey: string;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  revokedBy: string | null;
+  revokedAt: string | null;
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const walletSelect = `workspace_id AS "workspaceId",currency,available_amount AS "availableAmount",
   reserved_amount AS "reservedAmount",spent_amount AS "spentAmount",refunded_amount AS "refundedAmount",
+  reversal_debt_amount AS "reversalDebtAmount",
   total_funded_amount AS "totalFundedAmount",total_fee_amount AS "totalFeeAmount",
   fee_basis_points AS "feeBasisPoints",version,created_at AS "createdAt",updated_at AS "updatedAt"`;
 
@@ -64,6 +92,12 @@ const topupSelect = `id,workspace_id AS "workspaceId",created_by AS "createdBy",
   credited_at AS "creditedAt",provider_response AS "providerResponse",error_code AS "errorCode",
   error_message AS "errorMessage",created_at AS "createdAt",updated_at AS "updatedAt"`;
 
+const authorizationSelect = `id,workspace_id AS "workspaceId",created_by AS "createdBy",provider,
+  account_id AS "accountId",campaign_id AS "campaignId",currency,authorized_amount AS "authorizedAmount",
+  reserved_amount AS "reservedAmount",consumed_amount AS "consumedAmount",starts_at AS "startsAt",
+  ends_at AS "endsAt",status,idempotency_key AS "idempotencyKey",reason,metadata,
+  revoked_by AS "revokedBy",revoked_at AS "revokedAt",version,created_at AS "createdAt",updated_at AS "updatedAt"`;
+
 function publicWallet(row: WalletRow) {
   return {
     ...row,
@@ -71,9 +105,10 @@ function publicWallet(row: WalletRow) {
     reservedAmount: Number(row.reservedAmount),
     spentAmount: Number(row.spentAmount),
     refundedAmount: Number(row.refundedAmount),
+    reversalDebtAmount: Number(row.reversalDebtAmount),
     totalFundedAmount: Number(row.totalFundedAmount),
     totalFeeAmount: Number(row.totalFeeAmount),
-    adsEnabled: Number(row.availableAmount) > 0,
+    adsEnabled: Number(row.availableAmount) > 0 && Number(row.reversalDebtAmount) === 0,
   };
 }
 
@@ -84,6 +119,70 @@ export function publicTopup(row: AdSpendTopupRow) {
     feeAmount: Number(row.feeAmount),
     totalAmount: Number(row.totalAmount),
   };
+}
+
+function publicAuthorization(row: AdBudgetAuthorizationRow) {
+  const authorizedAmount = Number(row.authorizedAmount);
+  const reservedAmount = Number(row.reservedAmount);
+  const consumedAmount = Number(row.consumedAmount);
+  const startsAt = timestampIso(row.startsAt);
+  const endsAt = timestampIso(row.endsAt);
+  const effectivelyExpired = row.status === 'ACTIVE' && timestampMs(row.endsAt) <= Date.now();
+  return {
+    ...row,
+    startsAt,
+    endsAt,
+    status: effectivelyExpired ? 'EXPIRED' as const : row.status,
+    authorizedAmount,
+    reservedAmount,
+    consumedAmount,
+    remainingAmount: Math.max(0, Math.round((authorizedAmount - reservedAmount - consumedAmount) * 100) / 100),
+  };
+}
+
+function timestampMs(value: string | Date) {
+  return value instanceof Date ? value.getTime() : Date.parse(value);
+}
+
+function timestampIso(value: string | Date) {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function money(value: number, code: string, message: string) {
+  if (!Number.isFinite(value) || value <= 0) throw new AppError(422, code, message);
+  const rounded = Math.round(value * 100) / 100;
+  if (!Number.isSafeInteger(Math.round(rounded * 100))) throw new AppError(422, code, message);
+  return rounded;
+}
+
+function normalizeScopeId(provider: string, value: string) {
+  const normalized = value.trim();
+  // Google accepts customer IDs in both 123-456-7890 and 1234567890 form.
+  // Store and compare one canonical representation so formatting cannot make a
+  // valid customer authorization unusable (or create a duplicate scope).
+  return provider === 'google-ads' ? normalized.replaceAll('-', '') : normalized;
+}
+
+function assertUuid(value: string, code: string, message: string) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw new AppError(409, code, message);
+  }
+}
+
+async function auditBudgetAuthorization(
+  client: PoolClient,
+  workspaceId: string,
+  actorId: string | null,
+  action: string,
+  authorizationId: string,
+  afterData: Record<string, unknown>,
+) {
+  await query(
+    `INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,after_data)
+     VALUES($1,$2,$3,'ad_budget_authorization',$4,$5::jsonb)`,
+    [workspaceId, actorId, action, authorizationId, JSON.stringify(afterData)],
+    client,
+  );
 }
 
 async function ensureWallet(workspaceId: string, client?: PoolClient) {
@@ -104,6 +203,9 @@ export async function getAdSpendOverview(workspaceId: string) {
 
 export async function assertAdSpendFunded(workspaceId: string) {
   const wallet = await ensureWallet(workspaceId);
+  if (Number(wallet.reversalDebtAmount) > 0) {
+    throw new AppError(409, 'AD_SPEND_REVERSAL_DEBT', 'Paid advertising is paused until the outstanding refund or chargeback balance is covered.');
+  }
   if (Number(wallet.availableAmount) <= 0) {
     throw new AppError(409, 'AD_SPEND_FUNDS_REQUIRED', 'Paid advertising is paused until the customer funds the ad spend wallet.');
   }
@@ -178,6 +280,8 @@ function mapProviderStatus(status: string): AdSpendTopupStatus {
 }
 
 export async function applyAdSpendProviderStatus(input: {
+  topupId?: string | null;
+  workspaceId?: string | null;
   providerPaymentIntentId?: string | null;
   providerInvoiceId?: string | null;
   providerStatus: string;
@@ -185,24 +289,46 @@ export async function applyAdSpendProviderStatus(input: {
   providerResponse?: Record<string, unknown>;
 }) {
   return withTransaction(async (client) => {
-    const topup = (await query<AdSpendTopupRow>(
+    const matches = await query<AdSpendTopupRow>(
       `SELECT ${topupSelect} FROM workspace_ad_spend_topups
        WHERE ($1::text IS NOT NULL AND provider_payment_intent_id=$1)
           OR ($2::text IS NOT NULL AND provider_invoice_id=$2)
+          OR ($3::text IS NOT NULL AND id::text=$3)
        FOR UPDATE`,
-      [input.providerPaymentIntentId ?? null, input.providerInvoiceId ?? null], client,
-    )).rows[0];
+      [input.providerPaymentIntentId ?? null, input.providerInvoiceId ?? null, input.topupId ?? null], client,
+    );
+    if (matches.rows.length > 1) {
+      throw new AppError(409, 'AIRWALLEX_WALLET_CORRELATION_AMBIGUOUS', 'Airwallex advertising wallet references resolve to multiple top-ups.');
+    }
+    const topup = matches.rows[0];
     if (!topup) return null;
+    if (input.topupId && input.topupId !== topup.id) {
+      throw new AppError(409, 'AIRWALLEX_WALLET_TOPUP_MISMATCH', 'Airwallex wallet metadata does not match the correlated advertising top-up.');
+    }
+    if (input.workspaceId && input.workspaceId !== topup.workspaceId) {
+      throw new AppError(409, 'AIRWALLEX_WALLET_WORKSPACE_MISMATCH', 'Airwallex wallet metadata does not match the correlated advertising top-up.');
+    }
+    if (input.providerPaymentIntentId && topup.providerPaymentIntentId
+      && input.providerPaymentIntentId !== topup.providerPaymentIntentId) {
+      throw new AppError(409, 'AIRWALLEX_WALLET_PAYMENT_INTENT_MISMATCH', 'Airwallex PaymentIntent does not match the correlated advertising top-up.');
+    }
+    if (input.providerInvoiceId && topup.providerInvoiceId && input.providerInvoiceId !== topup.providerInvoiceId) {
+      throw new AppError(409, 'AIRWALLEX_WALLET_INVOICE_MISMATCH', 'Airwallex invoice does not match the correlated advertising top-up.');
+    }
     const mappedStatus = mapProviderStatus(input.providerStatus);
     const reversal = mappedStatus === 'REFUNDED' || mappedStatus === 'CHARGEBACK';
     const wasReversed = topup.status === 'REFUNDED' || topup.status === 'CHARGEBACK';
     // Provider events can arrive out of order. Once funds were credited, a
     // delayed pending/failed event must never downgrade the successful top-up.
-    const status: AdSpendTopupStatus = reversal
-      ? mappedStatus
-      : topup.creditedAt
-        ? (wasReversed ? topup.status : 'SUCCEEDED')
-        : mappedStatus;
+    // Reversal is terminal even if it is observed before the corresponding
+    // success webhook. Airwallex does not guarantee delivery ordering.
+    const status: AdSpendTopupStatus = wasReversed && topup.creditedAt
+      ? topup.status
+      : reversal
+        ? mappedStatus
+        : topup.creditedAt
+          ? 'SUCCEEDED'
+          : mappedStatus;
     const successful = status === 'SUCCEEDED';
     const newlyCredited = successful && !topup.creditedAt;
     const newlyReversed = reversal && Boolean(topup.creditedAt) && !wasReversed;
@@ -210,18 +336,22 @@ export async function applyAdSpendProviderStatus(input: {
       `UPDATE workspace_ad_spend_topups SET status=$2::varchar,
        paid_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(paid_at,$3::timestamptz,NOW()) ELSE paid_at END,
        credited_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(credited_at,NOW()) ELSE credited_at END,
-       provider_response=provider_response || $4::jsonb
+       provider_response=provider_response || $4::jsonb,
+       provider_payment_intent_id=COALESCE(provider_payment_intent_id,$5),
+       provider_invoice_id=COALESCE(provider_invoice_id,$6)
        WHERE id=$1`,
-      [topup.id, status, input.paidAt ?? null, JSON.stringify(input.providerResponse ?? {})], client,
+      [topup.id, status, input.paidAt ?? null, JSON.stringify(input.providerResponse ?? {}),
+        input.providerPaymentIntentId ?? null, input.providerInvoiceId ?? null], client,
     );
     if (newlyCredited) {
       await ensureWallet(topup.workspaceId, client);
       const wallet = (await query<WalletRow>(
         `UPDATE workspace_ad_spend_wallets SET
-           available_amount=available_amount+$2,
+           available_amount=available_amount+GREATEST(0,$2-reversal_debt_amount),
+           reversal_debt_amount=GREATEST(0,reversal_debt_amount-$2),
            total_funded_amount=total_funded_amount+$2,
-           total_fee_amount=total_fee_amount+$3,
-           version=version+1
+            total_fee_amount=total_fee_amount+$3,
+            version=version+1
          WHERE workspace_id=$1 RETURNING ${walletSelect}`,
         [topup.workspaceId, topup.netAmount, topup.feeAmount], client,
       )).rows[0];
@@ -231,25 +361,33 @@ export async function applyAdSpendProviderStatus(input: {
           workspace_id,topup_id,entry_type,amount_delta,balance_after,currency,idempotency_key,metadata
         ) VALUES($1,$2,'TOPUP_CREDIT',$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
         [topup.workspaceId, topup.id, topup.netAmount, wallet.availableAmount, `adspend-topup:${topup.id}:credit`,
-          JSON.stringify({ feeAmount: Number(topup.feeAmount), totalCharged: Number(topup.totalAmount), provider: 'airwallex' })], client,
+          JSON.stringify({
+            feeAmount: Number(topup.feeAmount),
+            totalCharged: Number(topup.totalAmount),
+            provider: 'airwallex',
+            reversalDebtAmount: Number(wallet.reversalDebtAmount),
+          })], client,
       );
-      await appendDomainEvent({
-        workspaceId: topup.workspaceId,
-        type: DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED,
-        aggregateType: 'ad_spend_wallet',
-        aggregateId: topup.workspaceId,
-        payload: { topupId: topup.id, amount: Number(topup.netAmount), currency: 'CNY', availableAmount: Number(wallet.availableAmount) },
-        metadata: { actorId: topup.createdBy, source: 'airwallex' },
-        idempotencyKey: `adspend-topup:${topup.id}:funded`,
-      }, client);
+      const reconciled = await applyPendingAirwallexWalletReversals({ walletType: 'AD_SPEND', topupId: topup.id, client });
+      const effectiveWallet = reconciled.wallet ?? wallet;
+      if (Number(effectiveWallet.availableAmount) > 0 && Number(effectiveWallet.reversalDebtAmount) === 0) {
+        await appendDomainEvent({
+          workspaceId: topup.workspaceId,
+          type: DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED,
+          aggregateType: 'ad_spend_wallet',
+          aggregateId: topup.workspaceId,
+          payload: { topupId: topup.id, amount: Number(topup.netAmount), currency: 'CNY', availableAmount: Number(effectiveWallet.availableAmount) },
+          metadata: { actorId: topup.createdBy, source: 'airwallex' },
+          idempotencyKey: `adspend-topup:${topup.id}:funded`,
+        }, client);
+      }
     }
     if (newlyReversed) {
-      const before = await ensureWallet(topup.workspaceId, client);
-      const deducted = Math.min(Number(before.availableAmount), Number(topup.netAmount));
+      await ensureWallet(topup.workspaceId, client);
       const wallet = (await query<WalletRow>(
         `UPDATE workspace_ad_spend_wallets SET
            available_amount=GREATEST(0,available_amount-$2),
-           reserved_amount=0,
+           reversal_debt_amount=reversal_debt_amount+GREATEST(0,$2-available_amount),
            refunded_amount=refunded_amount+$2,
            total_funded_amount=GREATEST(0,total_funded_amount-$2),
            total_fee_amount=GREATEST(0,total_fee_amount-$3),
@@ -259,20 +397,15 @@ export async function applyAdSpendProviderStatus(input: {
       )).rows[0];
       if (!wallet) throw new Error('Ad spend wallet reversal failed');
       await query(
-        `UPDATE workspace_ad_spend_reservations
-         SET status='EXPIRED',metadata=metadata||$2::jsonb
-         WHERE workspace_id=$1 AND status='RESERVED'`,
-        [topup.workspaceId, JSON.stringify({ reason: 'provider_payment_reversal', topupId: topup.id })], client,
+        `INSERT INTO workspace_ad_spend_ledger(
+           workspace_id,topup_id,entry_type,amount_delta,balance_after,currency,idempotency_key,metadata
+         ) VALUES($1,$2,'REFUND',$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
+        [topup.workspaceId, topup.id, (-Number(topup.netAmount)).toFixed(2), wallet.availableAmount,
+          `adspend-topup:${topup.id}:reversal`, JSON.stringify({
+            provider: 'airwallex', status, originalAmount: Number(topup.netAmount),
+            reversalDebtAmount: Number(wallet.reversalDebtAmount),
+          })], client,
       );
-      if (deducted > 0) {
-        await query(
-          `INSERT INTO workspace_ad_spend_ledger(
-             workspace_id,topup_id,entry_type,amount_delta,balance_after,currency,idempotency_key,metadata
-           ) VALUES($1,$2,'REFUND',$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
-          [topup.workspaceId, topup.id, (-deducted).toFixed(2), wallet.availableAmount,
-            `adspend-topup:${topup.id}:reversal`, JSON.stringify({ provider: 'airwallex', status, originalAmount: Number(topup.netAmount) })], client,
-        );
-      }
     }
     return (await query<AdSpendTopupRow>(
       `SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE workspace_id=$1 AND id=$2`,
@@ -289,41 +422,253 @@ export async function failAdSpendTopup(topupId: string, code: string, message: s
   );
 }
 
-/** Atomically reserves prepaid funds. Ad providers must call this before spend. */
-export async function reserveAdSpend(input: {
+export async function createAdBudgetAuthorization(input: {
   workspaceId: string;
+  userId: string;
+  provider: string;
+  accountId: string;
+  campaignId: string;
+  currency: string;
   amount: number;
+  startsAt?: string;
+  endsAt: string;
   idempotencyKey: string;
-  platform?: string | null;
-  campaignId?: string | null;
+  reason?: string | null;
   metadata?: Record<string, unknown>;
 }) {
+  const amount = money(input.amount, 'AD_BUDGET_AUTHORIZATION_AMOUNT_INVALID', 'A campaign budget authorization requires a positive amount.');
+  const provider = input.provider.trim().toLowerCase();
+  const accountId = normalizeScopeId(provider, input.accountId);
+  const campaignId = normalizeScopeId(provider, input.campaignId);
+  const currency = input.currency.trim().toUpperCase();
+  const startsAt = input.startsAt ? new Date(input.startsAt) : new Date();
+  const endsAt = new Date(input.endsAt);
+  if (!provider || !accountId || !campaignId || !/^[A-Z]{3}$/.test(currency)
+    || Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime()) || startsAt >= endsAt) {
+    throw new AppError(422, 'AD_BUDGET_AUTHORIZATION_INVALID', 'Provider, account, campaign, currency and a valid authorization period are required.');
+  }
+  if (endsAt.getTime() <= Date.now()) {
+    throw new AppError(422, 'AD_BUDGET_AUTHORIZATION_PERIOD_INVALID', 'A campaign budget authorization must end in the future.');
+  }
+  return withTransaction(async (client) => {
+    await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ad-budget-idempotency:${input.workspaceId}:${input.idempotencyKey}`], client);
+    await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ad-budget:${input.workspaceId}:${provider}:${accountId}:${campaignId}`], client);
+    const prior = (await query<AdBudgetAuthorizationRow>(
+      `SELECT ${authorizationSelect} FROM workspace_ad_budget_authorizations
+       WHERE workspace_id=$1 AND idempotency_key=$2`,
+      [input.workspaceId, input.idempotencyKey], client,
+    )).rows[0];
+    if (prior) {
+      const same = prior.createdBy === input.userId && prior.provider === provider
+        && prior.accountId === accountId && prior.campaignId === campaignId
+        && prior.currency === currency && Number(prior.authorizedAmount) === amount
+        && (!input.startsAt || timestampMs(prior.startsAt) === startsAt.getTime()) && timestampMs(prior.endsAt) === endsAt.getTime();
+      if (!same) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_IDEMPOTENCY_CONFLICT', 'This idempotency key was already used for a different campaign authorization.');
+      return { ...publicAuthorization(prior), idempotent: true };
+    }
+    await query(
+      `UPDATE workspace_ad_budget_authorizations SET status='EXPIRED',version=version+1
+       WHERE workspace_id=$1 AND provider=$2 AND account_id=$3 AND campaign_id=$4
+         AND status='ACTIVE' AND ends_at<=NOW()`,
+      [input.workspaceId, provider, accountId, campaignId], client,
+    );
+    const active = (await query<{ id: string }>(
+      `SELECT id FROM workspace_ad_budget_authorizations
+       WHERE workspace_id=$1 AND provider=$2 AND account_id=$3 AND campaign_id=$4 AND status='ACTIVE'
+       LIMIT 1 FOR UPDATE`,
+      [input.workspaceId, provider, accountId, campaignId], client,
+    )).rows[0];
+    if (active) {
+      throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_ACTIVE', 'Revoke or exhaust the existing campaign authorization before creating another one.');
+    }
+    const row = (await query<AdBudgetAuthorizationRow>(
+      `INSERT INTO workspace_ad_budget_authorizations(
+         workspace_id,created_by,provider,account_id,campaign_id,currency,authorized_amount,
+         starts_at,ends_at,idempotency_key,reason,metadata
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
+       RETURNING ${authorizationSelect}`,
+      [input.workspaceId, input.userId, provider, accountId, campaignId, currency, amount.toFixed(2),
+        startsAt, endsAt, input.idempotencyKey, input.reason?.trim().slice(0, 2000) || null,
+        JSON.stringify(input.metadata ?? {})], client,
+    )).rows[0];
+    if (!row) throw new Error('Campaign budget authorization could not be created');
+    const result = publicAuthorization(row);
+    await auditBudgetAuthorization(client, input.workspaceId, input.userId, 'advertising.budget_authorized', row.id, result);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.AD_BUDGET_AUTHORIZED,
+      aggregateType: 'ad_budget_authorization',
+      aggregateId: row.id,
+      payload: { authorizationId: row.id, provider, accountId, campaignId, currency, amount, startsAt: row.startsAt, endsAt: row.endsAt },
+      metadata: { actorId: input.userId, source: 'adspend' },
+      idempotencyKey: `ad-budget:${row.id}:authorized`,
+    }, client);
+    return { ...result, idempotent: false };
+  });
+}
+
+export async function listAdBudgetAuthorizations(workspaceId: string) {
+  const { rows } = await query<AdBudgetAuthorizationRow>(
+    `SELECT ${authorizationSelect} FROM workspace_ad_budget_authorizations
+     WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 250`,
+    [workspaceId],
+  );
+  return rows.map(publicAuthorization);
+}
+
+export async function revokeAdBudgetAuthorization(input: { workspaceId: string; authorizationId: string; userId: string; reason?: string | null }) {
+  assertUuid(input.authorizationId, 'AD_BUDGET_AUTHORIZATION_NOT_FOUND', 'Campaign budget authorization not found.');
+  return withTransaction(async (client) => {
+    const row = (await query<AdBudgetAuthorizationRow>(
+      `SELECT ${authorizationSelect} FROM workspace_ad_budget_authorizations
+       WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+      [input.workspaceId, input.authorizationId], client,
+    )).rows[0];
+    if (!row) throw new AppError(404, 'AD_BUDGET_AUTHORIZATION_NOT_FOUND', 'Campaign budget authorization not found.');
+    if (row.status !== 'ACTIVE') return { ...publicAuthorization(row), idempotent: true };
+    if (Number(row.reservedAmount) > 0) {
+      throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_IN_USE', 'This authorization has an in-flight provider operation and cannot be revoked yet.');
+    }
+    const updated = (await query<AdBudgetAuthorizationRow>(
+      `UPDATE workspace_ad_budget_authorizations
+       SET status='REVOKED',revoked_by=$3,revoked_at=NOW(),reason=COALESCE($4,reason),version=version+1
+       WHERE workspace_id=$1 AND id=$2 RETURNING ${authorizationSelect}`,
+      [input.workspaceId, input.authorizationId, input.userId, input.reason?.trim().slice(0, 2000) || null], client,
+    )).rows[0]!;
+    const result = publicAuthorization(updated);
+    await auditBudgetAuthorization(client, input.workspaceId, input.userId, 'advertising.budget_authorization_revoked', updated.id, result);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.AD_BUDGET_REVOKED,
+      aggregateType: 'ad_budget_authorization',
+      aggregateId: updated.id,
+      payload: { authorizationId: updated.id, provider: updated.provider, accountId: updated.accountId, campaignId: updated.campaignId, reason: updated.reason },
+      metadata: { actorId: input.userId, source: 'adspend' },
+      idempotencyKey: `ad-budget:${updated.id}:revoked`,
+    }, client);
+    return { ...result, idempotent: false };
+  });
+}
+
+/** Read-only preflight for action-packet creation. Execution must still call
+ * reserveAdSpend, which repeats this policy atomically with wallet reservation. */
+export async function assertAdBudgetAuthorization(input: {
+  workspaceId: string;
+  authorizationId: string;
+  provider: string;
+  accountId: string;
+  campaignId: string;
+  currency: string;
+  amount: number;
+}, client?: PoolClient) {
+  const amount = money(input.amount, 'AD_BUDGET_AUTHORIZATION_AMOUNT_INVALID', 'A campaign operation requires a positive authorized amount.');
+  assertUuid(input.authorizationId, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'A customer-authorized campaign budget is required before paid advertising can run.');
+  const provider = input.provider.trim().toLowerCase();
+  const accountId = normalizeScopeId(provider, input.accountId);
+  const campaignId = normalizeScopeId(provider, input.campaignId);
+  const row = (await query<AdBudgetAuthorizationRow>(
+    `SELECT ${authorizationSelect} FROM workspace_ad_budget_authorizations WHERE workspace_id=$1 AND id=$2`,
+    [input.workspaceId, input.authorizationId], client,
+  )).rows[0];
+  if (!row) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'A customer-authorized campaign budget is required before paid advertising can run.');
+  if (row.provider !== provider || row.accountId !== accountId
+    || row.campaignId !== campaignId || row.currency !== input.currency.trim().toUpperCase()) {
+    throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_SCOPE_MISMATCH', 'The campaign operation does not match the authorized provider, account, campaign and currency.');
+  }
+  if (row.status !== 'ACTIVE' || timestampMs(row.startsAt) > Date.now() || timestampMs(row.endsAt) <= Date.now()) {
+    throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_INACTIVE', 'The campaign budget authorization is not currently active.');
+  }
+  const remaining = Number(row.authorizedAmount) - Number(row.reservedAmount) - Number(row.consumedAmount);
+  if (remaining < amount) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_EXCEEDED', 'The campaign operation exceeds the customer-authorized remaining amount.');
+  return publicAuthorization(row);
+}
+
+/** Atomically reserves both campaign authority and prepaid funds. A funded
+ * wallet by itself is never permission to launch or increase a campaign. */
+export async function reserveAdSpend(input: {
+  workspaceId: string;
+  authorizationId: string;
+  amount: number;
+  idempotencyKey: string;
+  provider: string;
+  accountId: string;
+  campaignId: string;
+  currency: string;
+  metadata?: Record<string, unknown>;
+}) {
+  if (!input.authorizationId || !input.provider?.trim() || !input.accountId?.trim() || !input.campaignId?.trim() || !input.currency?.trim()) {
+    throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'A campaign-specific customer budget authorization is required in addition to prepaid funds.');
+  }
+  assertUuid(input.authorizationId, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'A customer-authorized campaign budget is required before paid advertising can run.');
   if (!Number.isFinite(input.amount) || input.amount <= 0) {
     throw new AppError(400, 'AD_SPEND_AMOUNT_INVALID', 'Ad spend reservations require a positive CNY amount.');
   }
   const amount = Math.round(input.amount * 100) / 100;
   return withTransaction(async (client) => {
-    const prior = (await query<{ id: string; workspaceId: string; amount: string; status: string }>(
-      `SELECT id,workspace_id AS "workspaceId",amount,status FROM workspace_ad_spend_reservations WHERE idempotency_key=$1`, [input.idempotencyKey], client,
+    const provider = input.provider.trim().toLowerCase();
+    const accountId = normalizeScopeId(provider, input.accountId);
+    const campaignId = normalizeScopeId(provider, input.campaignId);
+    const currency = input.currency.trim().toUpperCase();
+    await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`ad-reservation-idempotency:${input.workspaceId}:${input.idempotencyKey}`], client);
+    const prior = (await query<{ id: string; workspaceId: string; authorizationId: string | null; amount: string; status: string; platform: string | null; accountId: string | null; campaignId: string | null; currency: string; metadata: Record<string, unknown> }>(
+      `SELECT id,workspace_id AS "workspaceId",authorization_id AS "authorizationId",amount,status,platform,
+       account_id AS "accountId",campaign_id AS "campaignId",currency,metadata
+       FROM workspace_ad_spend_reservations WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE`, [input.workspaceId,input.idempotencyKey], client,
     )).rows[0];
     if (prior) {
-      if (prior.workspaceId !== input.workspaceId || Number(prior.amount) !== amount) {
+      if (prior.authorizationId !== input.authorizationId
+        || Number(prior.amount) !== amount || prior.platform !== provider || prior.accountId !== accountId
+        || prior.campaignId !== campaignId || prior.currency !== currency) {
         throw new AppError(409, 'AD_SPEND_IDEMPOTENCY_CONFLICT', 'This ad spend operation key was already used for a different reservation.');
       }
       return { ...prior, amount: Number(prior.amount), idempotent: true };
+    }
+    await query(
+      `UPDATE workspace_ad_budget_authorizations SET status='EXPIRED',version=version+1
+       WHERE workspace_id=$1 AND id=$2 AND status='ACTIVE' AND ends_at<=NOW()`,
+      [input.workspaceId, input.authorizationId], client,
+    );
+    const authorization = (await query<AdBudgetAuthorizationRow>(
+      `UPDATE workspace_ad_budget_authorizations
+       SET reserved_amount=reserved_amount+$7,version=version+1
+       WHERE workspace_id=$1 AND id=$2 AND provider=$3 AND account_id=$4 AND campaign_id=$5 AND currency=$6
+         AND status='ACTIVE' AND starts_at<=NOW() AND ends_at>NOW()
+         AND authorized_amount-reserved_amount-consumed_amount >= $7
+       RETURNING ${authorizationSelect}`,
+      [input.workspaceId, input.authorizationId, provider, accountId, campaignId, currency, amount.toFixed(2)], client,
+    )).rows[0];
+    if (!authorization) {
+      const candidate = (await query<AdBudgetAuthorizationRow>(
+        `SELECT ${authorizationSelect} FROM workspace_ad_budget_authorizations WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+        [input.workspaceId, input.authorizationId], client,
+      )).rows[0];
+      if (!candidate) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'A customer-authorized campaign budget is required before paid advertising can run.');
+      if (candidate.provider !== provider || candidate.accountId !== accountId || candidate.campaignId !== campaignId || candidate.currency !== currency) {
+        throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_SCOPE_MISMATCH', 'The campaign operation does not match the authorized provider, account, campaign and currency.');
+      }
+      if (candidate.status !== 'ACTIVE' || timestampMs(candidate.startsAt) > Date.now() || timestampMs(candidate.endsAt) <= Date.now()) {
+        throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_INACTIVE', 'The campaign budget authorization is not currently active.');
+      }
+      throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_EXCEEDED', 'The campaign operation exceeds the customer-authorized remaining amount.');
     }
     await ensureWallet(input.workspaceId, client);
     const wallet = (await query<WalletRow>(
       `UPDATE workspace_ad_spend_wallets SET available_amount=available_amount-$2,
        reserved_amount=reserved_amount+$2,version=version+1
-       WHERE workspace_id=$1 AND available_amount >= $2 RETURNING ${walletSelect}`,
+       WHERE workspace_id=$1 AND available_amount >= $2 AND reversal_debt_amount=0 RETURNING ${walletSelect}`,
       [input.workspaceId, amount.toFixed(2)], client,
     )).rows[0];
-    if (!wallet) throw new AppError(409, 'AD_SPEND_FUNDS_REQUIRED', 'Paid ads are paused until the ad spend wallet is funded.');
+    if (!wallet) {
+      const currentWallet = await ensureWallet(input.workspaceId, client);
+      if (Number(currentWallet.reversalDebtAmount) > 0) {
+        throw new AppError(409, 'AD_SPEND_REVERSAL_DEBT', 'Paid advertising is paused until the outstanding refund or chargeback balance is covered.');
+      }
+      throw new AppError(409, 'AD_SPEND_FUNDS_REQUIRED', 'Paid ads are paused until the ad spend wallet is funded.');
+    }
     const reservation = (await query<{ id: string }>(
-      `INSERT INTO workspace_ad_spend_reservations(workspace_id,amount,platform,campaign_id,idempotency_key,metadata)
-       VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING id`,
-      [input.workspaceId, amount.toFixed(2), input.platform ?? null, input.campaignId ?? null,
+      `INSERT INTO workspace_ad_spend_reservations(workspace_id,authorization_id,amount,currency,platform,account_id,campaign_id,idempotency_key,metadata)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb) RETURNING id`,
+      [input.workspaceId, input.authorizationId, amount.toFixed(2), currency, provider, accountId, campaignId,
         input.idempotencyKey, JSON.stringify(input.metadata ?? {})], client,
     )).rows[0];
     if (!reservation) throw new Error('Ad spend reservation failed');
@@ -332,7 +677,16 @@ export async function reserveAdSpend(input: {
        VALUES($1,'RESERVE',$2,$3,$4,$5::jsonb)`,
       [input.workspaceId, (-amount).toFixed(2), wallet.availableAmount, `adspend-reserve:${reservation.id}`, JSON.stringify(input.metadata ?? {})], client,
     );
-    return { ...reservation, amount, status: 'RESERVED' as const, idempotent: false };
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.AD_BUDGET_RESERVED,
+      aggregateType: 'ad_budget_authorization',
+      aggregateId: authorization.id,
+      payload: { authorizationId: authorization.id, reservationId: reservation.id, provider, accountId, campaignId, currency, amount },
+      metadata: { actorId: null, source: 'adspend' },
+      idempotencyKey: `ad-budget:${authorization.id}:reservation:${reservation.id}:reserved`,
+    }, client);
+    return { ...reservation, authorizationId: authorization.id, amount, status: 'RESERVED' as const, metadata: input.metadata ?? {}, idempotent: false };
   });
 }
 
@@ -345,31 +699,62 @@ export async function consumeAdSpendReservation(input: {
   metadata?: Record<string, unknown>;
 }) {
   return withTransaction(async (client) => {
-    const reservation = (await query<{id:string;amount:string;status:string;metadata:Record<string,unknown>}>(
-      `SELECT id,amount,status,metadata FROM workspace_ad_spend_reservations WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+    const reservation = (await query<{id:string;authorizationId:string|null;amount:string;settledAmount:string;status:string;metadata:Record<string,unknown>}>(
+      `SELECT id,authorization_id AS "authorizationId",amount,settled_amount AS "settledAmount",status,metadata
+       FROM workspace_ad_spend_reservations WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
       [input.reservationId, input.workspaceId], client,
     )).rows[0];
     if (!reservation) throw new AppError(404, 'AD_SPEND_RESERVATION_NOT_FOUND', 'Ad spend reservation not found.');
-    if (reservation.status === 'CONSUMED') return { ...reservation, amount: Number(reservation.amount), idempotent: true };
+    if (reservation.status === 'CONSUMED') return { ...reservation, amount: Number(reservation.amount), settledAmount: Number(reservation.settledAmount), idempotent: true };
     if (reservation.status !== 'RESERVED') throw new AppError(409, 'AD_SPEND_RESERVATION_CLOSED', `Ad spend reservation is already ${reservation.status.toLowerCase()}.`);
+    if (!reservation.authorizationId) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'This legacy reservation has no customer campaign authorization and cannot be consumed.');
     const metadata = { ...reservation.metadata, ...input.metadata, providerOperationId: input.providerOperationId ?? null };
+    const remainingAmount = Math.round((Number(reservation.amount) - Number(reservation.settledAmount)) * 100) / 100;
+    if (remainingAmount <= 0) {
+      await query(
+        `UPDATE workspace_ad_spend_reservations SET status='CONSUMED',settled_amount=amount,metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
+        [input.reservationId, input.workspaceId, JSON.stringify(metadata)], client,
+      );
+      return { id: reservation.id, authorizationId: reservation.authorizationId, amount: Number(reservation.amount),
+        settledAmount: Number(reservation.amount), consumedAmount: 0, status: 'CONSUMED' as const, idempotent: false };
+    }
     const wallet = (await query<WalletRow>(
       `UPDATE workspace_ad_spend_wallets SET reserved_amount=reserved_amount-$2,spent_amount=spent_amount+$2,version=version+1
        WHERE workspace_id=$1 AND reserved_amount >= $2 RETURNING ${walletSelect}`,
-      [input.workspaceId, reservation.amount], client,
+      [input.workspaceId, remainingAmount.toFixed(2)], client,
     )).rows[0];
     if (!wallet) throw new AppError(409, 'AD_SPEND_RESERVATION_BALANCE_MISMATCH', 'Reserved ad spend no longer matches the wallet balance.');
+    const authorization = (await query<AdBudgetAuthorizationRow>(
+      `UPDATE workspace_ad_budget_authorizations
+       SET reserved_amount=reserved_amount-$3,consumed_amount=consumed_amount+$3,
+           status=CASE WHEN consumed_amount+$3>=authorized_amount THEN 'EXHAUSTED' ELSE status END,
+           version=version+1
+       WHERE workspace_id=$1 AND id=$2 AND reserved_amount >= $3
+       RETURNING ${authorizationSelect}`,
+       [input.workspaceId, reservation.authorizationId, remainingAmount.toFixed(2)], client,
+    )).rows[0];
+    if (!authorization) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_BALANCE_MISMATCH', 'Reserved campaign authority no longer matches the provider operation.');
     await query(
-      `UPDATE workspace_ad_spend_reservations SET status='CONSUMED',metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
+      `UPDATE workspace_ad_spend_reservations SET status='CONSUMED',settled_amount=amount,metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
       [input.reservationId, input.workspaceId, JSON.stringify(metadata)], client,
     );
     await query(
       `INSERT INTO workspace_ad_spend_ledger(workspace_id,entry_type,amount_delta,balance_after,idempotency_key,metadata)
        VALUES($1,'SPEND',$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING`,
-      [input.workspaceId, (-Number(reservation.amount)).toFixed(2), wallet.availableAmount,
+      [input.workspaceId, (-remainingAmount).toFixed(2), wallet.availableAmount,
         `adspend-consume:${reservation.id}`, JSON.stringify(metadata)], client,
     );
-    return { id: reservation.id, amount: Number(reservation.amount), status: 'CONSUMED' as const, idempotent: false };
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.AD_BUDGET_CONSUMED,
+      aggregateType: 'ad_budget_authorization',
+      aggregateId: authorization.id,
+      payload: { authorizationId: authorization.id, reservationId: reservation.id, amount: remainingAmount, providerOperationId: input.providerOperationId ?? null },
+      metadata: { actorId: null, source: 'adspend' },
+      idempotencyKey: `ad-budget:${authorization.id}:reservation:${reservation.id}:consumed`,
+    }, client);
+    return { id: reservation.id, authorizationId: authorization.id, amount: Number(reservation.amount),
+      settledAmount: Number(reservation.amount), consumedAmount: remainingAmount, status: 'CONSUMED' as const, idempotent: false };
   });
 }
 
@@ -381,20 +766,46 @@ export async function releaseAdSpendReservation(input: {
   metadata?: Record<string, unknown>;
 }) {
   return withTransaction(async (client) => {
-    const reservation = (await query<{id:string;amount:string;status:string;metadata:Record<string,unknown>}>(
-      `SELECT id,amount,status,metadata FROM workspace_ad_spend_reservations WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
+    const reservation = (await query<{id:string;authorizationId:string|null;amount:string;settledAmount:string;status:string;metadata:Record<string,unknown>}>(
+      `SELECT id,authorization_id AS "authorizationId",amount,settled_amount AS "settledAmount",status,metadata
+       FROM workspace_ad_spend_reservations WHERE id=$1 AND workspace_id=$2 FOR UPDATE`,
       [input.reservationId, input.workspaceId], client,
     )).rows[0];
     if (!reservation) throw new AppError(404, 'AD_SPEND_RESERVATION_NOT_FOUND', 'Ad spend reservation not found.');
-    if (reservation.status === 'RELEASED' || reservation.status === 'EXPIRED') return { ...reservation, amount: Number(reservation.amount), idempotent: true };
+    if (reservation.status === 'RELEASED' || reservation.status === 'EXPIRED' || reservation.status === 'CONSUMED') {
+      return { ...reservation, amount: Number(reservation.amount), settledAmount: Number(reservation.settledAmount),
+        releasedAmount: Math.max(0, Number(reservation.amount) - Number(reservation.settledAmount)), idempotent: true };
+    }
     if (reservation.status !== 'RESERVED') throw new AppError(409, 'AD_SPEND_RESERVATION_CLOSED', `Ad spend reservation is already ${reservation.status.toLowerCase()}.`);
     const metadata = { ...reservation.metadata, ...input.metadata, releaseReason: input.reason.slice(0, 500) };
+    const remainingAmount = Math.round((Number(reservation.amount) - Number(reservation.settledAmount)) * 100) / 100;
+    if (remainingAmount <= 0) {
+      await query(
+        `UPDATE workspace_ad_spend_reservations SET status='CONSUMED',settled_amount=amount,metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
+        [input.reservationId, input.workspaceId, JSON.stringify(metadata)], client,
+      );
+      return { id: reservation.id, authorizationId: reservation.authorizationId, amount: Number(reservation.amount),
+        settledAmount: Number(reservation.settledAmount), releasedAmount: 0, status: 'CONSUMED' as const, idempotent: false };
+    }
     const wallet = (await query<WalletRow>(
-      `UPDATE workspace_ad_spend_wallets SET reserved_amount=reserved_amount-$2,available_amount=available_amount+$2,version=version+1
+      `UPDATE workspace_ad_spend_wallets SET reserved_amount=reserved_amount-$2,
+       available_amount=available_amount+GREATEST(0,$2-reversal_debt_amount),
+       reversal_debt_amount=GREATEST(0,reversal_debt_amount-$2),version=version+1
        WHERE workspace_id=$1 AND reserved_amount >= $2 RETURNING ${walletSelect}`,
-      [input.workspaceId, reservation.amount], client,
+      [input.workspaceId, remainingAmount.toFixed(2)], client,
     )).rows[0];
     if (!wallet) throw new AppError(409, 'AD_SPEND_RESERVATION_BALANCE_MISMATCH', 'Reserved ad spend no longer matches the wallet balance.');
+    let authorization: AdBudgetAuthorizationRow | null = null;
+    if (reservation.authorizationId) {
+      authorization = (await query<AdBudgetAuthorizationRow>(
+        `UPDATE workspace_ad_budget_authorizations
+         SET reserved_amount=reserved_amount-$3,version=version+1
+         WHERE workspace_id=$1 AND id=$2 AND reserved_amount >= $3
+         RETURNING ${authorizationSelect}`,
+        [input.workspaceId, reservation.authorizationId, remainingAmount.toFixed(2)], client,
+      )).rows[0] ?? null;
+      if (!authorization) throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_BALANCE_MISMATCH', 'Reserved campaign authority no longer matches the provider operation.');
+    }
     await query(
       `UPDATE workspace_ad_spend_reservations SET status='RELEASED',metadata=$3::jsonb WHERE id=$1 AND workspace_id=$2`,
       [input.reservationId, input.workspaceId, JSON.stringify(metadata)], client,
@@ -402,9 +813,37 @@ export async function releaseAdSpendReservation(input: {
     await query(
       `INSERT INTO workspace_ad_spend_ledger(workspace_id,entry_type,amount_delta,balance_after,idempotency_key,metadata)
        VALUES($1,'RELEASE',$2,$3,$4,$5::jsonb) ON CONFLICT DO NOTHING`,
-      [input.workspaceId, Number(reservation.amount).toFixed(2), wallet.availableAmount,
-        `adspend-release:${reservation.id}`, JSON.stringify(metadata)], client,
+      [input.workspaceId, remainingAmount.toFixed(2), wallet.availableAmount,
+        `adspend-release:${reservation.id}`, JSON.stringify({ ...metadata, reversalDebtAmount: Number(wallet.reversalDebtAmount) })], client,
     );
-    return { id: reservation.id, amount: Number(reservation.amount), status: 'RELEASED' as const, idempotent: false };
+    if (authorization) {
+      await appendDomainEvent({
+        workspaceId: input.workspaceId,
+        type: DOMAIN_EVENT_TYPES.AD_BUDGET_RELEASED,
+        aggregateType: 'ad_budget_authorization',
+        aggregateId: authorization.id,
+        payload: { authorizationId: authorization.id, reservationId: reservation.id, amount: remainingAmount, reason: input.reason.slice(0, 500) },
+        metadata: { actorId: null, source: 'adspend' },
+        idempotencyKey: `ad-budget:${authorization.id}:reservation:${reservation.id}:released`,
+      }, client);
+    }
+    if (Number(wallet.availableAmount) > 0 && Number(wallet.reversalDebtAmount) === 0) {
+      await appendDomainEvent({
+        workspaceId: input.workspaceId,
+        type: DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED,
+        aggregateType: 'ad_spend_wallet',
+        aggregateId: input.workspaceId,
+        payload: {
+          reservationId: reservation.id,
+          releasedAmount: remainingAmount,
+          currency: 'CNY',
+          availableAmount: Number(wallet.availableAmount),
+        },
+        metadata: { actorId: null, source: 'adspend.release' },
+        idempotencyKey: `adspend-release:${reservation.id}:funded`,
+      }, client);
+    }
+    return { id: reservation.id, authorizationId: authorization?.id ?? null, amount: Number(reservation.amount),
+      settledAmount: Number(reservation.settledAmount), releasedAmount: remainingAmount, status: 'RELEASED' as const, idempotent: false };
   });
 }

@@ -83,16 +83,19 @@ async function assertGenerationNotCancelled(siteId: string, jobId: string) {
 
 export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationWorkItem, workerId: string) {
   let heartbeatRunning = false;
+  let activeHeartbeat: Promise<void> | null = null;
   const heartbeat = async () => {
     if (heartbeatRunning) return;
     heartbeatRunning = true;
-    try {
+    activeHeartbeat = (async () => {
       await repo.heartbeatJob(input.siteId, input.id, workerId);
-    } catch (error) {
+    })().catch((error: unknown) => {
       logger.error({ jobId: input.id, siteId: input.siteId, workerId, error: error instanceof Error ? error.message : String(error) }, 'Website generation heartbeat failed');
-    } finally {
+    }).finally(() => {
       heartbeatRunning = false;
-    }
+      activeHeartbeat = null;
+    });
+    await activeHeartbeat;
   };
   const heartbeatTimer = setInterval(() => void heartbeat(), 15_000);
   heartbeatTimer.unref();
@@ -230,6 +233,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
     if (shouldDisconnectProvider(error) && (input.provider === 'wordpress' || input.provider === 'webflow')) await disconnectWebsiteProvider(input.workspaceId, input.provider);
   } finally {
     clearInterval(heartbeatTimer);
+    if (activeHeartbeat) await activeHeartbeat;
     await repo.releaseJob(input.siteId, input.id, workerId).catch(() => undefined);
   }
 }

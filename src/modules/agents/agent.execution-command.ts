@@ -9,12 +9,22 @@ export const agentExecutionCommandTypeSchema = z.enum([
   'sales.create_followup_task',
   'advertising.create_optimization',
   'finance.create_automation',
+  'finance.invoice.create_from_order',
   'google_reviews.reply',
   'email.create_draft',
   'email.create_ai_draft',
   'omnichannel.send_message',
   'website.publish_job',
   'ecommerce.generate_product_images',
+  'commerce.order.create',
+  'commerce.order.update',
+  'commerce.order.transition',
+  'commerce.inventory.adjust',
+  'commerce.fulfillment.create',
+  'commerce.fulfillment.transition',
+  'social.content.publish',
+  'social.publication.retry',
+  'social.publication.cancel',
 ]);
 
 export type AgentExecutionCommandType = z.infer<typeof agentExecutionCommandTypeSchema>;
@@ -123,6 +133,56 @@ function storedBudgetPolicy(decision: InferCommandContext['policyDecision']): Ag
   return decision === 'allow' ? 'allow' : 'budget_required';
 }
 
+function serverCommandPolicy(command: AgentExecutionCommand, context: InferCommandContext): AgentExecutionCommand {
+  type ServerPolicy = {
+    targetSystem: string;
+    riskLevel: AgentExecutionRiskLevel;
+    budgetAuthority: NonNullable<AgentExecutionCommand['budgetAuthority']>;
+  };
+  const defaults: Record<AgentExecutionCommandType, ServerPolicy> = {
+    'record.create_artifact': { targetSystem: context.targetSystem, riskLevel: 'medium', budgetAuthority: 'none' },
+    'crm.create_followup_task': { targetSystem: 'crm', riskLevel: 'low', budgetAuthority: 'none' },
+    'sales.create_followup_task': { targetSystem: 'sales', riskLevel: 'low', budgetAuthority: 'none' },
+    'advertising.create_optimization': { targetSystem: 'advertising', riskLevel: 'medium', budgetAuthority: 'customer_authorization_required' },
+    'finance.create_automation': { targetSystem: 'finance', riskLevel: 'medium', budgetAuthority: 'none' },
+    'finance.invoice.create_from_order': { targetSystem: 'finance', riskLevel: 'medium', budgetAuthority: 'none' },
+    'google_reviews.reply': { targetSystem: 'reputation', riskLevel: 'high', budgetAuthority: 'none' },
+    'email.create_draft': { targetSystem: 'communication', riskLevel: 'medium', budgetAuthority: 'none' },
+    'email.create_ai_draft': { targetSystem: 'communication', riskLevel: 'medium', budgetAuthority: 'none' },
+    'omnichannel.send_message': { targetSystem: 'communication', riskLevel: 'high', budgetAuthority: 'none' },
+    'website.publish_job': { targetSystem: 'website', riskLevel: 'high', budgetAuthority: 'none' },
+    'ecommerce.generate_product_images': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'commerce.order.create': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'commerce.order.update': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'commerce.order.transition': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'commerce.inventory.adjust': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'commerce.fulfillment.create': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'commerce.fulfillment.transition': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
+    'social.content.publish': { targetSystem: 'marketing', riskLevel: 'high', budgetAuthority: 'none' },
+    'social.publication.retry': { targetSystem: 'marketing', riskLevel: 'medium', budgetAuthority: 'none' },
+    'social.publication.cancel': { targetSystem: 'marketing', riskLevel: 'medium', budgetAuthority: 'none' },
+  };
+  const configuredPolicy = defaults[command.type];
+  const policy = command.type === 'advertising.create_optimization' && command.payload.action === 'pause'
+    ? { ...configuredPolicy, budgetAuthority: 'none' as const }
+    : configuredPolicy;
+  const budgetProtected = policy.budgetAuthority === 'customer_authorization_required';
+  return {
+    ...command,
+    targetSystem: policy.targetSystem,
+    riskLevel: policy.riskLevel,
+    approvalPolicy: budgetProtected ? 'budget_required' : 'allow',
+    budgetAuthority: policy.budgetAuthority,
+    idempotencyKey: buildIdempotencyKey([
+      'server-command-v1',
+      command.type,
+      command.targetEntityType,
+      command.targetEntityId,
+      JSON.stringify(command.payload),
+    ]),
+  };
+}
+
 function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCommand {
   const summary = defaultSummary(context);
   const jobsSummary = context.jobs.slice(0, 4).join(', ');
@@ -203,7 +263,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
       provider: null,
       riskLevel: 'medium',
       approvalPolicy: storedBudgetPolicy(context.policyDecision),
-      budgetAuthority: 'prepaid_ad_spend_wallet',
+      budgetAuthority: 'customer_authorization_required',
       targetEntityType: 'ad_optimization',
       targetEntityId: context.pageId,
       payload: {
@@ -374,12 +434,12 @@ export function normalizeAgentExecutionCommands(value: unknown, context: InferCo
       return [result.data];
     });
     if (parsed.length > 0) {
-      return parsed.map((command) => ({
+      return parsed.map((command) => serverCommandPolicy({
         ...command,
         provider: command.provider ?? null,
         targetEntityType: command.targetEntityType ?? null,
         targetEntityId: command.targetEntityId ?? null,
-      }));
+      }, context));
     }
   }
   return [inferCommand(context)];
@@ -402,9 +462,15 @@ export function decideExecutionCommandPolicy(
 export function applyExecutionCommandPolicies(
   commands: readonly AgentExecutionCommand[],
   executionMode: 'analysis_only' | 'autonomous',
+  options: { verifiedCustomerBudget?: boolean } = {},
 ) {
   const decisions = commands.map((command) => {
-    const policy = decideExecutionCommandPolicy(command, executionMode);
+    const evaluated = decideExecutionCommandPolicy(command, executionMode);
+    const policy = evaluated.decision === 'require_budget'
+      && command.budgetAuthority === 'customer_authorization_required'
+      && options.verifiedCustomerBudget
+      ? { decision: 'allow' as const, reason: 'Customer campaign budget authorization was verified server-side.' }
+      : evaluated;
     return {
       ...command,
       approvalPolicy: policy.decision === 'allow' ? 'allow' : 'budget_required',

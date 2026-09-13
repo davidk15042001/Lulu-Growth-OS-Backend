@@ -16,6 +16,7 @@ export const WORKSPACE_CAPABILITIES = [
   'commercial_policy.read', 'commercial_policy.manage',
   'orders.read', 'orders.manage', 'website.read', 'website.manage',
   'website.publish', 'omnichannel.read', 'omnichannel.reply', 'omnichannel.manage',
+  'social.read', 'social.manage', 'social.publish',
   'advertising.read', 'advertising.manage', 'advertising.budget_authorize',
   'finance.read', 'finance.manage', 'payouts.request', 'payouts.manage',
   'providers.read', 'providers.connect', 'providers.manage',
@@ -34,7 +35,7 @@ const readOnly = new Set<WorkspaceCapability>([
   'workspace.read', 'members.read', 'products.read', 'crm.read', 'leads.read',
   'opportunities.read', 'quotes.read', 'invoices.read', 'orders.read', 'website.read',
   'omnichannel.read', 'advertising.read', 'finance.read', 'providers.read',
-  'agents.read', 'settings.read', 'audit.read',
+  'social.read', 'agents.read', 'settings.read', 'audit.read',
 ]);
 
 /** Fallback used during a rolling deployment before the registry migration is visible. */
@@ -46,14 +47,14 @@ export const ROLE_CAPABILITIES: Record<WorkspaceRole, ReadonlySet<WorkspaceCapab
     'products.update', 'crm.read', 'crm.manage', 'leads.read', 'leads.manage',
     'opportunities.read', 'opportunities.manage', 'quotes.read', 'quotes.create', 'quotes.send',
     'orders.read', 'orders.manage', 'website.read', 'website.manage', 'omnichannel.read',
-    'omnichannel.reply', 'advertising.read', 'finance.read', 'agents.read', 'agents.execute',
+    'omnichannel.reply', 'social.read', 'advertising.read', 'finance.read', 'agents.read', 'agents.execute',
     'settings.read',
   ]),
   viewer: readOnly,
   sales_manager: new Set(['workspace.read','workspace.write','members.read','products.read','crm.read','crm.manage','leads.read','leads.manage','opportunities.read','opportunities.manage','quotes.read','quotes.create','quotes.update','quotes.send','invoices.read','invoices.create','invoices.send','orders.read','orders.manage','omnichannel.read','omnichannel.reply','settings.read']),
   sales_user: new Set(['workspace.read','workspace.write','members.read','products.read','crm.read','leads.read','leads.manage','opportunities.read','quotes.read','quotes.create','quotes.update','quotes.send','invoices.read','invoices.create','invoices.send','orders.read','omnichannel.read','omnichannel.reply','settings.read']),
-  marketing_manager: new Set(['workspace.read','workspace.write','members.read','products.read','website.read','website.manage','website.publish','advertising.read','advertising.manage','advertising.budget_authorize','omnichannel.read','agents.read','settings.read']),
-  marketing_user: new Set(['workspace.read','workspace.write','members.read','products.read','website.read','advertising.read','omnichannel.read','agents.read','settings.read']),
+  marketing_manager: new Set(['workspace.read','workspace.write','members.read','products.read','website.read','website.manage','website.publish','social.read','social.manage','social.publish','advertising.read','advertising.manage','advertising.budget_authorize','omnichannel.read','agents.read','settings.read']),
+  marketing_user: new Set(['workspace.read','workspace.write','members.read','products.read','website.read','social.read','advertising.read','omnichannel.read','agents.read','settings.read']),
   finance_manager: new Set(['workspace.read','members.read','finance.read','finance.manage','invoices.read','invoices.create','invoices.issue','invoices.send','invoices.cancel','commercial_policy.read','commercial_policy.manage','payouts.request','payouts.manage','orders.read','settings.read']),
   operations_manager: new Set(['workspace.read','workspace.write','members.read','products.read','products.create','products.update','orders.read','orders.manage','website.read','website.manage','providers.read','settings.read']),
 };

@@ -1,9 +1,9 @@
 import { assertWorkspaceCapability } from '../workspaces/workspace-authorization.service.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import * as repo from './commercial-documents.repo.js';
-import type { CreateInvoiceInput, CreateQuoteInput, PolicyInput, SendDocumentInput } from './commercial-documents.validator.js';
+import type { CreateInvoiceInput, CreateQuoteInput, PolicyInput, RecordInvoicePaymentInput, SendDocumentInput } from './commercial-documents.validator.js';
 
-type DocumentCapability = 'quotes.read'|'quotes.create'|'quotes.update'|'quotes.send'|'quotes.approve'|'invoices.read'|'invoices.create'|'invoices.issue'|'invoices.send'|'invoices.cancel'|'commercial_policy.read'|'commercial_policy.manage';
+type DocumentCapability = 'quotes.read'|'quotes.create'|'quotes.update'|'quotes.send'|'quotes.approve'|'invoices.read'|'invoices.create'|'invoices.issue'|'invoices.send'|'invoices.cancel'|'commercial_policy.read'|'commercial_policy.manage'|'finance.manage';
 
 async function authorize(workspaceId: string, userId: string, capability: DocumentCapability) {
   return assertWorkspaceCapability({ workspaceId, userId, capability });
@@ -33,9 +33,20 @@ export async function sendQuote(workspaceId:string,userId:string,id:string,input
 export async function listInvoices(workspaceId:string,userId:string,filters:Parameters<typeof repo.listInvoices>[1]){await authorize(workspaceId,userId,'invoices.read');return repo.listInvoices(workspaceId,filters);}
 export async function getDocumentSellerProfile(workspaceId:string,userId:string){await authorize(workspaceId,userId,'invoices.read');const profile=await repo.getDocumentSellerProfile(workspaceId);if(!profile)throw notFoundError('Company profile not found');return profile;}
 export async function getInvoice(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.read');const result=await repo.getInvoice(workspaceId,id);if(!result)throw notFoundError('Invoice not found');return result;}
-export async function createInvoice(workspaceId:string,userId:string,input:CreateInvoiceInput){await authorize(workspaceId,userId,'invoices.create');if(!input.customerRecordId)throw new AppError(422,'INVOICE_CUSTOMER_REQUIRED','A customer record is required for an invoice');return repo.createInvoice(workspaceId,userId,input);}
+export async function createInvoice(
+  workspaceId: string,
+  userId: string,
+  input: CreateInvoiceInput,
+  actor: repo.CommercialDocumentActorContext = { actorType: 'USER', actorRef: userId },
+) {
+  await authorize(workspaceId, userId, 'invoices.create');
+  if (!input.customerRecordId) throw new AppError(422, 'INVOICE_CUSTOMER_REQUIRED', 'A customer record is required for an invoice');
+  return repo.createInvoice(workspaceId, userId, input, actor);
+}
 export async function issueInvoice(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.issue');return repo.issueInvoice(workspaceId,id,userId);}
 export async function sendInvoice(workspaceId:string,userId:string,id:string,input:SendDocumentInput){await authorize(workspaceId,userId,'invoices.send');const result=await repo.sendInvoice(workspaceId,id,userId,input);if(!('documentPath' in result))return result;return {...result,documentPath:result.documentPath.replace('/api/v1/public/commercial-documents/','/documents/commercial/')};}
+export async function listInvoicePayments(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.read');const invoice=await repo.getInvoice(workspaceId,id);if(!invoice)throw notFoundError('Invoice not found');return repo.listInvoicePayments(workspaceId,id);}
+export async function recordInvoicePayment(workspaceId:string,userId:string,id:string,input:RecordInvoicePaymentInput){await authorize(workspaceId,userId,'finance.manage');return repo.recordInvoicePayment(workspaceId,id,userId,input);}
 export async function getPolicy(workspaceId:string,userId:string){await authorize(workspaceId,userId,'commercial_policy.read');return repo.getPolicy(workspaceId);}
 export async function updatePolicy(workspaceId:string,userId:string,input:PolicyInput){await authorize(workspaceId,userId,'commercial_policy.manage');return repo.updatePolicy(workspaceId,input,userId);}
 export async function publicDocument(token:string){return repo.getPublicDocument(token);}

@@ -11,6 +11,10 @@ import * as searchRepo from '../search-intelligence/search-intelligence.repo.js'
 import type { AgentTool } from './agent.types.js';
 import type { ListRecordsQuery } from '../records/record.validator.js';
 import { AppError } from '../../utils/app-error.js';
+import { assertAdBudgetAuthorization } from '../adspend/adspend.repo.js';
+import * as commerceService from '../commerce/commerce.service.js';
+import * as financeRepo from '../finance/journal.repo.js';
+import * as socialPublishingService from '../social-publishing/social-publishing.service.js';
 import {
   applyExecutionCommandPolicies,
   listAgentExecutionCommandTypes,
@@ -50,6 +54,7 @@ type AgentSnapshotInput = {
   jobId?: unknown;
   provider?: unknown;
   delegatedContext?: unknown;
+  noActionReason?: unknown;
 };
 
 const DEFAULT_RECORD_QUERY = {
@@ -196,9 +201,10 @@ async function loadRecordSnapshot(workspaceId: string, resourceTypes: ResourceTy
 
 async function recordResourceSnapshot(input: AgentSnapshotInput, workspaceId: string) {
   const resourceTypes = uniqueResourceTypes(input.resourceTypes);
-  const [base, records] = await Promise.all([
+  const [base, records, canonicalOperations] = await Promise.all([
     loadWorkspaceBase(workspaceId),
     loadRecordSnapshot(workspaceId, resourceTypes),
+    canonicalOperationsSnapshot(compactText(input.module, 40), workspaceId),
   ]);
   return {
     snapshotType: 'record_resource',
@@ -222,7 +228,123 @@ async function recordResourceSnapshot(input: AgentSnapshotInput, workspaceId: st
       updatedAt: run.updatedAt,
     })),
     initialAnalysisSummary: compactText(base.initialAnalysis?.result?.summary),
+    canonicalOperations,
   };
+}
+
+async function canonicalOperationsSnapshot(module: string, workspaceId: string) {
+  if (module === 'commerce') {
+    const [orders, locations, inventory] = await Promise.all([
+      commerceService.listOrders(workspaceId, { page: 1, limit: 25, sort: 'updatedAt', order: 'desc' }),
+      commerceService.listInventoryLocations(workspaceId),
+      commerceService.listInventoryLevels(workspaceId, { page: 1, limit: 50 }),
+    ]);
+    return {
+      type: 'canonical_commerce',
+      orders: {
+        total: orders.pagination.total,
+        items: orders.items.map((order) => ({
+          id: order.id,
+          orderNumber: order.orderNumber,
+          status: order.status,
+          customerRecordId: order.customerRecordId,
+          companyRecordId: order.companyRecordId,
+          quoteId: order.quoteId,
+          currency: order.currency,
+          grandTotal: order.grandTotal,
+          lineCount: order.lineCount,
+          version: order.version,
+          updatedAt: order.updatedAt,
+        })),
+      },
+      inventory: {
+        total: inventory.pagination.total,
+        locations: locations.map((location) => ({
+          id: location.id,
+          code: location.code,
+          name: location.name,
+          status: location.status,
+          isDefault: location.isDefault,
+          version: location.version,
+        })),
+        levels: inventory.items.map((level) => ({
+          id: level.id,
+          locationId: level.locationId,
+          productId: level.productId,
+          variantId: level.variantId,
+          onHand: level.onHand,
+          reserved: level.reserved,
+          available: level.available,
+          reorderPoint: level.reorderPoint,
+          version: level.version,
+        })),
+      },
+    };
+  }
+
+  if (module === 'finance') {
+    const journals = await financeRepo.listJournals(workspaceId, { page: 1, limit: 25 });
+    const currencies = [...new Set(journals.items.map((journal) => journal.currency))].slice(0, 4);
+    const trialBalances = await Promise.all(currencies.map((currency) => financeRepo.getTrialBalance(workspaceId, currency)));
+    return {
+      type: 'canonical_finance',
+      journals: {
+        total: journals.pagination.total,
+        items: journals.items.map((journal) => ({
+          id: journal.id,
+          journalType: journal.journalType,
+          currency: journal.currency,
+          totalDebitsMinor: journal.totalDebitsMinor,
+          totalCreditsMinor: journal.totalCreditsMinor,
+          referenceType: journal.referenceType,
+          referenceId: journal.referenceId,
+          occurredAt: journal.occurredAt,
+        })),
+      },
+      trialBalances,
+    };
+  }
+
+  if (module === 'marketing') {
+    const [accounts, content, publications] = await Promise.all([
+      socialPublishingService.listAccounts(workspaceId),
+      socialPublishingService.listContent(workspaceId),
+      socialPublishingService.listPublicationJobs(workspaceId),
+    ]);
+    return {
+      type: 'canonical_social_publishing',
+      accounts: accounts.map((account) => ({
+        id: account.id,
+        provider: account.provider,
+        displayName: account.displayName,
+        status: account.status,
+        version: account.version,
+        statusReason: account.statusReason,
+      })),
+      content: content.slice(0, 25).map((item) => ({
+        id: item.id,
+        contentType: item.contentType,
+        status: item.status,
+        message: compactText(item.message, 500),
+        linkUrl: item.linkUrl,
+        mediaUrl: item.mediaUrl,
+        version: item.version,
+      })),
+      publications: publications.slice(0, 25).map((job) => ({
+        id: job.id,
+        socialAccountId: job.socialAccountId,
+        contentId: job.contentId,
+        status: job.status,
+        scheduledAt: job.scheduledAt,
+        attemptCount: job.attemptCount,
+        maxAttempts: job.maxAttempts,
+        blockCode: job.blockCode,
+        version: job.version,
+      })),
+    };
+  }
+
+  return null;
 }
 
 async function workspaceIntelligenceSnapshot(input: AgentSnapshotInput, workspaceId: string) {
@@ -506,6 +628,22 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   const delegatedContext = Array.isArray(input.delegatedContext)
     ? input.delegatedContext.slice(-4)
     : [];
+  if (Array.isArray(input.commands) && input.commands.length === 0) {
+    return {
+      snapshotType: 'page_action_noop',
+      module,
+      pageId: input.pageId ?? null,
+      pageLabel: input.pageLabel ?? null,
+      actionResourceType: resourceType,
+      executionMode,
+      policyDecision,
+      executionReady: false,
+      commandTypes: [],
+      noAction: true,
+      noActionReason: compactText(input.noActionReason, 1000) || 'No evidence-backed executable command was available.',
+      delegatedContext,
+    };
+  }
   const normalizedCommands = normalizeAgentExecutionCommands(input.commands, {
     module,
     targetSystem,
@@ -533,9 +671,28 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     jobId: compactText(input.jobId, 120) || null,
     provider: compactText(input.provider, 80) || null,
   });
+  const customerBudgetCommands = normalizedCommands.filter(
+    (command) => command.budgetAuthority === 'customer_authorization_required',
+  );
+  for (const command of customerBudgetCommands) {
+    const payload = command.payload;
+    const authorizationId = compactText(payload.authorizationId, 120);
+    const provider = compactText(command.provider ?? payload.provider, 80);
+    const accountId = compactText(payload.accountId ?? payload.customerId, 200);
+    const campaignId = compactText(payload.campaignId ?? command.targetEntityId, 200);
+    const currency = compactText(payload.currency ?? payload.accountCurrency, 3).toUpperCase();
+    const amount = typeof payload.budgetAmountCny === 'number'
+      ? payload.budgetAmountCny
+      : Number(payload.budgetAmountCny);
+    if (!authorizationId || !provider || !accountId || !campaignId || !currency || !Number.isFinite(amount) || amount <= 0) {
+      throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'Paid advertising requires an explicit customer authorization matching provider, account, campaign, currency and amount.');
+    }
+    await assertAdBudgetAuthorization({ workspaceId, authorizationId, provider, accountId, campaignId, currency, amount });
+  }
   const commandPolicy = applyExecutionCommandPolicies(
     normalizedCommands,
     executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
+    { verifiedCustomerBudget: customerBudgetCommands.length > 0 },
   );
   const budgetProtected = commandPolicy.commands.some(
     (command) => command.budgetAuthority === 'customer_authorization_required',
@@ -546,7 +703,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
   }));
   const hasForbiddenCommand = commandPolicy.commands.some((command) => command.policyDecision === 'forbidden');
   if(hasForbiddenCommand)throw new AppError(403,'AGENT_COMMAND_FORBIDDEN',commandPolicy.reasons.join(' ')||'The command is not registered for autonomous execution.');
-  if(budgetProtected)throw new AppError(409,'CUSTOMER_BUDGET_REQUIRED','Fund the prepaid ad-spend wallet before this action can run.');
+  if(commandPolicy.overallDecision==='require_budget')throw new AppError(409,'CUSTOMER_BUDGET_REQUIRED','Customer campaign budget authorization is required before this action can run.');
   const effectivePolicyDecision = 'allow' as const;
   const executionReady = true;
   const approvalStatus = 'not_required';

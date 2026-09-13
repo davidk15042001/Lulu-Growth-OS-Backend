@@ -11,14 +11,26 @@ import {
   pollCandidate,
   processCandidate,
   recordCandidateProviderUsage,
+  recoverStalePremiumMediaSubmissions,
   startPremiumMediaFromProductBrief,
 } from './premium-media.service.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 const workerId = `premium-media-${process.pid}-${randomUUID()}`;
+const runtimeMonitor = createRuntimeWorkerMonitor('premium-media', { staleAfterMs: Math.max(300_000, env.KIE_MEDIA_WORKER_INTERVAL_MS * 6) });
 let timer: NodeJS.Timeout | undefined;
 let activeCycle: Promise<void> | null = null;
 let stopping = false;
 let initialSweepComplete = false;
+const activeEventTasks = new Set<Promise<unknown>>();
+
+function trackPremiumMediaTask<T>(operation: () => Promise<T>): Promise<T> | null {
+  if (stopping) return null;
+  const task = operation();
+  activeEventTasks.add(task);
+  task.then(() => activeEventTasks.delete(task), () => activeEventTasks.delete(task));
+  return task;
+}
 
 function errorDetails(error: unknown) {
   return {
@@ -30,10 +42,13 @@ function errorDetails(error: unknown) {
 }
 
 export function runPremiumMediaCycle(): Promise<void> {
+  if (stopping) return Promise.resolve();
   if (activeCycle) return activeCycle;
   activeCycle = (async () => {
-    await repo.failStaleSubmittingCandidates(Math.max(300, env.KIE_MEDIA_POLL_AFTER_SECONDS * 4));
-    await repo.failTimedOutProviderCandidates(env.KIE_MEDIA_TASK_TIMEOUT_MINUTES);
+    await recoverStalePremiumMediaSubmissions(
+      Math.max(300, env.KIE_MEDIA_POLL_AFTER_SECONDS * 4),
+      env.KIE_MEDIA_TASK_TIMEOUT_MINUTES,
+    );
 
     if (!initialSweepComplete) {
       initialSweepComplete = true;
@@ -90,8 +105,9 @@ export function runPremiumMediaCycle(): Promise<void> {
         logger.error({ error, jobId: job.id, status: job.status }, 'Premium media workflow failed safely');
       }
     }
+    runtimeMonitor.progress({ phase: 'idle' });
   })()
-    .catch((error: unknown) => logger.error({ error }, 'Premium media worker cycle failed'))
+    .catch((error: unknown) => { runtimeMonitor.failed(error); logger.error({ error }, 'Premium media worker cycle failed'); })
     .finally(() => { activeCycle = null; });
   return activeCycle;
 }
@@ -113,10 +129,13 @@ export function startPremiumMediaWorker() {
     ],
     async handle(event) {
       if (!event.workspaceId || !event.aggregateId || event.metadata.source === 'premium-media') return { skipped: true };
-      const actorId = typeof event.metadata.actorId === 'string' ? event.metadata.actorId : null;
-      const result = await maybeStartAutonomousPremiumMedia(event.workspaceId, event.aggregateId, actorId);
-      requestPremiumMediaWorkerRun();
-      return { started: Boolean(result) };
+      const task = trackPremiumMediaTask(async () => {
+        const actorId = typeof event.metadata.actorId === 'string' ? event.metadata.actorId : null;
+        const result = await maybeStartAutonomousPremiumMedia(event.workspaceId!, event.aggregateId!, actorId);
+        requestPremiumMediaWorkerRun();
+        return { started: Boolean(result) };
+      });
+      return task ?? { skipped: true, stopping: true };
     },
   });
   registerDomainEventHandler({
@@ -124,14 +143,22 @@ export function startPremiumMediaWorker() {
     eventTypes: [DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED],
     async handle(event) {
       if (!event.workspaceId || typeof event.metadata.actorId !== 'string') return { skipped: true };
-      const products = await listKnowledgeProductsAwaitingImages(event.workspaceId);
-      let started=0;
-      for(const product of products){await startPremiumMediaFromProductBrief(event.workspaceId,product.id,event.metadata.actorId,false,false);started+=1;}
-      requestPremiumMediaWorkerRun();
-      return {started};
+      const task = trackPremiumMediaTask(async () => {
+        const products = await listKnowledgeProductsAwaitingImages(event.workspaceId!);
+        let started=0;
+        for(const product of products){
+          if(stopping)break;
+          await startPremiumMediaFromProductBrief(event.workspaceId!,product.id,event.metadata.actorId as string,false,false);
+          started+=1;
+        }
+        requestPremiumMediaWorkerRun();
+        return {started};
+      });
+      return task ?? { skipped: true, stopping: true };
     },
   });
   stopping = false;
+  runtimeMonitor.start({ workerId });
   initialSweepComplete = false;
   timer = setInterval(requestPremiumMediaWorkerRun, env.KIE_MEDIA_WORKER_INTERVAL_MS);
   timer.unref();
@@ -139,8 +166,12 @@ export function startPremiumMediaWorker() {
   logger.info({ workerId, intervalMs: env.KIE_MEDIA_WORKER_INTERVAL_MS }, 'Autonomous premium media worker started');
 }
 
-export function stopPremiumMediaWorker() {
+export async function stopPremiumMediaWorker() {
   stopping = true;
   if (timer) clearInterval(timer);
   timer = undefined;
+  await runtimeMonitor.stopping();
+  if (activeCycle) await activeCycle;
+  while (activeEventTasks.size > 0) await Promise.allSettled([...activeEventTasks]);
+  await runtimeMonitor.stopped();
 }

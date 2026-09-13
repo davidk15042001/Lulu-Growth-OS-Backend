@@ -3,11 +3,20 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-import { conflictError, notFoundError } from '../../utils/app-error.js';
-import type { CreateInvoiceInput, CreateQuoteInput, PolicyInput, SendDocumentInput } from './commercial-documents.validator.js';
+import { AppError, conflictError, notFoundError } from '../../utils/app-error.js';
+import { decimalToMinorUnits, minorUnitsToDecimal } from '../finance/money.js';
+import type { CreateInvoiceInput, CreateQuoteInput, PolicyInput, RecordInvoicePaymentInput, SendDocumentInput } from './commercial-documents.validator.js';
+
+export type CommercialDocumentActorContext = {
+  actorType: 'USER' | 'AI_AGENT' | 'WORKFLOW' | 'SYSTEM' | 'ADMIN';
+  actorRef?: string | null;
+  correlationId?: string | null;
+  causationId?: string | null;
+  sourceActionRecordId?: string | null;
+};
 
 const quoteSelect = `q.id,q.workspace_id AS "workspaceId",q.factory_id AS "factoryId",q.customer_record_id AS "customerRecordId",q.company_record_id AS "companyRecordId",q.lead_record_id AS "leadRecordId",q.opportunity_record_id AS "opportunityRecordId",q.quote_number AS "quoteNumber",q.status,q.currency,q.language,q.market_code AS "marketCode",q.current_version_id AS "currentVersionId",q.source,q.creation_mode AS "creationMode",q.handling_mode AS "handlingMode",q.assigned_user_id AS "assignedUserId",q.valid_until AS "validUntil",q.accepted_at AS "acceptedAt",q.declined_at AS "declinedAt",q.expired_at AS "expiredAt",q.metadata,q.version,q.created_by AS "createdBy",q.updated_by AS "updatedBy",q.created_at AS "createdAt",q.updated_at AS "updatedAt"`;
-const invoiceSelect = `i.id,i.workspace_id AS "workspaceId",i.factory_id AS "factoryId",i.customer_record_id AS "customerRecordId",i.company_record_id AS "companyRecordId",i.order_record_id AS "orderRecordId",i.quote_id AS "quoteId",i.invoice_number AS "invoiceNumber",i.invoice_type AS "invoiceType",i.status,i.currency,i.language,i.issue_date AS "issueDate",i.due_date AS "dueDate",i.subtotal,i.discount_total AS "discountTotal",i.shipping_total AS "shippingTotal",i.tax_total AS "taxTotal",i.grand_total AS "grandTotal",i.amount_paid AS "amountPaid",i.amount_due AS "amountDue",i.source,i.creation_mode AS "creationMode",i.issue_stage AS "issueStage",i.payment_reference AS "paymentReference",i.issued_at AS "issuedAt",i.sent_at AS "sentAt",i.paid_at AS "paidAt",i.cancelled_at AS "cancelledAt",i.document_status AS "documentStatus",i.document_storage_reference AS "documentStorageReference",i.document_hash AS "documentHash",i.metadata,i.version,i.created_by AS "createdBy",i.updated_by AS "updatedBy",i.created_at AS "createdAt",i.updated_at AS "updatedAt"`;
+const invoiceSelect = `i.id,i.workspace_id AS "workspaceId",i.factory_id AS "factoryId",i.customer_record_id AS "customerRecordId",i.company_record_id AS "companyRecordId",i.order_record_id AS "orderRecordId",i.commerce_order_id AS "commerceOrderId",i.quote_id AS "quoteId",i.invoice_number AS "invoiceNumber",i.invoice_type AS "invoiceType",i.status,i.currency,i.language,i.issue_date AS "issueDate",i.due_date AS "dueDate",i.subtotal,i.discount_total AS "discountTotal",i.shipping_total AS "shippingTotal",i.tax_total AS "taxTotal",i.grand_total AS "grandTotal",i.amount_paid AS "amountPaid",i.amount_due AS "amountDue",i.source,i.creation_mode AS "creationMode",i.issue_stage AS "issueStage",i.payment_reference AS "paymentReference",i.issued_at AS "issuedAt",i.sent_at AS "sentAt",i.paid_at AS "paidAt",i.cancelled_at AS "cancelledAt",i.document_status AS "documentStatus",i.document_storage_reference AS "documentStorageReference",i.document_hash AS "documentHash",i.metadata,i.version,i.created_by AS "createdBy",i.updated_by AS "updatedBy",i.created_at AS "createdAt",i.updated_at AS "updatedAt"`;
 
 export type DocumentSellerProfile = {
   companyName: string;
@@ -54,7 +63,142 @@ async function getCurrentDocumentSellerProfile(workspaceId: string, client?: Poo
 
 function normalizeCurrency(value: string) { return value.trim().toUpperCase(); }
 function hash(value: string) { return createHash('sha256').update(value).digest('hex'); }
+function canonicalValue(value:unknown):unknown{if(Array.isArray(value))return value.map(canonicalValue);if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value as Record<string,unknown>).sort(([a],[b])=>a.localeCompare(b)).map(([key,item])=>[key,canonicalValue(item)]));return value;}
+function canonicalHash(value:unknown){return hash(JSON.stringify(canonicalValue(value)));}
 function publicToken() { return randomBytes(32).toString('hex'); }
+
+function normalizedInvoiceCreationRequest(input: CreateInvoiceInput) {
+  return {
+    factoryId: input.factoryId ?? null,
+    customerRecordId: input.customerRecordId ?? null,
+    companyRecordId: input.companyRecordId ?? null,
+    orderRecordId: input.orderRecordId ?? null,
+    commerceOrderId: input.commerceOrderId ?? null,
+    quoteId: input.quoteId ?? null,
+    invoiceType: input.invoiceType,
+    issueDate: input.issueDate ?? null,
+    dueDate: input.dueDate ?? null,
+    shippingTotal: input.shippingTotal ?? 0,
+    source: input.source ?? 'workspace',
+    creationMode: input.creationMode ?? 'MANUAL',
+    currency: normalizeCurrency(input.currency),
+    language: input.language ?? 'en',
+    lines: input.lines.map((line, index) => ({
+      productId: line.productId ?? null,
+      sku: line.sku ?? null,
+      productName: line.productName,
+      description: line.description ?? null,
+      quantity: line.quantity,
+      quantityUnit: line.quantityUnit ?? null,
+      unitPrice: line.unitPrice,
+      discount: line.discount ?? 0,
+      tax: line.tax ?? 0,
+      sortOrder: line.sortOrder ?? index,
+    })),
+  };
+}
+
+function invoiceOperationConflict() {
+  return new AppError(409, 'INVOICE_IDEMPOTENCY_CONFLICT', 'This invoice operation key was already used for another request');
+}
+
+type InvoiceOperationReplay = { replayed: boolean; documentId: string | null };
+
+async function claimInvoiceCreationOperation(
+  client: PoolClient,
+  workspaceId: string,
+  input: CreateInvoiceInput,
+  requestHash: string,
+  actor: CommercialDocumentActorContext,
+): Promise<InvoiceOperationReplay> {
+  const inserted = await query<{ id: string }>(
+    `INSERT INTO commercial_document_operations(
+       workspace_id,operation_key,operation_type,request_hash,actor_type,actor_ref,correlation_id,causation_id
+     ) VALUES($1,$2,'invoice.create',$3,$4,$5,$6,$7)
+     ON CONFLICT (workspace_id,operation_key) DO NOTHING
+     RETURNING id`,
+    [
+      workspaceId,
+      input.operationKey,
+      requestHash,
+      actor.actorType,
+      actor.actorRef ?? null,
+      actor.correlationId ?? null,
+      actor.causationId ?? null,
+    ],
+    client,
+  );
+  if (inserted.rows[0]) return { replayed: false, documentId: null };
+
+  const existing = (await query<{
+    operationType: string;
+    requestHash: string;
+    status: 'STARTED' | 'COMPLETED';
+    documentId: string | null;
+  }>(
+    `SELECT operation_type AS "operationType",request_hash AS "requestHash",status,
+            document_id AS "documentId"
+       FROM commercial_document_operations
+      WHERE workspace_id=$1 AND operation_key=$2`,
+    [workspaceId, input.operationKey],
+    client,
+  )).rows[0];
+  if (!existing || existing.operationType !== 'invoice.create' || existing.requestHash !== requestHash) {
+    throw invoiceOperationConflict();
+  }
+  if (existing.status !== 'COMPLETED' || !existing.documentId) {
+    throw new AppError(409, 'INVOICE_OPERATION_IN_PROGRESS', 'This invoice operation is still in progress');
+  }
+  return { replayed: true, documentId: existing.documentId };
+}
+
+async function completeInvoiceCreationOperation(
+  client: PoolClient,
+  workspaceId: string,
+  operationKey: string,
+  documentId: string,
+) {
+  const result = { invoiceId: documentId };
+  await query(
+    `UPDATE commercial_document_operations
+        SET status='COMPLETED',document_id=$3,result=$4::jsonb,completed_at=NOW()
+      WHERE workspace_id=$1 AND operation_key=$2 AND status='STARTED'`,
+    [workspaceId, operationKey, documentId, JSON.stringify(result)],
+    client,
+  );
+}
+
+async function replayInvoiceForOrder(
+  client: PoolClient,
+  workspaceId: string,
+  operationKey: string,
+  requestHash: string,
+  invoiceId: string,
+) {
+  const original = (await query<{ requestHash: string }>(
+    `SELECT request_hash AS "requestHash"
+       FROM commercial_document_operations
+      WHERE workspace_id=$1 AND operation_type='invoice.create'
+        AND document_id=$2 AND status='COMPLETED'
+      ORDER BY completed_at ASC NULLS LAST,created_at ASC
+      LIMIT 1`,
+    [workspaceId, invoiceId],
+    client,
+  )).rows[0];
+  if (!original) {
+    throw new AppError(
+      409,
+      'INVOICE_ORDER_ALREADY_INVOICED',
+      'This order already has an invoice created before request-safe replay was enabled',
+      { invoiceId },
+    );
+  }
+  if (original.requestHash !== requestHash) {
+    throw new AppError(409, 'INVOICE_ORDER_CONFLICT', 'This order was already invoiced with different creation details', { invoiceId });
+  }
+  await completeInvoiceCreationOperation(client, workspaceId, operationKey, invoiceId);
+  return invoiceId;
+}
 
 async function nextNumber(client: PoolClient, workspaceId: string, type: 'QUOTE' | 'INVOICE') {
   await query(`INSERT INTO workspace_document_sequences(workspace_id,document_type,next_value) VALUES($1,$2,2) ON CONFLICT DO NOTHING`, [workspaceId, type], client);
@@ -237,7 +381,54 @@ export async function listAllQuotes(filters: { workspaceId?: string | undefined;
   const rows = await query(`SELECT ${quoteSelect},w.name AS "workspaceName",v.version_number AS "currentVersion",v.grand_total AS "grandTotal" FROM quotes q JOIN workspaces w ON w.id=q.workspace_id LEFT JOIN quote_versions v ON v.workspace_id=q.workspace_id AND v.id=q.current_version_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY q.created_at DESC LIMIT $${params.length}`, params);
   return rows.rows;
 }
-export async function getInvoice(workspaceId:string,id:string){const invoice=await query<any>(`SELECT ${invoiceSelect} FROM invoices i WHERE i.workspace_id=$1 AND i.id=$2`,[workspaceId,id]);if(!invoice.rows[0])return null;const lines=await query(`SELECT id,product_id AS "productId",sku_snapshot AS "sku",product_name_snapshot AS "productName",description_snapshot AS "description",quantity,quantity_unit AS "quantityUnit",unit_price AS "unitPrice",discount,tax,line_total AS "lineTotal",sort_order AS "sortOrder" FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 ORDER BY sort_order,id`,[workspaceId,id]);const deliveries=await query(`SELECT id,document_type AS "documentType",document_id AS "documentId",conversation_id AS "conversationId",channel,recipient,status,provider_message_id AS "providerMessageId",failure_reason AS "failureReason",actor_type AS "actorType",actor_id AS "actorId",sent_at AS "sentAt",delivered_at AS "deliveredAt",failed_at AS "failedAt",created_at AS "createdAt" FROM document_deliveries WHERE workspace_id=$1 AND document_type='INVOICE' AND document_id=$2 ORDER BY created_at DESC`,[workspaceId,id]);const currentSellerProfile=await getCurrentDocumentSellerProfile(workspaceId);const snapshot=invoice.rows[0].metadata?.sellerProfile;return {invoice:invoice.rows[0],sellerProfile:isDocumentSellerProfile(snapshot)?snapshot:currentSellerProfile,lines:lines.rows,deliveries:deliveries.rows};}
+export async function getInvoice(workspaceId:string,id:string,client?:PoolClient){
+  const invoice=await query<any>(`SELECT ${invoiceSelect} FROM invoices i WHERE i.workspace_id=$1 AND i.id=$2`,[workspaceId,id],client);
+  if(!invoice.rows[0])return null;
+  const lines=await query(`SELECT id,product_id AS "productId",sku_snapshot AS "sku",product_name_snapshot AS "productName",description_snapshot AS "description",quantity,quantity_unit AS "quantityUnit",unit_price AS "unitPrice",discount,tax,line_total AS "lineTotal",sort_order AS "sortOrder" FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 ORDER BY sort_order,id`,[workspaceId,id],client);
+  const deliveries=await query(`SELECT id,document_type AS "documentType",document_id AS "documentId",conversation_id AS "conversationId",channel,recipient,status,provider_message_id AS "providerMessageId",failure_reason AS "failureReason",actor_type AS "actorType",actor_id AS "actorId",sent_at AS "sentAt",delivered_at AS "deliveredAt",failed_at AS "failedAt",created_at AS "createdAt" FROM document_deliveries WHERE workspace_id=$1 AND document_type='INVOICE' AND document_id=$2 ORDER BY created_at DESC`,[workspaceId,id],client);
+  const payments=await listInvoicePayments(workspaceId,id,client);
+  const currentSellerProfile=await getCurrentDocumentSellerProfile(workspaceId,client);
+  const snapshot=invoice.rows[0].metadata?.sellerProfile;
+  return {invoice:invoice.rows[0],sellerProfile:isDocumentSellerProfile(snapshot)?snapshot:currentSellerProfile,lines:lines.rows,deliveries:deliveries.rows,payments};
+}
+
+type InvoicePaymentRow={id:string;workspaceId:string;invoiceId:string;amountMinor:string;currency:string;paymentMethod:string;paymentReference:string|null;receivedAt:string;idempotencyKey:string;requestHash:string;metadata:Record<string,unknown>;recordedBy:string|null;createdAt:string};
+const invoicePaymentSelect=`id,workspace_id AS "workspaceId",invoice_id AS "invoiceId",amount_minor::text AS "amountMinor",currency,payment_method AS "paymentMethod",payment_reference AS "paymentReference",received_at AS "receivedAt",idempotency_key AS "idempotencyKey",request_hash AS "requestHash",metadata,recorded_by AS "recordedBy",created_at AS "createdAt"`;
+
+export async function listInvoicePayments(workspaceId:string,invoiceId:string,client?:PoolClient){
+  return (await query<InvoicePaymentRow>(`SELECT ${invoicePaymentSelect} FROM invoice_payments WHERE workspace_id=$1 AND invoice_id=$2 ORDER BY received_at DESC,id DESC`,[workspaceId,invoiceId],client)).rows;
+}
+
+export async function recordInvoicePayment(workspaceId:string,invoiceId:string,actorId:string,input:RecordInvoicePaymentInput){
+  return withTransaction(async(client)=>{
+    const invoice=(await query<{id:string;invoiceType:string;status:string;currency:string;grandTotal:string;amountPaid:string;amountDue:string}>(`SELECT id,invoice_type AS "invoiceType",status,currency,grand_total::text AS "grandTotal",amount_paid::text AS "amountPaid",amount_due::text AS "amountDue" FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,invoiceId],client)).rows[0];
+    if(!invoice)throw notFoundError('Invoice not found');
+    const amountMinor=decimalToMinorUnits(input.amount,invoice.currency);
+    if(amountMinor<=0)throw new AppError(422,'INVALID_PAYMENT_AMOUNT','Invoice payment amount must be greater than zero');
+    const requestHash=canonicalHash({invoiceId,amountMinor,currency:invoice.currency,paymentMethod:input.paymentMethod,paymentReference:input.paymentReference??null,receivedAt:input.receivedAt??null,metadata:input.metadata??{}});
+    const prior=(await query<InvoicePaymentRow>(`SELECT ${invoicePaymentSelect} FROM invoice_payments WHERE workspace_id=$1 AND idempotency_key=$2`,[workspaceId,input.idempotencyKey],client)).rows[0];
+    if(prior){
+      if(prior.requestHash!==requestHash)throw new AppError(409,'PAYMENT_IDEMPOTENCY_CONFLICT','The payment idempotency key was already used with a different request');
+      return {payment:prior,invoice:await getInvoice(workspaceId,invoiceId,client),idempotent:true};
+    }
+    if(invoice.invoiceType==='PROFORMA')throw new AppError(409,'PROFORMA_PAYMENT_NOT_ALLOWED','A proforma invoice is not an accounts-receivable document');
+    if(!['ISSUED','SENT','PARTIALLY_PAID','OVERDUE'].includes(invoice.status))throw new AppError(409,'INVOICE_NOT_PAYABLE','Only an issued, sent, partially paid, or overdue invoice can receive a payment');
+    const dueMinor=decimalToMinorUnits(invoice.amountDue,invoice.currency);
+    if(amountMinor>dueMinor)throw new AppError(409,'PAYMENT_EXCEEDS_AMOUNT_DUE','Payment exceeds the invoice amount due',{amountDueMinor:String(dueMinor),attemptedAmountMinor:String(amountMinor),currency:invoice.currency});
+    const receivedAt=input.receivedAt??new Date().toISOString();
+    const payment=(await query<InvoicePaymentRow>(`INSERT INTO invoice_payments(workspace_id,invoice_id,amount_minor,currency,payment_method,payment_reference,received_at,idempotency_key,request_hash,metadata,recorded_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11) RETURNING ${invoicePaymentSelect}`,[workspaceId,invoiceId,amountMinor,invoice.currency,input.paymentMethod,input.paymentReference??null,receivedAt,input.idempotencyKey,requestHash,JSON.stringify(input.metadata??{}),actorId],client)).rows[0];
+    if(!payment)throw new Error('Invoice payment insert did not return a row');
+    const paidMinor=decimalToMinorUnits(invoice.amountPaid,invoice.currency)+amountMinor;
+    const remainingMinor=dueMinor-amountMinor;
+    const nextStatus=remainingMinor===0?'PAID':'PARTIALLY_PAID';
+    await query(`UPDATE invoices SET amount_paid=$3,amount_due=$4,status=$5,payment_reference=COALESCE($6,payment_reference),paid_at=CASE WHEN $5='PAID' THEN $7::timestamptz ELSE paid_at END,updated_by=$8,version=version+1 WHERE workspace_id=$1 AND id=$2`,[workspaceId,invoiceId,minorUnitsToDecimal(paidMinor,invoice.currency),minorUnitsToDecimal(remainingMinor,invoice.currency),nextStatus,input.paymentReference??null,receivedAt,actorId],client);
+    const eventType=nextStatus==='PAID'?DOMAIN_EVENT_TYPES.INVOICE_PAID:DOMAIN_EVENT_TYPES.INVOICE_PARTIALLY_PAID;
+    const eventPayload={invoiceId,paymentId:payment.id,amountMinor:String(amountMinor),currency:invoice.currency,paymentMethod:input.paymentMethod,status:nextStatus};
+    await audit(client,workspaceId,actorId,'invoice.payment_recorded','invoice_payment',payment.id,eventPayload);
+    await appendDomainEvent({workspaceId,type:eventType,aggregateType:'invoice',aggregateId:invoiceId,payload:eventPayload,metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice-payment:${payment.id}:recorded`},client);
+    return {payment,invoice:await getInvoice(workspaceId,invoiceId,client),idempotent:false};
+  });
+}
 export async function listAllInvoices(filters: { workspaceId?: string | undefined; status?: string | undefined; search?: string | undefined; limit?: number | undefined }) {
   const params: unknown[] = []; const where: string[] = [];
   if (filters.workspaceId) { params.push(filters.workspaceId); where.push(`i.workspace_id=$${params.length}`); }
@@ -248,9 +439,157 @@ export async function listAllInvoices(filters: { workspaceId?: string | undefine
   return rows.rows;
 }
 
-export async function createInvoice(workspaceId:string,actorId:string,input:CreateInvoiceInput){const result=await withTransaction(async(client)=>{await assertRecordType(client,workspaceId,input.customerRecordId,['customers','ecommerce_customers','finance_customers'],'Customer');await assertRecordType(client,workspaceId,input.companyRecordId,['crm_companies'],'Company');await assertRecordType(client,workspaceId,input.orderRecordId,['ecommerce_orders'],'Order');if(input.quoteId){const quote=await query(`SELECT 1 FROM quotes WHERE workspace_id=$1 AND id=$2`,[workspaceId,input.quoteId],client);if(!quote.rows[0])throw notFoundError('Quote not found');}if(input.orderRecordId){const existing=await query<{id:string}>(`SELECT id FROM invoices WHERE workspace_id=$1 AND order_record_id=$2 AND invoice_type=$3 AND status NOT IN ('CANCELLED','VOID') ORDER BY created_at DESC LIMIT 1`,[workspaceId,input.orderRecordId,input.invoiceType],client);if(existing.rows[0])return existing.rows[0].id;}const number=await nextNumber(client,workspaceId,'INVOICE');const invoiceNumber=`INV-${new Date().getUTCFullYear()}-${String(number).padStart(6,'0')}`;const invoice=(await query(`INSERT INTO invoices(workspace_id,factory_id,customer_record_id,company_record_id,order_record_id,quote_id,invoice_number,invoice_type,status,currency,language,issue_date,due_date,shipping_total,source,creation_mode,created_by,updated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'DRAFT',$9,$10,$11,$12,$13,$14,$15,$16,$16) RETURNING id`,[workspaceId,input.factoryId??null,input.customerRecordId??null,input.companyRecordId??null,input.orderRecordId??null,input.quoteId??null,invoiceNumber,input.invoiceType,normalizeCurrency(input.currency),input.language??'en',input.issueDate??null,input.dueDate??null,input.shippingTotal??0,input.source??'workspace',input.creationMode??'MANUAL',actorId],client)).rows[0];if(!invoice)throw new Error('Invoice insert did not return a row');for(const[index,line]of input.lines.entries())await query(`INSERT INTO invoice_lines(workspace_id,invoice_id,product_id,sku_snapshot,product_name_snapshot,description_snapshot,quantity,quantity_unit,unit_price,discount,tax,sort_order) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,[workspaceId,invoice.id,line.productId??null,line.sku??null,line.productName,line.description??null,line.quantity,line.quantityUnit??null,line.unitPrice,line.discount??0,line.tax??0,line.sortOrder??index],client);await updateInvoiceTotals(client,workspaceId,invoice.id,input.shippingTotal??0);await audit(client,workspaceId,actorId,'invoice.created','invoice',invoice.id,{invoiceNumber,creationMode:input.creationMode??'MANUAL'});await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_CREATED,aggregateType:'invoice',aggregateId:invoice.id,payload:{invoiceId:invoice.id,invoiceNumber},metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${invoice.id}:created`},client);return invoice.id as string;});return getInvoice(workspaceId,result);}
+export async function createInvoice(
+  workspaceId: string,
+  actorId: string,
+  input: CreateInvoiceInput,
+  actor: CommercialDocumentActorContext = { actorType: 'USER', actorRef: actorId },
+) {
+  const requestHash = canonicalHash(normalizedInvoiceCreationRequest(input));
+  const result = await withTransaction(async (client) => {
+    const operation = await claimInvoiceCreationOperation(client, workspaceId, input, requestHash, actor);
+    if (operation.replayed) return { invoiceId: operation.documentId!, idempotent: true };
 
-export async function issueInvoice(workspaceId:string,id:string,actorId:string){return withTransaction(async(client)=>{const row=(await query<any>(`SELECT * FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,id],client)).rows[0];if(!row)throw notFoundError('Invoice not found');if(!['DRAFT','READY'].includes(row.status))throw conflictError('Only a ready invoice can be issued');const lines=await query(`SELECT 1 FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 LIMIT 1`,[workspaceId,id],client);if(!lines.rows[0])throw conflictError('Invoice requires at least one line item');const sellerProfile=await getCurrentDocumentSellerProfile(workspaceId,client);if(!sellerProfile)throw conflictError('A company profile is required before issuing an invoice');await query(`UPDATE invoices SET status='ISSUED',issue_date=COALESCE(issue_date,CURRENT_DATE),issued_at=NOW(),amount_due=grand_total,metadata=metadata || jsonb_build_object('sellerProfile',$4::jsonb),updated_by=$3 WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,actorId,JSON.stringify(sellerProfile)],client);await audit(client,workspaceId,actorId,'invoice.issued','invoice',id,{status:'ISSUED',sellerProfileCaptured:true});await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_ISSUED,aggregateType:'invoice',aggregateId:id,payload:{invoiceId:id},metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${id}:issued`},client);return getInvoice(workspaceId,id);});}
+    await assertRecordType(client, workspaceId, input.customerRecordId, ['customers', 'ecommerce_customers', 'finance_customers'], 'Customer');
+    await assertRecordType(client, workspaceId, input.companyRecordId, ['crm_companies'], 'Company');
+    await assertRecordType(client, workspaceId, input.orderRecordId, ['ecommerce_orders'], 'Order');
+    if (input.orderRecordId) {
+      await query(
+        `SELECT id FROM workspace_records WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+        [workspaceId, input.orderRecordId],
+        client,
+      );
+    }
+    if (input.commerceOrderId) {
+      const order = await query(
+        `SELECT id FROM commerce_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+        [workspaceId, input.commerceOrderId],
+        client,
+      );
+      if (!order.rows[0]) throw notFoundError('Commerce order not found');
+    }
+    if (input.quoteId) {
+      const quote = await query(`SELECT 1 FROM quotes WHERE workspace_id=$1 AND id=$2`, [workspaceId, input.quoteId], client);
+      if (!quote.rows[0]) throw notFoundError('Quote not found');
+    }
+
+    if (input.orderRecordId) {
+      const existing = await query<{ id: string }>(
+        `SELECT id FROM invoices
+          WHERE workspace_id=$1 AND order_record_id=$2 AND invoice_type=$3
+            AND status NOT IN ('CANCELLED','VOID')
+          ORDER BY created_at DESC LIMIT 1`,
+        [workspaceId, input.orderRecordId, input.invoiceType],
+        client,
+      );
+      if (existing.rows[0]) {
+        const invoiceId = await replayInvoiceForOrder(client, workspaceId, input.operationKey, requestHash, existing.rows[0].id);
+        return { invoiceId, idempotent: true };
+      }
+    }
+    if (input.commerceOrderId) {
+      const existing = await query<{ id: string }>(
+        `SELECT id FROM invoices
+          WHERE workspace_id=$1 AND commerce_order_id=$2 AND invoice_type=$3
+            AND status NOT IN ('CANCELLED','VOID')
+          ORDER BY created_at DESC LIMIT 1`,
+        [workspaceId, input.commerceOrderId, input.invoiceType],
+        client,
+      );
+      if (existing.rows[0]) {
+        const invoiceId = await replayInvoiceForOrder(client, workspaceId, input.operationKey, requestHash, existing.rows[0].id);
+        return { invoiceId, idempotent: true };
+      }
+    }
+
+    const number = await nextNumber(client, workspaceId, 'INVOICE');
+    const invoiceNumber = `INV-${new Date().getUTCFullYear()}-${String(number).padStart(6, '0')}`;
+    const invoice = (await query<{ id: string }>(
+      `INSERT INTO invoices(
+         workspace_id,factory_id,customer_record_id,company_record_id,order_record_id,quote_id,
+         invoice_number,invoice_type,status,currency,language,issue_date,due_date,shipping_total,
+         source,creation_mode,commerce_order_id,created_by,updated_by
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'DRAFT',$9,$10,$11,$12,$13,$14,$15,$16,$17,$17)
+       RETURNING id`,
+      [
+        workspaceId,
+        input.factoryId ?? null,
+        input.customerRecordId ?? null,
+        input.companyRecordId ?? null,
+        input.orderRecordId ?? null,
+        input.quoteId ?? null,
+        invoiceNumber,
+        input.invoiceType,
+        normalizeCurrency(input.currency),
+        input.language ?? 'en',
+        input.issueDate ?? null,
+        input.dueDate ?? null,
+        input.shippingTotal ?? 0,
+        input.source ?? 'workspace',
+        input.creationMode ?? 'MANUAL',
+        input.commerceOrderId ?? null,
+        actorId,
+      ],
+      client,
+    )).rows[0];
+    if (!invoice) throw new Error('Invoice insert did not return a row');
+
+    for (const [index, line] of input.lines.entries()) {
+      await query(
+        `INSERT INTO invoice_lines(
+           workspace_id,invoice_id,product_id,sku_snapshot,product_name_snapshot,description_snapshot,
+           quantity,quantity_unit,unit_price,discount,tax,sort_order
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+        [workspaceId, invoice.id, line.productId ?? null, line.sku ?? null, line.productName,
+          line.description ?? null, line.quantity, line.quantityUnit ?? null, line.unitPrice,
+          line.discount ?? 0, line.tax ?? 0, line.sortOrder ?? index],
+        client,
+      );
+    }
+    await updateInvoiceTotals(client, workspaceId, invoice.id, input.shippingTotal ?? 0);
+    await completeInvoiceCreationOperation(client, workspaceId, input.operationKey, invoice.id);
+
+    const creationMode = input.creationMode ?? 'MANUAL';
+    const eventMetadata = {
+      actorId,
+      actorType: actor.actorType,
+      actorRef: actor.actorRef ?? null,
+      correlationId: actor.correlationId ?? null,
+      causationId: actor.causationId ?? null,
+      sourceActionRecordId: actor.sourceActionRecordId ?? null,
+      source: actor.actorType === 'AI_AGENT' ? 'agent-executor' : 'commercial-documents',
+    };
+    await audit(client, workspaceId, actorId, 'invoice.created', 'invoice', invoice.id, {
+      invoiceNumber,
+      operationKey: input.operationKey,
+      creationMode,
+      commerceOrderId: input.commerceOrderId ?? null,
+      actorType: actor.actorType,
+      actorRef: actor.actorRef ?? null,
+    });
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.INVOICE_CREATED,
+      aggregateType: 'invoice',
+      aggregateId: invoice.id,
+      payload: {
+        invoiceId: invoice.id,
+        invoiceNumber,
+        commerceOrderId: input.commerceOrderId ?? null,
+        creationMode,
+        sourceActionRecordId: actor.sourceActionRecordId ?? null,
+      },
+      metadata: eventMetadata,
+      idempotencyKey: `invoice:${invoice.id}:created`,
+    }, client);
+    return { invoiceId: invoice.id, idempotent: false };
+  });
+
+  const invoice = await getInvoice(workspaceId, result.invoiceId);
+  return invoice ? { ...invoice, idempotent: result.idempotent } : invoice;
+}
+
+export async function issueInvoice(workspaceId:string,id:string,actorId:string){return withTransaction(async(client)=>{const row=(await query<any>(`SELECT * FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,id],client)).rows[0];if(!row)throw notFoundError('Invoice not found');if(!['DRAFT','READY'].includes(row.status))throw conflictError('Only a ready invoice can be issued');const lines=await query(`SELECT 1 FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 LIMIT 1`,[workspaceId,id],client);if(!lines.rows[0])throw conflictError('Invoice requires at least one line item');const sellerProfile=await getCurrentDocumentSellerProfile(workspaceId,client);if(!sellerProfile)throw conflictError('A company profile is required before issuing an invoice');await query(`UPDATE invoices SET status='ISSUED',issue_date=COALESCE(issue_date,CURRENT_DATE),issued_at=NOW(),amount_due=grand_total,metadata=metadata || jsonb_build_object('sellerProfile',$4::jsonb),updated_by=$3 WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,actorId,JSON.stringify(sellerProfile)],client);await audit(client,workspaceId,actorId,'invoice.issued','invoice',id,{status:'ISSUED',sellerProfileCaptured:true});await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_ISSUED,aggregateType:'invoice',aggregateId:id,payload:{invoiceId:id},metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${id}:issued`},client);return getInvoice(workspaceId,id,client);});}
 export async function sendInvoice(workspaceId:string,id:string,actorId:string,input:SendDocumentInput){return withTransaction(async(client)=>{const row=(await query<any>(`SELECT * FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,id],client)).rows[0];if(!row)throw notFoundError('Invoice not found');if(!['ISSUED','SENT','PARTIALLY_PAID','OVERDUE'].includes(row.status))throw conflictError('Only an issued invoice can be sent');const key=input.operationKey??`invoice:${id}:send`;const prior=(await query(`SELECT result FROM commercial_document_idempotency WHERE workspace_id=$1 AND operation_key=$2`,[workspaceId,key],client)).rows[0];if(prior?.result)return {...(prior.result as Record<string,unknown>),idempotent:true};if(input.conversationId){const conversation=(await query(`SELECT 1 FROM omni_conversations WHERE workspace_id=$1 AND id=$2`,[workspaceId,input.conversationId],client)).rows[0];if(!conversation)throw notFoundError('Conversation not found');}const link=await createLink(client,workspaceId,'INVOICE',id,null);const reference=`/documents/commercial/${link}`;const hashValue=hash(JSON.stringify({invoiceId:id,total:row.grand_total}));await query(`UPDATE invoices SET status='SENT',document_status='READY',document_storage_reference=$3,document_hash=$4,sent_at=NOW(),updated_by=$5 WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,reference,hashValue,actorId],client);const delivery=(await query<{id:string}>(`INSERT INTO document_deliveries(workspace_id,document_type,document_id,conversation_id,channel,recipient,actor_type,actor_id,status,sent_at) VALUES($1,'INVOICE',$2,$3,$4,$5,'USER',$6,'QUEUED',NOW()) RETURNING id`,[workspaceId,id,input.conversationId??null,input.channel,input.recipient??null,actorId],client)).rows[0];const result={invoiceId:id,deliveryId:delivery?.id??null,documentPath:reference};await query(`INSERT INTO commercial_document_idempotency(workspace_id,operation_key,document_type,document_id,result) VALUES($1,$2,'DELIVERY',$3,$4::jsonb)`,[workspaceId,key,id,JSON.stringify(result)],client);await audit(client,workspaceId,actorId,'invoice.sent','invoice',id,result);await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_SENT,aggregateType:'invoice',aggregateId:id,payload:result,metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${id}:sent`},client);return result;});}
 
 export async function getPublicDocument(token:string){const result=await query<any>(`SELECT l.workspace_id,l.document_type,l.document_id,${documentSellerProfileSelect},q.quote_number,q.status AS quote_status,q.currency AS quote_currency,q.language AS quote_language,qv.version_number,qv.subtotal,qv.discount_total,qv.shipping_total,qv.tax_total,qv.grand_total,qv.valid_until,qv.terms_snapshot, i.invoice_number,i.status AS invoice_status,i.currency AS invoice_currency,i.language AS invoice_language,i.issue_date,i.due_date,i.subtotal AS invoice_subtotal,i.discount_total AS invoice_discount_total,i.shipping_total AS invoice_shipping_total,i.tax_total AS invoice_tax_total,i.grand_total AS invoice_grand_total,i.amount_paid,i.amount_due,i.metadata AS invoice_metadata FROM commercial_document_links l JOIN workspaces w ON w.id=l.workspace_id LEFT JOIN quotes q ON l.document_type='QUOTE' AND q.workspace_id=l.workspace_id AND q.id=l.document_id LEFT JOIN quote_versions qv ON qv.workspace_id=q.workspace_id AND qv.id=q.current_version_id LEFT JOIN invoices i ON l.document_type='INVOICE' AND i.workspace_id=l.workspace_id AND i.id=l.document_id WHERE l.token_hash=$1 AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>NOW())`,[hash(token)]);const row=result.rows[0];if(!row)return null;const sellerProfile=isDocumentSellerProfile(row.invoice_metadata?.sellerProfile)?row.invoice_metadata.sellerProfile:{companyName:row.companyName,industry:row.industry,countryRegion:row.countryRegion,taxId:row.taxId,address:row.address,legalForm:row.legalForm,legalRepresentative:row.legalRepresentative,phoneNumber:row.phoneNumber,bankAccountNumber:row.bankAccountNumber,bankOpeningBank:row.bankOpeningBank,bankBranch:row.bankBranch,bankCode:row.bankCode};if(row.document_type==='QUOTE'){const lines=await query(`SELECT product_name_snapshot AS "productName",description_snapshot AS "description",quantity,quantity_unit AS "quantityUnit",unit_price AS "unitPrice",discount,tax,line_total AS "lineTotal" FROM quote_lines WHERE workspace_id=$1 AND quote_version_id=(SELECT current_version_id FROM quotes WHERE workspace_id=$1 AND id=$2) ORDER BY sort_order`,[row.workspace_id,row.document_id]);return {type:'QUOTE',number:row.quote_number,status:row.quote_status,currency:row.quote_currency,language:row.quote_language,versionNumber:row.version_number,validUntil:row.valid_until,subtotal:row.subtotal,discountTotal:row.discount_total,shippingTotal:row.shipping_total,taxTotal:row.tax_total,grandTotal:row.grand_total,terms:row.terms_snapshot,sellerProfile,lines:lines.rows};}const lines=await query(`SELECT product_name_snapshot AS "productName",description_snapshot AS "description",quantity,quantity_unit AS "quantityUnit",unit_price AS "unitPrice",discount,tax,line_total AS "lineTotal" FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 ORDER BY sort_order`,[row.workspace_id,row.document_id]);const snapshot=isDocumentSellerProfile(row.invoice_metadata?.sellerProfile)?row.invoice_metadata.sellerProfile:sellerProfile;return {type:'INVOICE',number:row.invoice_number,status:row.invoice_status,currency:row.invoice_currency,language:row.invoice_language,issueDate:row.issue_date,dueDate:row.due_date,subtotal:row.invoice_subtotal,discountTotal:row.invoice_discount_total,shippingTotal:row.invoice_shipping_total,taxTotal:row.invoice_tax_total,grandTotal:row.invoice_grand_total,amountPaid:row.amount_paid,amountDue:row.amount_due,sellerProfile:snapshot,lines:lines.rows};}

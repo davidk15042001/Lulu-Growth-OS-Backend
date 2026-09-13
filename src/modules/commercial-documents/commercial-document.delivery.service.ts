@@ -7,6 +7,7 @@ import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { sendMail } from '../../utils/mailer.js';
 import { createDraft, listAccounts, sendDraft } from '../email/email.service.js';
 import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 type Delivery = {
   id:string;workspaceId:string;documentType:'QUOTE'|'INVOICE';documentId:string;conversationId:string|null;
@@ -14,7 +15,10 @@ type Delivery = {
 };
 
 let timer:NodeJS.Timeout|undefined;
-let cycleRunning=false;
+let activeCycle:Promise<void>|null=null;
+let stopping=false;
+const activeDeliveries=new Set<Promise<unknown>>();
+const runtimeMonitor=createRuntimeWorkerMonitor('commercial-document-delivery',{staleAfterMs:120_000});
 
 function escapeHtml(value:string){return value.replace(/[&<>'"]/g,(character)=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[character]!));}
 
@@ -65,7 +69,7 @@ async function loadAndClaim(deliveryId:string){
         i.invoice_number AS number,i.document_storage_reference AS "documentPath"`,[deliveryId])).rows[0]??null;
 }
 
-export async function deliverCommercialDocument(deliveryId:string){
+async function performCommercialDocumentDelivery(deliveryId:string){
   const delivery=await loadAndClaim(deliveryId);
   if(!delivery)return {deliveryId,reused:true};
   try{
@@ -102,23 +106,47 @@ export async function deliverCommercialDocument(deliveryId:string){
   }
 }
 
-async function runDeliveryCycle(){
-  if(cycleRunning)return;
-  cycleRunning=true;
-  try{
+export async function deliverCommercialDocument(deliveryId:string){
+  if(stopping)return {deliveryId,reused:true};
+  const task=performCommercialDocumentDelivery(deliveryId);
+  activeDeliveries.add(task);
+  task.then(()=>activeDeliveries.delete(task),()=>activeDeliveries.delete(task));
+  return task;
+}
+
+export function runCommercialDocumentDeliveryCycle():Promise<void>{
+  if(stopping)return Promise.resolve();
+  if(activeCycle)return activeCycle;
+  activeCycle=(async()=>{
     await query(`UPDATE document_deliveries SET status='FAILED',failure_reason='Delivery worker lease expired before completion.',failed_at=NOW(),next_attempt_at=NOW() WHERE status='SENDING' AND next_attempt_at<=NOW() AND attempt_count<8`);
     const rows=(await query<{id:string}>(`SELECT id FROM document_deliveries WHERE status IN ('QUEUED','FAILED') AND attempt_count<8 AND next_attempt_at<=NOW() ORDER BY next_attempt_at,created_at LIMIT 20`)).rows;
-    for(const row of rows){try{await deliverCommercialDocument(row.id);}catch(error){logger.warn({error,deliveryId:row.id},'Commercial document delivery attempt failed');}}
-  }finally{cycleRunning=false;}
+    for(const row of rows){
+      if(stopping)break;
+      try{await deliverCommercialDocument(row.id);}catch(error){logger.warn({error,deliveryId:row.id},'Commercial document delivery attempt failed');}
+    }
+    runtimeMonitor.progress({phase:rows.length?'processed':'idle',processed:rows.length});
+  })()
+    .catch((error:unknown)=>{runtimeMonitor.failed(error);logger.error({error},'Commercial document delivery worker cycle failed');})
+    .finally(()=>{activeCycle=null;});
+  return activeCycle;
 }
 
 export function startCommercialDocumentDeliveryWorker(){
   registerDomainEventHandler({name:'commercial-documents.delivery.v1',eventTypes:[DOMAIN_EVENT_TYPES.QUOTE_SENT,DOMAIN_EVENT_TYPES.INVOICE_SENT],async handle(event){
     const deliveryId=typeof event.payload.deliveryId==='string'?event.payload.deliveryId:null;
-    return deliveryId?deliverCommercialDocument(deliveryId):{ignored:true};
+    return deliveryId&&!stopping?deliverCommercialDocument(deliveryId):{ignored:true,stopping};
   }});
   if(timer)return;
-  timer=setInterval(()=>void runDeliveryCycle(),30_000);timer.unref();void runDeliveryCycle();
+  stopping=false;
+  runtimeMonitor.start();
+  timer=setInterval(()=>void runCommercialDocumentDeliveryCycle(),30_000);timer.unref();void runCommercialDocumentDeliveryCycle();
 }
 
-export function stopCommercialDocumentDeliveryWorker(){if(timer){clearInterval(timer);timer=undefined;}}
+export async function stopCommercialDocumentDeliveryWorker(){
+  stopping=true;
+  if(timer){clearInterval(timer);timer=undefined;}
+  await runtimeMonitor.stopping();
+  if(activeCycle)await activeCycle;
+  while(activeDeliveries.size>0)await Promise.allSettled([...activeDeliveries]);
+  await runtimeMonitor.stopped();
+}

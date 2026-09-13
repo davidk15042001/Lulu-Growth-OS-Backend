@@ -33,6 +33,7 @@ import type { AgentExecutionCommand } from '../src/modules/agents/agent.executio
 import type { DomainEvent } from '../src/events/domain-event.types.js';
 const db=new PGlite();
 const { RESOURCE_CATALOG }=await import('../src/domain/resource-catalog.js');
+const workerLiveness=await import('../src/operations/worker-liveness.js');
 let passwordHash:string;
 const legitimateAdmin='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const roleOnlyAdmin='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -328,6 +329,53 @@ describe('deterministic agent execution authorization',()=>{
     await assert.rejects(agentAuth.executeAuthorizedAgentPacket(f.record,[f.command],async()=>{executed++;}),{code:'AGENT_EXECUTION_FORBIDDEN'});
     assert.equal(executed,1);
   });
+  it('enforces each command domain capability when packets are registered and executed',async()=>{
+    const registration=await agentFixture('finance.create_automation');
+    const replacementOwner=await newUser(true);
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,[registration.context.workspaceId,replacementOwner.id]);
+    await db.query(`UPDATE workspace_members SET role='member' WHERE workspace_id=$1 AND user_id=$2`,[registration.context.workspaceId,registration.user.id]);
+    await assert.rejects(
+      agentAuth.registerAgentActionPacket(registration.context,registration.record,[registration.command]),
+      {code:'AGENT_EXECUTION_FORBIDDEN'},
+    );
+
+    const execution=await agentFixture('finance.create_automation');
+    await agentAuth.registerAgentActionPacket(execution.context,execution.record,[execution.command]);
+    const nextOwner=await newUser(true);
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`,[execution.context.workspaceId,nextOwner.id]);
+    await db.query(`UPDATE workspace_members SET role='member' WHERE workspace_id=$1 AND user_id=$2`,[execution.context.workspaceId,execution.user.id]);
+    let dispatched=0;
+    await assert.rejects(
+      agentAuth.executeAuthorizedAgentPacket(execution.record,[execution.command],async()=>{dispatched+=1;}),
+      {code:'AGENT_EXECUTION_FORBIDDEN'},
+    );
+    assert.equal(dispatched,0);
+  });
+  it('uses the explicit workflow scope instead of silently inheriting owner capabilities',async()=>{
+    const denied=await agentFixture('finance.create_automation');
+    await db.query(`UPDATE agent_runs
+      SET execution_actor_type='WORKFLOW',execution_actor_ref='lulu:test:crm-only',
+          execution_capability_scope='["agents.execute","crm.manage"]'::jsonb
+      WHERE id=$1`,[denied.context.runId]);
+    await assert.rejects(
+      agentAuth.registerAgentActionPacket(denied.context,denied.record,[denied.command]),
+      {code:'AGENT_EXECUTION_FORBIDDEN'},
+    );
+
+    const allowed=await agentFixture('crm.create_followup_task');
+    await db.query(`UPDATE agent_runs
+      SET execution_actor_type='WORKFLOW',execution_actor_ref='lulu:test:crm',
+          execution_capability_scope='["agents.execute","crm.manage"]'::jsonb
+      WHERE id=$1`,[allowed.context.runId]);
+    const packet=await agentAuth.registerAgentActionPacket(allowed.context,allowed.record,[allowed.command]);
+    assert.equal(packet.executionReady,true);
+    const stored=(await db.query<{actorType:string;actorRef:string;requiredCapabilities:string[]}>(
+      `SELECT actor_type AS "actorType",actor_ref AS "actorRef",required_capabilities AS "requiredCapabilities"
+       FROM agent_action_packets WHERE record_id=$1`,[allowed.record.id])).rows[0]!;
+    assert.equal(stored.actorType,'WORKFLOW');
+    assert.equal(stored.actorRef,'lulu:test:crm');
+    assert.deepEqual(stored.requiredCapabilities,['crm.manage']);
+  });
   it('treats an audited admin billing skip as agent activation without granting wallet funds',async()=>{
     const f=await agentFixture();
     await db.query(`DELETE FROM workspace_subscriptions WHERE workspace_id=$1`,[f.context.workspaceId]);
@@ -348,7 +396,7 @@ describe('deterministic agent execution authorization',()=>{
     const f=await agentFixture('google_reviews.reply');
     f.command.budgetAuthority='customer_authorization_required';
     f.record.data={...f.record.data,commands:[f.command],budgetProtected:true};
-    await assert.rejects(agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]),{code:'AGENT_EXECUTION_FORBIDDEN'});
+    await assert.rejects(agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]),{code:'AD_BUDGET_AUTHORIZATION_REQUIRED'});
     assert.equal((await db.query(`SELECT id FROM approval_requests WHERE workspace_id=$1 AND action_type IN ('agent_tool','agent_packet','agent_assistant_action')`,[f.context.workspaceId])).rows.length,0);
   });
   it('executes external packets without approval when the stored run mode is autonomous',async()=>{
@@ -406,12 +454,18 @@ describe('ad spend authorization boundary',()=>{
     assert.equal(overview.topups[0]?.status,'SUCCEEDED');
     assert.equal((await db.query(`SELECT id FROM workspace_ad_spend_ledger WHERE topup_id=$1`,[topup.id])).rows.length,1);
     assert.equal((await db.query(`SELECT id FROM domain_events WHERE idempotency_key=$1`,[`adspend-topup:${topup.id}:funded`])).rows.length,1);
-    await assert.rejects(adSpend.reserveAdSpend({workspaceId:ws.id,amount:101,idempotencyKey:'reserve-over-wallet'}),{code:'AD_SPEND_FUNDS_REQUIRED'});
-    const consumedReservation=await adSpend.reserveAdSpend({workspaceId:ws.id,amount:25,idempotencyKey:'reserve-consume'});
+    await assert.rejects((adSpend.reserveAdSpend as any)({workspaceId:ws.id,amount:1,idempotencyKey:'wallet-alone-is-not-authority'}),{code:'AD_BUDGET_AUTHORIZATION_REQUIRED'});
+    const authorization=await adSpend.createAdBudgetAuthorization({workspaceId:ws.id,userId:user.id,provider:'google-ads',accountId:'123-456-7890',campaignId:'987654321',currency:'CNY',amount:500,startsAt:new Date(Date.now()-60_000).toISOString(),endsAt:new Date(Date.now()+86_400_000).toISOString(),idempotencyKey:'authorize-google-campaign'});
+    assert.equal((await adSpend.createAdBudgetAuthorization({workspaceId:ws.id,userId:user.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY',amount:500,startsAt:authorization.startsAt,endsAt:authorization.endsAt,idempotencyKey:'authorize-google-campaign'})).idempotent,true);
+    await assert.rejects(adSpend.createAdBudgetAuthorization({workspaceId:ws.id,userId:user.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY',amount:500,startsAt:new Date(Date.now()-60_000).toISOString(),endsAt:new Date(Date.now()+86_400_000).toISOString(),idempotencyKey:'second-active-authorization'}),{code:'AD_BUDGET_AUTHORIZATION_ACTIVE'});
+    const scope={workspaceId:ws.id,authorizationId:authorization.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY'};
+    await assert.rejects(adSpend.reserveAdSpend({...scope,amount:101,idempotencyKey:'reserve-over-wallet'}),{code:'AD_SPEND_FUNDS_REQUIRED'});
+    await assert.rejects(adSpend.reserveAdSpend({...scope,campaignId:'different-campaign',amount:1,idempotencyKey:'reserve-wrong-scope'}),{code:'AD_BUDGET_AUTHORIZATION_SCOPE_MISMATCH'});
+    const consumedReservation=await adSpend.reserveAdSpend({...scope,amount:25,idempotencyKey:'reserve-consume'});
     const consumed=await adSpend.consumeAdSpendReservation({workspaceId:ws.id,reservationId:consumedReservation.id,providerOperationId:'google-op-1'});
     assert.equal(consumed.status,'CONSUMED');
     assert.equal((await adSpend.consumeAdSpendReservation({workspaceId:ws.id,reservationId:consumedReservation.id})).idempotent,true);
-    const releasedReservation=await adSpend.reserveAdSpend({workspaceId:ws.id,amount:30,idempotencyKey:'reserve-release'});
+    const releasedReservation=await adSpend.reserveAdSpend({...scope,amount:30,idempotencyKey:'reserve-release'});
     const released=await adSpend.releaseAdSpendReservation({workspaceId:ws.id,reservationId:releasedReservation.id,reason:'provider rejected operation'});
     assert.equal(released.status,'RELEASED');
     assert.equal((await adSpend.releaseAdSpendReservation({workspaceId:ws.id,reservationId:releasedReservation.id,reason:'retry'})).idempotent,true);
@@ -419,6 +473,44 @@ describe('ad spend authorization boundary',()=>{
     assert.equal(finalOverview.wallet.availableAmount,75);
     assert.equal(finalOverview.wallet.reservedAmount,0);
     assert.equal(finalOverview.wallet.spentAmount,25);
+    const listed=(await adSpend.listAdBudgetAuthorizations(ws.id))[0]!;
+    assert.equal(listed.consumedAmount,25);
+    assert.equal(listed.reservedAmount,0);
+    assert.equal(listed.remainingAmount,475);
+    const inFlight=await adSpend.reserveAdSpend({...scope,amount:1,idempotencyKey:'reserve-before-revoke'});
+    await assert.rejects(adSpend.revokeAdBudgetAuthorization({workspaceId:ws.id,authorizationId:authorization.id,userId:user.id}),{code:'AD_BUDGET_AUTHORIZATION_IN_USE'});
+    await adSpend.releaseAdSpendReservation({workspaceId:ws.id,reservationId:inFlight.id,reason:'cancel before revoke'});
+    const revoked=await adSpend.revokeAdBudgetAuthorization({workspaceId:ws.id,authorizationId:authorization.id,userId:user.id,reason:'Customer stopped campaign'});
+    assert.equal(revoked.status,'REVOKED');
+    await assert.rejects(adSpend.reserveAdSpend({...scope,amount:1,idempotencyKey:'reserve-after-revoke'}),{code:'AD_BUDGET_AUTHORIZATION_INACTIVE'});
+
+    const otherWs=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Other ad spend tenant',$1) RETURNING id`,[user.id])).rows[0]!;
+    const otherTopup=await adSpend.createAdSpendTopup({workspaceId:otherWs.id,userId:user.id,netAmount:100,feeAmount:4,totalAmount:104,paymentMethod:'alipaycn'});
+    await adSpend.attachAdSpendProviderPayment({topupId:otherTopup.id,status:'PENDING_PAYMENT',providerPaymentIntentId:'pi-adspend-other-tenant'});
+    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-other-tenant',providerStatus:'SUCCEEDED'});
+    const otherAuthorization=await adSpend.createAdBudgetAuthorization({workspaceId:otherWs.id,userId:user.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY',amount:100,startsAt:new Date(Date.now()-60_000).toISOString(),endsAt:new Date(Date.now()+86_400_000).toISOString(),idempotencyKey:'authorize-other-tenant'});
+    const sameTenantLocalKey=await adSpend.reserveAdSpend({workspaceId:otherWs.id,authorizationId:otherAuthorization.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY',amount:1,idempotencyKey:'reserve-consume'});
+    assert.equal(sameTenantLocalKey.status,'RESERVED');
+    assert.equal((await db.query(`SELECT id FROM workspace_ad_spend_reservations WHERE workspace_id=$1 AND idempotency_key='reserve-consume'`,[ws.id])).rows.length,1);
+    assert.equal((await db.query(`SELECT id FROM workspace_ad_spend_reservations WHERE workspace_id=$1 AND idempotency_key='reserve-consume'`,[otherWs.id])).rows.length,1);
+  });
+});
+
+describe('worker supervisor liveness',()=>{
+  it('requires fresh per-worker progress instead of trusting the supervisor process alone',async()=>{
+    await workerLiveness.startWorkerSupervisorHeartbeat(['agent-runs','omnichannel-ai-reply']);
+    const processOnly=await workerLiveness.getWorkerSupervisorHealth();
+    assert.equal(processOnly.supervisorLive,true);
+    assert.equal(processOnly.live,false);
+    await workerLiveness.markRuntimeWorkerStarted('agent-runs',{required:true,staleAfterMs:60_000});
+    await workerLiveness.markRuntimeWorkerProgress('agent-runs',{phase:'idle'});
+    await workerLiveness.markRuntimeWorkerStarted('omnichannel-ai-reply',{required:true,staleAfterMs:60_000});
+    await workerLiveness.markRuntimeWorkerProgress('omnichannel-ai-reply',{phase:'idle'});
+    const live=await workerLiveness.getWorkerSupervisorHealth();
+    assert.equal(live.live,true);
+    assert.deepEqual(live.registeredWorkers,['agent-runs','omnichannel-ai-reply']);
+    await workerLiveness.stopWorkerSupervisorHeartbeat();
+    assert.equal((await workerLiveness.getWorkerSupervisorHealth()).live,false);
   });
 });
 
@@ -473,6 +565,18 @@ describe('assistant action gateway',()=>{
     assert.equal((await db.query(`SELECT id FROM approval_requests WHERE workspace_id=$1 AND action_type='agent_assistant_action' AND entity_id=$2`,[f.ws.id,completed.id])).rows.length,0);
     assert.equal((await db.query(`SELECT id FROM workspace_records WHERE workspace_id=$1 AND source='ai_assistant'`,[f.ws.id])).rows.length,1);
     await assert.rejects(assistantActions.executeAssistantActionRequest(f.ws.id,f.user.id,f.conversation.id,crypto.randomUUID()),{code:'NOT_FOUND'});
+  });
+
+  it('creates email drafts without silently sending them',async()=>{
+    const f=await assistantFixture();
+    const account=(await db.query<{id:string}>(`INSERT INTO email_accounts(workspace_id,connected_by,provider,email_address,status) VALUES($1,$2,'imap',$3,'connected') RETURNING id`,[f.ws.id,f.user.id,`${crypto.randomUUID()}@test.local`])).rows[0]!;
+    const action=await assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,{type:'email.create_draft',summary:'Prepare a customer reply draft',payload:{accountId:account.id,to:[{address:'customer@example.com'}],subject:'Draft only',bodyText:'Review before an explicit send action.'}});
+    assert.equal(action.status,'succeeded');
+    assert.equal(action.result?.status,'drafted');
+    const draft=(await db.query<{status:string;sentAt:string|null}>(`SELECT status,sent_at AS "sentAt" FROM email_drafts WHERE id=$1`,[action.result?.recordId])).rows[0]!;
+    assert.equal(draft.status,'draft');
+    assert.equal(draft.sentAt,null);
+    assert.equal((await db.query(`SELECT id FROM email_messages WHERE account_id=$1 AND direction='outbound'`,[account.id])).rows.length,0);
   });
 
   it('marks interrupted executions as uncertain instead of replaying an external side effect',async()=>{

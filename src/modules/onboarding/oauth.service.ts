@@ -77,7 +77,7 @@ const providerScopes: Record<OAuthProvider, string[]> = {
   'google-business': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/business.manage'],
   meta: ['ads_read', 'ads_management', 'business_management'],
   facebook: ['pages_show_list', 'pages_read_engagement', 'pages_manage_posts'],
-  instagram: ['instagram_basic', 'instagram_manage_messages', 'pages_show_list', 'pages_read_engagement'],
+  instagram: ['instagram_basic', 'instagram_content_publish', 'instagram_manage_messages', 'pages_show_list', 'pages_read_engagement'],
   whatsapp: ['business_management', 'whatsapp_business_management', 'whatsapp_business_messaging'],
   linkedin: ['openid', 'profile', 'email', 'r_ads_reporting'],
   'tiktok-ads': ['user.info.basic', 'advertiser.read', 'ad.read', 'ad.write'],

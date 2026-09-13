@@ -4,6 +4,7 @@ import { query } from '../db/pool.js';
 import { hasDb } from '../config/env.js';
 import { logger } from '../config/logger.js';
 import { tooManyRequests } from '../utils/response.js';
+import { createRuntimeWorkerMonitor } from '../operations/worker-liveness.js';
 
 type DbRateLimitOptions = {
   keyPrefix: string;
@@ -81,20 +82,39 @@ export async function cleanupRateLimits(olderThanMs = 1000 * 60 * 60 * 24 * 2) {
 }
 
 let cleanupTimer: NodeJS.Timeout | undefined;
+let activeCleanup: Promise<void> | null = null;
+let cleanupStopping = false;
+const rateLimitRuntimeMonitor = createRuntimeWorkerMonitor('rate-limit-cleanup', { staleAfterMs: 7 * 60 * 60 * 1000 });
+
+export function runRateLimitCleanupCycle(): Promise<void> {
+  if (cleanupStopping) return Promise.resolve();
+  if (activeCleanup) return activeCleanup;
+  activeCleanup = cleanupRateLimits()
+    .then(() => rateLimitRuntimeMonitor.progress({ phase: 'idle' }))
+    .catch((error: unknown) => {
+      rateLimitRuntimeMonitor.failed(error);
+      logger.error({ error }, 'Expired rate-limit windows could not be removed');
+    })
+    .finally(() => { activeCleanup = null; });
+  return activeCleanup;
+}
 
 export function startRateLimitCleanupWorker() {
   if (cleanupTimer || !hasDb) return;
-  const run = () => void cleanupRateLimits().catch((error: unknown) => {
-    logger.error({ error }, 'Expired rate-limit windows could not be removed');
-  });
-  cleanupTimer = setInterval(run, 6 * 60 * 60 * 1000);
+  cleanupStopping = false;
+  rateLimitRuntimeMonitor.start();
+  cleanupTimer = setInterval(() => void runRateLimitCleanupCycle(), 6 * 60 * 60 * 1000);
   cleanupTimer.unref();
-  run();
+  void runRateLimitCleanupCycle();
 }
 
-export function stopRateLimitCleanupWorker() {
+export async function stopRateLimitCleanupWorker() {
+  cleanupStopping = true;
   if (cleanupTimer) clearInterval(cleanupTimer);
   cleanupTimer = undefined;
+  await rateLimitRuntimeMonitor.stopping();
+  if (activeCleanup) await activeCleanup;
+  await rateLimitRuntimeMonitor.stopped();
 }
 
 export const otpLimiter = rateLimit({

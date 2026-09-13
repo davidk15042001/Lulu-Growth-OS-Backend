@@ -17,6 +17,8 @@ import {
 } from './agent.page-context.js';
 import { registerAgentTools } from './agent.tools.js';
 import { authorizeAgentTool, authorizeAgentIdentity } from './agent.authorization.js';
+import { agentExecutionCommandTypeSchema } from './agent.execution-command.js';
+import { serviceCapabilityScopeForModule } from './agent.command-capabilities.js';
 import {
   agentRegistry,
   agentRegistrySummary,
@@ -24,6 +26,7 @@ import {
   getAgentDefinition,
   getPageAgentDefinition,
   pageAgentId,
+  selectCollaboratingAgents,
   selectAgentTeam,
   type AgentDefinition,
 } from './agent.ecosystem.js';
@@ -41,11 +44,35 @@ function buildPipeline(
   module: AgentModule,
   capabilities: ReturnType<typeof getAgentCapabilities>,
   page: AgentPageContext | null,
+  teamContext?: AgentTeamContext,
 ) {
   const profile = buildAgentExecutionProfile(page, module);
   const specialistId = page ? pageAgentId(page.pageId) : 'system:market-intelligence-lead';
   const domainLeadId = domainLeadAgentId(module);
   const successMetrics = page?.successMetrics.length ? page.successMetrics : ['verified outcome', 'North Star contribution'];
+  const collaborators = teamContext
+    ? selectCollaboratingAgents({
+        selectedAgentIds: teamContext.selectedAgentIds,
+        primaryAgentId: specialistId,
+        module,
+      })
+    : [];
+  const collaborationSteps = collaborators.map((definition) => ({
+    role: 'strategist' as const,
+    agentId: definition.id,
+    taskType: 'specialist_collaboration',
+    title: `${definition.name}: Contribute specialist context`,
+    instruction: [
+      `Contribute your ${definition.domain} expertise to the current objective.`,
+      `Your responsibility is: ${definition.purpose}`,
+      'Use the live evidence and earlier handoffs, resolve only the part inside your responsibility, and return a concrete handoff for the lead agent.',
+    ].join(' '),
+    successCriteria: [
+      'evidence-linked specialist handoff',
+      'explicit dependencies and risks',
+      ...definition.kpis.slice(0, 2),
+    ],
+  }));
   const steps: Array<{
     role: AgentRole;
     agentId: string;
@@ -79,6 +106,7 @@ function buildPipeline(
         resourceTypes: profile.resourceTypes,
       },
     },
+    ...collaborationSteps,
     ...(capabilities.recommend
       ? [{
           role: 'strategist' as const,
@@ -87,6 +115,22 @@ function buildPipeline(
           title: page ? `${page.pageLabel}: Design the next moves` : 'Design the next moves',
           instruction: profile.strategistInstruction,
           successCriteria: [...successMetrics],
+        }]
+      : []),
+    ...(capabilities.act && profile.executorToolName && profile.executorInstruction && profile.actionResourceType
+      ? [{
+          role: 'strategist' as const,
+          agentId: specialistId,
+          taskType: 'materialize_execution_commands',
+          title: page ? `${page.pageLabel}: Materialize executable work` : 'Materialize executable work',
+          instruction: [
+            'Translate the evidence-backed plan into zero to three concrete, registered execution commands.',
+            `The only permitted command types are: ${agentExecutionCommandTypeSchema.options.join(', ')}.`,
+            'Use canonical entity, account, thread, campaign, site, job and recipient identifiers only when those exact values appear in live evidence.',
+            'Do not guess provider identifiers, recipients, monetary amounts, customer intent or publishing targets.',
+            'If a safe action cannot be fully materialized from the available evidence, return an empty commands array and explain the missing evidence.',
+          ].join(' '),
+          successCriteria: ['registered command types only', 'evidence-backed payload values', 'zero invented identifiers or monetary amounts'],
         }]
       : []),
     ...(capabilities.act && profile.executorToolName
@@ -124,10 +168,16 @@ function buildPipeline(
     {
       role: 'reviewer',
       agentId: 'system:outcome-auditor',
-      taskType: 'verify_outcome',
-      title: page ? `${page.pageLabel}: Verify evidence and outcomes` : 'Verify evidence and outcomes',
-      instruction: profile.reviewerInstruction,
-      successCriteria: ['factual support', 'policy compliance', ...successMetrics],
+      taskType: capabilities.act && profile.executorToolName ? 'verify_execution_handoff' : 'verify_outcome',
+      title: capabilities.act && profile.executorToolName
+        ? page ? `${page.pageLabel}: Verify execution handoff` : 'Verify execution handoff'
+        : page ? `${page.pageLabel}: Verify evidence and outcomes` : 'Verify evidence and outcomes',
+      instruction: capabilities.act && profile.executorToolName
+        ? 'Verify that every proposed command was supported by evidence, authorized by server policy, and either safely queued or explicitly declined. Do not claim that an asynchronous provider side effect has completed; that outcome is verified by the downstream work item and provider result.'
+        : profile.reviewerInstruction,
+      successCriteria: capabilities.act && profile.executorToolName
+        ? ['factual support', 'policy compliance', 'truthful queued-or-no-action status']
+        : ['factual support', 'policy compliance', ...successMetrics],
     },
   ];
   return { profile, steps };
@@ -212,11 +262,63 @@ function extractEntitiesFromOutputs(outputs: unknown[]) {
   return entities.slice(0, 24);
 }
 
-type AgentTeamContext = {
+export type AgentTriggerContext = {
+  eventId: string;
+  eventType: string;
+  aggregateType: string;
+  aggregateId: string | null;
+  occurredAt: string;
+  correlationId: string | null;
+};
+
+export type AgentTeamContext = {
   cycleId: string;
   selectedAgentIds: string[];
   selectionReason: string[];
+  trigger?: AgentTriggerContext;
 };
+
+function normalizeTeamContext(value: unknown): AgentTeamContext | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const candidate = value as Record<string, unknown>;
+  const selectedAgentIds = Array.isArray(candidate.selectedAgentIds)
+    ? candidate.selectedAgentIds.filter((id): id is string => typeof id === 'string' && Boolean(getAgentDefinition(id)))
+    : [];
+  if (typeof candidate.cycleId !== 'string' || selectedAgentIds.length === 0) return undefined;
+  const triggerCandidate = candidate.trigger && typeof candidate.trigger === 'object'
+    ? candidate.trigger as Record<string, unknown>
+    : null;
+  const trigger = triggerCandidate
+    && typeof triggerCandidate.eventId === 'string'
+    && triggerCandidate.eventId.trim()
+    && typeof triggerCandidate.eventType === 'string'
+    && triggerCandidate.eventType.trim()
+    && typeof triggerCandidate.aggregateType === 'string'
+    && triggerCandidate.aggregateType.trim()
+    && typeof triggerCandidate.occurredAt === 'string'
+    && triggerCandidate.occurredAt.trim()
+    ? {
+        eventId: triggerCandidate.eventId.trim().slice(0, 200),
+        eventType: triggerCandidate.eventType.trim().slice(0, 200),
+        aggregateType: triggerCandidate.aggregateType.trim().slice(0, 200),
+        aggregateId: typeof triggerCandidate.aggregateId === 'string'
+          ? triggerCandidate.aggregateId.trim().slice(0, 200) || null
+          : null,
+        occurredAt: triggerCandidate.occurredAt.trim().slice(0, 100),
+        correlationId: typeof triggerCandidate.correlationId === 'string'
+          ? triggerCandidate.correlationId.trim().slice(0, 200) || null
+          : null,
+      }
+    : undefined;
+  return {
+    cycleId: candidate.cycleId,
+    selectedAgentIds: [...new Set(selectedAgentIds)],
+    selectionReason: Array.isArray(candidate.selectionReason)
+      ? candidate.selectionReason.filter((reason): reason is string => typeof reason === 'string')
+      : [],
+    ...(trigger ? { trigger } : {}),
+  };
+}
 
 function compactAgentDefinition(definition: AgentDefinition) {
   return {
@@ -241,7 +343,7 @@ function buildInitialPlan(
     ? getPageAgentDefinition(page.pageId)
     : getAgentDefinition('system:executive-orchestrator');
   return {
-    version: 4,
+    version: 5,
     module,
     capabilities,
     executionMode,
@@ -361,7 +463,9 @@ async function planRun(
 ) {
   await repo.updateRun(runId, { status: 'planning', started_at: new Date() });
   await event({ runId, workspaceId, eventType: 'run.planning_started', agentRole: 'planner', payload: { goal, pageId: page?.pageId ?? null } });
-  const { profile, steps: selectedPipeline } = buildPipeline(goal, executionMode, module, capabilities, page);
+  const existingRun = await repo.getRun(workspaceId, runId);
+  const teamContext = normalizeTeamContext(existingRun?.plan?.team);
+  const { profile, steps: selectedPipeline } = buildPipeline(goal, executionMode, module, capabilities, page, teamContext);
   const steps = await repo.createSteps(selectedPipeline.map((step, index) => ({
     runId,
     workspaceId,
@@ -378,7 +482,7 @@ async function planRun(
   await repo.updateRun(runId, {
     status: 'running',
     plan: {
-      version: 4,
+      version: 5,
       module,
       capabilities,
       executionMode,
@@ -413,6 +517,9 @@ async function planRun(
       actionResourceType: profile.actionResourceType,
       resourceTypes: profile.resourceTypes,
       selectedAgentIds: [...new Set(selectedPipeline.map((item) => item.agentId))],
+      collaboratingAgentIds: selectedPipeline
+        .filter((item) => item.taskType === 'specialist_collaboration')
+        .map((item) => item.agentId),
     },
   });
   return steps;
@@ -450,8 +557,11 @@ async function executeReasoningStep(input: {
   const definition = input.step.agentId ? getAgentDefinition(input.step.agentId) : null;
   const reviewer = input.step.agentRole === 'reviewer';
   const preExecutionReview = input.step.taskType === 'pre_execution_policy_gate';
+  const commandMaterialization = input.step.taskType === 'materialize_execution_commands';
   const outputShape = reviewer
     ? '{"verdict":"verified"|"failed","summary":string,"evidence":string[],"issues":string[],"nextAction":string|null}'
+    : commandMaterialization
+      ? '{"summary":string,"commands":[{"type":string,"summary":string,"targetSystem":string,"provider":string|null,"riskLevel":"low"|"medium"|"high","approvalPolicy":"allow"|"budget_required","budgetAuthority":"none"|"prepaid_ad_spend_wallet"|"customer_authorization_required","targetEntityType":string|null,"targetEntityId":string|null,"payload":object,"idempotencyKey":string}],"noActionReason":string|null}'
     : '{"summary":string,"observations":string[],"decisions":string[],"nextActions":string[],"confidence":"high"|"medium"|"low"}';
   const context = JSON.stringify(input.priorOutputs).slice(0, 40_000);
   const response = await withTimeout(getOpenAIResponsesClient().create({
@@ -469,13 +579,20 @@ async function executeReasoningStep(input: {
         ? preExecutionReview
           ? 'Act as an independent pre-execution gate. Return verdict "verified" only when the proposed next action is supported by evidence and remains inside tenant, tool, privacy, safety and prepaid-budget policy. Otherwise return "failed" with concrete issues and a safe alternative.'
           : 'Act as an independent outcome gate. Return verdict "verified" only when the evidence demonstrates the success criteria and authorized execution. Otherwise return "failed" with concrete issues and a safe next action.'
-        : 'Produce a bounded, evidence-aware contribution that the next agent can consume.',
+        : commandMaterialization
+          ? 'Materialize executable commands only from the supplied evidence. An empty command list is the correct result when required identifiers, authorization, recipient intent or payload data is missing.'
+          : 'Produce a bounded, evidence-aware contribution that the next agent can consume.',
       `Return only valid JSON matching ${outputShape}.`,
     ].filter(Boolean).join(' '),
     input: [{ role: 'user', content: context || 'No prior task output is available yet.' }],
     max_output_tokens: reviewer ? 1800 : 2400,
     store: false,
-  }, { billing: { workspaceId: input.workspaceId, userId: input.userId === 'system' ? null : input.userId } }), TOOL_TIMEOUT_MS, 'AGENT_REASONING_TIMEOUT');
+  }, { billing: {
+    workspaceId: input.workspaceId,
+    userId: input.userId === 'system' ? null : input.userId,
+    operation: 'agent.reasoning',
+    operationId: `${input.runId}:${input.step.id}:reasoning`,
+  } }), TOOL_TIMEOUT_MS, 'AGENT_REASONING_TIMEOUT');
   const result = parseReasoningOutput(response.output_text ?? '');
   if (reviewer && result.verdict !== 'verified') {
     const issue = Array.isArray(result.issues) ? result.issues.filter((value): value is string => typeof value === 'string').slice(0, 3).join('; ') : '';
@@ -487,6 +604,24 @@ async function executeReasoningStep(input: {
     taskType: input.step.taskType,
     result,
   };
+}
+
+function plannedExecutionCommands(priorOutputs: Record<string, unknown>[]) {
+  for (const entry of [...priorOutputs].reverse()) {
+    const output = entry.output;
+    if (!output || typeof output !== 'object') continue;
+    const reasoning = output as Record<string, unknown>;
+    if (reasoning.taskType !== 'materialize_execution_commands') continue;
+    const result = reasoning.result;
+    if (!result || typeof result !== 'object') return { found: true, commands: [], noActionReason: 'The command planner returned no usable result.' };
+    const packet = result as Record<string, unknown>;
+    return {
+      found: true,
+      commands: Array.isArray(packet.commands) ? packet.commands : [],
+      noActionReason: typeof packet.noActionReason === 'string' ? packet.noActionReason : null,
+    };
+  }
+  return { found: false, commands: [] as unknown[], noActionReason: null as string | null };
 }
 
 async function executeStep(
@@ -513,18 +648,25 @@ async function executeStep(
     const identity = { runId, workspaceId, userId, stepId: step.id };
     const toolAuthorization = await authorizeAgentTool(identity, step.toolName);
     const policyDecision = toolAuthorization.decision;
+    const planned = step.toolName === 'page_action_writeback'
+      ? plannedExecutionCommands(priorOutputs)
+      : { found: false, commands: [] as unknown[], noActionReason: null as string | null };
     const effectiveToolInput = {
       ...toolInput,
       policyDecision,
       executionMode: autonomous ? 'autonomous' : 'analysis_only',
       delegatedContext: priorOutputs.slice(-4),
+      ...(planned.found ? { commands: planned.commands, noActionReason: planned.noActionReason } : {}),
     };
     if (tool && policyDecision === 'require_budget') throw new AppError(409, 'CUSTOMER_BUDGET_REQUIRED', 'Fund the prepaid ad-spend wallet before this action can run.');
     const toolOutput = tool
       ? await withTimeout(tool.execute(effectiveToolInput, identity), TOOL_TIMEOUT_MS, 'AGENT_TOOL_TIMEOUT')
       : await executeReasoningStep({ runId, workspaceId, userId, step, priorOutputs });
-    await repo.updateStep(step.id, { status: 'completed', verification_status: 'verified', tool_output: toolOutput, result: toolOutput, finished_at: new Date() });
-    await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: { ...toolOutput, agentId: step.agentId, verificationStatus: 'verified' } });
+    const outputRecord = toolOutput as Record<string, unknown>;
+    const asyncExecutionQueued = outputRecord.snapshotType === 'page_action_writeback' && outputRecord.executionReady === true;
+    const verificationStatus = asyncExecutionQueued ? 'pending' : 'verified';
+    await repo.updateStep(step.id, { status: 'completed', verification_status: verificationStatus, tool_output: toolOutput, result: toolOutput, finished_at: new Date() });
+    await event({ runId, stepId: step.id, workspaceId, eventType: 'step.completed', agentRole: step.agentRole, payload: { ...toolOutput, agentId: step.agentId, verificationStatus } });
     return { waiting: false, output: toolOutput };
   } catch (error) {
     const appError = error instanceof AppError ? error : new AppError(500, 'AGENT_STEP_FAILED', error instanceof Error ? error.message : 'Agent step failed');
@@ -548,7 +690,9 @@ async function executeRun(
   activeRuns.add(runId);
   const deadline = Date.now() + MAX_RUN_DURATION_MS;
   try {
-    const { profile, steps: pipelineSteps } = buildPipeline(goal, executionMode, module, capabilities, page);
+    const persistedRun = await repo.getRun(workspaceId, runId);
+    const teamContext = normalizeTeamContext(persistedRun?.plan?.team);
+    const { profile, steps: pipelineSteps } = buildPipeline(goal, executionMode, module, capabilities, page, teamContext);
     let steps = await repo.listSteps(workspaceId, runId);
     if (initial && steps.length === 0) steps = await planRun(runId, workspaceId, goal, executionMode, module, capabilities, page);
     const outputs: Record<string, unknown>[] = [];
@@ -560,9 +704,14 @@ async function executeRun(
         continue;
       }
       const result = await executeStep(runId, workspaceId, userId, step, executionMode === 'autonomous', outputs);
+      // A cancellation may be requested while an external tool is in flight.
+      // Record the tool result truthfully, then stop before delegating any more
+      // work or synthesizing a successful run outcome.
+      await assertNotCancelled(workspaceId, runId);
       if (result.waiting) return;
       outputs.push({ stepId: step.id, output: result.output });
     }
+    await assertNotCancelled(workspaceId, runId);
     let finalResult: Record<string, unknown> = {
       goal,
       outputs,
@@ -580,10 +729,18 @@ async function executeRun(
     if (isAiGenerationConfigured()) {
       if (!steps[0]) throw new AppError(403,'AGENT_EXECUTION_FORBIDDEN','Agent synthesis requires a persisted step identity');
       await authorizeAgentIdentity({workspaceId,userId,runId,stepId:steps[0].id});
-      const response = await withTimeout(getOpenAIResponsesClient().create({ model: configuredModel(), instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: { workspaceId, userId: userId === 'system' ? null : userId } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
+      const response = await withTimeout(getOpenAIResponsesClient().create({ model: configuredModel(), instructions: 'Synthesize the coordinated agent outputs into a concise page-aware business result. Return plain text.', input: [{ role: 'user', content: JSON.stringify(finalResult) }], store: false }, { billing: {
+        workspaceId,
+        userId: userId === 'system' ? null : userId,
+        operation: 'agent.synthesis',
+        operationId: `${runId}:synthesis`,
+      } }), TOOL_TIMEOUT_MS, 'AGENT_SYNTHESIS_TIMEOUT');
       finalResult = { ...finalResult, summary: response.output_text?.trim() ?? null };
+      await assertNotCancelled(workspaceId, runId);
     }
+    await assertNotCancelled(workspaceId, runId);
     await persistPageSnapshot(runId, workspaceId, goal, page, finalResult);
+    await assertNotCancelled(workspaceId, runId);
     await repo.finalizeRun({
       runId,
       workspaceId,
@@ -629,7 +786,11 @@ export async function executePersistedAgentRun(run: AgentRun) {
   );
 }
 
-async function calculateWorkspaceTeam(workspaceId: string) {
+async function calculateWorkspaceTeam(
+  workspaceId: string,
+  preferredModules: readonly AgentModule[] = [],
+  preferredPageIds: readonly string[] = [],
+) {
   const [platforms, resourceTypes, activity] = await Promise.all([
     onboardingRepo.listPlatforms(workspaceId),
     repo.listWorkspaceResourceTypes(workspaceId),
@@ -647,14 +808,21 @@ async function calculateWorkspaceTeam(workspaceId: string) {
       ]).filter(Boolean),
       resourceTypes: resourceTypes.map((entry) => entry.resourceType),
       activity,
+      preferredModules,
+      preferredPageIds,
     }),
     connectedPlatforms,
     resourceTypes,
   };
 }
 
-export async function prepareAutomaticAgentTeam(workspaceId: string, triggerType: 'scheduled' | 'reactive' | 'manual' | 'recovery' = 'scheduled') {
-  const calculated = await calculateWorkspaceTeam(workspaceId);
+export async function prepareAutomaticAgentTeam(
+  workspaceId: string,
+  triggerType: 'scheduled' | 'reactive' | 'manual' | 'recovery' = 'scheduled',
+  preferredModules: readonly AgentModule[] = [],
+  preferredPageIds: readonly string[] = [],
+) {
+  const calculated = await calculateWorkspaceTeam(workspaceId, preferredModules, preferredPageIds);
   const cycle = await repo.createAgentTeamCycle({
     workspaceId,
     triggerType,
@@ -735,7 +903,7 @@ export async function startRun(
   dedupeMinutes?: number,
 ) {
   const subscription = await repo.getWorkspacePlan(workspaceId);
-  if (subscription.status !== 'active' && subscription.status !== 'trialing') throw new AppError(403, 'AGENT_PLAN_INACTIVE', 'An active workspace subscription is required for agent analysis');
+  if (!['active', 'trialing', 'billing_skipped'].includes(subscription.status)) throw new AppError(403, 'AGENT_PLAN_INACTIVE', 'An active workspace subscription or audited billing skip is required for agent analysis');
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
   if (pageInput && !page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');
   const resolvedModule = resolveAgentModule(isAgentModule(module) ? module : 'general', page);
@@ -778,13 +946,32 @@ export async function startAutomaticRun(
   const permanentGoal = page ? buildPageAgentGoal(page) : buildGlobalAgentGoal();
   const goal = withExecutionScope(permanentGoal, requestedGoal);
   const capabilities = getAgentCapabilities(subscription.plan_key, resolvedModule);
-  if ((subscription.status !== 'active' && subscription.status !== 'trialing') || !capabilities.automatic || !capabilities.analyze) return null;
+  if (!['active', 'trialing', 'billing_skipped'].includes(subscription.status) || !capabilities.automatic || !capabilities.analyze) return null;
   const automaticCapabilities = { ...capabilities };
   const executionMode = automaticCapabilities.autonomous ? 'autonomous' : 'analysis_only';
   const initialPlan = buildInitialPlan(resolvedModule, automaticCapabilities, executionMode, page, teamContext);
+  const executionIdentity = {
+    actorType: 'WORKFLOW' as const,
+    actorRef: teamContext?.trigger?.eventId
+      ? `lulu:reactive:${teamContext.trigger.eventId}:${page?.pageId ?? resolvedModule}`
+      : `lulu:automatic:${resolvedModule}:${page?.pageId ?? 'global'}`,
+    capabilityScope: serviceCapabilityScopeForModule(resolvedModule),
+  };
   let run;
   let created = true;
-  if (page && dedupeMinutes) {
+  if (page && teamContext?.trigger?.eventId) {
+    const result = await repo.createOrReuseTriggeredPageRun({
+      workspaceId,
+      userId: actorUserId ?? null,
+      goal,
+      pageId: page.pageId,
+      sourceEventId: teamContext.trigger.eventId,
+      initialPlan,
+      executionIdentity,
+    });
+    run = result.run;
+    created = result.created;
+  } else if (page && dedupeMinutes) {
     const result = await repo.createOrReusePageRun({
       workspaceId,
       userId: actorUserId ?? null,
@@ -792,11 +979,12 @@ export async function startAutomaticRun(
       pageId: page.pageId,
       dedupeMinutes,
       initialPlan,
+      executionIdentity,
     });
     run = result.run;
     created = result.created;
   } else {
-    run = await repo.createRun(workspaceId, actorUserId ?? null, goal, page ? initialPlan : null);
+    run = await repo.createRun(workspaceId, actorUserId ?? null, goal, page ? initialPlan : null, undefined, executionIdentity);
   }
   if (!run) throw new AppError(500, 'AGENT_AUTOMATIC_RUN_CREATION_FAILED', 'The automatic analysis run could not be created');
   if (created && teamContext?.cycleId) {
@@ -908,7 +1096,7 @@ export async function cancelRun(workspaceId: string, runId: string, userId: stri
   const run = await repo.getRun(workspaceId, runId);
   if (!run) throw notFoundError('Agent run not found');
   if (['completed', 'failed', 'cancelled'].includes(run.status)) throw conflictError('This agent run is already finished');
-  await repo.finalizeRun({
+  const cancelled = await repo.finalizeRun({
     runId,
     workspaceId,
     status: 'cancelled',
@@ -916,6 +1104,9 @@ export async function cancelRun(workspaceId: string, runId: string, userId: stri
     eventPayload: { code: 'AGENT_RUN_CANCELLED', message: 'Cancelled by workspace user' },
     actorId: userId,
   });
+  if (cancelled.status !== 'cancelled') {
+    throw conflictError('This agent run finished before cancellation could be applied');
+  }
   return repo.getRun(workspaceId, runId);
 }
 export { automaticPageProfiles, buildPageAgentGoal };

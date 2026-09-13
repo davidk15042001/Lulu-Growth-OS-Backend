@@ -31,7 +31,7 @@ describe('OpenAI Responses adapter', () => {
   it('builds bounded instructions with company and prepaid-budget context', () => {
     const instructions = buildAssistantInstructions(context);
     assert.match(instructions, /Acme GmbH/);
-    assert.match(instructions, /only customer authorization boundary is adding prepaid paid-media budget/);
+    assert.match(instructions, /active customer authorization for the exact provider account/);
     assert.match(instructions, /advisory/);
   });
 

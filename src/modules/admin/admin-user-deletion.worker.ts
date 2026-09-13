@@ -1,18 +1,27 @@
 import { randomUUID } from 'node:crypto';
 import { logger } from '../../config/logger.js';
 import * as repo from './admin.repo.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 const workerId = `admin-user-deletion-${process.pid}-${randomUUID()}`;
 const pollIntervalMs = 5_000;
+const runtimeMonitor = createRuntimeWorkerMonitor('admin-user-deletion', { staleAfterMs: 60_000 });
 let timer: NodeJS.Timeout | null = null;
 let activeCycle: Promise<void> | null = null;
 let stopping = false;
 
 async function processJob(job: NonNullable<Awaited<ReturnType<typeof repo.claimNextUserDeletionJob>>>) {
+  const pendingHeartbeats = new Set<Promise<unknown>>();
   const heartbeat = setInterval(() => {
-    void repo.heartbeatUserDeletionJob(job.id, workerId).catch((error: unknown) => {
-      logger.warn({ error, jobId: job.id }, 'Could not refresh account deletion lease');
-    });
+    const task = repo.heartbeatUserDeletionJob(job.id, workerId);
+    pendingHeartbeats.add(task);
+    task.then(
+      () => pendingHeartbeats.delete(task),
+      (error: unknown) => {
+        pendingHeartbeats.delete(task);
+        logger.warn({ error, jobId: job.id }, 'Could not refresh account deletion lease');
+      },
+    );
   }, 30_000);
   heartbeat.unref();
   try {
@@ -30,19 +39,26 @@ async function processJob(job: NonNullable<Awaited<ReturnType<typeof repo.claimN
     logger.error({ error, jobId: job.id, targetUserId: job.targetUserId }, 'Admin account deletion job failed');
   } finally {
     clearInterval(heartbeat);
+    if (pendingHeartbeats.size > 0) await Promise.allSettled([...pendingHeartbeats]);
   }
 }
 
 export function runAdminUserDeletionWorkerCycle(): Promise<void> {
+  if (stopping) return Promise.resolve();
   if (activeCycle) return activeCycle;
   activeCycle = (async () => {
+    let processed = 0;
     while (!stopping) {
       const job = await repo.claimNextUserDeletionJob(workerId);
-      if (!job) return;
+      if (!job) {
+        runtimeMonitor.progress({ phase: processed ? 'processed' : 'idle', processed });
+        return;
+      }
       await processJob(job);
+      processed += 1;
     }
   })()
-    .catch((error: unknown) => logger.error({ error }, 'Admin account deletion worker cycle failed'))
+    .catch((error: unknown) => { runtimeMonitor.failed(error); logger.error({ error }, 'Admin account deletion worker cycle failed'); })
     .finally(() => { activeCycle = null; });
   return activeCycle;
 }
@@ -54,14 +70,18 @@ export function requestAdminUserDeletionWorkerRun() {
 export function startAdminUserDeletionWorker() {
   if (timer) return;
   stopping = false;
+  runtimeMonitor.start({ workerId });
   timer = setInterval(requestAdminUserDeletionWorkerRun, pollIntervalMs);
   timer.unref();
   requestAdminUserDeletionWorkerRun();
   logger.info({ workerId, pollIntervalMs }, 'Admin account deletion worker started');
 }
 
-export function stopAdminUserDeletionWorker() {
+export async function stopAdminUserDeletionWorker() {
   stopping = true;
   if (timer) clearInterval(timer);
   timer = null;
+  await runtimeMonitor.stopping();
+  if (activeCycle) await activeCycle;
+  await runtimeMonitor.stopped();
 }

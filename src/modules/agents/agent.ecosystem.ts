@@ -3,7 +3,9 @@ import { buildAgentExecutionProfile, modulesForResourceType } from './agent.doma
 import type { AgentModule } from './agent.capabilities.js';
 import {
   GLOBAL_BRAND_MISSION,
+  LEGACY_AUTOMATIC_PAGE_IDS,
   resolveAgentModule,
+  sanitizeAgentPageContext,
   type AgentPageContext,
 } from './agent.page-context.js';
 import { canonicalAgentPageProfiles } from './agent.registry.generated.js';
@@ -102,18 +104,9 @@ const systemAgentDefinitions: readonly AgentDefinition[] = Object.freeze([
 ]);
 
 function pageContext(profile: (typeof canonicalAgentPageProfiles)[number]): AgentPageContext {
-  return {
-    pageId: profile.pageId,
-    pageLabel: profile.pageLabel,
-    sectionLabel: profile.sectionLabel,
-    agentName: profile.agentName,
-    objective: profile.objective,
-    autonomy: profile.autonomy,
-    jobs: [...profile.jobs],
-    integrations: [...profile.integrations],
-    successMetrics: [...profile.successMetrics],
-    approvalGates: [],
-  };
+  const normalized = sanitizeAgentPageContext({ pageId: profile.pageId });
+  if (!normalized) throw new Error(`Unknown canonical agent page: ${profile.pageId}`);
+  return normalized;
 }
 
 export function pageAgentId(pageId: string) {
@@ -127,22 +120,22 @@ const pageAgentDefinitions: readonly AgentDefinition[] = Object.freeze(canonical
   return Object.freeze({
     id: pageAgentId(profile.pageId),
     version: '1.0.0',
-    name: profile.agentName,
+    name: page.agentName ?? page.pageLabel,
     tier: 'specialist' as const,
     module,
-    domain: profile.sectionLabel,
-    purpose: profile.objective,
-    capabilities: Object.freeze([...profile.jobs]),
+    domain: page.sectionLabel,
+    purpose: page.objective ?? profile.objective,
+    capabilities: Object.freeze([...page.jobs]),
     requiredTools: Object.freeze([execution.analystToolName, ...(execution.executorToolName ? [execution.executorToolName] : [])]),
     activationTriggers: Object.freeze(['scheduled_cycle', 'relevant_record_event', 'integration_connected', 'recovery']),
     permissions: Object.freeze(['read_workspace_state', ...(execution.executorToolName ? ['write_bounded_action_packet'] : [])]),
     spendPermission: module === 'ads' ? 'prepaid_ad_spend_only' as const : 'none' as const,
-    kpis: Object.freeze([...profile.successMetrics]),
+    kpis: Object.freeze([...page.successMetrics]),
     languages: Object.freeze(['workspace_language', 'target_market_languages']),
     confidenceRequirement: 'medium' as const,
     timeoutMs: 10 * 60 * 1000,
     maxRetries: 3,
-    evaluationPolicy: `Verify evidence and outcomes against: ${profile.successMetrics.join(', ') || 'the permanent North Star'}.`,
+    evaluationPolicy: `Verify evidence and outcomes against: ${page.successMetrics.join(', ') || 'the permanent North Star'}.`,
     recoveryBehavior: 'Retry transient failures, then route the task to the domain lead or a stronger specialist without requesting routine human approval.',
     pageId: profile.pageId,
   });
@@ -194,6 +187,54 @@ export function domainLeadAgentId(module: AgentModule) {
   return domainLeadByModule[module];
 }
 
+const collaborationModules: Readonly<Record<AgentModule, readonly AgentModule[]>> = {
+  general: ['dashboard', 'intelligence'],
+  dashboard: ['intelligence', 'marketing', 'sales', 'finance'],
+  intelligence: ['marketing', 'sales', 'reputation'],
+  finance: ['sales', 'commerce', 'crm'],
+  sales: ['crm', 'email', 'calendar', 'commerce', 'finance'],
+  crm: ['sales', 'email', 'calendar', 'commerce'],
+  ai: ['intelligence', 'dashboard'],
+  email: ['crm', 'sales', 'calendar', 'reputation'],
+  calendar: ['crm', 'sales', 'email'],
+  marketing: ['ads', 'website', 'reputation', 'seo', 'geo', 'aeo', 'sales'],
+  ads: ['marketing', 'sales', 'website', 'intelligence'],
+  website: ['marketing', 'commerce', 'seo', 'geo', 'aeo', 'reputation'],
+  commerce: ['website', 'sales', 'crm', 'finance', 'marketing'],
+  reputation: ['marketing', 'website', 'crm', 'email'],
+  settings: ['ai', 'dashboard'],
+  seo: ['website', 'marketing', 'geo', 'aeo'],
+  geo: ['website', 'marketing', 'seo', 'aeo'],
+  aeo: ['website', 'marketing', 'seo', 'geo'],
+};
+
+/** Resolve a small set of real specialists from the persisted team selection. */
+export function selectCollaboratingAgents(input: {
+  selectedAgentIds: readonly string[];
+  primaryAgentId: string;
+  module: AgentModule;
+  maxCollaborators?: number;
+}) {
+  const maxCollaborators = Math.max(0, Math.min(4, input.maxCollaborators ?? 2));
+  const related = collaborationModules[input.module];
+  return [...new Set(input.selectedAgentIds)]
+    .map((id) => getAgentDefinition(id))
+    .filter((definition): definition is AgentDefinition => Boolean(definition))
+    .filter((definition) => definition.tier === 'specialist' && definition.id !== input.primaryAgentId)
+    .map((definition) => ({
+      definition,
+      relevance: definition.module === input.module
+        ? 1_000
+        : related.includes(definition.module)
+          ? 500 - related.indexOf(definition.module)
+          : 0,
+    }))
+    .filter((entry) => entry.relevance > 0)
+    .sort((left, right) => right.relevance - left.relevance || left.definition.id.localeCompare(right.definition.id))
+    .slice(0, maxCollaborators)
+    .map((entry) => entry.definition);
+}
+
 function normalized(value: string) {
   return value.trim().toLowerCase();
 }
@@ -223,6 +264,8 @@ export function selectAgentTeam(input: {
   connectedSignals: readonly string[];
   resourceTypes: readonly string[];
   activity: readonly AgentRoutingSignal[];
+  preferredModules?: readonly AgentModule[];
+  preferredPageIds?: readonly string[];
   now?: Date;
   maxSpecialists?: number;
 }) {
@@ -230,12 +273,16 @@ export function selectAgentTeam(input: {
   const maxSpecialists = Math.max(1, Math.min(16, input.maxSpecialists ?? MAX_AUTOMATIC_SPECIALISTS));
   const activityByPage = new Map(input.activity.map((signal) => [signal.pageId, signal]));
   const modulesWithData = activeModules(input.resourceTypes);
+  const preferredModules = new Set(input.preferredModules ?? []);
+  const preferredPageIds = new Set(input.preferredPageIds ?? []);
 
   const candidates = pageAgentDefinitions.map((definition): SelectedAgent & { eligible: boolean } => {
     const signal = activityByPage.get(definition.pageId!);
     const integrationRelevant = connectedMatch(definition, input.connectedSignals);
     const hasDomainData = modulesWithData.has(definition.module);
     const core = CORE_MODULES.has(definition.module);
+    const eventRelevant = preferredModules.has(definition.module);
+    const eventSpecific = preferredPageIds.has(definition.pageId ?? '');
     const failed = signal?.lastStatus === 'failed';
     const neverRun = !signal?.lastRunAt;
     const ageHours = signal?.lastRunAt
@@ -245,6 +292,8 @@ export function selectAgentTeam(input: {
     const reasons: string[] = [];
     let score = core ? 42 : 15;
     if (core) reasons.push('core North Star capability');
+    if (eventRelevant) { score += 80; reasons.push('source event capability match'); }
+    if (eventSpecific) { score += 120; reasons.push('source event responsibility match'); }
     if (integrationRelevant) { score += 32; reasons.push('connected system match'); }
     if (hasDomainData) { score += 28; reasons.push('live domain data'); }
     if (failed) { score += 24; reasons.push('recovery required'); }
@@ -255,7 +304,9 @@ export function selectAgentTeam(input: {
     if (performance < 35) reasons.push('performance penalty applied');
     score -= Math.min(20, (signal?.selectionCount ?? 0) * 2);
     if ((signal?.selectionCount ?? 0) > 0) reasons.push('rotation pressure applied');
-    return { definition, score, reasons, eligible: core || integrationRelevant || hasDomainData || failed };
+    const operationalPage = !LEGACY_AUTOMATIC_PAGE_IDS.has(definition.pageId ?? '');
+    if (!operationalPage) reasons.push('legacy route alias excluded from scheduling');
+    return { definition, score, reasons, eligible: operationalPage && (core || eventRelevant || eventSpecific || integrationRelevant || hasDomainData || failed) };
   }).filter((candidate) => candidate.eligible)
     .sort((left, right) => right.score - left.score || left.definition.id.localeCompare(right.definition.id));
 

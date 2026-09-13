@@ -73,13 +73,29 @@ export const sendDocumentSchema = z.object({
   operationKey: z.string().trim().min(1).max(200).optional(),
 });
 
+const paymentAmount = z.union([
+  z.string().trim().regex(/^\d+(?:\.\d{1,4})?$/),
+  z.number().finite().positive(),
+]).transform((value) => String(value));
+
+export const recordInvoicePaymentSchema = z.object({
+  amount: paymentAmount,
+  paymentMethod: z.enum(['BANK_TRANSFER','CARD','ALIPAY','WECHAT_PAY','CASH','OTHER']),
+  paymentReference: z.string().trim().min(1).max(250).nullable().optional(),
+  receivedAt: z.string().datetime({ offset: true }).optional(),
+  idempotencyKey: z.string().trim().min(1).max(180),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
 const invoiceLine = z.object(quoteLineFields).omit({ variantId: true, leadTime: true, moq: true, customizationNotes: true, priceSource: true, sourceReference: true, specifications: true }).extend({
   productName: z.string().trim().min(1).max(300),
 }).superRefine(validateLineDiscount);
 
 export const createInvoiceSchema = z.object({
   ...documentReferences,
+  operationKey: z.string().trim().min(1).max(200),
   orderRecordId: uuid.nullable().optional(),
+  commerceOrderId: uuid.nullable().optional(),
   quoteId: uuid.nullable().optional(),
   invoiceType: z.enum(['PROFORMA','COMMERCIAL','STANDARD','DEPOSIT','FINAL']).default('STANDARD'),
   issueDate: date.nullable().optional(),
@@ -89,6 +105,14 @@ export const createInvoiceSchema = z.object({
   creationMode: z.enum(['MANUAL','AI_ASSISTED','AUTOMATIC','API','IMPORT']).optional(),
   conversationId: uuid.nullable().optional(),
   lines: z.array(invoiceLine).min(1).max(500),
+}).superRefine((value, context) => {
+  if (value.orderRecordId && value.commerceOrderId) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['commerceOrderId'],
+      message: 'Use either the canonical commerce order or the legacy order record, not both',
+    });
+  }
 });
 
 export const policySchema = z.object({
@@ -114,3 +138,4 @@ export type CreateQuoteInput = z.infer<typeof createQuoteSchema>;
 export type CreateInvoiceInput = z.infer<typeof createInvoiceSchema>;
 export type SendDocumentInput = z.infer<typeof sendDocumentSchema>;
 export type PolicyInput = z.infer<typeof policySchema>;
+export type RecordInvoicePaymentInput = z.infer<typeof recordInvoicePaymentSchema>;

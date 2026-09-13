@@ -12,6 +12,7 @@ import {
   fetchAirwallexInvoice,
   finalizePaygInvoice,
   payPaygInvoice,
+  reconcilePendingWalletInvoicePayments,
 } from './airwallex.service.js';
 import {
   claimDuePaygPeriod,
@@ -24,12 +25,19 @@ import {
   savePaygProviderInvoice,
   type PaygPeriod,
 } from './payg-billing.repo.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
+import { reconcileUnsettledApiUsage } from '../usage/usage.service.js';
 
 const MAX_PERIODS_PER_CYCLE = 50;
-let running = false;
 let interval: NodeJS.Timeout | null = null;
+let activeCycle: Promise<void> | null = null;
+let activeScheduleRequest: Promise<void> | null = null;
+let stopping = false;
 let lastStorageInventoryAt = 0;
 const STORAGE_INVENTORY_INTERVAL_MS = 24 * 60 * 60 * 1_000;
+const runtimeMonitor = createRuntimeWorkerMonitor('payg-billing', {
+  staleAfterMs: Math.max(60_000, env.PAYG_BILLING_WORKER_INTERVAL_MINUTES * 60_000 + 60_000),
+});
 
 function invoiceAmount(value: string) {
   return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
@@ -119,19 +127,23 @@ async function issuePeriodInvoice(period: PaygPeriod) {
   logger.info({ periodId: period.id, workspaceId: period.workspaceId, invoiceId, apiCostUsd, serverCostUsd }, 'PAYG invoice finalized');
 }
 
-export async function runPaygBillingCycle() {
-  if (running) return;
-  running = true;
-  try {
+export function runPaygBillingCycle(): Promise<void> {
+  if (stopping) return Promise.resolve();
+  if (activeCycle) return activeCycle;
+  activeCycle = (async () => {
+    let processedCount = 0;
     await repairCompletedProfilePointers();
-    if (Date.now() - lastStorageInventoryAt >= STORAGE_INVENTORY_INTERVAL_MS) {
+    const apiSettlement = await reconcileUnsettledApiUsage();
+    const walletInvoiceReconciliation = await reconcilePendingWalletInvoicePayments();
+    if (!stopping && Date.now() - lastStorageInventoryAt >= STORAGE_INVENTORY_INTERVAL_MS) {
       const inventory = await reconcileStoredObjectInventory();
       if (inventory.scanned) lastStorageInventoryAt = Date.now();
     }
-    await snapshotAllR2Storage();
-    for (let processed = 0; processed < MAX_PERIODS_PER_CYCLE; processed += 1) {
+    if (!stopping) await snapshotAllR2Storage();
+    for (let processed = 0; processed < MAX_PERIODS_PER_CYCLE && !stopping; processed += 1) {
       const period = await claimDuePaygPeriod();
       if (!period) break;
+      processedCount += 1;
       try {
         await issuePeriodInvoice(period);
       } catch (error) {
@@ -141,24 +153,47 @@ export async function runPaygBillingCycle() {
         logger.error({ error, code, periodId: period.id, workspaceId: period.workspaceId }, 'PAYG period invoicing failed');
       }
     }
-  } catch (error) {
-    logger.error({ error }, 'PAYG billing worker cycle failed');
-  } finally {
-    running = false;
-  }
+    runtimeMonitor.progress({
+      phase: processedCount || apiSettlement.settled || walletInvoiceReconciliation.credited ? 'processed' : 'idle',
+      processed: processedCount + apiSettlement.settled + walletInvoiceReconciliation.credited,
+      metadata: {
+        apiUsageSettled: apiSettlement.settled,
+        walletInvoicesChecked: walletInvoiceReconciliation.checked,
+        walletInvoicesCredited: walletInvoiceReconciliation.credited,
+        walletInvoiceFailures: walletInvoiceReconciliation.failed,
+      },
+    });
+  })()
+    .catch((error: unknown) => {
+      runtimeMonitor.failed(error);
+      logger.error({ error }, 'PAYG billing worker cycle failed');
+    })
+    .finally(() => { activeCycle = null; });
+  return activeCycle;
 }
 
-export function startPaygBillingWorker() {
-  if (interval) return;
-  const intervalMs = env.PAYG_BILLING_WORKER_INTERVAL_MINUTES * 60_000;
-  const requestCycle = () => appendDomainEvent({
+function requestPaygBillingCycle(intervalMs: number): Promise<void> {
+  if (stopping) return Promise.resolve();
+  if (activeScheduleRequest) return activeScheduleRequest;
+  activeScheduleRequest = appendDomainEvent({
     type: DOMAIN_EVENT_TYPES.BILLING_CYCLE_REQUESTED,
     aggregateType: 'billing_scheduler',
     aggregateId: 'payg',
     payload: { scheduledAt: new Date().toISOString() },
     metadata: { source: 'billing.scheduler' },
     idempotencyKey: `schedule:payg-billing:${Math.floor(Date.now() / intervalMs)}`,
-  }).catch((error: unknown) => logger.error({ error }, 'PAYG billing schedule event could not be published'));
+  })
+    .then(() => undefined)
+    .catch((error: unknown) => logger.error({ error }, 'PAYG billing schedule event could not be published'))
+    .finally(() => { activeScheduleRequest = null; });
+  return activeScheduleRequest;
+}
+
+export function startPaygBillingWorker() {
+  if (interval) return;
+  stopping = false;
+  runtimeMonitor.start();
+  const intervalMs = env.PAYG_BILLING_WORKER_INTERVAL_MINUTES * 60_000;
   registerDomainEventHandler({
     name: 'billing.payg-cycle.v1',
     eventTypes: [DOMAIN_EVENT_TYPES.BILLING_CYCLE_REQUESTED],
@@ -167,13 +202,18 @@ export function startPaygBillingWorker() {
       return { completed: true };
     },
   });
-  void requestCycle();
-  interval = setInterval(() => void requestCycle(), intervalMs);
+  void requestPaygBillingCycle(intervalMs);
+  interval = setInterval(() => void requestPaygBillingCycle(intervalMs), intervalMs);
   interval.unref();
   logger.info({ intervalMinutes: env.PAYG_BILLING_WORKER_INTERVAL_MINUTES }, 'Weekly Cloudflare R2 storage billing worker started');
 }
 
-export function stopPaygBillingWorker() {
+export async function stopPaygBillingWorker() {
+  stopping = true;
   if (interval) clearInterval(interval);
   interval = null;
+  await runtimeMonitor.stopping();
+  if (activeScheduleRequest) await activeScheduleRequest;
+  if (activeCycle) await activeCycle;
+  await runtimeMonitor.stopped();
 }

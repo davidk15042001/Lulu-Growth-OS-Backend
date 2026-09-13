@@ -23,7 +23,7 @@ describe('production error diagnostics', () => {
   it('reports missing Airwallex webhook secret with an exact code', () => {
     if (process.env.AIRWALLEX_WEBHOOK_SECRET) return;
     assert.throws(
-      () => verifyWebhookSignature('{}', '1700000000', 'signature', 'nonce'),
+      () => verifyWebhookSignature('{}', '1700000000000', 'signature'),
       (error: unknown) => {
         assert.ok(error instanceof AppError);
         assert.equal(error.code, 'AIRWALLEX_WEBHOOK_SECRET_MISSING');

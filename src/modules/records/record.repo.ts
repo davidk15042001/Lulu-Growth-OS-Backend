@@ -197,6 +197,41 @@ export async function findExecutionResultByCommandIdempotencyKey(
   return rows[0] ?? null;
 }
 
+export async function findAgentActionRecord(
+  workspaceId: string,
+  recordId: string,
+  client?: PoolClient,
+) {
+  const { rows } = await query<WorkspaceRecord>(
+    `SELECT ${recordSelect}
+       FROM workspace_records record
+      WHERE record.workspace_id=$1 AND record.id=$2 AND record.deleted_at IS NULL
+        AND EXISTS(SELECT 1 FROM agent_action_packets packet
+          WHERE packet.workspace_id=record.workspace_id AND packet.record_id=record.id)
+      LIMIT 1`,
+    [workspaceId, recordId],
+    client,
+  );
+  return rows[0] ?? null;
+}
+
+export async function listCommandExecutionResultsBySourceRecordId(
+  workspaceId: string,
+  sourceRecordId: string,
+  client?: PoolClient,
+) {
+  const { rows } = await query<WorkspaceRecord>(
+    `SELECT ${recordSelect}
+       FROM workspace_records
+      WHERE workspace_id=$1 AND parent_id=$2 AND deleted_at IS NULL
+        AND source='agent_executor_command'
+      ORDER BY created_at,id`,
+    [workspaceId, sourceRecordId],
+    client,
+  );
+  return rows;
+}
+
 async function insertAudit(
   client: PoolClient,
   workspaceId: string,
@@ -214,6 +249,28 @@ async function insertAudit(
     [workspaceId, actorId, action, resourceType, recordId, beforeData, afterData],
     client
   );
+}
+
+function recordEventContext(record: WorkspaceRecord, actorId: string) {
+  const recordSource = record.source?.trim() || 'manual';
+  const normalizedSource = recordSource.toLowerCase();
+  const generatedByAgent = normalizedSource === 'page_agent'
+    || normalizedSource.startsWith('agent_')
+    || normalizedSource.includes('agent-executor')
+    || record.data?.generatedByExecutor === true;
+  const sourceActionRecordId = typeof record.data?.sourceActionRecordId === 'string'
+    ? record.data.sourceActionRecordId
+    : null;
+  return {
+    payload: { recordSource },
+    metadata: {
+      actorId,
+      actorType: generatedByAgent ? 'AI_AGENT' : 'USER',
+      actorRef: generatedByAgent ? sourceActionRecordId ?? record.id : actorId,
+      source: `records:${recordSource}`,
+      ...(sourceActionRecordId ? { causationId: sourceActionRecordId } : {}),
+    },
+  };
 }
 
 export async function createRecord(
@@ -257,13 +314,14 @@ export async function createRecord(
     const record = rows[0];
     if (!record) throw new Error('Record insert did not return a row');
     await insertAudit(client, workspaceId, userId, 'record.created', resourceType, record.id, null, record);
+    const eventContext = recordEventContext(record, userId);
     await appendDomainEvent({
       workspaceId,
       type: DOMAIN_EVENT_TYPES.RECORD_CREATED,
       aggregateType: 'workspace_record',
       aggregateId: record.id,
-      payload: { resourceType, recordId: record.id, version: record.version },
-      metadata: { actorId: userId, source: 'records' },
+      payload: { resourceType, recordId: record.id, version: record.version, ...eventContext.payload },
+      metadata: eventContext.metadata,
       idempotencyKey: `record:${record.id}:created:v${record.version}`,
     }, client);
     return record;
@@ -319,13 +377,14 @@ export async function updateRecord(
     const record = rows[0];
     if (!record) return { status: 'not_found' as const };
     await insertAudit(client, workspaceId, userId, 'record.updated', resourceType, record.id, before, record);
+    const eventContext = recordEventContext(record, userId);
     await appendDomainEvent({
       workspaceId,
       type: DOMAIN_EVENT_TYPES.RECORD_UPDATED,
       aggregateType: 'workspace_record',
       aggregateId: record.id,
-      payload: { resourceType, recordId: record.id, version: record.version, changedFields: Object.keys(mutableInput) },
-      metadata: { actorId: userId, source: 'records' },
+      payload: { resourceType, recordId: record.id, version: record.version, changedFields: Object.keys(mutableInput), ...eventContext.payload },
+      metadata: eventContext.metadata,
       idempotencyKey: `record:${record.id}:updated:v${record.version}`,
     }, client);
     return { status: 'updated' as const, record };
@@ -352,13 +411,14 @@ export async function archiveRecord(
     await insertAudit(client, workspaceId, userId, 'record.archived', resourceType, recordId, before, rows[0] ?? null);
     const record = rows[0];
     if (record) {
+      const eventContext = recordEventContext(record, userId);
       await appendDomainEvent({
         workspaceId,
         type: DOMAIN_EVENT_TYPES.RECORD_ARCHIVED,
         aggregateType: 'workspace_record',
         aggregateId: record.id,
-        payload: { resourceType, recordId: record.id, version: record.version },
-        metadata: { actorId: userId, source: 'records' },
+        payload: { resourceType, recordId: record.id, version: record.version, ...eventContext.payload },
+        metadata: eventContext.metadata,
         idempotencyKey: `record:${record.id}:archived:v${record.version}`,
       }, client);
     }
@@ -386,13 +446,14 @@ export async function restoreRecord(
     const record = rows[0];
     if (!record) return undefined;
     await insertAudit(client, workspaceId, userId, 'record.restored', resourceType, recordId, before, record);
+    const eventContext = recordEventContext(record, userId);
     await appendDomainEvent({
       workspaceId,
       type: DOMAIN_EVENT_TYPES.RECORD_RESTORED,
       aggregateType: 'workspace_record',
       aggregateId: record.id,
-      payload: { resourceType, recordId: record.id, version: record.version },
-      metadata: { actorId: userId, source: 'records' },
+      payload: { resourceType, recordId: record.id, version: record.version, ...eventContext.payload },
+      metadata: eventContext.metadata,
       idempotencyKey: `record:${record.id}:restored:v${record.version}`,
     }, client);
     return record;

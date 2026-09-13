@@ -13,6 +13,7 @@ router.route('/seller-profile').get(requireWorkspaceCapability('invoices.read'),
 router.route('/invoices/:documentId').get(requireWorkspaceCapability('invoices.read'), controller.getInvoice).all(methodNotAllowed);
 router.route('/invoices/:documentId/issue').post(requireWorkspaceCapability('invoices.issue'), controller.issueInvoice).all(methodNotAllowed);
 router.route('/invoices/:documentId/send').post(requireWorkspaceCapability('invoices.send'), controller.sendInvoice).all(methodNotAllowed);
+router.route('/invoices/:documentId/payments').get(requireWorkspaceCapability('invoices.read'), controller.listInvoicePayments).post(requireWorkspaceCapability('finance.manage'), controller.recordInvoicePayment).all(methodNotAllowed);
 router.route('/commercial-policy').get(requireWorkspaceCapability('commercial_policy.read'), controller.getPolicy).patch(requireWorkspaceCapability('commercial_policy.manage'), controller.updatePolicy).all(methodNotAllowed);
 export default router;
 

@@ -49,7 +49,7 @@ describe('agent execution commands', () => {
     assert.equal(command.targetEntityId, 'review-1');
   });
 
-  it('keeps explicit commands when they are valid', () => {
+  it('keeps valid explicit command intent but derives security policy and idempotency server-side', () => {
     const [command] = normalizeAgentExecutionCommands([
       {
         type: 'email.create_ai_draft',
@@ -83,7 +83,42 @@ describe('agent execution commands', () => {
     assert.ok(command);
     assert.equal(command.type, 'email.create_ai_draft');
     assert.equal(command.targetEntityId, 'thread-1');
-    assert.equal(command.idempotencyKey, 'explicit-command-1');
+    assert.notEqual(command.idempotencyKey, 'explicit-command-1');
+    assert.match(command.idempotencyKey, /^[a-f0-9]{40}$/);
+  });
+
+  it('cannot be tricked into removing the customer budget boundary from advertising', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'advertising.create_optimization',
+      summary: 'Launch an authorized campaign',
+      targetSystem: 'crm',
+      provider: 'google-ads',
+      riskLevel: 'low',
+      approvalPolicy: 'allow',
+      budgetAuthority: 'none',
+      targetEntityType: 'campaign',
+      targetEntityId: 'campaign-1',
+      payload: { authorizationId: 'authorization-1', budgetAmountCny: 100 },
+      idempotencyKey: 'model-controlled-key',
+    }], {
+      module: 'ads',
+      targetSystem: 'advertising',
+      actionResourceType: 'ad_optimizations',
+      pageId: 'ads-page',
+      pageLabel: 'Advertising',
+      goal: 'Launch campaign',
+      jobs: ['Launch campaign'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.targetSystem, 'advertising');
+    assert.equal(command.riskLevel, 'medium');
+    assert.equal(command.budgetAuthority, 'customer_authorization_required');
+    assert.equal(command.approvalPolicy, 'budget_required');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'require_budget');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous', { verifiedCustomerBudget: true }).overallDecision, 'allow');
   });
 
   it('executes financial workflows autonomously when they do not request new customer funds', () => {
@@ -122,5 +157,50 @@ describe('agent execution commands', () => {
     const decision = applyExecutionCommandPolicies([command], 'autonomous');
     assert.equal(command.type, 'sales.create_followup_task');
     assert.equal(decision.overallDecision, 'allow');
+  });
+
+  it('keeps canonical commerce and social commands autonomous but server-owned', () => {
+    const commands = normalizeAgentExecutionCommands([
+      {
+        type: 'commerce.order.transition',
+        summary: 'Confirm the verified order',
+        targetSystem: 'unknown',
+        provider: null,
+        riskLevel: 'low',
+        approvalPolicy: 'budget_required',
+        targetEntityType: 'commerce_order',
+        targetEntityId: '00000000-0000-4000-8000-000000000001',
+        payload: { expectedVersion: 1, targetStatus: 'CONFIRMED' },
+        idempotencyKey: 'model-key-commerce',
+      },
+      {
+        type: 'social.content.publish',
+        summary: 'Publish verified brand content',
+        targetSystem: 'unknown',
+        provider: 'facebook',
+        riskLevel: 'low',
+        approvalPolicy: 'budget_required',
+        targetEntityType: 'social_publication',
+        targetEntityId: null,
+        payload: { socialAccountId: '00000000-0000-4000-8000-000000000002', contentType: 'TEXT', message: 'Hello' },
+        idempotencyKey: 'model-key-social',
+      },
+    ], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'orders-page',
+      pageLabel: 'Orders',
+      goal: 'Continue verified operations',
+      jobs: ['Process order'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.deepEqual(commands.map((command) => command.targetSystem), ['ecommerce', 'marketing']);
+    assert.deepEqual(commands.map((command) => command.riskLevel), ['medium', 'high']);
+    assert.equal(applyExecutionCommandPolicies(commands, 'autonomous').overallDecision, 'allow');
+    assert.ok(commands.every((command) => command.approvalPolicy === 'allow'));
+    assert.ok(commands.every((command) => /^[a-f0-9]{40}$/.test(command.idempotencyKey)));
   });
 });

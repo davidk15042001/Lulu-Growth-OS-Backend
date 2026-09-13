@@ -2,9 +2,12 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
+import type { WorkspaceCapability } from '../workspaces/workspace-permissions.js';
 import type { AgentRun, AgentRunEvent, AgentStep } from './agent.types.js';
 
 const runSelect = `id, workspace_id AS "workspaceId", created_by AS "createdBy", goal, status, plan,
+ execution_actor_type AS "executionActorType", execution_actor_ref AS "executionActorRef",
+ execution_capability_scope AS "executionCapabilityScope",
  team_cycle_id AS "teamCycleId",
  result, error_code AS "errorCode", error_message AS "errorMessage", started_at AS "startedAt",
  finished_at AS "finishedAt", worker_id AS "workerId", locked_at AS "lockedAt",
@@ -25,12 +28,23 @@ export async function createRun(
   goal: string,
   plan: Record<string, unknown> | null = null,
   client?: PoolClient,
+  executionIdentity?: {
+    actorType: 'USER' | 'WORKFLOW';
+    actorRef: string;
+    capabilityScope: readonly WorkspaceCapability[];
+  },
 ): Promise<AgentRun> {
   if (!client) {
-    return withTransaction((transactionClient) => createRun(workspaceId, userId, goal, plan, transactionClient));
+    return withTransaction((transactionClient) => createRun(workspaceId, userId, goal, plan, transactionClient, executionIdentity));
   }
-  const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (workspace_id, created_by, goal, plan)
-    VALUES ($1, $2, $3, $4) RETURNING ${runSelect}`, [workspaceId, userId, goal, JSON.stringify(plan ?? {})], client);
+  const identity = executionIdentity ?? (userId
+    ? { actorType: 'USER' as const, actorRef: userId, capabilityScope: [] }
+    : { actorType: 'WORKFLOW' as const, actorRef: 'lulu:automatic-agent-runtime', capabilityScope: ['agents.execute'] as WorkspaceCapability[] });
+  const { rows } = await query<AgentRun>(`INSERT INTO agent_runs (
+      workspace_id, created_by, goal, plan, execution_actor_type,
+      execution_actor_ref, execution_capability_scope
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb) RETURNING ${runSelect}`,
+    [workspaceId, userId, goal, JSON.stringify(plan ?? {}), identity.actorType, identity.actorRef, JSON.stringify([...new Set(identity.capabilityScope)].sort())], client);
   const run = rows[0];
   if (!run) throw new Error('Agent run insert did not return a row');
   const actor = userId ? { actorId: userId } : (await query<{ actorId: string }>(
@@ -44,7 +58,12 @@ export async function createRun(
     aggregateType: 'agent_run',
     aggregateId: run.id,
     payload: { runId: run.id, goal },
-    metadata: { actorId: actor?.actorId ?? null, source: 'agents' },
+    metadata: {
+      actorId: actor?.actorId ?? null,
+      actorType: identity.actorType,
+      actorRef: identity.actorRef,
+      source: identity.actorType === 'WORKFLOW' ? 'agents.workflow' : 'agents',
+    },
     idempotencyKey: `agent-run:${run.id}:requested:v1`,
   }, client);
   return run;
@@ -59,7 +78,7 @@ export async function listAutomatedTargets() {
   }>(`SELECT w.id AS workspace_id, w.created_by AS actor_user_id,
              COALESCE(ws.plan_key,'starter') AS plan_key,
              COALESCE(ws.status,'billing_skipped') AS status,
-             COALESCE(ad.available_amount,0)>0 AS ad_spend_funded
+             (COALESCE(ad.available_amount,0)>0 AND COALESCE(ad.reversal_debt_amount,0)=0) AS ad_spend_funded
       FROM workspaces w
       LEFT JOIN LATERAL (
         SELECT s.plan_key,s.status,s.provider
@@ -78,7 +97,9 @@ export async function listAutomatedTargets() {
         AND w.onboarding_completed_at IS NOT NULL
         AND w.profile_completed_at IS NOT NULL
         AND w.knowledge_base_completed_at IS NOT NULL
-        AND (ws.plan_key='test' OR ws.provider='internal' OR COALESCE(api.available_amount,0)>0)`);
+        AND (ws.plan_key='test' OR ws.provider='internal' OR (
+          COALESCE(api.available_amount,0)>0 AND COALESCE(api.reversal_debt_amount,0)=0
+        ))`);
   return rows;
 }
 
@@ -252,6 +273,7 @@ export async function createOrReusePageRun(input: {
   pageId: string;
   dedupeMinutes: number;
   initialPlan: Record<string, unknown>;
+  executionIdentity?: { actorType: 'USER' | 'WORKFLOW'; actorRef: string; capabilityScope: readonly WorkspaceCapability[] };
 }) {
   return withTransaction(async (client) => {
     await query('SELECT pg_advisory_xact_lock(hashtext($1))', [`agent-page-run:${input.workspaceId}:${input.pageId}`], client);
@@ -259,7 +281,55 @@ export async function createOrReusePageRun(input: {
     if (recentRun) {
       return { run: recentRun, created: false as const };
     }
-    const run = await createRun(input.workspaceId, input.userId, input.goal, input.initialPlan, client);
+    const run = await createRun(input.workspaceId, input.userId, input.goal, input.initialPlan, client, input.executionIdentity);
+    return { run, created: true as const };
+  });
+}
+
+export async function getTriggeredPageRun(
+  workspaceId: string,
+  pageId: string,
+  sourceEventId: string,
+  client?: PoolClient,
+) {
+  const { rows } = await query<AgentRun>(`SELECT ${runSelect}
+    FROM agent_runs
+    WHERE workspace_id=$1
+      AND plan -> 'page' ->> 'pageId' = $2
+      AND plan -> 'team' -> 'trigger' ->> 'eventId' = $3
+    ORDER BY created_at ASC
+    LIMIT 1`, [workspaceId, pageId, sourceEventId], client);
+  return rows[0] ?? null;
+}
+
+/**
+ * Domain-event delivery is at-least-once. This lock plus persisted source-event
+ * identity guarantees that a retry cannot create a second run for the same
+ * employee and event, even after the first run has completed or failed.
+ */
+export async function createOrReuseTriggeredPageRun(input: {
+  workspaceId: string;
+  userId: string | null;
+  goal: string;
+  pageId: string;
+  sourceEventId: string;
+  initialPlan: Record<string, unknown>;
+  executionIdentity?: { actorType: 'USER' | 'WORKFLOW'; actorRef: string; capabilityScope: readonly WorkspaceCapability[] };
+}) {
+  return withTransaction(async (client) => {
+    await query(
+      'SELECT pg_advisory_xact_lock(hashtext($1))',
+      [`agent-event-run:${input.workspaceId}:${input.pageId}:${input.sourceEventId}`],
+      client,
+    );
+    const existingRun = await getTriggeredPageRun(
+      input.workspaceId,
+      input.pageId,
+      input.sourceEventId,
+      client,
+    );
+    if (existingRun) return { run: existingRun, created: false as const };
+    const run = await createRun(input.workspaceId, input.userId, input.goal, input.initialPlan, client, input.executionIdentity);
     return { run, created: true as const };
   });
 }
@@ -371,7 +441,10 @@ export async function updateRun(runId: string, patch: Record<string, unknown>, c
   const keys = Object.keys(patch);
   const values = keys.map((key) => patch[key]);
   const assignments = keys.map((key, index) => `${key}=$${index + 2}`).join(', ');
-  const { rows } = await query<AgentRun>(`UPDATE agent_runs SET ${assignments}, updated_at=NOW() WHERE id=$1 RETURNING ${runSelect}`, [runId, ...values], client);
+  // Cancellation is terminal. In particular, a planner returning after an
+  // in-flight cancellation must not be able to restore the run to "running".
+  const { rows } = await query<AgentRun>(`UPDATE agent_runs SET ${assignments}, updated_at=NOW()
+    WHERE id=$1 AND status <> 'cancelled' RETURNING ${runSelect}`, [runId, ...values], client);
   return rows[0];
 }
 
@@ -411,8 +484,27 @@ export async function finalizeRun(input: {
   agentRole?: string | null;
 }) {
   return withTransaction(async (client) => {
-    const run = await updateRun(input.runId, { ...input.patch, status: input.status }, client);
-    if (!run) throw new Error('Agent run finalization did not return a row');
+    // Finalization is a compare-and-set transition. A user cancellation can
+    // arrive while a worker is returning from an external tool call; that late
+    // worker must never be able to turn the cancelled run back into completed
+    // or failed (and a late cancel must not rewrite an already terminal run).
+    const finalPatch: Record<string, unknown> = { ...input.patch, status: input.status };
+    const keys = Object.keys(finalPatch);
+    const values = keys.map((key) => finalPatch[key]);
+    const assignments = keys.map((key, index) => `${key}=$${index + 3}`).join(', ');
+    const transitioned = await query<AgentRun>(`UPDATE agent_runs
+      SET ${assignments},updated_at=NOW()
+      WHERE id=$1 AND workspace_id=$2
+        AND status IN ('queued','planning','running','waiting_approval')
+      RETURNING ${runSelect}`, [input.runId,input.workspaceId,...values], client);
+    const run = transitioned.rows[0];
+    if (!run) {
+      const current = (await query<AgentRun>(`SELECT ${runSelect} FROM agent_runs
+        WHERE id=$1 AND workspace_id=$2 FOR UPDATE`, [input.runId,input.workspaceId], client)).rows[0];
+      if (!current) throw new Error('Agent run finalization did not find the run');
+      if (['completed','failed','cancelled'].includes(current.status)) return current;
+      throw new Error('Agent run finalization could not apply its terminal transition');
+    }
     const eventType = input.status === 'completed'
       ? DOMAIN_EVENT_TYPES.AGENT_RUN_COMPLETED
       : input.status === 'cancelled' ? DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED : DOMAIN_EVENT_TYPES.AGENT_RUN_FAILED;
@@ -553,7 +645,21 @@ export async function addEvent(input: { runId: string; stepId?: string | null; w
   return rows[0];
 }
 export async function getWorkspacePlan(workspaceId: string) {
-  const { rows } = await query<{ plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test'; status: string }>(`SELECT plan_key, status FROM workspace_subscriptions WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT 1`, [workspaceId]);
+  const { rows } = await query<{ plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test'; status: string }>(
+    `SELECT
+       CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'ai' ELSE COALESCE(subscription.plan_key,'explorer') END AS plan_key,
+       CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'billing_skipped' ELSE COALESCE(subscription.status,'inactive') END AS status
+     FROM workspaces w
+     LEFT JOIN LATERAL (
+       SELECT s.plan_key,s.status
+       FROM workspace_subscriptions s
+       WHERE s.workspace_id=w.id
+       ORDER BY s.updated_at DESC
+       LIMIT 1
+     ) subscription ON TRUE
+     WHERE w.id=$1 AND w.deleted_at IS NULL`,
+    [workspaceId],
+  );
   return rows[0] ?? { plan_key: 'explorer' as const, status: 'inactive' };
 }
 

@@ -1,6 +1,10 @@
 import { env, hasAiProvider, isProd, trustProxySetting } from '../config/env.js';
 import { checkDatabase } from '../db/pool.js';
 import { getAiProviderHealth } from '../modules/ai/openai.service.js';
+import { getAiReservationHealth } from '../modules/api-wallet/ai-spend-reservation.repo.js';
+import { getKieBillingCatalogReadiness } from '../modules/premium-media/premium-media-cost-catalog.js';
+import { getPremiumMediaBillingHealth } from '../modules/premium-media/premium-media.repo.js';
+import { getWorkerSupervisorHealth } from './worker-liveness.js';
 
 function configured(...values: Array<string | undefined>) {
   return values.every((value) => Boolean(value?.trim()));
@@ -9,10 +13,34 @@ function configured(...values: Array<string | undefined>) {
 export async function getRuntimeReadiness() {
   const database = await checkDatabase();
   const aiProviders = getAiProviderHealth().map(({ lastError: _lastError, ...provider }) => provider);
+  // Every provider in this list is wired through the OpenAI-compatible text
+  // completion path (Kie supplies the configured quality model as a fallback).
+  const textProviders = aiProviders;
+  const primaryTextProvider = textProviders.find((provider) => provider.primary) ?? null;
+  const textAiReady = hasAiProvider && textProviders.some((provider) => provider.operational);
+  const aiSpendReservations = database.connected
+    ? await getAiReservationHealth().catch(() => null)
+    : null;
+  const premiumMediaCatalog = getKieBillingCatalogReadiness();
+  const premiumMediaBilling = database.connected
+    ? await getPremiumMediaBillingHealth().catch(() => null)
+    : null;
+  const workerSupervisor = database.connected && env.BACKGROUND_WORKERS_ENABLED
+    ? await getWorkerSupervisorHealth().catch(() => ({ live: false, supervisorLive: false, staleAfterMs: 45_000, instanceId: null, heartbeatAt: null, startedAt: null, registeredWorkers: [] as string[], requiredWorkers: [] as string[], unhealthyRequiredWorkers: [] as string[], workers: [] }))
+    : { live: false, supervisorLive: false, staleAfterMs: 45_000, instanceId: null, heartbeatAt: null, startedAt: null, registeredWorkers: [] as string[], requiredWorkers: [] as string[], unhealthyRequiredWorkers: [] as string[], workers: [] };
   const components = {
     database: { required: true, ready: database.configured && database.connected },
-    ai: { required: true, ready: hasAiProvider && aiProviders.some((provider) => provider.operational) },
-    workers: { required: isProd, ready: !isProd || env.BACKGROUND_WORKERS_ENABLED },
+    ai: { required: true, ready: textAiReady, kind: 'text', operationalProviders: textProviders.filter((provider) => provider.operational).map((provider) => provider.provider) },
+    aiSpendReservations: {
+      required: false,
+      ready: aiSpendReservations !== null,
+      healthy: aiSpendReservations !== null
+        && aiSpendReservations.staleUnresolvedCount === 0
+        && aiSpendReservations.walletHoldMismatchCount === 0,
+      ...(aiSpendReservations ?? {}),
+    },
+    primaryTextAi: { required: false, ready: Boolean(primaryTextProvider?.operational), provider: primaryTextProvider?.provider ?? env.AI_PROVIDER, configured: Boolean(primaryTextProvider?.configured), fallbackActive: textAiReady && !primaryTextProvider?.operational },
+    workers: { required: isProd, ready: !isProd || (env.BACKGROUND_WORKERS_ENABLED && workerSupervisor.live), configured: env.BACKGROUND_WORKERS_ENABLED, supervisor: workerSupervisor },
     proxyTrust: { required: isProd, ready: !isProd || Boolean(trustProxySetting), mode: trustProxySetting || 'disabled' },
     storage: {
       required: isProd,
@@ -37,7 +65,14 @@ export async function getRuntimeReadiness() {
     },
     premiumMedia: {
       required: false,
-      ready: Boolean(env.KIE_API_KEY) && configured(env.AWS_S3_BUCKET, env.AWS_ACCESS_KEY_ID, env.AWS_SECRET_ACCESS_KEY),
+      ready: Boolean(env.KIE_API_KEY)
+        && configured(env.AWS_S3_BUCKET, env.AWS_ACCESS_KEY_ID, env.AWS_SECRET_ACCESS_KEY)
+        && premiumMediaCatalog.ready
+        && premiumMediaBilling !== null
+        && premiumMediaBilling.ambiguousCount === 0
+        && premiumMediaBilling.unreservedCount === 0,
+      catalog: premiumMediaCatalog,
+      billing: premiumMediaBilling,
     },
   };
   const blockers = Object.entries(components)

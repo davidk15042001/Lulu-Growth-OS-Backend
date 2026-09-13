@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { getPremiumVideoModels, normalizeKieTask } from '../src/modules/premium-media/kie-media.client.js';
+import {
+  classifyKiePostFailure,
+  getPremiumVideoModels,
+  kieRequestRetryBudget,
+  normalizeKieTask,
+} from '../src/modules/premium-media/kie-media.client.js';
 import { buildPremiumImagePrompt, buildPremiumVideoPrompt, marketVideoParameters } from '../src/modules/premium-media/premium-media.service.js';
+import { resolveKieMaximumCreditVariant } from '../src/modules/premium-media/premium-media-cost-catalog.js';
 import { createPremiumMediaSchema } from '../src/modules/premium-media/premium-media.validator.js';
+import { AppError } from '../src/utils/app-error.js';
 
 const product = {
   name: 'Lulu One',
@@ -32,6 +39,47 @@ describe('premium media production', () => {
     assert.equal(task.state, 'failed');
     assert.equal(task.errorCode, 'CONTENT_FAILED');
     assert.deepEqual(task.resultUrls, []);
+  });
+
+  it('never treats missing or zero provider credits as free usage', () => {
+    assert.equal(normalizeKieTask({ data: { taskId: 'missing', successFlag: 1, resultUrls: ['https://example.test/a.png'] } }).creditsConsumed, null);
+    assert.equal(normalizeKieTask({ data: { taskId: 'zero', successFlag: 1, creditsConsumed: 0, resultUrls: ['https://example.test/a.png'] } }).creditsConsumed, null);
+  });
+
+  it('never automatically retries billable POSTs and releases only definitive 4xx rejections', () => {
+    assert.equal(kieRequestRetryBudget('POST', 5), 0);
+    assert.equal(kieRequestRetryBudget('GET', 2), 2);
+    assert.equal(classifyKiePostFailure(new Error('socket timeout')), 'AMBIGUOUS');
+    assert.equal(
+      classifyKiePostFailure(new AppError(502, 'KIE_REQUEST_FAILED', 'Rejected', { providerStatus: 422 })),
+      'DEFINITIVE_REJECTION',
+    );
+    assert.equal(
+      classifyKiePostFailure(new AppError(502, 'KIE_REQUEST_FAILED', 'Unknown outcome', { providerStatus: 500 })),
+      'AMBIGUOUS',
+    );
+  });
+
+  it('fails closed when a Kie model variant has no reviewed prepaid ceiling', () => {
+    assert.deepEqual(
+      resolveKieMaximumCreditVariant({
+        purpose: 'VIDEO_GENERATION',
+        model: 'kling/v3-turbo-image-to-video',
+        resolution: '1080p',
+        durationSeconds: 5,
+      }),
+      {
+        purpose: 'VIDEO_GENERATION',
+        model: 'kling/v3-turbo-image-to-video',
+        resolution: '1080p',
+        durationSeconds: 5,
+        maximumCredits: 1_000,
+      },
+    );
+    assert.throws(
+      () => resolveKieMaximumCreditVariant({ purpose: 'VIDEO_GENERATION', model: 'unknown/model', resolution: '1080p', durationSeconds: 5 }),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'KIE_BILLING_VARIANT_UNAPPROVED'),
+    );
   });
 
   it('builds product-identity preserving image and video briefs', () => {

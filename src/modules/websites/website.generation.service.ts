@@ -241,6 +241,7 @@ function errorStatus(error: unknown) {
 
 async function createJsonCompletion(input: { workspaceId: string; userId: string; system: string; user: string; maxTokens: number }) {
   const client = getOpenAIResponsesClient();
+  const operationId = globalThis.crypto.randomUUID();
   const tokenLimit = env.AI_PROVIDER === 'openai' ? { max_completion_tokens: input.maxTokens } : { max_tokens: input.maxTokens };
   const request = {
     model: configuredModel(),
@@ -254,7 +255,12 @@ async function createJsonCompletion(input: { workspaceId: string; userId: string
   for (let attempt = 0; attempt <= env.AI_MAX_RETRIES; attempt += 1) {
     try {
       logger.info({ label: 'Website structured content generation', provider: env.AI_PROVIDER, model: request.model, maxTokens: input.maxTokens, attempt: attempt + 1 }, 'Website AI request started');
-      const response = await client.createChat(request, { timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: 0, billing: { workspaceId: input.workspaceId, userId: input.userId } });
+      const response = await client.createChat(request, { timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: 0, billing: {
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        operation: 'website.structured-content',
+        operationId,
+      } });
       const text = extractResponseText(response);
       logger.info({ label: 'Website structured content generation', responseChars: text.length, attempt: attempt + 1 }, 'Website AI response received');
       if (!text) throw new AppError(502, 'WEBSITE_AI_EMPTY_RESPONSE', 'Website content generation returned an empty AI response');

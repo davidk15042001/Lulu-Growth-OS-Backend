@@ -12,6 +12,7 @@ import { buildEmailAuthorizationUrl } from './email.oauth.service.js';
 import { sendProviderEmail, setProviderMessageState, syncProvider, verifyImapConnection } from './email.provider.service.js';
 import type { EmailAddress } from './email.types.js';
 import type { CreateDraftInput, CreateRuleInput, UpdateDraftInput, UpdateRuleInput } from './email.validator.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 export const listAccounts = repo.listAccounts;
 export const listFolders = repo.listFolders;
@@ -202,9 +203,47 @@ async function runAutomations(workspaceId: string, accountId: string, fallbackUs
 }
 
 let syncTimer: NodeJS.Timeout | null = null;
-let syncTickRunning = false;
+let activeSyncCycle: Promise<void> | null = null;
+let syncStopping = false;
+const activeSyncExecutions = new Set<Promise<unknown>>();
+const emailSyncRuntimeMonitor = createRuntimeWorkerMonitor('email-sync', {
+  staleAfterMs: Math.max(60_000, env.EMAIL_SYNC_INTERVAL_MINUTES * 60_000 + 60_000),
+});
+
+function trackEmailSyncExecution<T>(operation: () => Promise<T>): Promise<T> | null {
+  if (syncStopping) return null;
+  const task = operation();
+  activeSyncExecutions.add(task);
+  task.then(
+    () => activeSyncExecutions.delete(task),
+    () => activeSyncExecutions.delete(task),
+  );
+  return task;
+}
+
+export function runEmailSyncCycle(): Promise<void> {
+  if (syncStopping) return Promise.resolve();
+  if (activeSyncCycle) return activeSyncCycle;
+  activeSyncCycle = (async () => {
+    const accounts = await repo.dueAccountIds(env.EMAIL_SYNC_INTERVAL_MINUTES);
+    for (const account of accounts) {
+      if (syncStopping) break;
+      await repo.createSyncJob(account.workspaceId, account.id, null);
+    }
+    emailSyncRuntimeMonitor.progress({ phase: accounts.length ? 'enqueued' : 'idle', processed: accounts.length });
+  })()
+    .catch((error: unknown) => {
+      emailSyncRuntimeMonitor.failed(error);
+      logger.error({ error }, 'Automatic email synchronization cycle failed');
+    })
+    .finally(() => { activeSyncCycle = null; });
+  return activeSyncCycle;
+}
+
 export function startEmailSyncWorker() {
   if (syncTimer) return;
+  syncStopping = false;
+  emailSyncRuntimeMonitor.start();
   registerDomainEventHandler({
     name: 'email.sync-job-wakeup.v1',
     eventTypes: [DOMAIN_EVENT_TYPES.EMAIL_SYNC_REQUESTED],
@@ -212,23 +251,22 @@ export function startEmailSyncWorker() {
       const jobId = typeof event.payload.jobId === 'string' ? event.payload.jobId : null;
       const accountId = typeof event.payload.accountId === 'string' ? event.payload.accountId : null;
       if (!event.workspaceId || !jobId || !accountId) return { ignored: true };
-      await executeSyncJob(event.workspaceId, accountId, jobId);
+      const execution = trackEmailSyncExecution(() => executeSyncJob(event.workspaceId!, accountId, jobId));
+      if (!execution) return { ignored: true, stopping: true };
+      await execution;
       return { completed: true, jobId };
     },
   });
-  const tick = async () => {
-    if (syncTickRunning) return;
-    syncTickRunning = true;
-    try {
-      for (const account of await repo.dueAccountIds(env.EMAIL_SYNC_INTERVAL_MINUTES)) {
-        await repo.createSyncJob(account.workspaceId, account.id, null);
-      }
-    } catch (error) {
-      logger.error({ error }, 'Automatic email synchronization cycle failed');
-    } finally { syncTickRunning = false; }
-  };
-  syncTimer = setInterval(() => void tick(), env.EMAIL_SYNC_INTERVAL_MINUTES * 60_000);
+  syncTimer = setInterval(() => void runEmailSyncCycle(), env.EMAIL_SYNC_INTERVAL_MINUTES * 60_000);
   syncTimer.unref();
-  void tick();
+  void runEmailSyncCycle();
 }
-export function stopEmailSyncWorker() { if (syncTimer) clearInterval(syncTimer); syncTimer = null; syncTickRunning = false; }
+export async function stopEmailSyncWorker() {
+  syncStopping = true;
+  if (syncTimer) clearInterval(syncTimer);
+  syncTimer = null;
+  await emailSyncRuntimeMonitor.stopping();
+  if (activeSyncCycle) await activeSyncCycle;
+  while (activeSyncExecutions.size > 0) await Promise.allSettled([...activeSyncExecutions]);
+  await emailSyncRuntimeMonitor.stopped();
+}

@@ -5,9 +5,13 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { getProviderAdapter } from './provider-registry.js';
 import * as repo from './provider.repo.js';
 import type { ProviderAdapterContext } from './provider.types.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 const syncWorkerId = `provider-sync-${process.pid}-${randomUUID()}`;
 const webhookWorkerId = `provider-webhook-${process.pid}-${randomUUID()}`;
+const runtimeMonitor = createRuntimeWorkerMonitor('provider-control', {
+  staleAfterMs: Math.max(60_000, env.PROVIDER_SYNC_WORKER_INTERVAL_MS * 4, env.PROVIDER_WEBHOOK_WORKER_INTERVAL_MS * 4),
+});
 let syncTimer: NodeJS.Timeout | null = null;
 let webhookTimer: NodeJS.Timeout | null = null;
 let stopping = false;
@@ -19,7 +23,18 @@ function retryDelayMs(attempt: number) {
 }
 
 async function processSyncJob(job: repo.ProviderSyncJob) {
-  const heartbeat = setInterval(() => void repo.heartbeatProviderSyncJob(job.id, syncWorkerId).catch((error) => logger.warn({ error, jobId: job.id }, 'Provider sync heartbeat failed')), Math.max(5_000, Math.floor(env.PROVIDER_SYNC_JOB_LEASE_SECONDS * 1_000 / 3)));
+  const pendingHeartbeats = new Set<Promise<unknown>>();
+  const heartbeat = setInterval(() => {
+    const task = repo.heartbeatProviderSyncJob(job.id, syncWorkerId);
+    pendingHeartbeats.add(task);
+    task.then(
+      () => pendingHeartbeats.delete(task),
+      (error: unknown) => {
+        pendingHeartbeats.delete(task);
+        logger.warn({ error, jobId: job.id }, 'Provider sync heartbeat failed');
+      },
+    );
+  }, Math.max(5_000, Math.floor(env.PROVIDER_SYNC_JOB_LEASE_SECONDS * 1_000 / 3)));
   heartbeat.unref();
   try {
     const connection = await repo.getProviderConnectionInternal(job.providerConnectionId);
@@ -50,6 +65,7 @@ async function processSyncJob(job: repo.ProviderSyncJob) {
     logger.error({ error, jobId: job.id, connectionId: job.providerConnectionId, attempts: job.attempts }, 'Provider synchronization failed');
   } finally {
     clearInterval(heartbeat);
+    if (pendingHeartbeats.size > 0) await Promise.allSettled([...pendingHeartbeats]);
   }
 }
 
@@ -70,35 +86,42 @@ async function processWebhookEvent(event: repo.ProviderWebhookEvent) {
 }
 
 async function drainSyncJobs() {
+  let processed = 0;
   while (!stopping) {
     const job = await repo.claimNextProviderSyncJob(syncWorkerId, env.PROVIDER_SYNC_JOB_LEASE_SECONDS, env.PROVIDER_SYNC_MAX_ATTEMPTS);
-    if (!job) return;
+    if (!job) break;
     await processSyncJob(job);
+    processed += 1;
   }
+  runtimeMonitor.progress({ phase: 'sync-idle', processed });
 }
 
 async function drainWebhookEvents() {
+  let processed = 0;
   while (!stopping) {
     const event = await repo.claimNextProviderWebhookEvent(webhookWorkerId, env.PROVIDER_WEBHOOK_LEASE_SECONDS, env.PROVIDER_WEBHOOK_MAX_ATTEMPTS);
-    if (!event) return;
+    if (!event) break;
     await processWebhookEvent(event);
+    processed += 1;
   }
+  runtimeMonitor.progress({ phase: 'webhook-idle', processed });
 }
 
 function requestSyncDrain() {
   if (stopping || syncDrain) return syncDrain;
-  syncDrain = drainSyncJobs().catch((error) => logger.error({ error }, 'Provider sync worker cycle failed')).finally(() => { syncDrain = null; });
+  syncDrain = drainSyncJobs().catch((error) => { runtimeMonitor.failed(error); logger.error({ error }, 'Provider sync worker cycle failed'); }).finally(() => { syncDrain = null; });
   return syncDrain;
 }
 
 function requestWebhookDrain() {
   if (stopping || webhookDrain) return webhookDrain;
-  webhookDrain = drainWebhookEvents().catch((error) => logger.error({ error }, 'Provider webhook worker cycle failed')).finally(() => { webhookDrain = null; });
+  webhookDrain = drainWebhookEvents().catch((error) => { runtimeMonitor.failed(error); logger.error({ error }, 'Provider webhook worker cycle failed'); }).finally(() => { webhookDrain = null; });
   return webhookDrain;
 }
 
 export function startProviderControlWorkers() {
   stopping = false;
+  runtimeMonitor.start({ syncWorkerId, webhookWorkerId });
   if (!syncTimer) syncTimer = setInterval(requestSyncDrain, env.PROVIDER_SYNC_WORKER_INTERVAL_MS);
   if (!webhookTimer) webhookTimer = setInterval(requestWebhookDrain, env.PROVIDER_WEBHOOK_WORKER_INTERVAL_MS);
   syncTimer.unref();
@@ -114,6 +137,8 @@ export async function stopProviderControlWorkers() {
   if (webhookTimer) clearInterval(webhookTimer);
   syncTimer = null;
   webhookTimer = null;
+  await runtimeMonitor.stopping();
   if (syncDrain) await syncDrain;
   if (webhookDrain) await webhookDrain;
+  await runtimeMonitor.stopped();
 }

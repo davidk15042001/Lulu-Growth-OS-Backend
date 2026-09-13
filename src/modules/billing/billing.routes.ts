@@ -11,7 +11,11 @@ router.post('/airwallex/webhook', async (req, res, next) => {
     if (!rawBody) {
       throw new AppError(400, 'AIRWALLEX_RAW_BODY_MISSING', 'Airwallex webhook raw body is missing', { required: 'rawBody' });
     }
-    verifyWebhookSignature(rawBody, req.header('x-timestamp') ?? undefined, req.header('x-signature') ?? undefined, req.header('x-nonce') ?? undefined);
+    verifyWebhookSignature(
+      rawBody,
+      req.header('x-timestamp') ?? undefined,
+      req.header('x-signature') ?? undefined,
+    );
     return successResponse(res, 'Airwallex webhook processed', await handleWebhook(req.body as Record<string, unknown>));
   } catch (error) {
     next(error);

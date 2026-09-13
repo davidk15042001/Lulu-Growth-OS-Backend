@@ -2,7 +2,7 @@ import { logger } from '../../config/logger.js';
 import { executeAuthorizedAgentPacket } from './agent.authorization.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as recordRepo from '../records/record.repo.js';
-import { createAiDraft, createDraft, sendDraft } from '../email/email.service.js';
+import { createAiDraft, createDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
 import { generateProductImagesFromText } from '../product-images/product-image.service.js';
@@ -11,16 +11,51 @@ import {
   type AgentExecutionCommand,
 } from './agent.execution-command.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
-import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-import { assertAdSpendFunded, consumeAdSpendReservation, releaseAdSpendReservation, reserveAdSpend } from '../adspend/adspend.repo.js';
+import { DOMAIN_EVENT_TYPES, type DomainEvent } from '../../events/domain-event.types.js';
 import { executeAdvertisingProviderOperation } from '../adspend/advertising.provider.service.js';
 import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
+import * as commerceService from '../commerce/commerce.service.js';
+import {
+  adjustInventorySchema,
+  createFulfillmentSchema,
+  createOrderSchema,
+  transitionFulfillmentSchema,
+  transitionOrderSchema,
+  updateOrderSchema,
+} from '../commerce/commerce.validator.js';
+import * as socialPublishingService from '../social-publishing/social-publishing.service.js';
+import {
+  createSocialContentSchema,
+  createSocialPublicationSchema,
+  transitionSocialPublicationSchema,
+} from '../social-publishing/social-publishing.validator.js';
+import { requestSocialPublishingWorkerRun } from '../social-publishing/social-publishing.worker.js';
+import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
+import { createInvoiceSchema } from '../commercial-documents/commercial-documents.validator.js';
+import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
 const maxExecutionAttempts = 3;
 let timer: NodeJS.Timeout | undefined;
-let running = false;
+let activeCycle: Promise<void> | null = null;
+let stopping = false;
+const activeEventTasks = new Set<Promise<unknown>>();
+
+function trackAgentExecutionEvent<T>(operation: () => Promise<T>): Promise<T> | null {
+  if (stopping) return null;
+  const task = operation();
+  activeEventTasks.add(task);
+  task.then(
+    () => activeEventTasks.delete(task),
+    (error: unknown) => {
+      activeEventTasks.delete(task);
+      runtimeMonitor.failed(error);
+    },
+  );
+  return task;
+}
+const runtimeMonitor = createRuntimeWorkerMonitor('agent-execution', { required: true, staleAfterMs: 120_000 });
 
 function textValue(value: unknown, maxLength = 400) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
@@ -74,25 +109,13 @@ function isoAfterMinutes(minutes: number) {
 }
 
 function resolveDomainArtifactType(targetSystem: string): ResourceType | null {
-  if (targetSystem === 'crm') return 'crm_tasks';
-  if (targetSystem === 'sales') return 'sales_tasks';
-  if (targetSystem === 'marketing') return 'marketing_content';
-  if (targetSystem === 'advertising') return 'ad_optimizations';
-  if (targetSystem === 'finance') return 'finance_automations';
-  if (targetSystem === 'ecommerce') return 'ai_tasks';
-  if (targetSystem === 'website') return 'marketing_publications';
-  if (targetSystem === 'communication') return 'ai_tasks';
-  if (targetSystem === 'reputation') return 'ai_tasks';
-  return 'ai_tasks';
+  return targetSystem ? 'ai_tasks' : null;
 }
 
 function resolveCommandResultResourceType(command: AgentExecutionCommand): ResourceType {
   if (command.type === 'crm.create_followup_task') return 'crm_tasks';
   if (command.type === 'sales.create_followup_task') return 'sales_tasks';
-  if (command.type === 'advertising.create_optimization') return 'ad_optimizations';
   if (command.type === 'finance.create_automation') return 'finance_automations';
-  if (command.type === 'website.publish_job') return 'marketing_publications';
-  if (command.type === 'ecommerce.generate_product_images') return 'ecommerce_products';
   return 'activities';
 }
 
@@ -155,6 +178,7 @@ async function persistCommandExecutionResult(
   record: recordRepo.WorkspaceRecord,
   command: AgentExecutionCommand,
   result: Record<string, unknown>,
+  lifecycle: 'completed' | 'waiting_for_provider' | 'provider_failed' = 'completed',
 ) {
   const existing = await recordRepo.findExecutionResultByCommandIdempotencyKey(record.workspaceId, command.idempotencyKey);
   if (existing) return existing;
@@ -163,8 +187,8 @@ async function persistCommandExecutionResult(
     parentId: record.id,
     name: `${command.type} result`,
     description: command.summary,
-    status: 'completed',
-    stage: 'executed',
+    status: lifecycle === 'provider_failed' ? 'failed' : lifecycle === 'completed' ? 'completed' : 'active',
+    stage: lifecycle,
     source: 'agent_executor_command',
     tags: ['agent-executor-command', command.targetSystem, command.type].slice(0, 12),
     externalId: command.idempotencyKey,
@@ -176,7 +200,8 @@ async function persistCommandExecutionResult(
       commandProvider: command.provider,
       commandPayload: command.payload,
       commandResult: result,
-      executedAt: new Date().toISOString(),
+      executedAt: lifecycle === 'completed' ? new Date().toISOString() : null,
+      providerQueuedAt: lifecycle === 'waiting_for_provider' ? new Date().toISOString() : null,
     },
   });
 }
@@ -184,12 +209,18 @@ async function persistCommandExecutionResult(
 async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: AgentExecutionCommand) {
   const existing = await recordRepo.findExecutionResultByCommandIdempotencyKey(record.workspaceId, command.idempotencyKey);
   if (existing) {
+    const executionState = existing.stage === 'waiting_for_provider'
+      ? 'waiting_for_provider' as const
+      : existing.status === 'failed' || existing.stage === 'provider_failed'
+        ? 'provider_failed' as const
+        : 'completed' as const;
     return {
       type: command.type,
       targetEntityId: command.targetEntityId,
       provider: command.provider,
       reused: true,
       resultRecordId: existing.id,
+      executionState,
       result: existing.data?.commandResult ?? { status: 'reused' },
     };
   }
@@ -246,19 +277,63 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       const item=await persistCommandExecutionResult(record,command,{status:'executed',...result});
       return {type:command.type,targetEntityId:command.targetEntityId,provider,resultRecordId:item.id,result};
     }
-    const wallet=await assertAdSpendFunded(record.workspaceId);
-    const requested=numberValue(payload.budgetAmountCny,Number(wallet.availableAmount));
-    const amount=Math.min(requested,Number(wallet.availableAmount));
-    const reservation=await reserveAdSpend({workspaceId:record.workspaceId,amount,idempotencyKey:`agent:${command.idempotencyKey}:ad-spend`,platform:provider,campaignId:textValue(payload.campaignId),metadata:{recordId:record.id,commandType:command.type}});
-    try{
-      const result=await executeAdvertisingProviderOperation(record.workspaceId,{provider:'google-ads',action:'launch',customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})});
-      await consumeAdSpendReservation({workspaceId:record.workspaceId,reservationId:reservation.id,providerOperationId:result.providerOperationId,metadata:{providerResponse:result.response}});
-      const item=await persistCommandExecutionResult(record,command,{status:'executed',reservationId:reservation.id,budgetAmountCny:amount,...result});
-      return {type:command.type,targetEntityId:command.targetEntityId,provider,resultRecordId:item.id,result:{...result,reservationId:reservation.id,budgetAmountCny:amount}};
-    }catch(error){
-      await releaseAdSpendReservation({workspaceId:record.workspaceId,reservationId:reservation.id,reason:error instanceof Error?error.message:'Provider execution failed'});
-      throw error;
+    const amount=numberValue(payload.budgetAmountCny);
+    const authorizationId=textValue(payload.authorizationId);
+    if(amount<=0||!authorizationId)throw new Error('advertising.create_optimization launch requires an explicit budgetAmountCny and customer authorizationId');
+    const result=await executeAdvertisingProviderOperation(record.workspaceId,{provider:'google-ads',action:'launch',customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,authorizationId,operationKey:`agent:${command.idempotencyKey}:ad-spend`,...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})});
+    const item=await persistCommandExecutionResult(record,command,{status:'executed',...result});
+    return {type:command.type,targetEntityId:command.targetEntityId,provider,resultRecordId:item.id,result};
+  }
+
+  if (command.type === 'finance.invoice.create_from_order') {
+    const orderId = textValue(payload.orderId || command.targetEntityId);
+    if (!orderId) throw new Error('finance.invoice.create_from_order requires orderId');
+    const order = await commerceService.getOrder(record.workspaceId, orderId);
+    if (!['CONFIRMED', 'PROCESSING', 'PARTIALLY_FULFILLED', 'FULFILLED'].includes(order.order.status)) {
+      throw new Error('finance.invoice.create_from_order requires a confirmed or fulfilling canonical order');
     }
+    const invoiceInput = createInvoiceSchema.parse({
+      operationKey: `agent:${command.idempotencyKey}:invoice-create`,
+      commerceOrderId: order.order.id,
+      customerRecordId: order.order.customerRecordId,
+      companyRecordId: order.order.companyRecordId,
+      quoteId: order.order.quoteId,
+      currency: order.order.currency,
+      invoiceType: payload.invoiceType ?? 'STANDARD',
+      issueDate: payload.issueDate ?? null,
+      dueDate: payload.dueDate ?? null,
+      shippingTotal: order.order.shippingTotal,
+      source: 'api',
+      creationMode: 'AUTOMATIC',
+      language: payload.language ?? 'en',
+      lines: order.lines.map((line) => ({
+        productId: line.productId,
+        sku: line.sku ?? null,
+        productName: line.productName,
+        description: line.description ?? null,
+        quantity: line.quantity,
+        quantityUnit: line.quantityUnit ?? null,
+        unitPrice: line.unitPrice,
+        discount: line.discount,
+        tax: line.tax,
+        sortOrder: line.sortOrder,
+      })),
+    });
+    const invoice = await commercialDocumentService.createInvoice(record.workspaceId, actorUserId, invoiceInput, {
+      actorType: 'AI_AGENT',
+      actorRef: record.id,
+      sourceActionRecordId: record.id,
+      correlationId: command.idempotencyKey,
+      causationId: record.id,
+    });
+    if (!invoice?.invoice?.id) throw new Error('Canonical invoice creation did not return an invoice');
+    const stored = await persistCommandExecutionResult(record, command, {
+      orderId,
+      invoiceId: invoice.invoice.id,
+      invoiceNumber: invoice.invoice.invoiceNumber,
+      status: invoice.invoice.status,
+    });
+    return { type: command.type, targetEntityId: invoice.invoice.id, provider: command.provider, resultRecordId: stored.id, result: invoice };
   }
 
   if (command.type === 'finance.create_automation') {
@@ -268,14 +343,15 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       description: textValue(payload.description || command.summary, 4000),
       jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
       status: 'planned',
-      executionBoundary: 'full_accounting_engine_excluded',
+      executionBoundary: 'planning_artifact_only',
+      canonicalFinanceAvailable: true,
     });
     return {
       type: command.type,
       targetEntityId: item.id,
       provider: command.provider,
       resultRecordId: item.id,
-      result: { status: 'planned', resourceType, executionBoundary: 'full_accounting_engine_excluded' },
+      result: { status: 'planned', resourceType, executionBoundary: 'planning_artifact_only', canonicalFinanceAvailable: true },
     };
   }
 
@@ -291,20 +367,18 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       bodyText: textValue(payload.bodyText, 100_000),
       replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
     });
-    const sent = await sendDraft(record.workspaceId, draft.id);
     const stored = await persistCommandExecutionResult(record, command, {
       draftId: draft.id,
       threadId: draft.threadId,
-      status: 'sent',
+      status: 'drafted',
       source: draft.source,
-      providerMessageId: sent?.providerMessageId ?? null,
     });
     return {
       type: command.type,
       targetEntityId: draft.id,
       provider: command.provider,
       resultRecordId: stored.id,
-      result: { draftId: draft.id, threadId: draft.threadId, status: 'sent', source: draft.source, providerMessageId: sent?.providerMessageId ?? null },
+      result: { draftId: draft.id, threadId: draft.threadId, status: 'drafted', source: draft.source },
     };
   }
 
@@ -325,20 +399,18 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       'automation',
       { sourceActionRecordId: record.id, generatedBy: 'agent_executor' },
     );
-    const sent = await sendDraft(record.workspaceId, draft.id);
     const stored = await persistCommandExecutionResult(record, command, {
       draftId: draft.id,
       threadId: draft.threadId,
-      status: 'sent',
+      status: 'drafted',
       source: draft.source,
-      providerMessageId: sent?.providerMessageId ?? null,
     });
     return {
       type: command.type,
       targetEntityId: draft.id,
       provider: command.provider,
       resultRecordId: stored.id,
-      result: { draftId: draft.id, threadId: draft.threadId, status: 'sent', source: draft.source, providerMessageId: sent?.providerMessageId ?? null },
+      result: { draftId: draft.id, threadId: draft.threadId, status: 'drafted', source: draft.source },
     };
   }
 
@@ -395,12 +467,201 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     };
   }
 
+  const commerceActor = {
+    actorType: 'AI_AGENT' as const,
+    actorRef: record.id,
+    correlationId: command.idempotencyKey,
+    causationId: record.id,
+  };
+
+  if (command.type === 'commerce.order.create') {
+    const input = createOrderSchema.parse({ ...payload, idempotencyKey: command.idempotencyKey });
+    const order = await commerceService.createOrder(record.workspaceId, commerceActor, input);
+    const stored = await persistCommandExecutionResult(record, command, {
+      orderId: order.order.id,
+      orderNumber: order.order.orderNumber,
+      status: order.order.status,
+      version: order.order.version,
+    });
+    return { type: command.type, targetEntityId: order.order.id, provider: command.provider, resultRecordId: stored.id, result: order };
+  }
+
+  if (command.type === 'commerce.order.update') {
+    const orderId = textValue(payload.orderId || command.targetEntityId);
+    if (!orderId) throw new Error('commerce.order.update requires orderId');
+    const input = updateOrderSchema.parse({ ...payload, idempotencyKey: command.idempotencyKey });
+    const order = await commerceService.updateOrder(record.workspaceId, orderId, commerceActor, input);
+    const stored = await persistCommandExecutionResult(record, command, {
+      orderId: order.order.id,
+      status: order.order.status,
+      version: order.order.version,
+    });
+    return { type: command.type, targetEntityId: order.order.id, provider: command.provider, resultRecordId: stored.id, result: order };
+  }
+
+  if (command.type === 'commerce.order.transition') {
+    const orderId = textValue(payload.orderId || command.targetEntityId);
+    if (!orderId) throw new Error('commerce.order.transition requires orderId');
+    const input = transitionOrderSchema.parse({ ...payload, idempotencyKey: command.idempotencyKey });
+    const order = await commerceService.transitionOrder(record.workspaceId, orderId, commerceActor, input);
+    const stored = await persistCommandExecutionResult(record, command, {
+      orderId: order.order.id,
+      status: order.order.status,
+      version: order.order.version,
+    });
+    return { type: command.type, targetEntityId: order.order.id, provider: command.provider, resultRecordId: stored.id, result: order };
+  }
+
+  if (command.type === 'commerce.inventory.adjust') {
+    const input = adjustInventorySchema.parse({ ...payload, idempotencyKey: command.idempotencyKey });
+    const level = await commerceService.adjustInventory(record.workspaceId, commerceActor, input);
+    const stored = await persistCommandExecutionResult(record, command, {
+      inventoryLevelId: level.id,
+      available: level.available,
+      version: level.version,
+    });
+    return { type: command.type, targetEntityId: level.id, provider: command.provider, resultRecordId: stored.id, result: level };
+  }
+
+  if (command.type === 'commerce.fulfillment.create') {
+    const orderId = textValue(payload.orderId || command.targetEntityId);
+    if (!orderId) throw new Error('commerce.fulfillment.create requires orderId');
+    const input = createFulfillmentSchema.parse({ ...payload, idempotencyKey: command.idempotencyKey });
+    const fulfillment = await commerceService.createFulfillment(record.workspaceId, orderId, commerceActor, input);
+    const stored = await persistCommandExecutionResult(record, command, {
+      orderId,
+      fulfillmentId: fulfillment.fulfillment.id,
+      status: fulfillment.fulfillment.status,
+      version: fulfillment.fulfillment.version,
+    });
+    return { type: command.type, targetEntityId: fulfillment.fulfillment.id, provider: command.provider, resultRecordId: stored.id, result: fulfillment };
+  }
+
+  if (command.type === 'commerce.fulfillment.transition') {
+    const orderId = textValue(payload.orderId);
+    const fulfillmentId = textValue(payload.fulfillmentId || command.targetEntityId);
+    if (!orderId || !fulfillmentId) throw new Error('commerce.fulfillment.transition requires orderId and fulfillmentId');
+    const input = transitionFulfillmentSchema.parse({ ...payload, idempotencyKey: command.idempotencyKey });
+    const fulfillment = await commerceService.transitionFulfillment(
+      record.workspaceId,
+      orderId,
+      fulfillmentId,
+      commerceActor,
+      input,
+    );
+    const stored = await persistCommandExecutionResult(record, command, {
+      orderId,
+      fulfillmentId: fulfillment.fulfillment.id,
+      status: fulfillment.fulfillment.status,
+      version: fulfillment.fulfillment.version,
+    });
+    return { type: command.type, targetEntityId: fulfillment.fulfillment.id, provider: command.provider, resultRecordId: stored.id, result: fulfillment };
+  }
+
+  if (command.type === 'social.content.publish') {
+    const contentInput = createSocialContentSchema.parse({
+      ...payload,
+      status: 'READY',
+      idempotencyKey: `${command.idempotencyKey}:content`,
+    });
+    const contentResult = await socialPublishingService.createContent({
+      workspaceId: record.workspaceId,
+      actorId: actorUserId,
+      actorType: 'AI_AGENT',
+      actorRef: record.id,
+      contentType: contentInput.contentType,
+      status: 'READY',
+      message: contentInput.message,
+      linkUrl: contentInput.linkUrl ?? null,
+      mediaUrl: contentInput.mediaUrl ?? null,
+      altText: contentInput.altText ?? null,
+      metadata: { ...contentInput.metadata, sourceActionRecordId: record.id },
+      idempotencyKey: contentInput.idempotencyKey,
+    });
+    const publicationInput = createSocialPublicationSchema.parse({
+      socialAccountId: payload.socialAccountId,
+      contentId: contentResult.content.id,
+      execution: 'QUEUE',
+      scheduledAt: payload.scheduledAt ?? null,
+      maxAttempts: payload.maxAttempts ?? 5,
+      idempotencyKey: `${command.idempotencyKey}:publication`,
+    });
+    const publicationResult = await socialPublishingService.createPublication({
+      workspaceId: record.workspaceId,
+      actorId: actorUserId,
+      actorType: 'AI_AGENT',
+      actorRef: record.id,
+      socialAccountId: publicationInput.socialAccountId,
+      contentId: publicationInput.contentId,
+      execution: 'QUEUE',
+      scheduledAt: publicationInput.scheduledAt ?? null,
+      maxAttempts: publicationInput.maxAttempts,
+      idempotencyKey: publicationInput.idempotencyKey,
+    });
+    if (['QUEUED', 'SCHEDULED'].includes(publicationResult.job.status)) requestSocialPublishingWorkerRun();
+    const socialState = publicationResult.job.status === 'BLOCKED' || publicationResult.job.status === 'FAILED'
+      ? 'provider_failed' as const
+      : publicationResult.job.status === 'PUBLISHED'
+        ? 'completed' as const
+        : 'waiting_for_provider' as const;
+    const stored = await persistCommandExecutionResult(record, command, {
+      contentId: contentResult.content.id,
+      publicationId: publicationResult.job.id,
+      status: publicationResult.job.status,
+      version: publicationResult.job.version,
+    }, socialState);
+    return {
+      type: command.type,
+      targetEntityId: publicationResult.job.id,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      executionState: socialState,
+      result: { content: contentResult.content, publication: publicationResult.job },
+    };
+  }
+
+  if (command.type === 'social.publication.retry' || command.type === 'social.publication.cancel') {
+    const publicationId = textValue(payload.publicationId || command.targetEntityId);
+    if (!publicationId) throw new Error(`${command.type} requires publicationId`);
+    const input = transitionSocialPublicationSchema.parse(payload);
+    const action = command.type === 'social.publication.retry' ? 'RETRY' as const : 'CANCEL' as const;
+    const publication = await socialPublishingService.transitionPublication({
+      workspaceId: record.workspaceId,
+      jobId: publicationId,
+      actorId: actorUserId,
+      actorType: 'AI_AGENT',
+      actorRef: record.id,
+      expectedVersion: input.expectedVersion,
+      action,
+      ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}),
+    });
+    if (action === 'RETRY') requestSocialPublishingWorkerRun();
+    const socialState = action === 'RETRY'
+      ? 'waiting_for_provider' as const
+      : 'completed' as const;
+    const stored = await persistCommandExecutionResult(record, command, {
+      publicationId: publication.id,
+      status: publication.status,
+      version: publication.version,
+    }, socialState);
+    return { type: command.type, targetEntityId: publication.id, provider: command.provider, resultRecordId: stored.id, executionState: socialState, result: publication };
+  }
+
   throw new Error(`No executable adapter is registered for agent command ${command.type}`);
 }
 
-async function executeRecord(record: recordRepo.WorkspaceRecord) {
+type CommandExecutionResult = {
+  type: AgentExecutionCommand['type'];
+  targetEntityId: string | null;
+  provider: string | null;
+  resultRecordId?: string;
+  result: unknown;
+  executionState?: 'completed' | 'waiting_for_provider' | 'provider_failed';
+};
+
+function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
   const data = record.data ?? {};
-  const commands = normalizeAgentExecutionCommands(data.commands, {
+  return normalizeAgentExecutionCommands(data.commands, {
     module: textValue(data.targetModule) || textValue(data.module) || 'general',
     targetSystem: textValue(data.targetSystem) || 'ai',
     actionResourceType: record.resourceType,
@@ -428,7 +689,14 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
     provider: textValue(data.provider) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
   });
-  const commandResults = await executeAuthorizedAgentPacket(record,commands,command=>executeAgentCommand(record,command));
+}
+
+async function finalizeExecutionRecord(
+  record: recordRepo.WorkspaceRecord,
+  commands: AgentExecutionCommand[],
+  commandResults: CommandExecutionResult[],
+) {
+  const data = record.data ?? {};
   const artifacts = await createExecutionArtifacts(record);
   const commandResultEntries: Array<{ id: string; resourceType: ResourceType }> = commands.flatMap((command, index) => {
     const resultId = commandResults[index]?.resultRecordId;
@@ -436,39 +704,74 @@ async function executeRecord(record: recordRepo.WorkspaceRecord) {
       ? [{ id: resultId, resourceType: resolveCommandResultResourceType(command) }]
       : [];
   });
-
   const resultRecords: Array<{ id: string; resourceType: ResourceType }> = [
     { id: artifacts.activity.id, resourceType: artifacts.activity.resourceType },
     ...(artifacts.artifact ? [{ id: artifacts.artifact.id, resourceType: artifacts.artifact.resourceType }] : []),
     ...commandResultEntries,
   ];
-
-  const nextData = {
-    ...data,
-    commands,
-    commandTypes: [...new Set(commands.map((command) => command.type))],
-    executionStatus: 'executed',
-    sideEffectsApplied: commandResults.some((item) => item.type !== 'record.create_artifact'),
-    executionCompletedAt: new Date().toISOString(),
-    executorVersion: '1.0.0',
-    executionSummary: executionSummary(record),
-    executionResults: commandResults,
-    resultRecords,
-    resultRecordIds: resultRecords.map((entry) => entry.id),
-    resultResourceTypes: resultRecords.map((entry) => entry.resourceType),
-    executionNextAttemptAt: null,
-    executionError: null,
-  };
   const update = await recordRepo.updateRecord(record.workspaceId, record.resourceType, record.id, record.createdBy, {
     status: 'completed',
     stage: 'executed',
-    data: nextData,
+    data: {
+      ...data,
+      commands,
+      commandTypes: [...new Set(commands.map((command) => command.type))],
+      executionReady: false,
+      executionStatus: 'executed',
+      sideEffectsApplied: commandResults.some((item) => item.type !== 'record.create_artifact'),
+      executionCompletedAt: new Date().toISOString(),
+      executorVersion: '1.0.0',
+      executionSummary: executionSummary(record),
+      executionResults: commandResults,
+      resultRecords,
+      resultRecordIds: resultRecords.map((entry) => entry.id),
+      resultResourceTypes: resultRecords.map((entry) => entry.resourceType),
+      pendingProviderOperations: [],
+      executionNextAttemptAt: null,
+      executionError: null,
+    },
     description: textValue(record.description) || textValue(data.goal) || `Executed action packet for ${textValue(data.pageLabel) || record.name}.`,
     expectedVersion: record.version,
   });
-  if (update.status !== 'updated') {
-    throw new Error(`Executor could not finalize record ${record.id}: ${update.status}`);
+  if (update.status !== 'updated') throw new Error(`Executor could not finalize record ${record.id}: ${update.status}`);
+}
+
+async function executeRecord(record: recordRepo.WorkspaceRecord) {
+  const data = record.data ?? {};
+  const commands = normalizedCommandsForRecord(record);
+  const commandResults = await executeAuthorizedAgentPacket(record,commands,command=>executeAgentCommand(record,command));
+  const failedProviderResult = commandResults.find((item) => 'executionState' in item && item.executionState === 'provider_failed');
+  if (failedProviderResult) {
+    throw new Error(`invalid provider execution state for ${failedProviderResult.type}`);
   }
+  const pendingProviderResults = commandResults.filter((item) => 'executionState' in item && item.executionState === 'waiting_for_provider');
+  if (pendingProviderResults.length > 0) {
+    const update = await recordRepo.updateRecord(record.workspaceId, record.resourceType, record.id, record.createdBy, {
+      status: 'active',
+      stage: 'waiting_for_provider',
+      data: {
+        ...data,
+        commands,
+        commandTypes: [...new Set(commands.map((command) => command.type))],
+        executionReady: false,
+        executionStatus: 'waiting_for_provider',
+        sideEffectsApplied: true,
+        providerWaitingSince: new Date().toISOString(),
+        executionResults: commandResults,
+        pendingProviderOperations: pendingProviderResults.map((item) => ({
+          type: item.type,
+          targetEntityId: item.targetEntityId,
+          resultRecordId: item.resultRecordId,
+        })),
+        executionNextAttemptAt: null,
+        executionError: null,
+      },
+      expectedVersion: record.version,
+    });
+    if (update.status !== 'updated') throw new Error(`Executor could not persist provider wait for record ${record.id}: ${update.status}`);
+    return;
+  }
+  await finalizeExecutionRecord(record, commands, commandResults as CommandExecutionResult[]);
 }
 
 function classifyExecutionError(error: unknown) {
@@ -510,24 +813,187 @@ async function failRecord(record: recordRepo.WorkspaceRecord, error: unknown) {
   }
 }
 
-export async function runAgentExecutionCycle() {
-  if (running) return;
-  running = true;
-  try {
-    const claimed = await recordRepo.claimExecutionReadyRecords(batchSize);
-    for (const record of claimed) {
-      try {
-        await executeRecord(record);
-      } catch (error) {
-        await failRecord(record, error);
-        logger.error({ error, workspaceId: record.workspaceId, recordId: record.id }, 'Agent execution record failed');
-      }
-    }
-  } catch (error) {
-    logger.error({ error }, 'Agent execution worker cycle failed');
-  } finally {
-    running = false;
+function receiptPublicationId(receipt: recordRepo.WorkspaceRecord) {
+  const commandResult = objectValue(receipt.data?.commandResult);
+  return textValue(commandResult.publicationId);
+}
+
+function commandResultFromReceipt(
+  command: AgentExecutionCommand,
+  receipt: recordRepo.WorkspaceRecord,
+): CommandExecutionResult {
+  const result = objectValue(receipt.data?.commandResult);
+  const targetEntityId = textValue(
+    result.publicationId
+      ?? result.orderId
+      ?? result.invoiceId
+      ?? result.fulfillmentId
+      ?? result.inventoryLevelId,
+  ) || null;
+  return {
+    type: command.type,
+    targetEntityId,
+    provider: command.provider,
+    resultRecordId: receipt.id,
+    executionState: receipt.status === 'failed' || receipt.stage === 'provider_failed'
+      ? 'provider_failed'
+      : receipt.stage === 'waiting_for_provider'
+        ? 'waiting_for_provider'
+        : 'completed',
+    result,
+  };
+}
+
+async function reconcileSocialProviderResult(event: DomainEvent) {
+  const workspaceId = event.workspaceId;
+  const actionRecordId = typeof event.metadata.actorRef === 'string' ? event.metadata.actorRef : '';
+  const actorType = typeof event.metadata.actorType === 'string' ? event.metadata.actorType.toUpperCase() : '';
+  const publicationId = textValue(event.payload.jobId ?? event.aggregateId);
+  const cancelled = event.type === DOMAIN_EVENT_TYPES.SOCIAL_PUBLICATION_CANCELLED;
+  if (!workspaceId || actorType !== 'AI_AGENT' || !actionRecordId || !publicationId) return { ignored: true };
+
+  const actionRecord = await recordRepo.findAgentActionRecord(workspaceId, actionRecordId);
+  if (!actionRecord) return { ignored: true, reason: 'action_packet_not_found' };
+  if (actionRecord.stage === 'executing') {
+    throw new Error(`Agent action packet ${actionRecord.id} has not persisted its provider wait state yet`);
   }
+  const eligibleStages = cancelled
+    ? ['waiting_for_provider', 'execution_failed', 'execution_cancelled']
+    : ['waiting_for_provider'];
+  if (!eligibleStages.includes(actionRecord.stage ?? '')) return { ignored: true, reason: 'action_packet_not_waiting' };
+
+  const receipts = await recordRepo.listCommandExecutionResultsBySourceRecordId(workspaceId, actionRecord.id);
+  const receipt = receipts.find((item) => receiptPublicationId(item) === publicationId);
+  if (!receipt) throw new Error(`Social provider receipt for publication ${publicationId} was not found`);
+  const receiptVersion = numberValue(objectValue(receipt.data?.commandResult).version);
+  const eventVersion = numberValue(event.payload.version);
+  if (receiptVersion > 0 && eventVersion > 0 && eventVersion < receiptVersion) {
+    return { ignored: true, reason: 'stale_provider_transition', eventVersion, receiptVersion };
+  }
+  if (receipt.stage === 'waiting_for_provider' || (cancelled && receipt.stage === 'provider_failed')) {
+    const published = event.type === DOMAIN_EVENT_TYPES.SOCIAL_PUBLICATION_PUBLISHED;
+    const terminalData = {
+      ...(receipt.data ?? {}),
+      commandResult: {
+        ...objectValue(receipt.data?.commandResult),
+        ...event.payload,
+        status: cancelled ? 'CANCELLED' : published ? 'PUBLISHED' : textValue(event.payload.status) || 'FAILED',
+        providerTerminalEventId: event.id,
+      },
+      executedAt: published ? event.occurredAt : null,
+      providerCompletedAt: event.occurredAt,
+      providerTerminalEventId: event.id,
+      providerError: published || cancelled ? null : {
+        code: textValue(event.payload.code) || 'SOCIAL_PUBLICATION_FAILED',
+        message: textValue(event.payload.message, 2000) || 'The social provider did not publish the content.',
+      },
+    };
+    const updated = await recordRepo.updateRecord(workspaceId, receipt.resourceType, receipt.id, actionRecord.createdBy, {
+      status: cancelled ? 'cancelled' : published ? 'completed' : 'failed',
+      stage: cancelled ? 'execution_cancelled' : published ? 'completed' : 'provider_failed',
+      data: terminalData,
+      expectedVersion: receipt.version,
+    });
+    if (updated.status !== 'updated') throw new Error(`Social provider receipt ${receipt.id} could not be reconciled: ${updated.status}`);
+  }
+
+  const terminalReceipts = await recordRepo.listCommandExecutionResultsBySourceRecordId(workspaceId, actionRecord.id);
+  if (terminalReceipts.some((item) => item.stage === 'waiting_for_provider')) {
+    return { reconciled: true, completed: false, waitingForOtherProviders: true };
+  }
+  const cancelledReceipt = terminalReceipts.find((item) => item.status === 'cancelled' || item.stage === 'execution_cancelled');
+  if (cancelledReceipt) {
+    if (actionRecord.status === 'cancelled' && actionRecord.stage === 'execution_cancelled') {
+      return { reconciled: true, completed: false, cancelled: true };
+    }
+    const update = await recordRepo.updateRecord(workspaceId, actionRecord.resourceType, actionRecord.id, actionRecord.createdBy, {
+      status: 'cancelled',
+      stage: 'execution_cancelled',
+      data: {
+        ...(actionRecord.data ?? {}),
+        executionReady: false,
+        executionStatus: 'cancelled',
+        executionRetryable: false,
+        executionError: null,
+        pendingProviderOperations: [],
+        executionNextAttemptAt: null,
+      },
+      expectedVersion: actionRecord.version,
+    });
+    if (update.status !== 'updated') throw new Error(`Agent action packet ${actionRecord.id} could not record provider cancellation: ${update.status}`);
+    return { reconciled: true, completed: false, cancelled: true };
+  }
+  const failedReceipt = terminalReceipts.find((item) => item.status === 'failed' || item.stage === 'provider_failed');
+  if (failedReceipt) {
+    const failedResult = objectValue(failedReceipt.data?.commandResult);
+    const update = await recordRepo.updateRecord(workspaceId, actionRecord.resourceType, actionRecord.id, actionRecord.createdBy, {
+      status: 'failed',
+      stage: 'execution_failed',
+      data: {
+        ...(actionRecord.data ?? {}),
+        executionReady: false,
+        executionStatus: 'failed',
+        executionFailedAt: event.occurredAt,
+        executionRetryable: false,
+        executionErrorClass: 'provider_terminal',
+        executionError: textValue(failedResult.message, 2000)
+          || textValue(event.payload.message, 2000)
+          || 'A provider operation failed.',
+        pendingProviderOperations: [],
+        executionNextAttemptAt: null,
+      },
+      expectedVersion: actionRecord.version,
+    });
+    if (update.status !== 'updated') throw new Error(`Agent action packet ${actionRecord.id} could not record provider failure: ${update.status}`);
+    return { reconciled: true, completed: false, failed: true };
+  }
+
+  const commands = normalizedCommandsForRecord(actionRecord);
+  const receiptsByKey = new Map(terminalReceipts.map((item) => [textValue(item.data?.commandIdempotencyKey), item]));
+  const consumedReceiptIds = new Set<string>();
+  const results = commands.map((command) => {
+    const exactReceipt = receiptsByKey.get(command.idempotencyKey);
+    const commandReceipt = exactReceipt && !consumedReceiptIds.has(exactReceipt.id)
+      ? exactReceipt
+      : terminalReceipts.find((item) => !consumedReceiptIds.has(item.id) && item.data?.commandType === command.type);
+    if (!commandReceipt) throw new Error(`Command receipt ${command.idempotencyKey} was not found during provider finalization`);
+    consumedReceiptIds.add(commandReceipt.id);
+    return commandResultFromReceipt(command, commandReceipt);
+  });
+  await finalizeExecutionRecord(actionRecord, commands, results);
+  return { reconciled: true, completed: true };
+}
+
+export function runAgentExecutionCycle(): Promise<void> {
+  if (activeCycle) return activeCycle;
+  if (stopping) return Promise.resolve();
+  activeCycle = (async () => {
+    const heartbeat = setInterval(() => runtimeMonitor.progress({ phase: 'processing' }), 30_000);
+    heartbeat.unref();
+    let processed = 0;
+    try {
+      for (let index = 0; index < batchSize && !stopping; index += 1) {
+        const record = (await recordRepo.claimExecutionReadyRecords(1))[0];
+        if (!record) break;
+        try {
+          await executeRecord(record);
+        } catch (error) {
+          await failRecord(record, error);
+          logger.error({ error, workspaceId: record.workspaceId, recordId: record.id }, 'Agent execution record failed');
+        }
+        processed += 1;
+      }
+      runtimeMonitor.progress({ phase: processed ? 'processed' : 'idle', processed });
+    } finally {
+      clearInterval(heartbeat);
+    }
+  })()
+    .catch((error: unknown) => {
+      runtimeMonitor.failed(error);
+      logger.error({ error }, 'Agent execution worker cycle failed');
+    })
+    .finally(() => { activeCycle = null; });
+  return activeCycle;
 }
 
 export function registerAgentExecutionHandlers() {
@@ -539,10 +1005,25 @@ export function registerAgentExecutionHandlers() {
       return { woken: true };
     },
   });
+  registerDomainEventHandler({
+    name: 'agents.social-provider-result.v1',
+    eventTypes: [
+      DOMAIN_EVENT_TYPES.SOCIAL_PUBLICATION_PUBLISHED,
+      DOMAIN_EVENT_TYPES.SOCIAL_PUBLICATION_FAILED,
+      DOMAIN_EVENT_TYPES.SOCIAL_PUBLICATION_BLOCKED,
+      DOMAIN_EVENT_TYPES.SOCIAL_PUBLICATION_CANCELLED,
+    ],
+    handle(event) {
+      return trackAgentExecutionEvent(() => reconcileSocialProviderResult(event))
+        ?? { ignored: true, stopping: true };
+    },
+  });
 }
 
 export function startAgentExecutionWorker() {
   if (timer) return;
+  stopping = false;
+  runtimeMonitor.start();
   registerAgentExecutionHandlers();
   timer = setInterval(() => void runAgentExecutionCycle(), intervalMs);
   timer.unref();
@@ -550,8 +1031,12 @@ export function startAgentExecutionWorker() {
   logger.info({ intervalMs, batchSize }, 'Agent execution worker started');
 }
 
-export function stopAgentExecutionWorker() {
-  if (!timer) return;
-  clearInterval(timer);
+export async function stopAgentExecutionWorker() {
+  stopping = true;
+  if (timer) clearInterval(timer);
   timer = undefined;
+  await runtimeMonitor.stopping();
+  if (activeCycle) await activeCycle;
+  while (activeEventTasks.size > 0) await Promise.allSettled([...activeEventTasks]);
+  await runtimeMonitor.stopped();
 }

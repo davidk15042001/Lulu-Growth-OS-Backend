@@ -271,7 +271,12 @@ async function generateIntelligence(record: NonNullable<CompanyRecord>, data: Co
       }) }],
     response_format: { type: 'json_object' },
     max_tokens: 2_500,
-  }, { billing: { workspaceId: record.workspaceId, userId: record.createdBy } });
+  }, { billing: {
+    workspaceId: record.workspaceId,
+    userId: record.createdBy,
+    operation: 'crm.company-intelligence',
+    operationId: `${record.id}:v${record.version}:company-intelligence`,
+  } });
   const body = response && typeof response === 'object' ? response as Record<string, unknown> : {};
   const choices = Array.isArray(body.choices) ? body.choices : [];
   const first = choices[0] && typeof choices[0] === 'object' ? choices[0] as Record<string, unknown> : {};
@@ -386,7 +391,7 @@ export async function processCompanyIntelligence(workspaceId: string, recordId: 
     await assertAiBillingAccess(workspaceId, record.createdBy);
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'AI_BILLING_UNAVAILABLE';
-    if (!['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED'].includes(code)) throw error;
+    if (!['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED', 'AI_REVERSAL_DEBT'].includes(code)) throw error;
     await saveCompany(record, {
       ...data,
       enrichment: { ...data.enrichment, status: 'blocked_funds', nextAction: 'Add AI balance to continue automatically', errorCode: code },
@@ -442,7 +447,7 @@ export async function processCompanyIntelligence(workspaceId: string, recordId: 
     return { enriched: true, completeness: completeness(missingFields), missingFields, outreach: outreach.status };
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'COMPANY_INTELLIGENCE_FAILED';
-    const blocked = ['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED'].includes(code);
+    const blocked = ['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED', 'AI_REVERSAL_DEBT'].includes(code);
     await saveCompany(record, {
       ...data,
       enrichment: {
@@ -480,17 +485,20 @@ export async function queueBlockedCompanies(workspaceId: string) {
   return records.rows.length;
 }
 
-export async function queueLegacyCompanies() {
+export async function queueLegacyCompanies(shouldContinue: () => boolean = () => true) {
   const records = await query<{ workspaceId: string; id: string; name: string; data: Record<string, unknown>; createdBy: string }>(
     `SELECT workspace_id AS "workspaceId",id,name,data,created_by AS "createdBy" FROM workspace_records
       WHERE resource_type='crm_companies' AND deleted_at IS NULL
         AND NOT (COALESCE(data,'{}'::jsonb) ? 'enrichment')
       ORDER BY created_at ASC LIMIT 500`,
   );
+  let queued = 0;
   for (const item of records.rows) {
+    if (!shouldContinue()) break;
     await recordRepo.updateRecord(item.workspaceId, 'crm_companies', item.id, item.createdBy, { data: queueCompanyResearch(item.name, item.data, 'legacy_company_backfill') });
+    queued += 1;
   }
-  return records.rows.length;
+  return queued;
 }
 
 export async function attachCustomerResponse(workspaceId: string, conversationId: string) {

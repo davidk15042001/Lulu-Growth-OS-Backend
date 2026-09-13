@@ -31,6 +31,7 @@ const EnvSchema = z
     // its HTTP startup indefinitely behind a stale migration advisory lock.
     RUN_MIGRATIONS_ON_STARTUP: booleanString.default(false),
     BACKGROUND_WORKERS_ENABLED: booleanString.default(true),
+    SHUTDOWN_GRACE_PERIOD_MS: z.coerce.number().int().min(1_000).max(900_000).default(240_000),
     EVENT_WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
     EVENT_WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(500).default(100),
     EVENT_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(10),
@@ -163,6 +164,17 @@ const EnvSchema = z
     GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     GOOGLE_ADS_DEVELOPER_TOKEN: z.string().min(1).optional(),
     GOOGLE_ADS_PREPAID_BILLING_ENABLED: z.enum(['true','false']).default('false').transform(value=>value==='true'),
+    // A boolean flag is not payer evidence. Managed prepaid advertising is
+    // enabled only when the live BillingSetup maps to these server-owned IDs.
+    GOOGLE_ADS_PREPAID_PAYING_MANAGER_CUSTOMER_ID: z.string().regex(/^[0-9-]+$/).optional(),
+    GOOGLE_ADS_PREPAID_PAYMENTS_ACCOUNT_ID: z.string().regex(/^[0-9-]+$/).optional(),
+    GOOGLE_ADS_PREPAID_PAYMENTS_PROFILE_ID: z.string().regex(/^[0-9-]+$/).optional(),
+    GOOGLE_ADS_RECONCILIATION_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(60_000),
+    GOOGLE_ADS_RECONCILIATION_LEASE_SECONDS: z.coerce.number().int().min(30).max(1_800).default(300),
+    GOOGLE_ADS_RECONCILIATION_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
+    GOOGLE_ADS_ACTIVE_RECONCILE_INTERVAL_SECONDS: z.coerce.number().int().min(60).max(86_400).default(900),
+    GOOGLE_ADS_BILLING_RETRY_INTERVAL_SECONDS: z.coerce.number().int().min(300).max(604_800).default(21_600),
+    GOOGLE_ADS_FINALIZATION_LAG_DAYS: z.coerce.number().int().min(1).max(120).default(35),
     META_CLIENT_ID: z.string().min(1).optional(),
     META_CLIENT_SECRET: z.string().min(1).optional(),
     META_GRAPH_VERSION: z.string().regex(/^v[0-9.]+$/).default('v23.0'),

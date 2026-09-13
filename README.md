@@ -88,6 +88,7 @@ All application routes are below `/api/v1`.
 | Members and invitations | `/workspaces/:workspaceId/members`, `POST /workspaces/invitations/:token/accept` |
 | Saved views and audit | `/workspaces/:workspaceId/saved-views`, `GET /workspaces/:workspaceId/audit` |
 | Billing and prepaid wallets | `GET /workspaces/:workspaceId/billing`, `/workspaces/:workspaceId/api-wallet`, `/workspaces/:workspaceId/adspend` |
+| Campaign budget authorizations | `GET/POST /workspaces/:workspaceId/adspend/budget-authorizations`, `POST /workspaces/:workspaceId/adspend/budget-authorizations/:authorizationId/revoke` |
 | Onboarding | `/workspaces/:workspaceId/onboarding/*` |
 | Typed records | `/workspaces/:workspaceId/records/:resourceType` |
 | Metrics | `/workspaces/:workspaceId/metrics` |
@@ -164,7 +165,7 @@ Set `AI_PROVIDER=alibaba`, `AI_PROVIDER=openai`, or `AI_PROVIDER=groq` with the 
 
 ## Prepaid execution and storage billing
 
-AI and premium-media execution use a CNY prepaid wallet with fixed customer packages of ¥1,000, ¥2,500, ¥5,000 and ¥9,000, plus a ¥1 payment-test package. Advertising uses a separate prepaid wallet with fixed packages of ¥10,000, ¥25,000, ¥50,000 and ¥90,000, plus a ¥1 payment-test package; Lulu adds a 4% service fee to the charge without reducing the advertising balance. Both wallets support hosted card payments and Airwallex Alipay/WeChat Pay QR payments. Provider callbacks credit each payment exactly once, and refunds or chargebacks cannot be replayed into available funds.
+AI and premium-media execution use a CNY prepaid wallet with fixed customer packages of ¥1,000, ¥2,500, ¥5,000 and ¥9,000, plus a ¥1 payment-test package. Advertising uses a separate prepaid wallet with fixed packages of ¥10,000, ¥25,000, ¥50,000 and ¥90,000, plus a ¥1 payment-test package; Lulu adds a 4% service fee to the charge without reducing the advertising balance. Both wallets support hosted card payments and Airwallex Alipay/WeChat Pay QR payments. Provider callbacks credit each payment exactly once, and refunds or chargebacks cannot be replayed into available funds. Advertising balance is financing, not campaign permission: launch or increase also requires a server-side authorization scoped to the exact provider account, campaign, currency, validity period and maximum amount.
 
 Only Cloudflare R2 storage is PAYG. Lulu does not deduct Cloudflare's free tier. R2 Standard storage and operation rates receive a 10% margin, and storage additionally includes USD 0.20 per GB-month. The worker performs a daily object-inventory reconciliation and creates weekly storage-only invoices; AI execution is never blocked by a storage invoice.
 

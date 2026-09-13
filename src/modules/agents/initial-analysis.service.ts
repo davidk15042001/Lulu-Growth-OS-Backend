@@ -159,7 +159,7 @@ function buildInstructions() {
 export async function queueInitialBusinessAnalysis(workspaceId: string) {
   if (await hasInitialAnalysis(workspaceId)) return null;
   const plan = await agentRepo.getWorkspacePlan(workspaceId);
-  if ((plan.status !== 'active' && plan.status !== 'trialing') || !['starter', 'ai', 'test'].includes(plan.plan_key)) return null;
+  if (!['active', 'trialing', 'billing_skipped'].includes(plan.status) || !['starter', 'ai', 'test'].includes(plan.plan_key)) return null;
   if (!isAiGenerationConfigured()) throw new AppError(503, 'INITIAL_ANALYSIS_AI_NOT_CONFIGURED', 'The AI provider is not configured for the initial analysis');
 
   const context = await loadInitialAnalysisContext(workspaceId);
@@ -197,7 +197,11 @@ export async function queueInitialBusinessAnalysis(workspaceId: string) {
         ].join('\n\n') }],
         max_output_tokens: 30000,
         store: false,
-      }, { billing: { workspaceId } });
+      }, { billing: {
+        workspaceId,
+        operation: 'initial-business-analysis',
+        operationId: `${run.id}:initial-business-analysis`,
+      } });
       const result = extractJson(response.output_text);
       const actualMetrics = normaliseActualMetrics(result.actualMetrics);
       const sections = result.sections && typeof result.sections === 'object'

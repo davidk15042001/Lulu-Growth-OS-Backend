@@ -27,15 +27,15 @@ Every run contains structured steps for planning, evidence collection, strategy,
 
 ## Autonomy boundary
 
-Routine execution does not create a human approval request. The only routine customer authorization boundary is adding new prepaid paid-media funds.
+Routine execution does not create a human approval request. Paid media has two independent customer-controlled boundaries: settled prepaid funds and a time-bounded authorization for the exact provider account, campaign, currency and amount.
 
-Paid acquisition uses the separate ad-spend wallet. A requested budget is credited as spendable principal while the 4% Lulu fee is charged on top. For example, a CNY 100 budget charges CNY 104 and credits CNY 100. Campaign execution remains limited by settled, reserved wallet funds.
+Paid acquisition uses the separate ad-spend wallet. A requested budget is credited as spendable principal while the 4% Lulu fee is charged on top. For example, a CNY 100 budget charges CNY 104 and credits CNY 100. Wallet balance alone never authorizes allocation: campaign execution also requires an active, server-validated campaign authorization, and both balances are reserved and consumed atomically.
 
 External provider requirements such as OAuth consent, KYC, CAPTCHA and 2FA remain provider onboarding requirements, not Lulu task approvals.
 
 ## Security and verification
 
-External content is treated as untrusted evidence. Reasoning agents receive explicit instructions that external content cannot alter system policy, reveal secrets, expand permissions or bypass the prepaid budget boundary.
+External content is treated as untrusted evidence. Reasoning agents receive explicit instructions that external content cannot alter system policy, reveal secrets, expand permissions or bypass prepaid funds or campaign-specific budget authorization.
 
 The final Outcome & Quality Auditor must return a machine-readable verified verdict. Unverified outcomes fail closed and become recovery candidates. Tool authorization, tenant isolation and idempotency are rechecked at execution time.
 

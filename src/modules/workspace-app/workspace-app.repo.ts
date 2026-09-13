@@ -603,8 +603,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       [workspaceId],
     ),
     getLatestPaygPaymentMethodSetup(workspaceId),
-    query<{availableAmount:string;spentAmount:string;totalFundedAmount:string;currency:string}>(
-      `SELECT available_amount AS "availableAmount",spent_amount AS "spentAmount",total_funded_amount AS "totalFundedAmount",currency
+    query<{availableAmount:string;reservedAmount:string;spentAmount:string;reversalDebtAmount:string;totalFundedAmount:string;currency:string}>(
+      `SELECT available_amount AS "availableAmount",reserved_amount AS "reservedAmount",spent_amount AS "spentAmount",reversal_debt_amount AS "reversalDebtAmount",total_funded_amount AS "totalFundedAmount",currency
        FROM workspace_api_wallets WHERE workspace_id=$1`, [workspaceId]),
   ]);
   const current = paygCurrent.rows[0];
@@ -615,9 +615,11 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     usage: usage.rows,
     apiWallet: apiWallet.rows[0] ? {
       availableAmount: Number(apiWallet.rows[0].availableAmount), spentAmount: Number(apiWallet.rows[0].spentAmount),
+      reservedAmount: Number(apiWallet.rows[0].reservedAmount),
+      reversalDebtAmount: Number(apiWallet.rows[0].reversalDebtAmount),
       totalFundedAmount: Number(apiWallet.rows[0].totalFundedAmount), currency: apiWallet.rows[0].currency,
-      packages: [1, 1000, 2500, 5000, 9000], enabled: Number(apiWallet.rows[0].availableAmount) > 0,
-    } : { availableAmount: 0, spentAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [1,1000,2500,5000,9000], enabled: false },
+      packages: [1, 1000, 2500, 5000, 9000], enabled: Number(apiWallet.rows[0].availableAmount) > 0 && Number(apiWallet.rows[0].reversalDebtAmount) === 0,
+    } : { availableAmount: 0, reservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [1,1000,2500,5000,9000], enabled: false },
     storagePricing: {
       currency: 'USD', freeTierDeduction: false, providerMarkupPercent: 10,
       additionalStoragePerGbMonthUsd: 0.2,

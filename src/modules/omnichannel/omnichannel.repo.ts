@@ -153,19 +153,51 @@ export async function createMessage(input:{workspaceId:string;conversationId:str
 }
 
 export async function claimAiReplyJob(messageId:string) {
-  const {rows}=await query<{messageId:string;workspaceId:string;conversationId:string}>(`UPDATE omni_ai_reply_jobs SET status='PROCESSING',attempts=attempts+1,locked_at=NOW(),updated_at=NOW()
-    WHERE message_id=$1 AND (status IN ('PENDING','WAITING_FUNDS') OR (status='PROCESSING' AND locked_at<NOW()-INTERVAL '5 minutes'))
-    RETURNING message_id AS "messageId",workspace_id AS "workspaceId",conversation_id AS "conversationId"`,[messageId]);
+  const {rows}=await query<{messageId:string;workspaceId:string;conversationId:string;attempts:number;maxAttempts:number}>(`UPDATE omni_ai_reply_jobs SET status='PROCESSING',attempts=attempts+1,locked_at=NOW(),updated_at=NOW()
+    WHERE message_id=$1 AND attempts<max_attempts AND (
+      (status='PENDING' AND available_at<=NOW()) OR status='WAITING_FUNDS'
+      OR (status='PROCESSING' AND locked_at<NOW()-INTERVAL '5 minutes')
+    )
+    RETURNING message_id AS "messageId",workspace_id AS "workspaceId",conversation_id AS "conversationId",attempts,max_attempts AS "maxAttempts"`,[messageId]);
   return rows[0]??null;
 }
 
 export async function markAiReplyJob(messageId:string,status:'PENDING'|'WAITING_FUNDS'|'SUCCEEDED'|'FAILED',error?:string|null) {
-  await query(`UPDATE omni_ai_reply_jobs SET status=$2,last_error=$3,locked_at=NULL,updated_at=NOW() WHERE message_id=$1`,[messageId,status,error??null]);
+  await query(`UPDATE omni_ai_reply_jobs SET status=$2,last_error=$3,locked_at=NULL,
+    attempts=CASE WHEN $2='WAITING_FUNDS' THEN 0 ELSE attempts END,
+    available_at=CASE WHEN $2='PENDING' THEN NOW() ELSE available_at END,
+    completed_at=CASE WHEN $2 IN ('SUCCEEDED','FAILED') THEN NOW() ELSE NULL END,updated_at=NOW()
+    WHERE message_id=$1`,[messageId,status,error?.slice(0,4000)??null]);
+}
+
+export async function rescheduleAiReplyJob(messageId:string,error:string,delayMs:number) {
+  const {rows}=await query<{status:'PENDING'|'FAILED';attempts:number;maxAttempts:number;availableAt:string;completedAt:string|null}>(
+    `UPDATE omni_ai_reply_jobs SET
+       status=CASE WHEN attempts>=max_attempts THEN 'FAILED' ELSE 'PENDING' END,
+       last_error=$2,locked_at=NULL,
+       available_at=NOW()+($3::integer*INTERVAL '1 millisecond'),
+       completed_at=CASE WHEN attempts>=max_attempts THEN NOW() ELSE NULL END,
+       updated_at=NOW()
+     WHERE message_id=$1
+     RETURNING status,attempts,max_attempts AS "maxAttempts",available_at AS "availableAt",completed_at AS "completedAt"`,
+    [messageId,error.slice(0,4000),Math.max(0,Math.floor(delayMs))],
+  );
+  return rows[0]??null;
 }
 
 export async function listWaitingAiReplyMessageIds(workspaceId:string,limit=100) {
   const {rows}=await query<{messageId:string}>(`SELECT message_id AS "messageId" FROM omni_ai_reply_jobs
-    WHERE workspace_id=$1 AND status IN ('PENDING','WAITING_FUNDS') ORDER BY created_at LIMIT $2`,[workspaceId,limit]);
+    WHERE workspace_id=$1 AND status='WAITING_FUNDS' ORDER BY created_at LIMIT $2`,[workspaceId,limit]);
+  return rows.map(row=>row.messageId);
+}
+
+export async function listReadyAiReplyMessageIds(limit=100) {
+  const {rows}=await query<{messageId:string}>(`SELECT message_id AS "messageId" FROM omni_ai_reply_jobs
+    WHERE attempts<max_attempts AND (
+      (status='PENDING' AND available_at<=NOW())
+      OR (status='PROCESSING' AND locked_at<NOW()-INTERVAL '5 minutes')
+    )
+    ORDER BY available_at,created_at LIMIT $1`,[limit]);
   return rows.map(row=>row.messageId);
 }
 

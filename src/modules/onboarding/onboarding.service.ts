@@ -514,7 +514,7 @@ export async function activateKnowledgeBase(workspaceId:string,userId:string,inp
     const premiumJobs:Array<{productId:string;status:string}>=[];
     for(const productId of result.missingImageProductIds){
       try{const production=await startPremiumMediaFromProductBrief(workspaceId,productId,userId,false,false);premiumJobs.push({productId,status:production.job.status});}
-      catch(error){premiumJobs.push({productId,status:error instanceof AppError&&['AI_FUNDS_REQUIRED','AI_FUNDS_EXHAUSTED'].includes(error.code)?'WAITING_FOR_AI_FUNDS':'WAITING_FOR_PREMIUM_RUNTIME'});}
+      catch(error){premiumJobs.push({productId,status:error instanceof AppError&&['AI_FUNDS_REQUIRED','AI_FUNDS_EXHAUSTED','AI_REVERSAL_DEBT'].includes(error.code)?'WAITING_FOR_AI_FUNDS':'WAITING_FOR_PREMIUM_RUNTIME'});}
     }
     return {...result,classification:normalizedClassification,premiumJobs};
   }catch(error){await repo.failKnowledgeActivation(activationId,error);throw error;}

@@ -25,6 +25,44 @@ function cleanString(value: unknown, maxLength: number) {
 export const GLOBAL_BRAND_MISSION = 'Continuously build a trusted global brand at maximum sustainable speed and make the company the number-one choice in its category worldwide.';
 const MARKET_LEADERSHIP_SUFFIX = 'Compare against competitors and category leaders wherever relevant, close the highest-leverage gaps, and move the business toward becoming number one globally.';
 
+// Historical generated navigation metadata placed Sales pages inside Finance
+// and advertising pages inside Marketing. Runtime ownership must follow the
+// business capability, not a legacy sidebar group.
+const PAGE_MODULE_OVERRIDES: Readonly<Partial<Record<string, AgentModule>>> = {
+  'fine-park-8079': 'sales',
+  'softly-autumn-9038': 'sales',
+  'wildly-sun-6424': 'sales',
+  'deeply-month-1392': 'sales',
+  'sweet-evening-7753': 'sales',
+  'warmly-road-3804': 'sales',
+  'wondrously-gate-2200': 'sales',
+  'sharp-cliff-6925': 'sales',
+  'lovingly-shore-4782': 'sales',
+  'rich-moon-9195': 'sales',
+  'lively-house-6788': 'sales',
+  'gentle-cliff-7133': 'sales',
+  'kindly-morning-7115': 'sales',
+  'friendly-tower-1528': 'sales',
+  'friendly-path-8200': 'ads',
+  'wise-brook-1762': 'ads',
+  'happily-storm-2690': 'ads',
+  'sunny-minute-1092': 'ads',
+  'zesty-grass-9196': 'ads',
+  'nicely-shade-2637': 'ads',
+  'nice-moon-2056': 'ads',
+  'sunnily-peak-7188': 'ads',
+  'solid-sand-5563': 'ads',
+  'sunny-summer-2293': 'ads',
+  'website-posts-9016': 'website',
+  'fresh-tide-9404': 'settings',
+  'glad-coast-1428': 'settings',
+};
+
+// The former Companies page redirects to the product-selected CRM route. It
+// remains addressable for old run history but must not schedule a second copy
+// of the same Company employee.
+export const LEGACY_AUTOMATIC_PAGE_IDS = new Set(['kindly-pool-8785']);
+
 function withCompetitiveObjective(objective: string | null) {
   const normalized = typeof objective === 'string' ? objective.trim() : '';
   if (!normalized) return MARKET_LEADERSHIP_SUFFIX;
@@ -37,16 +75,17 @@ function withCompetitiveObjective(objective: string | null) {
 function toAgentPageContext(pageId: string): AgentPageContext | null {
   const canonical = canonicalAgentPageProfileById[pageId];
   if (!canonical) return null;
+  const companyRoute = canonical.pageId === 'sturdy-month-1562';
   return {
     pageId: canonical.pageId,
-    pageLabel: canonical.pageLabel,
+    pageLabel: companyRoute ? 'Companies' : canonical.pageLabel,
     sectionLabel: canonical.sectionLabel,
-    agentName: canonical.agentName,
-    objective: withCompetitiveObjective(canonical.objective),
+    agentName: companyRoute ? 'Company Agent' : canonical.agentName,
+    objective: withCompetitiveObjective(companyRoute ? 'Maintain complete, verified company records.' : canonical.objective),
     autonomy: canonical.autonomy,
-    jobs: [...canonical.jobs],
+    jobs: companyRoute ? ['enrich companies', 'detect duplicates', 'maintain company context'] : [...canonical.jobs],
     integrations: [...canonical.integrations],
-    successMetrics: [...canonical.successMetrics],
+    successMetrics: companyRoute ? ['account completeness', 'duplicate reduction', 'verified data coverage'] : [...canonical.successMetrics],
     approvalGates: [],
   };
 }
@@ -67,6 +106,8 @@ export function resolveAgentModule(explicitModule: AgentModule | undefined, page
   const normalizedSection = page.sectionLabel.trim().toLowerCase();
   const normalizedPageId = page.pageId.trim().toLowerCase();
   const normalizedPageLabel = page.pageLabel.trim().toLowerCase();
+  const moduleOverride = PAGE_MODULE_OVERRIDES[normalizedPageId];
+  if (moduleOverride) return moduleOverride;
   if (normalizedPageId === 'sparklingly-moon-5114' || normalizedPageLabel === 'seo') return 'seo';
   if (normalizedPageId === 'zealously-path-4224' || normalizedPageLabel === 'geo') return 'geo';
   if (normalizedPageId === 'sunny-house-9595' || normalizedPageLabel === 'aeo') return 'aeo';
@@ -116,6 +157,7 @@ export function buildGlobalAgentGoal() {
 
 export const automaticPageProfiles: readonly AgentPageContext[] = Object.freeze(
   canonicalAgentPageProfiles
+    .filter((profile) => !LEGACY_AUTOMATIC_PAGE_IDS.has(profile.pageId))
     .map((profile) => toAgentPageContext(profile.pageId))
     .filter((profile): profile is AgentPageContext => Boolean(profile)),
 );

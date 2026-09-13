@@ -21,9 +21,53 @@ import { startProviderControlWorkers, stopProviderControlWorkers } from './modul
 import { startAssistantActionWorker, stopAssistantActionWorker } from './modules/ai/assistant-action.worker.js';
 import { startCommercialDocumentDeliveryWorker, stopCommercialDocumentDeliveryWorker } from './modules/commercial-documents/commercial-document.delivery.service.js';
 import { startPremiumMediaWorker, stopPremiumMediaWorker } from './modules/premium-media/premium-media.worker.js';
-import { startCompanyIntelligenceWorker } from './modules/crm-company/company-intelligence.worker.js';
-import { startOmnichannelAiReplyWorker } from './modules/omnichannel/omnichannel.ai-reply.worker.js';
+import { startCompanyIntelligenceWorker, stopCompanyIntelligenceWorker } from './modules/crm-company/company-intelligence.worker.js';
+import { startOmnichannelAiReplyWorker, stopOmnichannelAiReplyWorker } from './modules/omnichannel/omnichannel.ai-reply.worker.js';
 import { probeAiRuntime } from './modules/ai/openai.service.js';
+import { startWorkerSupervisorHeartbeat, stopWorkerSupervisorHeartbeat } from './operations/worker-liveness.js';
+import { startSocialPublishingWorker, stopSocialPublishingWorker } from './modules/social-publishing/social-publishing.worker.js';
+import { startGoogleAdsSpendReconciliationWorker, stopGoogleAdsSpendReconciliationWorker } from './modules/adspend/google-ads-spend.worker.js';
+import { autonomousWorkerManifest } from './operations/autonomous-worker-manifest.js';
+import {
+  createIdempotentShutdown,
+  drainRuntime,
+  GracefulShutdownTimeoutError,
+  withGracefulShutdownDeadline,
+} from './operations/graceful-shutdown.js';
+
+const workersEnabled = env.BACKGROUND_WORKERS_ENABLED && !process.env.VERCEL;
+const eventRuntimeEnabled = hasDb && !process.env.VERCEL;
+
+async function stopBackgroundWorkers() {
+  if (!workersEnabled) return;
+  const results = await Promise.allSettled([
+    stopAutomaticAnalysisWorker(),
+    stopAgentExecutionWorker(),
+    ...(hasDb ? [
+      stopAssistantActionWorker(),
+      stopAgentRunWorker(),
+      stopContentGenerationWorker(),
+      stopEmailSyncWorker(),
+      stopCalendarSyncWorker(),
+      stopRateLimitCleanupWorker(),
+      stopWebsiteGenerationWorker(),
+      stopOnboardingFileCleanupWorker(),
+      stopPaygBillingWorker(),
+      stopAdminUserDeletionWorker(),
+      stopProviderControlWorkers(),
+      stopCommercialDocumentDeliveryWorker(),
+      stopPremiumMediaWorker(),
+      stopCompanyIntelligenceWorker(),
+      stopOmnichannelAiReplyWorker(),
+      stopSocialPublishingWorker(),
+      stopGoogleAdsSpendReconciliationWorker(),
+    ] : []),
+  ]);
+  const failures = results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => result.reason);
+  if (failures.length > 0) throw new AggregateError(failures, 'One or more background workers failed to drain');
+}
 
 async function bootstrap() {
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
@@ -39,8 +83,6 @@ async function bootstrap() {
       logger.error({ error }, 'AI startup probe failed; readiness will remain unavailable until a provider succeeds');
     });
   }
-
-  const workersEnabled = env.BACKGROUND_WORKERS_ENABLED && !process.env.VERCEL;
 
   if (workersEnabled) {
     startAutomaticAnalysisWorker();
@@ -61,10 +103,12 @@ async function bootstrap() {
       startPremiumMediaWorker();
       startCompanyIntelligenceWorker();
       startOmnichannelAiReplyWorker();
+      startSocialPublishingWorker();
+      startGoogleAdsSpendReconciliationWorker();
+      await startWorkerSupervisorHeartbeat(autonomousWorkerManifest);
     }
   }
 
-  const eventRuntimeEnabled = hasDb && !process.env.VERCEL;
   if (eventRuntimeEnabled) {
     await startDomainEventRuntime({ processEvents: workersEnabled });
   }
@@ -76,45 +120,55 @@ async function bootstrap() {
     );
   });
 
-  const shutdown = async (signal: string) => {
-    logger.info({ signal }, 'Shutting down API');
-    if (workersEnabled) {
-      stopAutomaticAnalysisWorker();
-      stopAgentExecutionWorker();
-      if (hasDb) {
-        stopAssistantActionWorker();
-        stopAgentRunWorker();
-        stopContentGenerationWorker();
-      }
-      stopEmailSyncWorker();
-      stopCalendarSyncWorker();
-      stopRateLimitCleanupWorker();
-      stopWebsiteGenerationWorker();
-      stopOnboardingFileCleanupWorker();
-      stopPaygBillingWorker();
-      stopAdminUserDeletionWorker();
-      await stopProviderControlWorkers();
-      stopCommercialDocumentDeliveryWorker();
-      stopPremiumMediaWorker();
+  const closeHttpIntake = () => new Promise<void>((resolve, reject) => {
+    if (!server.listening) {
+      resolve();
+      return;
     }
-    server.close(async () => {
-      if (hasDb) {
-        if (eventRuntimeEnabled) await stopDomainEventRuntime();
-        await pool.end();
+    server.close((error) => error ? reject(error) : resolve());
+    server.closeIdleConnections?.();
+  });
+
+  const shutdown = createIdempotentShutdown((signal: string) => {
+    logger.info({ signal, gracePeriodMs: env.SHUTDOWN_GRACE_PERIOD_MS }, 'Shutting down API');
+    const drain = drainRuntime({
+      closeHttpIntake,
+      stopDomainRuntime: () => eventRuntimeEnabled ? stopDomainEventRuntime() : Promise.resolve(),
+      stopWorkers: stopBackgroundWorkers,
+      stopSupervisor: () => workersEnabled && hasDb ? stopWorkerSupervisorHeartbeat() : Promise.resolve(),
+      closePool: () => hasDb ? pool.end() : Promise.resolve(),
+    });
+    return withGracefulShutdownDeadline(drain, env.SHUTDOWN_GRACE_PERIOD_MS)
+      .then(() => {
+        process.exitCode = 0;
+        logger.info({ signal }, 'API shutdown completed');
+      });
+  });
+
+  const onSignal = (signal: 'SIGTERM' | 'SIGINT') => {
+    void shutdown(signal).catch((error: unknown) => {
+      server.closeAllConnections?.();
+      if (error instanceof GracefulShutdownTimeoutError) {
+        logger.fatal({ error, signal, gracePeriodMs: error.timeoutMs }, 'API shutdown deadline exceeded; forcing termination');
+      } else {
+        logger.fatal({ error, signal }, 'API shutdown failed; forcing termination');
       }
-      process.exit(0);
+      process.exit(1);
     });
   };
-
-  process.once('SIGTERM', () => void shutdown('SIGTERM'));
-  process.once('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => onSignal('SIGTERM'));
+  process.on('SIGINT', () => onSignal('SIGINT'));
 }
 
 try {
   await bootstrap();
 } catch (error: unknown) {
   logger.fatal({ error }, 'Failed to bootstrap API');
-  process.exit(1);
+  await stopDomainEventRuntime().catch(() => undefined);
+  await stopBackgroundWorkers().catch(() => undefined);
+  if (workersEnabled && hasDb) await stopWorkerSupervisorHeartbeat().catch(() => undefined);
+  if (hasDb) await pool.end().catch(() => undefined);
+  process.exitCode = 1;
 }
 
 export default app;

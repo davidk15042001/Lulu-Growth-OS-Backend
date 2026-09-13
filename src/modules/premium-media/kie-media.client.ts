@@ -7,7 +7,7 @@ export type NormalizedKieTask = {
   taskId: string | null;
   state: 'pending' | 'success' | 'failed';
   resultUrls: string[];
-  creditsConsumed: number;
+  creditsConsumed: number | null;
   errorCode: string | null;
   errorMessage: string | null;
   payload: JsonRecord;
@@ -39,6 +39,11 @@ function stringValue(value: unknown): string | null {
 function numberValue(value: unknown): number {
   const number = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function positiveNumberOrNull(value: unknown): number | null {
+  const number = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 function parseJsonRecord(value: unknown): JsonRecord {
@@ -82,7 +87,7 @@ export function normalizeKieTask(payload: unknown): NormalizedKieTask {
     taskId,
     state: explicitFailure ? 'failed' : explicitSuccess ? 'success' : 'pending',
     resultUrls,
-    creditsConsumed: numberValue(data.creditsConsumed ?? data.credits_consumed ?? root.creditsConsumed ?? root.credits_consumed),
+    creditsConsumed: positiveNumberOrNull(data.creditsConsumed ?? data.credits_consumed ?? root.creditsConsumed ?? root.credits_consumed),
     errorCode: explicitFailure ? errorCode : null,
     errorMessage: explicitFailure ? errorMessage : null,
     payload: root,
@@ -105,7 +110,7 @@ async function requestJson(
   init: RequestInit = {},
   options: { retries?: number; timeoutMs?: number } = {},
 ): Promise<JsonRecord> {
-  const retries = options.retries ?? env.AI_MAX_RETRIES;
+  const retries = kieRequestRetryBudget(init.method, options.retries);
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
@@ -148,6 +153,25 @@ async function requestJson(
   throw new AppError(502, 'KIE_NETWORK_ERROR', 'Kie.ai could not be reached', {
     reason: lastError instanceof Error ? lastError.message : 'Unknown provider error',
   });
+}
+
+/** Billable POSTs are never replayed automatically: a timeout or 5xx can hide
+ * an accepted provider operation. Read-only requests may retain bounded retry. */
+export function kieRequestRetryBudget(method?: string, requestedRetries?: number) {
+  return String(method ?? 'GET').toUpperCase() === 'POST'
+    ? 0
+    : Math.max(0, requestedRetries ?? env.AI_MAX_RETRIES);
+}
+
+export function classifyKiePostFailure(error: unknown): 'DEFINITIVE_REJECTION' | 'AMBIGUOUS' {
+  if (!(error instanceof AppError)) return 'AMBIGUOUS';
+  const details = error.details && typeof error.details === 'object'
+    ? error.details as Record<string, unknown>
+    : {};
+  const providerStatus = Number(details.providerStatus);
+  return Number.isInteger(providerStatus) && providerStatus >= 400 && providerStatus < 500
+    ? 'DEFINITIVE_REJECTION'
+    : 'AMBIGUOUS';
 }
 
 function apiUrl(path: string, baseUrl = env.KIE_BASE_URL) {
@@ -200,6 +224,7 @@ export async function uploadReferenceFile(input: { buffer: Buffer; mimeType: str
         fileName: input.fileName,
       }),
     },
+    { retries: 0 },
   );
   const data = asRecord(payload.data);
   const url = stringValue(data.downloadUrl ?? data.fileUrl);
@@ -214,6 +239,7 @@ export async function uploadReferenceUrl(sourceUrl: string, fileName: string) {
       method: 'POST',
       body: JSON.stringify({ fileUrl: sourceUrl, uploadPath: 'lulu/product-references', fileName }),
     },
+    { retries: 0 },
   );
   const data = asRecord(payload.data);
   const url = stringValue(data.downloadUrl ?? data.fileUrl);
@@ -229,7 +255,7 @@ export async function createMarketTask(input: {
   const payload = await requestJson(apiUrl('/api/v1/jobs/createTask'), {
     method: 'POST',
     body: JSON.stringify({ model: input.model, callBackUrl: input.callbackUrl, input: input.parameters }),
-  });
+  }, { retries: 0 });
   const task = normalizeKieTask(payload);
   if (!task.taskId) throw new AppError(502, 'KIE_TASK_ID_MISSING', 'Kie.ai did not return a task ID');
   return { taskId: task.taskId, payload };
@@ -253,7 +279,7 @@ export async function createVeoTask(input: {
       enableTranslation: true,
       generationType: 'FIRST_AND_LAST_FRAMES_2_VIDEO',
     }),
-  });
+  }, { retries: 0 });
   const task = normalizeKieTask(payload);
   if (!task.taskId) throw new AppError(502, 'KIE_TASK_ID_MISSING', 'Kie.ai did not return a Veo task ID');
   return { taskId: task.taskId, payload };
@@ -282,9 +308,7 @@ function parseQualityJson(text: string) {
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   const candidate = start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned;
-  try { return asRecord(JSON.parse(candidate)); } catch {
-    throw new AppError(502, 'KIE_QUALITY_RESPONSE_INVALID', 'The premium quality auditor returned invalid JSON');
-  }
+  try { return asRecord(JSON.parse(candidate)); } catch { return null; }
 }
 
 export async function evaluateMediaQuality(input: {
@@ -319,6 +343,7 @@ export async function evaluateMediaQuality(input: {
     body: JSON.stringify({
       model: env.KIE_QUALITY_MODEL,
       stream: false,
+      max_tokens: 1_024,
       reasoning_effort: 'high',
       messages: [
         { role: 'system', content: 'You are Lulu\'s independent premium media quality gate. Never approve uncertainty. Output valid JSON only.' },
@@ -354,8 +379,24 @@ export async function evaluateMediaQuality(input: {
         },
       },
     }),
-  }, { retries: 1 });
+  }, { retries: 0 });
   const parsed = parseQualityJson(extractAssistantText(payload));
+  const responseId = stringValue(payload.id ?? payload.responseId);
+  const creditsConsumed = positiveNumberOrNull(payload.credits_consumed ?? payload.creditsConsumed);
+  if (!parsed) {
+    return {
+      report: {
+        score: 0,
+        accepted: false,
+        summary: 'The premium quality auditor returned an invalid structured response.',
+        hardFailures: ['invalid_quality_audit_response'],
+        metrics: { productIdentity: 0, logoAndText: 0, geometry: 0, artifacts: 0, commercialReadiness: 0 },
+        model: env.KIE_QUALITY_MODEL,
+      } satisfies MediaQualityReport,
+      responseId,
+      creditsConsumed,
+    };
+  }
   const metricsRaw = asRecord(parsed.metrics);
   const hardFailures = Array.isArray(parsed.hardFailures)
     ? parsed.hardFailures.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -381,8 +422,6 @@ export async function evaluateMediaQuality(input: {
     metrics,
     model: env.KIE_QUALITY_MODEL,
   };
-  const responseId = stringValue(payload.id);
-  const creditsConsumed = numberValue(payload.credits_consumed ?? payload.creditsConsumed);
   return { report, responseId, creditsConsumed };
 }
 

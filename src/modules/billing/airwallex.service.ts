@@ -37,13 +37,16 @@ import { getPaygDirectPaymentMethods, getPaygInvoicePaymentMethods } from './pay
 import {
   applyAdSpendProviderStatus,
   attachAdSpendProviderPayment,
+  getAdSpendTopup,
   type AdSpendTopupRow,
 } from '../adspend/adspend.repo.js';
 import {
   applyApiProviderStatus,
   attachApiProviderPayment,
+  getApiTopup,
   type ApiTopupRow,
 } from '../api-wallet/api-wallet.repo.js';
+import { recordAirwallexWalletReversal } from './airwallex-wallet-reversal.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -67,6 +70,10 @@ function requireAirwallex() {
   }
 }
 
+function airwallexTimeoutSignal() {
+  return AbortSignal.timeout(Math.min(env.AI_REQUEST_TIMEOUT_MS, 60_000));
+}
+
 async function login(): Promise<string> {
   requireAirwallex();
   const headers: Record<string, string> = {
@@ -78,6 +85,7 @@ async function login(): Promise<string> {
   const response = await fetch(`${env.AIRWALLEX_BASE_URL}/api/v1/authentication/login`, {
     method: 'POST',
     headers,
+    signal: airwallexTimeoutSignal(),
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   const token = typeof data.token === 'string' ? data.token : typeof data.access_token === 'string' ? data.access_token : null;
@@ -97,6 +105,7 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
     },
     body: JSON.stringify({ ...body, request_id: requestId }),
+    signal: airwallexTimeoutSignal(),
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
@@ -117,6 +126,7 @@ async function airwallexPostWithoutBody(path: string, operation: string) {
       'Content-Type': 'application/json',
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
     },
+    signal: airwallexTimeoutSignal(),
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
@@ -138,6 +148,7 @@ async function airwallexPostBody(path: string, body: AirwallexObject, operation:
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
     },
     body: JSON.stringify(body),
+    signal: airwallexTimeoutSignal(),
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
@@ -445,6 +456,7 @@ export async function fetchAirwallexInvoice(invoiceId: string, requestId: string
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
       Accept: 'application/json',
     },
+    signal: airwallexTimeoutSignal(),
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
@@ -472,7 +484,7 @@ async function sendInvoiceEmailForWebhook(workspaceId: string, planKey: BillingP
     return;
   }
 
-  const pdfResponse = await fetch(pdfUrl);
+  const pdfResponse = await fetch(pdfUrl, { signal: airwallexTimeoutSignal() });
   if (!pdfResponse.ok) {
     logger.warn({ code: 'AIRWALLEX_INVOICE_PDF_DOWNLOAD_FAILED', workspaceId, planKey, invoiceId, providerHttpStatus: pdfResponse.status }, 'Airwallex invoice PDF download failed');
     return;
@@ -664,6 +676,115 @@ function providerCheckoutUrl(value: AirwallexObject) {
           : null;
 }
 
+function exactProviderMinor(value: unknown) {
+  if (typeof value !== 'number' && typeof value !== 'string') return null;
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric < 0) return null;
+  const minor = Math.round(numeric * 100);
+  return Number.isSafeInteger(minor) && Math.abs(numeric * 100 - minor) < 0.000001 ? minor : null;
+}
+
+/**
+ * An Airwallex invoice may be marked PAID by credits, adjustments or a manual
+ * out-of-band action. Prepaid wallet money is minted only when the invoice's
+ * Billing Transactions prove an equal, provider-processed net PAYMENT.
+ */
+export async function verifyAirwallexInvoiceWalletPayment(input: {
+  invoiceId: string;
+  expectedAmount: number | string;
+  currency?: string;
+}) {
+  const expectedMinor = exactProviderMinor(input.expectedAmount);
+  if (expectedMinor === null || expectedMinor <= 0) {
+    throw providerError('AIRWALLEX_WALLET_EXPECTED_AMOUNT_INVALID', 'The expected wallet payment amount is invalid.', undefined, 500);
+  }
+  const expectedCurrency = (input.currency ?? 'CNY').trim().toUpperCase();
+  let page: string | null = null;
+  const seenPages = new Set<string>();
+  const seenTransactions = new Set<string>();
+  const transactionIds: string[] = [];
+  const paymentIntentIds = new Set<string>();
+  let paymentMinor = 0;
+  let refundMinor = 0;
+  let excludedOutOfBand = 0;
+
+  for (let index = 0; index < 20; index += 1) {
+    const search = new URLSearchParams({ invoice_id: input.invoiceId, page_size: '100' });
+    if (page) search.set('page', page);
+    const response = await airwallexGet(`/api/v1/billing/billing_transactions?${search.toString()}`, 'WALLET_BILLING_TRANSACTIONS');
+    const items = Array.isArray(response.items) ? response.items : [];
+    for (const raw of items) {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+      const item = raw as AirwallexObject;
+      const id = webhookString(item.id);
+      if (!id || seenTransactions.has(id)) continue;
+      seenTransactions.add(id);
+      if (webhookString(item.invoice_id) !== input.invoiceId) {
+        return { verified: false as const, reason: 'invoice_mismatch', netAmount: 0, transactionIds: [] as string[], paymentIntentId: null };
+      }
+      if (String(item.status ?? '').toUpperCase() !== 'SUCCEEDED') continue;
+      const currency = String(item.currency ?? '').toUpperCase();
+      const type = String(item.type ?? '').toUpperCase();
+      const amountMinor = exactProviderMinor(item.amount);
+      if (currency !== expectedCurrency || amountMinor === null || !['PAYMENT', 'REFUND'].includes(type)) {
+        return { verified: false as const, reason: 'transaction_invalid', netAmount: 0, transactionIds: [] as string[], paymentIntentId: null };
+      }
+      if (item.out_of_band !== false) {
+        excludedOutOfBand += 1;
+        continue;
+      }
+      const externalId = webhookString(item.external_id);
+      if (type === 'PAYMENT' && !externalId) {
+        return { verified: false as const, reason: 'payment_intent_missing', netAmount: 0, transactionIds: [] as string[], paymentIntentId: null };
+      }
+      if (externalId) paymentIntentIds.add(externalId);
+      transactionIds.push(id);
+      if (type === 'PAYMENT') paymentMinor += amountMinor;
+      else refundMinor += amountMinor;
+    }
+    const next = webhookString(response.page_after);
+    if (!next) break;
+    if (seenPages.has(next)) throw providerError('AIRWALLEX_BILLING_TRANSACTION_PAGINATION_INVALID', 'Airwallex repeated a Billing Transaction page cursor.');
+    seenPages.add(next);
+    page = next;
+    if (index === 19) throw providerError('AIRWALLEX_BILLING_TRANSACTION_PAGINATION_LIMIT', 'Airwallex returned too many Billing Transaction pages.');
+  }
+
+  const netMinor = paymentMinor - refundMinor;
+  const verified = netMinor === expectedMinor && transactionIds.length > 0;
+  return {
+    verified,
+    reason: verified ? null : excludedOutOfBand > 0 && netMinor === 0 ? 'out_of_band_not_accepted' : netMinor < expectedMinor ? 'cash_payment_pending' : 'cash_payment_amount_mismatch',
+    netAmount: netMinor / 100,
+    paymentAmount: paymentMinor / 100,
+    refundAmount: refundMinor / 100,
+    transactionIds,
+    paymentIntentId: paymentIntentIds.size === 1 ? [...paymentIntentIds][0]! : null,
+  };
+}
+
+async function verifiedWalletInvoiceStatus(input: {
+  invoice: AirwallexObject;
+  invoiceId: string;
+  expectedAmount: number | string;
+}) {
+  const invoiceStatus = String(input.invoice.payment_status ?? input.invoice.status ?? 'PENDING').toUpperCase();
+  if (!['PAID', 'SUCCEEDED', 'COMPLETED'].includes(invoiceStatus)) {
+    const providerStatus = ['VOIDED', 'CANCELLED', 'CANCELED'].includes(invoiceStatus)
+      ? 'CANCELLED'
+      : ['UNCOLLECTIBLE', 'FAILED'].includes(invoiceStatus)
+        ? 'FAILED'
+        : invoiceStatus;
+    return { providerStatus, proof: null };
+  }
+  const proof = await verifyAirwallexInvoiceWalletPayment({
+    invoiceId: input.invoiceId,
+    expectedAmount: input.expectedAmount,
+    currency: 'CNY',
+  });
+  return { providerStatus: proof.verified ? 'SUCCEEDED' : 'PENDING_PAYMENT', proof };
+}
+
 /** Creates the only customer authorization required for paid advertising. */
 export async function createAdSpendProviderPayment(topup: AdSpendTopupRow, returnUrl: string) {
   if (!getPaygDirectPaymentMethods().includes(topup.paymentMethod)) {
@@ -770,11 +891,17 @@ export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
   }
   if (topup.providerInvoiceId) {
     const invoice = await airwallexGet(`/api/v1/billing/invoices/${encodeURIComponent(topup.providerInvoiceId)}`, 'AD_SPEND_INVOICE_STATUS');
+    const verified = await verifiedWalletInvoiceStatus({
+      invoice,
+      invoiceId: topup.providerInvoiceId,
+      expectedAmount: topup.totalAmount,
+    });
     return applyAdSpendProviderStatus({
       providerInvoiceId: topup.providerInvoiceId,
-      providerStatus: String(invoice.payment_status ?? invoice.status ?? 'PENDING'),
+      providerPaymentIntentId: verified.proof?.paymentIntentId ?? null,
+      providerStatus: verified.providerStatus,
       paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
-      providerResponse: invoice,
+      providerResponse: { ...invoice, walletPaymentProof: verified.proof },
     });
   }
   return topup;
@@ -836,9 +963,65 @@ export async function syncApiWalletProviderPayment(topup: ApiTopupRow) {
   }
   if (topup.providerInvoiceId) {
     const invoice = await airwallexGet(`/api/v1/billing/invoices/${encodeURIComponent(topup.providerInvoiceId)}`, 'API_WALLET_INVOICE_STATUS');
-    return applyApiProviderStatus({ providerInvoiceId: topup.providerInvoiceId, providerStatus: String(invoice.payment_status ?? invoice.status ?? 'PENDING'), paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null, providerResponse: invoice });
+    const verified = await verifiedWalletInvoiceStatus({
+      invoice,
+      invoiceId: topup.providerInvoiceId,
+      expectedAmount: topup.amount,
+    });
+    return applyApiProviderStatus({
+      providerInvoiceId: topup.providerInvoiceId,
+      providerPaymentIntentId: verified.proof?.paymentIntentId ?? null,
+      providerStatus: verified.providerStatus,
+      paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
+      providerResponse: { ...invoice, walletPaymentProof: verified.proof },
+    });
   }
   return topup;
+}
+
+/**
+ * Invoice webhooks can arrive before Billing Transactions are queryable. Keep
+ * those top-ups pending and re-check them instead of ever minting wallet funds
+ * from an invoice status alone.
+ */
+export async function reconcilePendingWalletInvoicePayments(limit = 50) {
+  const boundedLimit = Math.max(1, Math.min(200, Math.trunc(limit)));
+  const pending = await query<{ walletType: 'API' | 'AD_SPEND'; workspaceId: string; topupId: string; createdAt: string }>(
+    `SELECT 'API'::text AS "walletType", workspace_id AS "workspaceId", id::text AS "topupId",
+            created_at AS "createdAt"
+       FROM workspace_api_topups
+      WHERE provider_invoice_id IS NOT NULL
+        AND status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+     UNION ALL
+     SELECT 'AD_SPEND'::text AS "walletType", workspace_id AS "workspaceId", id::text AS "topupId",
+            created_at AS "createdAt"
+       FROM workspace_ad_spend_topups
+      WHERE provider_invoice_id IS NOT NULL
+        AND status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+      ORDER BY "createdAt", "topupId"
+      LIMIT $1`,
+    [boundedLimit],
+  );
+  let checked = 0;
+  let credited = 0;
+  let failed = 0;
+  for (const candidate of pending.rows) {
+    try {
+      const topup = candidate.walletType === 'API'
+        ? await getApiTopup(candidate.workspaceId, candidate.topupId)
+        : await getAdSpendTopup(candidate.workspaceId, candidate.topupId);
+      if (!topup) continue;
+      checked += 1;
+      const updated = candidate.walletType === 'API'
+        ? await syncApiWalletProviderPayment(topup as ApiTopupRow)
+        : await syncAdSpendProviderPayment(topup as AdSpendTopupRow);
+      if (updated?.status === 'SUCCEEDED') credited += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn({ error, ...candidate }, 'Pending Airwallex wallet invoice reconciliation failed');
+    }
+  }
+  return { checked, credited, failed };
 }
 
 /**
@@ -1301,6 +1484,7 @@ async function airwallexGet(path: string, operation = 'CHECKOUT_STATUS') {
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
       Accept: 'application/json',
     },
+    signal: airwallexTimeoutSignal(),
   });
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
@@ -1367,19 +1551,88 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
   return { checkoutId, planKey: localCheckout.plan_key, status: 'active' as const, providerStatus, subscriptionId, invoiceId };
 }
 
-export function verifyWebhookSignature(rawBody: string, timestamp: string | undefined, signature: string | undefined, nonce: string | undefined) {
+export function verifyWebhookSignature(rawBody: string, timestamp: string | undefined, signature: string | undefined) {
   if (!env.AIRWALLEX_WEBHOOK_SECRET) throw providerError('AIRWALLEX_WEBHOOK_SECRET_MISSING', 'Airwallex webhook secret is missing on the server', { requiredEnv: 'AIRWALLEX_WEBHOOK_SECRET' }, 500);
-  if (!timestamp || !signature || !nonce) throw providerError('AIRWALLEX_WEBHOOK_HEADERS_MISSING', 'Airwallex webhook signature headers are missing', { requiredHeaders: ['x-timestamp', 'x-signature', 'x-nonce'] }, 403);
+  if (!timestamp || !signature) throw providerError('AIRWALLEX_WEBHOOK_HEADERS_MISSING', 'Airwallex webhook signature headers are missing', { requiredHeaders: ['x-timestamp', 'x-signature'] }, 403);
   const timestampNumber = Number(timestamp);
   if (!Number.isFinite(timestampNumber)) throw providerError('AIRWALLEX_WEBHOOK_TIMESTAMP_INVALID', 'Airwallex webhook timestamp is invalid', undefined, 403);
-  if (Math.abs(Date.now() - timestampNumber * 1000) > env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS * 1000) throw providerError('AIRWALLEX_WEBHOOK_TIMESTAMP_EXPIRED', 'Airwallex webhook timestamp is outside the allowed tolerance', { toleranceSeconds: env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS }, 403);
-  const expected = crypto.createHmac('sha256', env.AIRWALLEX_WEBHOOK_SECRET).update(`${timestamp}${nonce}${rawBody}`).digest('hex');
+  // Airwallex sends x-timestamp as Unix milliseconds and signs the exact
+  // concatenation `x-timestamp + raw request body` with HMAC-SHA256.
+  if (Math.abs(Date.now() - timestampNumber) > env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS * 1000) throw providerError('AIRWALLEX_WEBHOOK_TIMESTAMP_EXPIRED', 'Airwallex webhook timestamp is outside the allowed tolerance', { toleranceSeconds: env.AIRWALLEX_WEBHOOK_TOLERANCE_SECONDS }, 403);
+  const expected = crypto.createHmac('sha256', env.AIRWALLEX_WEBHOOK_SECRET).update(`${timestamp}${rawBody}`).digest('hex');
   if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) throw providerError('AIRWALLEX_WEBHOOK_SIGNATURE_INVALID', 'Airwallex webhook signature is invalid', { signatureFormat: 'HMAC-SHA256' }, 403);
+}
+
+const refundWebhookEvents = new Set(['refund.received', 'refund.accepted', 'refund.settled', 'refund.failed']);
+const disputeWebhookEvents = new Set([
+  'payment_dispute.requires_response',
+  'payment_dispute.challenged',
+  'payment_dispute.accepted',
+  'payment_dispute.expired',
+  'payment_dispute.pending_closure',
+  'payment_dispute.pending_decision',
+  'payment_dispute.won',
+  'payment_dispute.lost',
+  'payment_dispute.reversed',
+]);
+
+function webhookString(value: unknown) {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+async function markWebhookProcessed(eventId: string) {
+  await query(
+    `UPDATE airwallex_webhook_events
+     SET processed_at=NOW(),processing_at=NULL,last_error_code=NULL WHERE event_id=$1`,
+    [eventId],
+  );
+}
+
+function classifyWalletReversal(eventType: string, data: AirwallexObject) {
+  const normalized = eventType.trim().toLowerCase();
+  if (normalized.startsWith('refund.')) {
+    if (!refundWebhookEvents.has(normalized)) {
+      throw providerError('AIRWALLEX_REFUND_EVENT_UNSUPPORTED', 'Airwallex sent an undocumented refund event.', { eventType }, 409);
+    }
+    if (normalized === 'refund.received' || normalized === 'refund.accepted') {
+      return { terminal: false as const, status: webhookString(data.status)?.toUpperCase() ?? normalized.split('.')[1]!.toUpperCase() };
+    }
+    const status = webhookString(data.status)?.toUpperCase();
+    const expected = normalized === 'refund.settled' ? 'SETTLED' : 'FAILED';
+    if (status !== expected) {
+      throw providerError('AIRWALLEX_REFUND_STATUS_MISMATCH', 'Airwallex refund event and resource status do not match.', {
+        eventType, resourceStatus: status,
+      }, 409);
+    }
+    return { terminal: true as const, kind: 'REFUND' as const, active: normalized === 'refund.settled', status };
+  }
+  if (normalized.startsWith('payment_dispute.')) {
+    if (!disputeWebhookEvents.has(normalized)) {
+      throw providerError('AIRWALLEX_DISPUTE_EVENT_UNSUPPORTED', 'Airwallex sent an undocumented payment dispute event.', { eventType }, 409);
+    }
+    const stage = webhookString(data.stage)?.toUpperCase() ?? null;
+    if (normalized === 'payment_dispute.accepted') {
+      if (!stage) {
+        throw providerError('AIRWALLEX_DISPUTE_STAGE_MISSING', 'Airwallex accepted dispute is missing its stage.', { eventType }, 409);
+      }
+      if (stage === 'RFI') return { terminal: false as const, status: 'ACCEPTED', stage };
+      return { terminal: true as const, kind: 'DISPUTE' as const, active: true, status: 'ACCEPTED', stage };
+    }
+    if (normalized === 'payment_dispute.lost') {
+      return { terminal: true as const, kind: 'DISPUTE' as const, active: true, status: 'LOST', stage };
+    }
+    if (normalized === 'payment_dispute.won' || normalized === 'payment_dispute.reversed') {
+      return { terminal: true as const, kind: 'DISPUTE' as const, active: false,
+        status: normalized === 'payment_dispute.won' ? 'WON' : 'REVERSED', stage };
+    }
+    return { terminal: false as const, status: webhookString(data.status)?.toUpperCase() ?? normalized.split('.')[1]!.toUpperCase(), stage };
+  }
+  return null;
 }
 
 export async function handleWebhook(event: AirwallexObject) {
   const eventId = String(event.id ?? event.event_id ?? '');
-  const eventType = String(event.type ?? event.event_type ?? 'unknown');
+  const eventType = String(event.name ?? event.type ?? event.event_type ?? 'unknown');
   if (!eventId) throw providerError('AIRWALLEX_WEBHOOK_EVENT_ID_MISSING', 'Airwallex webhook event ID is missing', undefined, 400);
 
   const claim = await withTransaction(async (client) => {
@@ -1422,85 +1675,169 @@ export async function handleWebhook(event: AirwallexObject) {
     const data = eventData.object && typeof eventData.object === 'object'
       ? eventData.object as AirwallexObject
       : eventData;
+    const normalizedEventType = eventType.trim().toLowerCase();
+    if (!normalizedEventType || normalizedEventType === 'unknown') {
+      throw providerError('AIRWALLEX_WEBHOOK_EVENT_TYPE_MISSING', 'Airwallex webhook event name is missing.', undefined, 409);
+    }
 
-    const paymentIntent = (data.payment_intent ?? data) as AirwallexObject;
-    const paymentIntentId = typeof paymentIntent.id === 'string'
-      ? paymentIntent.id
-      : typeof data.payment_intent_id === 'string'
-        ? data.payment_intent_id
-        : null;
-    const paymentIntentStatus = typeof paymentIntent.status === 'string'
-      ? paymentIntent.status
-      : eventType.toUpperCase().includes('PAYMENT_INTENT.SUCCEEDED')
-        ? 'SUCCEEDED'
-        : null;
-    if (paymentIntentId && paymentIntentStatus && eventType.toUpperCase().includes('PAYMENT_INTENT')) {
+    const nestedPaymentIntent = data.payment_intent && typeof data.payment_intent === 'object'
+      ? data.payment_intent as AirwallexObject : null;
+    const paymentIntent = nestedPaymentIntent ?? (normalizedEventType.startsWith('payment_intent.') ? data : {});
+    const paymentIntentId = webhookString(data.payment_intent_id)
+      ?? webhookString(paymentIntent.id);
+    const paymentIntentStatus = webhookString(paymentIntent.status)
+      ?? (normalizedEventType === 'payment_intent.succeeded' ? 'SUCCEEDED' : null);
+    const nestedInvoice = data.invoice && typeof data.invoice === 'object' ? data.invoice as AirwallexObject : null;
+    const invoice = nestedInvoice ?? (normalizedEventType.startsWith('invoice.') ? data : {});
+    const providerInvoiceId = webhookString(data.invoice_id) ?? webhookString(invoice.id);
+    const metadata = (data.metadata ?? invoice.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
+    const workspaceId = webhookString(metadata.workspace_id);
+    const apiWalletTopupId = webhookString(metadata.api_wallet_topup_id);
+    const adSpendTopupId = webhookString(metadata.ad_spend_topup_id);
+
+    const reversal = classifyWalletReversal(normalizedEventType, data);
+    if (reversal) {
+      if (!reversal.terminal) {
+        await markWebhookProcessed(eventId);
+        return { processed: true, eventId, ignored: true, reason: 'non_terminal_reversal', status: reversal.status.toLowerCase() };
+      }
+      const reversalId = reversal.kind === 'REFUND'
+        ? webhookString(data.id)
+        : webhookString(data.dispute_id) ?? webhookString(data.id);
+      const amount = reversal.kind === 'REFUND' ? data.amount : data.dispute_amount;
+      const currency = reversal.kind === 'REFUND' ? webhookString(data.currency) : webhookString(data.dispute_currency);
+      if (!reversalId || (typeof amount !== 'number' && typeof amount !== 'string') || !currency) {
+        throw providerError('AIRWALLEX_REVERSAL_RESOURCE_INVALID', 'Airwallex terminal reversal is missing its ID, amount or currency.', {
+          eventType, reversalId, currency,
+        }, 409);
+      }
+      const handled = await recordAirwallexWalletReversal({
+        eventId,
+        eventType: normalizedEventType,
+        reversalKind: reversal.kind,
+        reversalId,
+        providerStatus: reversal.status,
+        providerStage: 'stage' in reversal ? reversal.stage : null,
+        active: reversal.active,
+        amount,
+        currency,
+        providerPaymentIntentId: paymentIntentId,
+        providerInvoiceId,
+        workspaceId,
+        apiTopupId: apiWalletTopupId,
+        adSpendTopupId,
+        providerUpdatedAt: webhookString(data.updated_at),
+        eventCreatedAt: webhookString(event.created_at),
+        providerPayload: data,
+      });
+      await markWebhookProcessed(eventId);
+      return { processed: true, eventId, walletType: handled.walletType, topupId: handled.topupId,
+        reversalId, status: handled.status.toLowerCase(), idempotent: handled.idempotent, stale: handled.stale };
+    }
+
+    if (paymentIntentId && paymentIntentStatus && normalizedEventType.startsWith('payment_intent.')) {
       const handledPayment = await applyPaygQrPaymentIntentStatus({
         providerPaymentIntentId: paymentIntentId,
         providerStatus: paymentIntentStatus,
-        paidAt: typeof paymentIntent.paid_at === 'string' ? paymentIntent.paid_at : null,
+        paidAt: webhookString(paymentIntent.paid_at),
         providerResponse: paymentIntent,
       });
       if (handledPayment) {
-        await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
+        await markWebhookProcessed(eventId);
         return { processed: true, eventId, paygQrPaymentId: handledPayment.id, status: handledPayment.status.toLowerCase() };
       }
     }
 
-    const metadata = (data.metadata ?? data.invoice?.metadata ?? data.subscription?.metadata ?? data.checkout?.metadata ?? {}) as AirwallexObject;
-    const workspaceId = typeof metadata.workspace_id === 'string' ? metadata.workspace_id : null;
     if (!workspaceId) {
       await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL WHERE event_id=$1`, [eventId]);
       logger.warn({ eventId, eventType }, 'Airwallex webhook ignored: workspace metadata missing');
       return { processed: false, eventId, reason: 'workspace_id_missing', code: 'AIRWALLEX_WEBHOOK_WORKSPACE_ID_MISSING' };
     }
-    const upperEventType = eventType.toUpperCase();
-    const walletReversalStatus = upperEventType.includes('CHARGEBACK')
-      ? 'CHARGEBACK'
-      : upperEventType.includes('REFUND')
-        ? 'REFUNDED'
-        : null;
 
-    const apiWalletTopupId = typeof metadata.api_wallet_topup_id === 'string' ? metadata.api_wallet_topup_id : null;
     if (apiWalletTopupId) {
-      const invoice = (data.invoice ?? data) as AirwallexObject;
-      const providerInvoiceId = eventType.toUpperCase().includes('INVOICE')
-        ? (typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null)
-        : null;
+      if (!normalizedEventType.startsWith('payment_intent.') && !normalizedEventType.startsWith('invoice.')) {
+        throw providerError('AIRWALLEX_WALLET_EVENT_UNSUPPORTED', 'Airwallex event is not a documented wallet payment event.', { eventType }, 409);
+      }
+      let providerStatus = paymentIntentStatus ?? 'PENDING';
+      let providerResponse = paymentIntent;
+      let effectivePaymentIntentId = paymentIntentId;
+      if (normalizedEventType.startsWith('invoice.')) {
+        if (!providerInvoiceId) {
+          throw providerError('AIRWALLEX_WALLET_INVOICE_ID_MISSING', 'Airwallex invoice event is missing its invoice ID.', { eventType }, 409);
+        }
+        const topup = await getApiTopup(workspaceId, apiWalletTopupId);
+        if (!topup) {
+          throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex AI wallet top-up was not found.', { apiWalletTopupId }, 409);
+        }
+        if (topup.providerInvoiceId && topup.providerInvoiceId !== providerInvoiceId) {
+          throw providerError('AIRWALLEX_WALLET_INVOICE_MISMATCH', 'Airwallex invoice does not match the AI wallet top-up.', { apiWalletTopupId }, 409);
+        }
+        const verified = await verifiedWalletInvoiceStatus({
+          invoice,
+          invoiceId: providerInvoiceId,
+          expectedAmount: topup.amount,
+        });
+        providerStatus = verified.providerStatus;
+        effectivePaymentIntentId = verified.proof?.paymentIntentId ?? effectivePaymentIntentId;
+        providerResponse = { ...invoice, walletPaymentProof: verified.proof };
+      }
       const handled = await applyApiProviderStatus({
-        providerPaymentIntentId: paymentIntentId,
-        providerInvoiceId,
-        providerStatus: walletReversalStatus ?? paymentIntentStatus ?? String(invoice.payment_status ?? invoice.status ?? (upperEventType.includes('PAID') ? 'PAID' : 'PENDING')),
-        paidAt: typeof paymentIntent.paid_at === 'string' ? paymentIntent.paid_at : typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
-        providerResponse: paymentIntentId ? paymentIntent : invoice,
-      });
-      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL,last_error_code=NULL WHERE event_id=$1`, [eventId]);
-      return { processed: Boolean(handled), eventId, apiWalletTopupId, status: handled?.status.toLowerCase() ?? 'not_found' };
-    }
-
-    const adSpendTopupId = typeof metadata.ad_spend_topup_id === 'string' ? metadata.ad_spend_topup_id : null;
-    if (adSpendTopupId) {
-      const invoice = (data.invoice ?? data) as AirwallexObject;
-      const providerInvoiceId = eventType.toUpperCase().includes('INVOICE')
-        ? (typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null)
-        : null;
-      const providerStatus = walletReversalStatus ?? paymentIntentStatus
-        ?? String(invoice.payment_status ?? invoice.status ?? (upperEventType.includes('PAID') ? 'PAID' : 'PENDING'));
-      const handled = await applyAdSpendProviderStatus({
-        providerPaymentIntentId: paymentIntentId,
+        topupId: apiWalletTopupId,
+        workspaceId,
+        providerPaymentIntentId: effectivePaymentIntentId,
         providerInvoiceId,
         providerStatus,
-        paidAt: typeof paymentIntent.paid_at === 'string' ? paymentIntent.paid_at
-          : typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
-        providerResponse: paymentIntentId ? paymentIntent : invoice,
+        paidAt: webhookString(paymentIntent.paid_at) ?? webhookString(invoice.paid_at),
+        providerResponse,
       });
-      await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
-      return { processed: Boolean(handled), eventId, adSpendTopupId, status: handled?.status.toLowerCase() ?? 'not_found' };
+      if (!handled) throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex AI wallet top-up was not found.', { apiWalletTopupId }, 409);
+      await markWebhookProcessed(eventId);
+      return { processed: true, eventId, apiWalletTopupId, status: handled.status.toLowerCase() };
+    }
+
+    if (adSpendTopupId) {
+      if (!normalizedEventType.startsWith('payment_intent.') && !normalizedEventType.startsWith('invoice.')) {
+        throw providerError('AIRWALLEX_WALLET_EVENT_UNSUPPORTED', 'Airwallex event is not a documented wallet payment event.', { eventType }, 409);
+      }
+      let providerStatus = paymentIntentStatus ?? 'PENDING';
+      let providerResponse = paymentIntent;
+      let effectivePaymentIntentId = paymentIntentId;
+      if (normalizedEventType.startsWith('invoice.')) {
+        if (!providerInvoiceId) {
+          throw providerError('AIRWALLEX_WALLET_INVOICE_ID_MISSING', 'Airwallex invoice event is missing its invoice ID.', { eventType }, 409);
+        }
+        const topup = await getAdSpendTopup(workspaceId, adSpendTopupId);
+        if (!topup) {
+          throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex advertising wallet top-up was not found.', { adSpendTopupId }, 409);
+        }
+        if (topup.providerInvoiceId && topup.providerInvoiceId !== providerInvoiceId) {
+          throw providerError('AIRWALLEX_WALLET_INVOICE_MISMATCH', 'Airwallex invoice does not match the advertising wallet top-up.', { adSpendTopupId }, 409);
+        }
+        const verified = await verifiedWalletInvoiceStatus({
+          invoice,
+          invoiceId: providerInvoiceId,
+          expectedAmount: topup.totalAmount,
+        });
+        providerStatus = verified.providerStatus;
+        effectivePaymentIntentId = verified.proof?.paymentIntentId ?? effectivePaymentIntentId;
+        providerResponse = { ...invoice, walletPaymentProof: verified.proof };
+      }
+      const handled = await applyAdSpendProviderStatus({
+        topupId: adSpendTopupId,
+        workspaceId,
+        providerPaymentIntentId: effectivePaymentIntentId,
+        providerInvoiceId,
+        providerStatus,
+        paidAt: webhookString(paymentIntent.paid_at) ?? webhookString(invoice.paid_at),
+        providerResponse,
+      });
+      if (!handled) throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex advertising wallet top-up was not found.', { adSpendTopupId }, 409);
+      await markWebhookProcessed(eventId);
+      return { processed: true, eventId, adSpendTopupId, status: handled.status.toLowerCase() };
     }
 
     const paygPeriodId = typeof metadata.payg_period_id === 'string' ? metadata.payg_period_id : null;
     if (paygPeriodId) {
-      const invoice = (data.invoice ?? data) as AirwallexObject;
       const handled = await applyPaygInvoiceWebhook({
         periodId: paygPeriodId,
         providerInvoiceId: typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null,
@@ -1578,7 +1915,7 @@ registerDomainEventHandler({
     try { await assertAiBillingAccess(event.workspaceId); }
     catch (error) {
       const code=error&&typeof error==='object'&&'code' in error?String(error.code):'';
-      if(code==='AI_FUNDS_REQUIRED'||code==='AI_FUNDS_EXHAUSTED')return {workspaceId:event.workspaceId,trigger,deferredUntilAiFunds:true};
+      if(code==='AI_FUNDS_REQUIRED'||code==='AI_FUNDS_EXHAUSTED'||code==='AI_REVERSAL_DEBT')return {workspaceId:event.workspaceId,trigger,deferredUntilAiFunds:true};
       throw error;
     }
     await startPostPaymentAutomation(event.workspaceId, trigger);

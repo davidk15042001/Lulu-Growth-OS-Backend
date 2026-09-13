@@ -134,6 +134,37 @@ describe('admin user deletion', () => {
       [ownedWorkspace.id],
     );
 
+    // Accounting rows are immutable during normal operation, but the explicit
+    // workspace teardown must remove them without weakening append-only rules.
+    const invoice = (await db.query<{ id: string }>(
+      `INSERT INTO invoices(workspace_id,invoice_number,status,currency,grand_total,amount_due,created_by)
+       VALUES($1,$2,'ISSUED','CNY',10,10,$3) RETURNING id`,
+      [ownedWorkspace.id, `DELETE-${crypto.randomUUID()}`, target],
+    )).rows[0]!;
+    await db.query(
+      `INSERT INTO invoice_payments(
+         workspace_id,invoice_id,amount_minor,currency,payment_method,received_at,
+         idempotency_key,request_hash,recorded_by
+       ) VALUES($1,$2,1000,'CNY','CARD',NOW(),$3,$4,$5)`,
+      [ownedWorkspace.id, invoice.id, `delete-payment-${crypto.randomUUID()}`, '0'.repeat(64), target],
+    );
+    const journalId = crypto.randomUUID();
+    await db.query(
+      `INSERT INTO financial_journals(
+         id,workspace_id,journal_type,occurred_at,currency,total_debits_minor,total_credits_minor,
+         idempotency_key,payload_hash,actor_id
+       ) VALUES($1,$2,'ACCOUNT_ERASURE_TEST',NOW(),'CNY',1000,1000,$3,$4,$5)`,
+      [journalId, ownedWorkspace.id, `delete-journal-${crypto.randomUUID()}`, '1'.repeat(64), target],
+    );
+    await db.query(
+      `INSERT INTO financial_ledger_entries(
+         workspace_id,entry_group_id,account_code,direction,amount_minor,currency,idempotency_key,actor_id,line_key
+       ) VALUES
+         ($1,$2,'CASH','DEBIT',1000,'CNY',$3,$4,'cash'),
+         ($1,$2,'SALES_REVENUE','CREDIT',1000,'CNY',$3,$4,'revenue')`,
+      [ownedWorkspace.id, journalId, `delete-ledger-${crypto.randomUUID()}`, target],
+    );
+
     const result = await admin.deleteUserAndOwnedData(target);
 
     assert.equal(result?.deletedWorkspaceCount, 2);
@@ -150,6 +181,9 @@ describe('admin user deletion', () => {
     }
     assert.equal((await db.query('SELECT * FROM legacy_user_delete_blockers WHERE user_id=$1', [target])).rows.length, 0);
     assert.equal((await db.query('SELECT * FROM legacy_workspace_delete_blockers WHERE workspace_id=$1', [ownedWorkspace.id])).rows.length, 0);
+    for (const table of ['invoice_payments', 'financial_journals', 'financial_ledger_entries']) {
+      assert.equal((await db.query(`SELECT * FROM ${table} WHERE workspace_id=$1`, [ownedWorkspace.id])).rows.length, 0, `${table} should be erased with its workspace`);
+    }
   });
 
   it('keeps the final Super Admin protected', async () => {

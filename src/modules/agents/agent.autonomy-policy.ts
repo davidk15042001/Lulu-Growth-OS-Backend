@@ -12,8 +12,14 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'sales.create_followup_task':'AUTONOMOUS', 'email.create_draft':'AUTONOMOUS',
   'email.create_ai_draft':'AUTONOMOUS', 'ecommerce.generate_product_images':'AUTONOMOUS',
   'finance.create_automation':'AUTONOMOUS', 'advertising.create_optimization':'AUTONOMOUS',
+  'finance.invoice.create_from_order':'AUTONOMOUS',
   'google_reviews.reply':'AUTONOMOUS', 'website.publish_job':'AUTONOMOUS',
   'omnichannel.send_message':'AUTONOMOUS', 'workspace.refresh':'AUTONOMOUS',
+  'commerce.order.create':'AUTONOMOUS', 'commerce.order.update':'AUTONOMOUS',
+  'commerce.order.transition':'AUTONOMOUS', 'commerce.inventory.adjust':'AUTONOMOUS',
+  'commerce.fulfillment.create':'AUTONOMOUS', 'commerce.fulfillment.transition':'AUTONOMOUS',
+  'social.content.publish':'AUTONOMOUS', 'social.publication.retry':'AUTONOMOUS',
+  'social.publication.cancel':'AUTONOMOUS',
 };
 
 /** A single, fail-closed classification shared by the runner and command worker.

@@ -7,18 +7,31 @@ import { PGlite } from '@electric-sql/pglite';
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL = 'postgres://test:test@127.0.0.1:1/payg_billing_tests_only';
 process.env.JWT_SECRET = 'payg-billing-tests-secret-0123456789';
+process.env.AIRWALLEX_CLIENT_ID = 'test-client';
+process.env.AIRWALLEX_API_KEY = 'test-api-key';
 
 const { pool } = await import('../src/db/pool.js');
 const { reservePaygApiCheckout } = await import('../src/modules/billing/payg-billing.repo.js');
 const { getBilling } = await import('../src/modules/workspace-app/workspace-app.repo.js');
 const { createKnowledgeActivation, applyKnowledgeClassification } = await import('../src/modules/onboarding/onboarding.repo.js');
 const { reconcileR2Inventory, recordR2Delete, recordR2Get, recordR2Put } = await import('../src/storage/r2-metering.repo.js');
-const { applyApiProviderStatus, attachApiProviderPayment, createApiTopup, debitApiWallet } = await import('../src/modules/api-wallet/api-wallet.repo.js');
+const { applyApiProviderStatus, assertApiWalletFunded, attachApiProviderPayment, createApiTopup, debitApiWallet, getApiTopup } = await import('../src/modules/api-wallet/api-wallet.repo.js');
 const { createApiTopupSchema } = await import('../src/modules/api-wallet/api-wallet.validator.js');
+const { reconcileUnsettledApiUsage } = await import('../src/modules/usage/usage.service.js');
 const { updateWorkspaceStatus } = await import('../src/modules/admin/admin.repo.js');
 const { listAutomatedTargets } = await import('../src/modules/agents/agent.repo.js');
 const { listKnowledgeProductsAwaitingImages } = await import('../src/modules/premium-media/premium-media.worker.js');
-const { applyAdSpendProviderStatus, attachAdSpendProviderPayment, createAdSpendTopup, reserveAdSpend } = await import('../src/modules/adspend/adspend.repo.js');
+const { recordAirwallexWalletReversal } = await import('../src/modules/billing/airwallex-wallet-reversal.repo.js');
+const { handleWebhook, verifyAirwallexInvoiceWalletPayment } = await import('../src/modules/billing/airwallex.service.js');
+const {
+  applyAdSpendProviderStatus,
+  assertAdSpendFunded,
+  attachAdSpendProviderPayment,
+  createAdBudgetAuthorization,
+  createAdSpendTopup,
+  releaseAdSpendReservation,
+  reserveAdSpend,
+} = await import('../src/modules/adspend/adspend.repo.js');
 const db = new PGlite();
 
 before(async () => {
@@ -40,6 +53,97 @@ after(async () => {
 });
 
 describe('prepaid API and transparent usage reporting', () => {
+  it('credits invoice-funded wallets only from exact provider-processed cash transactions', async (t) => {
+    t.mock.method(globalThis, 'fetch', async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.endsWith('/api/v1/authentication/login')) {
+        return new Response(JSON.stringify({ token: 'airwallex-test-token' }), { status: 200 });
+      }
+      const invoiceId = new URL(value).searchParams.get('invoice_id');
+      const items = invoiceId === 'inv_exact'
+        ? [{ id: 'txn_exact', invoice_id: invoiceId, type: 'PAYMENT', status: 'SUCCEEDED',
+          amount: 1000, currency: 'CNY', out_of_band: false, external_id: 'int_exact' }]
+        : invoiceId === 'inv_out_of_band'
+          ? [{ id: 'txn_oob', invoice_id: invoiceId, type: 'PAYMENT', status: 'SUCCEEDED',
+            amount: 1000, currency: 'CNY', out_of_band: true, external_id: null }]
+          : invoiceId === 'inv_partial'
+            ? [{ id: 'txn_partial', invoice_id: invoiceId, type: 'PAYMENT', status: 'SUCCEEDED',
+              amount: 999.99, currency: 'CNY', out_of_band: false, external_id: 'int_partial' }]
+            : [
+              { id: 'txn_paid', invoice_id: invoiceId, type: 'PAYMENT', status: 'SUCCEEDED',
+                amount: 1100, currency: 'CNY', out_of_band: false, external_id: 'int_net' },
+              { id: 'txn_refund', invoice_id: invoiceId, type: 'REFUND', status: 'SUCCEEDED',
+                amount: 100, currency: 'CNY', out_of_band: false, external_id: 'int_net' },
+            ];
+      return new Response(JSON.stringify({ items }), { status: 200 });
+    });
+
+    const exact = await verifyAirwallexInvoiceWalletPayment({ invoiceId: 'inv_exact', expectedAmount: 1000 });
+    const outOfBand = await verifyAirwallexInvoiceWalletPayment({ invoiceId: 'inv_out_of_band', expectedAmount: 1000 });
+    const partial = await verifyAirwallexInvoiceWalletPayment({ invoiceId: 'inv_partial', expectedAmount: 1000 });
+    const net = await verifyAirwallexInvoiceWalletPayment({ invoiceId: 'inv_net_refund', expectedAmount: 1000 });
+
+    assert.equal(exact.verified, true);
+    assert.equal(exact.paymentIntentId, 'int_exact');
+    assert.equal(outOfBand.verified, false);
+    assert.equal(outOfBand.reason, 'out_of_band_not_accepted');
+    assert.equal(partial.verified, false);
+    assert.equal(partial.reason, 'cash_payment_pending');
+    assert.equal(net.verified, true);
+    assert.equal(net.netAmount, 1000);
+  });
+
+  it('keeps paid invoice webhooks pending until cash proof exists', async (t) => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email,password_hash) VALUES($1,'hash') RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name,created_by) VALUES('Invoice Proof Workspace',$1) RETURNING id`,
+      [user.id],
+    )).rows[0]!;
+    const unproven = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1000, paymentMethod: 'card' });
+    const proven = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 2500, paymentMethod: 'card' });
+    await attachApiProviderPayment({ topupId: unproven.id, status: 'PENDING_PAYMENT', providerInvoiceId: 'inv_unproven' });
+    await attachApiProviderPayment({ topupId: proven.id, status: 'PENDING_PAYMENT', providerInvoiceId: 'inv_proven' });
+
+    t.mock.method(globalThis, 'fetch', async (url: string | URL | Request) => {
+      const value = String(url);
+      if (value.endsWith('/api/v1/authentication/login')) {
+        return new Response(JSON.stringify({ token: 'airwallex-test-token' }), { status: 200 });
+      }
+      const invoiceId = new URL(value).searchParams.get('invoice_id');
+      const amount = invoiceId === 'inv_proven' ? 2500 : 1000;
+      return new Response(JSON.stringify({ items: [{
+        id: `txn_${invoiceId}`,
+        invoice_id: invoiceId,
+        type: 'PAYMENT',
+        status: 'SUCCEEDED',
+        amount,
+        currency: 'CNY',
+        out_of_band: invoiceId !== 'inv_proven',
+        external_id: invoiceId === 'inv_proven' ? 'int_proven' : null,
+      }] }), { status: 200 });
+    });
+
+    await handleWebhook({ id: 'evt_invoice_unproven', name: 'invoice.paid', data: { object: {
+      id: 'inv_unproven', payment_status: 'PAID', paid_at: '2026-09-13T12:00:00.000Z',
+      metadata: { workspace_id: workspace.id, api_wallet_topup_id: unproven.id },
+    } } });
+    assert.equal((await getApiTopup(workspace.id, unproven.id))?.status, 'PENDING_PAYMENT');
+    assert.equal((await db.query(`SELECT workspace_id FROM workspace_api_wallets WHERE workspace_id=$1`, [workspace.id])).rows.length, 0);
+
+    await handleWebhook({ id: 'evt_invoice_proven', name: 'invoice.paid', data: { object: {
+      id: 'inv_proven', payment_status: 'PAID', paid_at: '2026-09-13T12:01:00.000Z',
+      metadata: { workspace_id: workspace.id, api_wallet_topup_id: proven.id },
+    } } });
+    assert.equal((await getApiTopup(workspace.id, proven.id))?.status, 'SUCCEEDED');
+    const wallet = (await db.query<{ available: string }>(
+      `SELECT available_amount AS available FROM workspace_api_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(wallet.available), 2500);
+  });
+
   it('rejects the retired API PAYG reservation without mutating usage', async () => {
     const user = (await db.query<{ id: string }>(
       `INSERT INTO users(email, password_hash) VALUES($1, 'hash') RETURNING id`,
@@ -247,17 +351,83 @@ describe('prepaid API and transparent usage reporting', () => {
 
     await applyApiProviderStatus({ providerPaymentIntentId: 'pi_test_wallet', providerStatus: 'REFUNDED' });
     await applyApiProviderStatus({ providerPaymentIntentId: 'pi_test_wallet', providerStatus: 'SUCCEEDED' });
-    const reversed = (await db.query<{ available: string; funded: string; status: string }>(
-      `SELECT w.available_amount AS available,w.total_funded_amount AS funded,t.status
+    const reversed = (await db.query<{ available: string; debt: string; funded: string; status: string }>(
+      `SELECT w.available_amount AS available,w.reversal_debt_amount AS debt,w.total_funded_amount AS funded,t.status
        FROM workspace_api_wallets w JOIN workspace_api_topups t ON t.workspace_id=w.workspace_id
        WHERE w.workspace_id=$1`, [workspace.id],
     )).rows[0]!;
     assert.equal(Number(reversed.available), 0);
+    assert.equal(Number(reversed.debt), 7.2);
     assert.equal(Number(reversed.funded), 0);
     assert.equal(reversed.status, 'REFUNDED');
+
+    await assert.rejects(
+      () => assertApiWalletFunded(workspace.id),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error
+        && (error as { code: string }).code === 'AI_REVERSAL_DEBT'),
+    );
+    const recovery = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1000, paymentMethod: 'card' });
+    await attachApiProviderPayment({ topupId: recovery.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_test_wallet_recovery' });
+    await applyApiProviderStatus({ providerPaymentIntentId: 'pi_test_wallet_recovery', providerStatus: 'SUCCEEDED' });
+    const recovered = await assertApiWalletFunded(workspace.id);
+    assert.equal(recovered.availableAmount, 992.8);
+    assert.equal(recovered.reversalDebtAmount, 0);
+
+    await applyApiProviderStatus({ providerPaymentIntentId: 'pi_test_wallet', providerStatus: 'REFUNDED' });
+    const replayed = (await db.query<{ available: string; debt: string }>(
+      `SELECT available_amount AS available,reversal_debt_amount AS debt
+       FROM workspace_api_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(replayed.available), 992.8);
+    assert.equal(Number(replayed.debt), 0);
   });
 
-  it('stops advertising reservations after a provider payment reversal', async () => {
+  it('records concurrent AI overage as debt and repairs an unsettled usage row', async () => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email,password_hash) VALUES($1,'hash') RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name,created_by) VALUES('AI Settlement Workspace',$1) RETURNING id`,
+      [user.id],
+    )).rows[0]!;
+    const topup = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1, paymentMethod: 'card' });
+    await attachApiProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_ai_overage' });
+    await applyApiProviderStatus({ providerPaymentIntentId: 'pi_ai_overage', providerStatus: 'SUCCEEDED' });
+    const usage = (await db.query<{ id: string }>(
+      `INSERT INTO ai_usage_ledger(workspace_id,user_id,provider,model,customer_cost_usd,metadata)
+       VALUES($1,$2,'openai','test-model',1,'{"responseId":"resp_overage"}'::jsonb) RETURNING id`,
+      [workspace.id,user.id],
+    )).rows[0]!;
+    await debitApiWallet({ workspaceId: workspace.id, usageLedgerId: usage.id, customerCostUsd: 1, responseId: 'resp_overage', usdCnyRate: 7.2 });
+    await debitApiWallet({ workspaceId: workspace.id, usageLedgerId: usage.id, customerCostUsd: 1, responseId: 'resp_overage', usdCnyRate: 7.2 });
+    const exhausted = (await db.query<{ available:string;spent:string;debt:string }>(
+      `SELECT available_amount AS available,spent_amount AS spent,reversal_debt_amount AS debt
+         FROM workspace_api_wallets WHERE workspace_id=$1`,[workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(exhausted.available),0);
+    assert.equal(Number(exhausted.spent),7.2);
+    assert.equal(Number(exhausted.debt),6.2);
+
+    const recovery = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1000, paymentMethod: 'card' });
+    await attachApiProviderPayment({ topupId: recovery.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_ai_overage_recovery' });
+    await applyApiProviderStatus({ providerPaymentIntentId: 'pi_ai_overage_recovery', providerStatus: 'SUCCEEDED' });
+    await db.query(
+      `INSERT INTO ai_usage_ledger(workspace_id,user_id,provider,model,customer_cost_usd,metadata)
+       VALUES($1,$2,'openai','test-model',0.5,'{"responseId":"resp_unsettled"}'::jsonb)`,
+      [workspace.id,user.id],
+    );
+    const repaired=await reconcileUnsettledApiUsage();
+    assert.ok(repaired.settled>=1);
+    const recovered = (await db.query<{ available:string;debt:string }>(
+      `SELECT available_amount AS available,reversal_debt_amount AS debt
+         FROM workspace_api_wallets WHERE workspace_id=$1`,[workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(recovered.debt),0);
+    assert.equal(Number(recovered.available),990.2);
+  });
+
+  it('preserves unrelated reservations and settles reversal debt before advertising resumes', async () => {
     const user = (await db.query<{ id: string }>(
       `INSERT INTO users(email, password_hash) VALUES($1, 'hash') RETURNING id`,
       [`${crypto.randomUUID()}@test.local`],
@@ -269,11 +439,16 @@ describe('prepaid API and transparent usage reporting', () => {
       netAmount: 10_000, feeAmount: 400, totalAmount: 10_400, paymentMethod: 'card' });
     await attachAdSpendProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_ad_reversal' });
     await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_reversal', providerStatus: 'SUCCEEDED' });
-    await reserveAdSpend({ workspaceId: workspace.id, amount: 100, idempotencyKey: 'reserve-before-chargeback' });
+    const authorization = await createAdBudgetAuthorization({ workspaceId: workspace.id, userId: user.id,
+      provider: 'google-ads', accountId: '1234567890', campaignId: '987654321', currency: 'CNY', amount: 200,
+      startsAt: new Date(Date.now() - 60_000).toISOString(), endsAt: new Date(Date.now() + 86_400_000).toISOString(),
+      idempotencyKey: 'authorize-before-chargeback' });
+    const reservation = await reserveAdSpend({ workspaceId: workspace.id, authorizationId: authorization.id, amount: 100,
+      provider: 'google-ads', accountId: '1234567890', campaignId: '987654321', currency: 'CNY', idempotencyKey: 'reserve-before-chargeback' });
     await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_reversal', providerStatus: 'CHARGEBACK' });
     await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_reversal', providerStatus: 'SUCCEEDED' });
-    const state = (await db.query<{ available: string; reserved: string; status: string; reservationStatus: string }>(
-      `SELECT w.available_amount AS available,w.reserved_amount AS reserved,t.status,
+    const state = (await db.query<{ available: string; reserved: string; debt: string; status: string; reservationStatus: string }>(
+      `SELECT w.available_amount AS available,w.reserved_amount AS reserved,w.reversal_debt_amount AS debt,t.status,
               r.status AS "reservationStatus"
        FROM workspace_ad_spend_wallets w
        JOIN workspace_ad_spend_topups t ON t.workspace_id=w.workspace_id
@@ -281,9 +456,58 @@ describe('prepaid API and transparent usage reporting', () => {
        WHERE w.workspace_id=$1`, [workspace.id],
     )).rows[0]!;
     assert.equal(Number(state.available), 0);
-    assert.equal(Number(state.reserved), 0);
+    assert.equal(Number(state.reserved), 100);
+    assert.equal(Number(state.debt), 100);
     assert.equal(state.status, 'CHARGEBACK');
-    assert.equal(state.reservationStatus, 'EXPIRED');
+    assert.equal(state.reservationStatus, 'RESERVED');
+
+    await assert.rejects(
+      () => assertAdSpendFunded(workspace.id),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error
+        && (error as { code: string }).code === 'AD_SPEND_REVERSAL_DEBT'),
+    );
+    await assert.rejects(
+      () => reserveAdSpend({ workspaceId: workspace.id, authorizationId: authorization.id, amount: 1,
+        provider: 'google-ads', accountId: '1234567890', campaignId: '987654321', currency: 'CNY', idempotencyKey: 'blocked-by-chargeback-debt' }),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error
+        && (error as { code: string }).code === 'AD_SPEND_REVERSAL_DEBT'),
+    );
+
+    const recoveryTopup = await createAdSpendTopup({ workspaceId: workspace.id, userId: user.id,
+      netAmount: 50, feeAmount: 2, totalAmount: 52, paymentMethod: 'card' });
+    await attachAdSpendProviderPayment({ topupId: recoveryTopup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_ad_recovery' });
+    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_recovery', providerStatus: 'SUCCEEDED' });
+    const partiallyRecovered = (await db.query<{ available: string; debt: string }>(
+      `SELECT available_amount AS available,reversal_debt_amount AS debt
+       FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(partiallyRecovered.available), 0);
+    assert.equal(Number(partiallyRecovered.debt), 50);
+
+    await releaseAdSpendReservation({ workspaceId: workspace.id, reservationId: reservation.id,
+      reason: 'Provider rejected the campaign operation' });
+    const recovered = (await db.query<{ available: string; reserved: string; debt: string; reservationStatus: string }>(
+      `SELECT w.available_amount AS available,w.reserved_amount AS reserved,w.reversal_debt_amount AS debt,
+              r.status AS "reservationStatus"
+       FROM workspace_ad_spend_wallets w
+       JOIN workspace_ad_spend_reservations r ON r.workspace_id=w.workspace_id
+       WHERE w.workspace_id=$1 AND r.id=$2`, [workspace.id, reservation.id],
+    )).rows[0]!;
+    assert.equal(Number(recovered.available), 50);
+    assert.equal(Number(recovered.reserved), 0);
+    assert.equal(Number(recovered.debt), 0);
+    assert.equal(recovered.reservationStatus, 'RELEASED');
+
+    const resumed = await reserveAdSpend({ workspaceId: workspace.id, authorizationId: authorization.id, amount: 25,
+      provider: 'google-ads', accountId: '1234567890', campaignId: '987654321', currency: 'CNY', idempotencyKey: 'reserve-after-debt-settled' });
+    assert.equal(resumed.status, 'RESERVED');
+    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_reversal', providerStatus: 'CHARGEBACK' });
+    const replayed = (await db.query<{ debt: string; refunded: string }>(
+      `SELECT reversal_debt_amount AS debt,refunded_amount AS refunded
+       FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(replayed.debt), 0);
+    assert.equal(Number(replayed.refunded), 10_000);
   });
 
   it('audits an admin billing skip without granting a plan or wallet funds', async () => {
@@ -319,5 +543,168 @@ describe('prepaid API and transparent usage reporting', () => {
     await applyApiProviderStatus({ providerPaymentIntentId: 'pi_skipped_workspace', providerStatus: 'SUCCEEDED' });
     const target = (await listAutomatedTargets()).find((item) => item.workspace_id === workspace.id);
     assert.equal(target?.status, 'billing_skipped');
+  });
+
+  it('journals exact partial AI refunds and idempotent dispute releases', async () => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email,password_hash) VALUES($1,'hash') RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name,created_by) VALUES('Partial AI Reversal',$1) RETURNING id`, [user.id],
+    )).rows[0]!;
+    const topup = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1000, paymentMethod: 'card' });
+    await attachApiProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'int_partial_ai' });
+    await applyApiProviderStatus({ providerPaymentIntentId: 'int_partial_ai', providerStatus: 'SUCCEEDED' });
+
+    const first = await recordAirwallexWalletReversal({
+      eventId: 'evt_partial_ai_1', eventType: 'refund.settled', reversalKind: 'REFUND',
+      reversalId: 'rfd_partial_ai_1', providerStatus: 'SETTLED', active: true, amount: 125.25,
+      currency: 'CNY', providerPaymentIntentId: 'int_partial_ai',
+      providerUpdatedAt: '2026-09-13T08:00:00.000Z', eventCreatedAt: '2026-09-13T08:00:01.000Z',
+    });
+    const replay = await recordAirwallexWalletReversal({
+      eventId: 'evt_partial_ai_1_replay', eventType: 'refund.settled', reversalKind: 'REFUND',
+      reversalId: 'rfd_partial_ai_1', providerStatus: 'SETTLED', active: true, amount: 125.25,
+      currency: 'CNY', providerPaymentIntentId: 'int_partial_ai',
+      providerUpdatedAt: '2026-09-13T08:00:00.000Z', eventCreatedAt: '2026-09-13T08:00:02.000Z',
+    });
+    await recordAirwallexWalletReversal({
+      eventId: 'evt_partial_ai_2', eventType: 'refund.settled', reversalKind: 'REFUND',
+      reversalId: 'rfd_partial_ai_2', providerStatus: 'SETTLED', active: true, amount: 74.75,
+      currency: 'CNY', providerPaymentIntentId: 'int_partial_ai',
+      providerUpdatedAt: '2026-09-13T08:01:00.000Z', eventCreatedAt: '2026-09-13T08:01:01.000Z',
+    });
+    assert.equal(first.idempotent, false);
+    assert.equal(replay.idempotent, true);
+
+    await handleWebhook({ id: 'evt_dispute_lost', name: 'payment_dispute.lost', created_at: '2026-09-13T08:02:01.000Z',
+      data: { object: { dispute_id: 'dst_partial_ai', payment_intent_id: 'int_partial_ai', stage: 'DISPUTE',
+        dispute_amount: 50, dispute_currency: 'CNY', updated_at: '2026-09-13T08:02:00.000Z' } } });
+    await handleWebhook({ id: 'evt_dispute_won', name: 'payment_dispute.won', created_at: '2026-09-13T08:03:01.000Z',
+      data: { object: { dispute_id: 'dst_partial_ai', payment_intent_id: 'int_partial_ai', stage: 'DISPUTE',
+        dispute_amount: 50, dispute_currency: 'CNY', updated_at: '2026-09-13T08:03:00.000Z' } } });
+    const stale = await handleWebhook({ id: 'evt_dispute_stale_lost', name: 'payment_dispute.lost', created_at: '2026-09-13T08:04:01.000Z',
+      data: { object: { dispute_id: 'dst_partial_ai', payment_intent_id: 'int_partial_ai', stage: 'DISPUTE',
+        dispute_amount: 50, dispute_currency: 'CNY', updated_at: '2026-09-13T08:02:00.000Z' } } });
+    assert.equal(stale.stale, true);
+
+    const wallet = (await db.query<{ available: string; funded: string; debt: string }>(
+      `SELECT available_amount AS available,total_funded_amount AS funded,reversal_debt_amount AS debt
+       FROM workspace_api_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.equal(Number(wallet.available), 800);
+    assert.equal(Number(wallet.funded), 800);
+    assert.equal(Number(wallet.debt), 0);
+    const journal = await db.query<{ kind: string; providerAmount: string; applied: string; sequence: number }>(
+      `SELECT provider_reversal_kind AS kind,provider_amount AS "providerAmount",
+         applied_wallet_amount AS applied,movement_sequence AS sequence
+       FROM airwallex_wallet_reversals WHERE api_topup_id=$1 ORDER BY provider_reversal_id`, [topup.id],
+    );
+    assert.equal(journal.rows.length, 3);
+    assert.equal(journal.rows.filter((row) => row.kind === 'REFUND').reduce((sum, row) => sum + Number(row.providerAmount), 0), 200);
+    const dispute = journal.rows.find((row) => row.kind === 'DISPUTE')!;
+    assert.equal(Number(dispute.applied), 0);
+    assert.equal(dispute.sequence, 2);
+  });
+
+  it('splits partial advertising refunds exactly between budget and the four-percent fee', async () => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email,password_hash) VALUES($1,'hash') RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name,created_by) VALUES('Partial Ad Reversal',$1) RETURNING id`, [user.id],
+    )).rows[0]!;
+    const topup = await createAdSpendTopup({ workspaceId: workspace.id, userId: user.id,
+      netAmount: 10_000, feeAmount: 400, totalAmount: 10_400, paymentMethod: 'card' });
+    await attachAdSpendProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'int_partial_ad' });
+    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'int_partial_ad', providerStatus: 'SUCCEEDED' });
+
+    await recordAirwallexWalletReversal({
+      eventId: 'evt_partial_ad_1', eventType: 'refund.settled', reversalKind: 'REFUND',
+      reversalId: 'rfd_partial_ad_1', providerStatus: 'SETTLED', active: true, amount: 5200,
+      currency: 'CNY', providerPaymentIntentId: 'int_partial_ad', providerUpdatedAt: '2026-09-13T09:00:00.000Z',
+    });
+    let wallet = (await db.query<{ available: string; funded: string; fee: string; refunded: string }>(
+      `SELECT available_amount AS available,total_funded_amount AS funded,total_fee_amount AS fee,
+         refunded_amount AS refunded FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.deepEqual([Number(wallet.available), Number(wallet.funded), Number(wallet.fee), Number(wallet.refunded)], [5000, 5000, 200, 5000]);
+
+    await recordAirwallexWalletReversal({
+      eventId: 'evt_partial_ad_2', eventType: 'refund.settled', reversalKind: 'REFUND',
+      reversalId: 'rfd_partial_ad_2', providerStatus: 'SETTLED', active: true, amount: 5200,
+      currency: 'CNY', providerPaymentIntentId: 'int_partial_ad', providerUpdatedAt: '2026-09-13T09:01:00.000Z',
+    });
+    wallet = (await db.query<{ available: string; funded: string; fee: string; refunded: string }>(
+      `SELECT available_amount AS available,total_funded_amount AS funded,total_fee_amount AS fee,
+         refunded_amount AS refunded FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.deepEqual([Number(wallet.available), Number(wallet.funded), Number(wallet.fee), Number(wallet.refunded)], [0, 0, 0, 10_000]);
+    const state = (await db.query<{ status: string; provider: string; wallet: string; fee: string }>(
+      `SELECT t.status,r.provider_amount AS provider,r.wallet_amount AS wallet,r.fee_amount AS fee
+       FROM workspace_ad_spend_topups t JOIN airwallex_wallet_reversals r ON r.ad_spend_topup_id=t.id
+       WHERE t.id=$1 ORDER BY r.provider_reversal_id LIMIT 1`, [topup.id],
+    )).rows[0]!;
+    assert.deepEqual([state.status, Number(state.provider), Number(state.wallet), Number(state.fee)], ['REFUNDED', 5200, 5000, 200]);
+  });
+
+  it('applies a terminal refund received before payment success and keeps unknown or unmatched events retryable', async () => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email,password_hash) VALUES($1,'hash') RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name,created_by) VALUES('Out Of Order Reversal',$1) RETURNING id`, [user.id],
+    )).rows[0]!;
+    const topup = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1000, paymentMethod: 'wechatpay' });
+
+    const received = await handleWebhook({ id: 'evt_pending_refund_received', name: 'refund.received',
+      created_at: '2026-09-13T10:00:00.000Z', data: { object: { id: 'rfd_pending_ai',
+        payment_intent_id: 'int_pending_ai', amount: 250, currency: 'CNY', status: 'RECEIVED',
+        metadata: { workspace_id: workspace.id, api_wallet_topup_id: topup.id }, updated_at: '2026-09-13T10:00:00.000Z' } } });
+    assert.equal(received.ignored, true);
+    assert.equal((await db.query(`SELECT id FROM airwallex_wallet_reversals WHERE api_topup_id=$1`, [topup.id])).rows.length, 0);
+    const accepted = await handleWebhook({ id: 'evt_pending_refund_accepted', name: 'refund.accepted',
+      created_at: '2026-09-13T10:00:30.000Z', data: { object: { id: 'rfd_pending_ai',
+        payment_intent_id: 'int_pending_ai', amount: 250, currency: 'CNY', status: 'ACCEPTED',
+        metadata: { workspace_id: workspace.id, api_wallet_topup_id: topup.id }, updated_at: '2026-09-13T10:00:30.000Z' } } });
+    assert.equal(accepted.ignored, true);
+    assert.equal((await db.query(`SELECT id FROM airwallex_wallet_reversals WHERE api_topup_id=$1`, [topup.id])).rows.length, 0);
+
+    await handleWebhook({ id: 'evt_pending_refund_settled', name: 'refund.settled',
+      created_at: '2026-09-13T10:01:01.000Z', data: { object: { id: 'rfd_pending_ai',
+        payment_intent_id: 'int_pending_ai', amount: 250, currency: 'CNY', status: 'SETTLED',
+        metadata: { workspace_id: workspace.id, api_wallet_topup_id: topup.id }, updated_at: '2026-09-13T10:01:00.000Z' } } });
+    assert.equal((await db.query(`SELECT workspace_id FROM workspace_api_wallets WHERE workspace_id=$1`, [workspace.id])).rows.length, 0);
+    await applyApiProviderStatus({ providerPaymentIntentId: 'int_pending_ai', providerStatus: 'SUCCEEDED' });
+    const wallet = (await db.query<{ available: string; funded: string; applied: string }>(
+      `SELECT w.available_amount AS available,w.total_funded_amount AS funded,r.applied_wallet_amount AS applied
+       FROM workspace_api_wallets w JOIN airwallex_wallet_reversals r ON r.workspace_id=w.workspace_id
+       WHERE w.workspace_id=$1`, [workspace.id],
+    )).rows[0]!;
+    assert.deepEqual([Number(wallet.available), Number(wallet.funded), Number(wallet.applied)], [750, 750, 250]);
+
+    await assert.rejects(
+      () => handleWebhook({ id: 'evt_unknown_refund', name: 'refund.completed', data: { object: {} } }),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error
+        && (error as { code: string }).code === 'AIRWALLEX_REFUND_EVENT_UNSUPPORTED'),
+    );
+    await assert.rejects(
+      () => handleWebhook({ id: 'evt_unmatched_refund', name: 'refund.settled', data: { object: {
+        id: 'rfd_not_found', payment_intent_id: 'int_not_found', amount: 10, currency: 'CNY', status: 'SETTLED',
+        updated_at: '2026-09-13T10:02:00.000Z',
+      } } }),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error
+        && (error as { code: string }).code === 'AIRWALLEX_WALLET_TOPUP_NOT_FOUND'),
+    );
+    const failedEvents = await db.query<{ eventId: string; processedAt: string | null; errorCode: string | null }>(
+      `SELECT event_id AS "eventId",processed_at AS "processedAt",last_error_code AS "errorCode"
+       FROM airwallex_webhook_events WHERE event_id IN ('evt_unknown_refund','evt_unmatched_refund') ORDER BY event_id`,
+    );
+    assert.equal(failedEvents.rows.every((row) => row.processedAt === null), true);
+    assert.deepEqual(failedEvents.rows.map((row) => row.errorCode),
+      ['AIRWALLEX_REFUND_EVENT_UNSUPPORTED', 'AIRWALLEX_WALLET_TOPUP_NOT_FOUND']);
   });
 });

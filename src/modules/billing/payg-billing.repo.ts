@@ -6,25 +6,12 @@ import type { PaygDirectPaymentMethod } from './payg-payment-methods.js';
 const nextBerlinMondaySql = `(date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') + INTERVAL '7 days') AT TIME ZONE 'Europe/Berlin'`;
 const currentBerlinMondaySql = `date_trunc('week', NOW() AT TIME ZONE 'Europe/Berlin') AT TIME ZONE 'Europe/Berlin'`;
 import { hasAdminCapability } from '../admin/admin.authorization.js';
+import { resolveAiFundingMode } from '../api-wallet/ai-funding-policy.js';
 
 export const AWS_USAGE_CUSTOMER_MULTIPLIER = 2;
 
 export async function isBillingAdminUser(userId?: string | null) {
   return hasAdminCapability(userId,'billing.bypass');
-}
-
-async function isAdminOwnedWorkspace(workspaceId: string) {
-  const { rows } = await query<{ id: string }>(
-    `SELECT u.id
-     FROM workspace_members wm
-     JOIN users u ON u.id = wm.user_id
-     WHERE wm.workspace_id = $1 AND wm.role = 'owner'
-     ORDER BY wm.joined_at
-     LIMIT 1`,
-    [workspaceId],
-  );
-  const owner = rows[0];
-  return hasAdminCapability(owner?.id,'billing.bypass');
 }
 
 export type PaygPeriod = {
@@ -985,13 +972,7 @@ export async function applyPaygInvoiceWebhook(input: {
 }
 
 export async function assertAiBillingAccess(workspaceId: string, userId?: string | null) {
-  if (await isBillingAdminUser(userId)) return;
-  if (await isAdminOwnedWorkspace(workspaceId)) return;
-  const { rows } = await query<{ planKey: string | null }>(
-    `SELECT plan_key AS "planKey" FROM workspace_subscriptions
-     WHERE workspace_id=$1 ORDER BY updated_at DESC LIMIT 1`, [workspaceId]);
-  const state = rows[0];
-  if (state?.planKey === 'test') return;
+  if ((await resolveAiFundingMode(workspaceId, userId)).mode === 'PLATFORM_FUNDED') return;
   const { assertApiWalletFunded } = await import('../api-wallet/api-wallet.repo.js');
   await assertApiWalletFunded(workspaceId);
 }

@@ -11,6 +11,10 @@ process.env.JWT_SECRET = 'agent-ecosystem-tests-only-not-a-production-key';
 const { pool } = await import('../src/db/pool.js');
 const agentRepo = await import('../src/modules/agents/agent.repo.js');
 const agentService = await import('../src/modules/agents/agent.service.js');
+const agentReactive = await import('../src/modules/agents/agent.reactive.js');
+const domainEventRepo = await import('../src/events/domain-event.repo.js');
+const { DOMAIN_EVENT_TYPES } = await import('../src/events/domain-event.types.js');
+const { registeredDomainEventHandlers } = await import('../src/events/domain-event.registry.js');
 const db = new PGlite();
 
 before(async () => {
@@ -95,5 +99,126 @@ describe('agent ecosystem persistence', () => {
     assert.equal(learned?.successCount, 1);
     assert.equal(learned?.failureCount, 0);
     assert.equal(learned?.performanceScore, 52);
+  });
+
+  it('creates exactly one employee run when a domain event is delivered more than once', async () => {
+    const f = await fixture();
+    const eventId = crypto.randomUUID();
+    const pageId = 'mightily-shore-7108';
+    const initialPlan = {
+      version: 5,
+      page: { pageId },
+      team: {
+        cycleId: crypto.randomUUID(),
+        selectedAgentIds: [`page:${pageId}`],
+        selectionReason: ['source event responsibility match'],
+        trigger: {
+          eventId,
+          eventType: 'order.created',
+          aggregateType: 'commerce_order',
+          aggregateId: crypto.randomUUID(),
+          occurredAt: '2026-09-13T00:00:00.000Z',
+          correlationId: null,
+        },
+      },
+    };
+    const first = await agentRepo.createOrReuseTriggeredPageRun({
+      workspaceId: f.workspaceId,
+      userId: f.owner,
+      goal: 'Handle canonical order',
+      pageId,
+      sourceEventId: eventId,
+      initialPlan,
+    });
+    const retry = await agentRepo.createOrReuseTriggeredPageRun({
+      workspaceId: f.workspaceId,
+      userId: f.owner,
+      goal: 'Handle canonical order',
+      pageId,
+      sourceEventId: eventId,
+      initialPlan,
+    });
+    assert.equal(first.created, true);
+    assert.equal(retry.created, false);
+    assert.equal(retry.run.id, first.run.id);
+    const count = await db.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM agent_runs
+       WHERE workspace_id=$1 AND plan->'team'->'trigger'->>'eventId'=$2`,
+      [f.workspaceId, eventId],
+    );
+    assert.equal(count.rows[0]?.count, '1');
+  });
+
+  it('treats an audited admin billing skip as an AI entitlement without minting wallet funds', async () => {
+    const owner = (await db.query<{ id: string }>(
+      `INSERT INTO users(email,password_hash,role,verified_at) VALUES($1,'hash','user',NOW()) RETURNING id`,
+      [`${crypto.randomUUID()}@example.test`],
+    )).rows[0]!.id;
+    const workspaceId = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name,created_by,billing_skipped_at,billing_skipped_by)
+       VALUES('Billing Skip',$1,NOW(),$1) RETURNING id`,
+      [owner],
+    )).rows[0]!.id;
+    const plan = await agentRepo.getWorkspacePlan(workspaceId);
+    assert.deepEqual(plan, { plan_key: 'ai', status: 'billing_skipped' });
+    const wallet = await db.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM workspace_api_wallets WHERE workspace_id=$1`,
+      [workspaceId],
+    );
+    assert.equal(wallet.rows[0]?.count, '0');
+  });
+
+  it('durably defers reactive work until AI funds exist and resumes from the original event', async () => {
+    const f = await fixture();
+    await db.query(`UPDATE workspace_subscriptions SET provider='airwallex' WHERE workspace_id=$1`,[f.workspaceId]);
+    const sourceEvent = await domainEventRepo.appendDomainEvent({
+      workspaceId: f.workspaceId,
+      type: DOMAIN_EVENT_TYPES.RECORD_CREATED,
+      aggregateType: 'workspace_record',
+      aggregateId: crypto.randomUUID(),
+      payload: { resourceType: 'crm_contacts', recordSource: 'user' },
+      metadata: { actorId: f.owner, actorType: 'USER', source: 'records' },
+      idempotencyKey: `test:reactive-unfunded:${crypto.randomUUID()}`,
+    });
+    agentReactive.startReactiveDispatcher();
+    const handler = registeredDomainEventHandlers().find((entry) => entry.name === 'agents.reactive-business-events.v2');
+    assert.ok(handler);
+
+    const deferred = await handler.handle(sourceEvent);
+    assert.equal(deferred?.deferred, true);
+    assert.equal((await db.query(`SELECT id FROM agent_runs
+      WHERE workspace_id=$1 AND plan->'team'->'trigger'->>'eventId'=$2`,[f.workspaceId,sourceEvent.id])).rows.length,0);
+    assert.equal((await db.query<{status:string}>(`SELECT status FROM agent_reactive_deferrals
+      WHERE workspace_id=$1 AND source_event_id=$2`,[f.workspaceId,sourceEvent.id])).rows[0]?.status,'WAITING');
+
+    await db.query(`UPDATE workspace_api_wallets
+      SET available_amount=100,total_funded_amount=100 WHERE workspace_id=$1`,[f.workspaceId]);
+    const fundingEvent = await domainEventRepo.appendDomainEvent({
+      workspaceId: f.workspaceId,
+      type: DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED,
+      aggregateType: 'api_wallet',
+      aggregateId: f.workspaceId,
+      payload: { amount: 100, availableAmount: 100 },
+      metadata: { actorId: f.owner, source: 'test' },
+      idempotencyKey: `test:api-funded:${crypto.randomUUID()}`,
+    });
+    const resumed = await handler.handle(fundingEvent);
+    assert.equal(resumed?.resumed,1);
+    assert.equal(resumed?.failed,0);
+    assert.equal((await db.query<{status:string}>(`SELECT status FROM agent_reactive_deferrals
+      WHERE workspace_id=$1 AND source_event_id=$2`,[f.workspaceId,sourceEvent.id])).rows[0]?.status,'RESUMED');
+    const runs = await db.query<{executionActorType:string;executionActorRef:string;executionCapabilityScope:string[]}>(
+      `SELECT execution_actor_type AS "executionActorType",execution_actor_ref AS "executionActorRef",
+              execution_capability_scope AS "executionCapabilityScope"
+       FROM agent_runs
+       WHERE workspace_id=$1 AND plan->'team'->'trigger'->>'eventId'=$2`,
+      [f.workspaceId,sourceEvent.id],
+    );
+    assert.ok(runs.rows.length > 0);
+    for (const run of runs.rows) {
+      assert.equal(run.executionActorType,'WORKFLOW');
+      assert.match(run.executionActorRef,/^lulu:reactive:/);
+      assert.ok(run.executionCapabilityScope.includes('agents.execute'));
+    }
   });
 });

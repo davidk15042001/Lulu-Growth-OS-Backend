@@ -4,8 +4,16 @@ import type { AssistantPendingAction } from './assistant-action.types.js';
 import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasKie, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
-import { recordUsage } from '../usage/usage.service.js';
-import { assertAiBillingAccess } from '../billing/payg-billing.repo.js';
+import { CUSTOMER_API_RATE, recordUsage } from '../usage/usage.service.js';
+import {
+  fingerprintAiRequest,
+  markAiSpendAmbiguous,
+  markAiSpendSubmitted,
+  markAiSpendSubmitting,
+  releaseAiSpend,
+  reserveAiSpend,
+} from '../api-wallet/ai-spend-reservation.repo.js';
+import type { AiFundingMode } from '../api-wallet/ai-funding-policy.js';
 
 export type ConversationTurn = {
   role: 'user' | 'assistant';
@@ -47,7 +55,13 @@ export type ResponsesClient = {
 export type AiRequestOptions = {
   timeout?: number;
   maxRetries?: number;
-  billing?: { workspaceId: string; userId?: string | null };
+  billing?: {
+    workspaceId: string;
+    userId?: string | null;
+    /** Stable business-operation identity. Worker retries must reuse it. */
+    operationId?: string;
+    operation?: string;
+  };
 };
 
 let openAIClient: OpenAI | undefined;
@@ -312,64 +326,218 @@ export async function probeAiRuntime() {
   return { provider, operational: true };
 }
 
+function boundedOutputLimit(params: Record<string, unknown>, kind: 'responses' | 'chat') {
+  const requested = kind === 'responses'
+    ? params.max_output_tokens
+    : params.max_completion_tokens ?? params.max_tokens;
+  const numeric = typeof requested === 'number' && Number.isFinite(requested) ? Math.floor(requested) : env.OPENAI_MAX_OUTPUT_TOKENS;
+  return Math.max(1, Math.min(env.OPENAI_MAX_OUTPUT_TOKENS, numeric));
+}
+
+function boundedAiParams(params: Record<string, unknown>, kind: 'responses' | 'chat'): {
+  params: Record<string, unknown>;
+  maximumOutputTokens: number;
+} {
+  const maximumOutputTokens = boundedOutputLimit(params, kind);
+  if (kind === 'responses') return { params: { ...params, max_output_tokens: maximumOutputTokens }, maximumOutputTokens };
+  if (params.max_completion_tokens !== undefined) {
+    return { params: { ...params, max_completion_tokens: maximumOutputTokens, max_tokens: undefined }, maximumOutputTokens };
+  }
+  return { params: { ...params, max_tokens: maximumOutputTokens }, maximumOutputTokens };
+}
+
+function reservationEstimate(params: Record<string, unknown>, maximumOutputTokens: number) {
+  // A BPE token cannot contain less than one source byte. Counting every UTF-8
+  // byte as a token plus framing headroom is intentionally conservative and is
+  // independent of whichever configured provider ultimately serves the call.
+  const maximumInputTokens = Buffer.byteLength(JSON.stringify(params), 'utf8') + 2_048;
+  const maximumCustomerCostUsd = (
+    maximumInputTokens * CUSTOMER_API_RATE.inputPerMillionUsd
+    + maximumOutputTokens * CUSTOMER_API_RATE.outputPerMillionUsd
+  ) / 1_000_000;
+  return { maximumInputTokens, maximumOutputTokens, maximumCustomerCostUsd };
+}
+
+function reservationKey(options: AiRequestOptions, operation: string) {
+  const identity = options.billing?.operationId?.trim() || crypto.randomUUID();
+  const digest = crypto.createHash('sha256').update(identity).digest('hex');
+  return `ai:${operation.slice(0, 80)}:${digest}`;
+}
+
+function definitiveProviderRejection(error: unknown) {
+  return ['authentication', 'insufficient_balance', 'model_unavailable', 'rate_limited', 'request']
+    .includes(classifyAiProviderFailure(error));
+}
+
 export function getOpenAIResponsesClient(): ResponsesClient {
   if (!hasAiProvider) {
     throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
   }
-  const providerOptions = (options?: AiRequestOptions) => options
-    ? { ...(options.timeout !== undefined ? { timeout: options.timeout } : {}), ...(options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}) }
-    : undefined;
-  const recordBilledUsage = async (provider: AiProviderName, params: Record<string, unknown>, response: any, options?: AiRequestOptions) => {
-    if (!options?.billing) return;
+  const providerOptions = (options?: AiRequestOptions, prepaid = false) => options
+    ? {
+        ...(options.timeout !== undefined ? { timeout: options.timeout } : {}),
+        ...(prepaid ? { maxRetries: 0 } : options.maxRetries !== undefined ? { maxRetries: options.maxRetries } : {}),
+      }
+    : prepaid ? { maxRetries: 0 } : undefined;
+
+  const recordBilledUsage = async (
+    provider: AiProviderName,
+    params: Record<string, unknown>,
+    response: any,
+    options?: AiRequestOptions,
+    reservationId?: string | null,
+    fundingMode?: AiFundingMode,
+  ) => {
+    if (!options?.billing) return null;
     const usage = response?.usage ?? {};
     const inputTokens = usage.input_tokens ?? usage.prompt_tokens ?? usage.promptTokens ?? null;
     const outputTokens = usage.output_tokens ?? usage.completion_tokens ?? usage.completionTokens ?? null;
-    try {
-      await recordUsage({
-        workspaceId: options.billing.workspaceId,
-        userId: options.billing.userId ?? null,
-        provider,
-        model: String(response?.model ?? params.model ?? configuredModel()),
-        inputTokens: typeof inputTokens === 'number' ? inputTokens : null,
-        outputTokens: typeof outputTokens === 'number' ? outputTokens : null,
-        responseId: typeof response?.id === 'string' ? response.id : null,
-      });
-    } catch (error) {
-      logger.error({ error, workspaceId: options.billing.workspaceId, responseId: response?.id ?? null }, 'AI usage could not be recorded for PAYG billing');
+    const responseId = typeof response?.id === 'string' && response.id.trim() ? response.id.trim() : null;
+    if (reservationId && (!responseId || (!Number.isFinite(inputTokens) && !Number.isFinite(outputTokens)))) {
+      throw new AppError(503, 'AI_USAGE_PENDING', 'The provider response cannot yet be reconciled to exact prepaid usage.');
     }
+    return recordUsage({
+      workspaceId: options.billing.workspaceId,
+      userId: options.billing.userId ?? null,
+      provider,
+      model: String(response?.model ?? params.model ?? configuredModel()),
+      inputTokens: typeof inputTokens === 'number' ? inputTokens : null,
+      outputTokens: typeof outputTokens === 'number' ? outputTokens : null,
+      responseId,
+      reservationId: reservationId ?? null,
+      ...(fundingMode ? { fundingMode } : {}),
+    });
   };
-  return {
-    create: async (params, options) => {
-      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId, options.billing.userId);
-      const attemptedModel = String(params.model ?? configuredModel());
-      const { provider, result: response } = await executeWithFailover(async (candidate, client) => {
-        const providerParams = { ...params, model: candidate === env.AI_PROVIDER ? attemptedModel : modelForProvider(candidate) };
-        if (candidate === 'openai') return client.responses.create(providerParams as never, providerOptions(options) as never) as Promise<ResponseResult>;
+
+  const execute = async (
+    kind: 'responses' | 'chat',
+    rawParams: Record<string, unknown>,
+    options?: AiRequestOptions,
+  ): Promise<any> => {
+    const bounded = boundedAiParams(rawParams, kind);
+    const attemptedModel = String(bounded.params.model ?? configuredModel());
+    const providers = configuredProviders().filter((provider) => !circuitIsOpen(provider));
+    if (!providers.length) {
+      throw new AppError(503, 'AI_PROVIDER_CIRCUITS_OPEN', 'All configured AI providers are unavailable or cooling down.');
+    }
+
+    const callProvider = async (provider: AiProviderName, prepaid: boolean) => {
+      const client = getProviderClient(provider);
+      const model = provider === env.AI_PROVIDER ? attemptedModel : modelForProvider(provider);
+      if (kind === 'responses') {
+        const providerParams = { ...bounded.params, model };
+        if (provider === 'openai') {
+          return client.responses.create(providerParams as never, providerOptions(options, prepaid) as never) as Promise<ResponseResult>;
+        }
         const chat = await client.chat.completions.create({
-          model: providerParams.model,
+          model,
           messages: responsesInputToMessages(providerParams),
-          max_tokens: params.max_output_tokens,
-        } as never, providerOptions(options) as never) as any;
+          max_tokens: bounded.maximumOutputTokens,
+        } as never, providerOptions(options, prepaid) as never) as any;
         return {
           id: String(chat.id ?? ''),
-          model: String(chat.model ?? providerParams.model),
+          model: String(chat.model ?? model),
           output_text: String(chat.choices?.[0]?.message?.content ?? ''),
           usage: { input_tokens: chat.usage?.prompt_tokens, output_tokens: chat.usage?.completion_tokens },
         } satisfies ResponseResult;
+      }
+      return client.chat.completions.create(
+        chatParamsForProvider(bounded.params, provider, model) as never,
+        providerOptions(options, prepaid) as never,
+      );
+    };
+
+    if (!options?.billing) {
+      const { provider, result } = await executeWithFailover((candidate) => callProvider(candidate, false));
+      return { provider, response: result, params: bounded.params };
+    }
+
+    const operation = options.billing.operation?.trim() || (kind === 'responses' ? 'responses.create' : 'chat.completions.create');
+    const estimate = reservationEstimate(bounded.params, bounded.maximumOutputTokens);
+    const selectedProvider = providers[0]!;
+    const selectedModel = selectedProvider === env.AI_PROVIDER ? attemptedModel : modelForProvider(selectedProvider);
+    const requestKey = reservationKey(options, operation);
+    const reserved = await reserveAiSpend({
+      workspaceId: options.billing.workspaceId,
+      userId: options.billing.userId ?? null,
+      requestKey,
+      requestFingerprint: fingerprintAiRequest({ kind, operation, params: bounded.params }),
+      operation,
+      maximumCustomerCostUsd: estimate.maximumCustomerCostUsd,
+      usdCnyRate: env.API_USD_CNY_RATE,
+      pricingSnapshot: { ...estimate, customerRate: CUSTOMER_API_RATE, method: 'utf8-byte-upper-bound-v1' },
+      provider: selectedProvider,
+      model: selectedModel,
+    });
+
+    if (reserved.funding.mode === 'PLATFORM_FUNDED') {
+      const { provider, result } = await executeWithFailover((candidate) => callProvider(candidate, false));
+      await recordBilledUsage(provider, bounded.params, result, options, null, 'PLATFORM_FUNDED');
+      return { provider, response: result, params: bounded.params };
+    }
+
+    const reservation = reserved.reservation;
+    if (!reservation) throw new AppError(500, 'AI_RESERVATION_MISSING', 'Customer-funded AI execution requires a durable wallet reservation.');
+    if (reservation.status !== 'RESERVED') {
+      throw new AppError(409, 'AI_REQUEST_RECOVERY_REQUIRED', 'This AI operation already has an unresolved or completed provider submission.', {
+        reservationId: reservation.id,
+        status: reservation.status,
       });
-      await recordBilledUsage(provider, params, response, options);
-      return response;
-    },
-    createChat: async (params, options) => {
-      if (options?.billing) await assertAiBillingAccess(options.billing.workspaceId, options.billing.userId);
-      const attemptedModel = String(params.model ?? configuredModel());
-      const { provider, result: response } = await executeWithFailover((candidate, client) => client.chat.completions.create(
-        chatParamsForProvider(params,candidate,candidate === env.AI_PROVIDER ? attemptedModel : modelForProvider(candidate)) as never,
-        providerOptions(options) as never,
-      ));
-      await recordBilledUsage(provider, params, response, options);
-      return response;
-    },
+    }
+    const submitting = await markAiSpendSubmitting(options.billing.workspaceId, reservation.id);
+    if (!submitting) throw new AppError(409, 'AI_REQUEST_RECOVERY_REQUIRED', 'The AI operation is already being processed.');
+
+    let response: any;
+    try {
+      response = await callProvider(selectedProvider, true);
+      markProviderSuccess(selectedProvider);
+    } catch (error) {
+      markProviderFailure(selectedProvider, error);
+      if (definitiveProviderRejection(error)) {
+        await releaseAiSpend({ workspaceId: options.billing.workspaceId, reservationId: reservation.id,
+          disposition: 'DEFINITIVE_REJECTION', reason: `provider_rejected:${classifyAiProviderFailure(error)}` })
+          .catch((releaseError) => logger.error({ releaseError, reservationId: reservation.id }, 'AI reservation release failed after definitive provider rejection'));
+      } else {
+        await markAiSpendAmbiguous(options.billing.workspaceId, reservation.id, `provider_outcome_unknown:${classifyAiProviderFailure(error)}`)
+          .catch((markError) => logger.error({ markError, reservationId: reservation.id }, 'AI reservation ambiguity could not be persisted'));
+      }
+      throw error;
+    }
+
+    const providerRequestId = typeof response?.id === 'string' ? response.id.trim() : '';
+    if (!providerRequestId) {
+      await markAiSpendAmbiguous(options.billing.workspaceId, reservation.id, 'provider_response_id_missing');
+      throw new AppError(503, 'AI_PROVIDER_RESULT_UNRECONCILABLE', 'The AI provider result did not contain a durable response identifier.');
+    }
+    try {
+      const submitted = await markAiSpendSubmitted({
+        workspaceId: options.billing.workspaceId,
+        reservationId: reservation.id,
+        provider: selectedProvider,
+        model: String(response?.model ?? selectedModel),
+        providerRequestId,
+      });
+      if (!submitted) {
+        throw new AppError(409, 'AI_PROVIDER_RESULT_CONFLICT', 'The provider result conflicts with the durable AI reservation.');
+      }
+    } catch (error) {
+      await markAiSpendAmbiguous(options.billing.workspaceId, reservation.id, `provider_result_persistence_pending:${errorMessage(error)}`)
+        .catch((markError) => logger.error({ markError, reservationId: reservation.id }, 'AI reservation ambiguity could not be persisted'));
+      throw error;
+    }
+    try {
+      await recordBilledUsage(selectedProvider, bounded.params, response, options, reservation.id, 'CUSTOMER_PREPAID');
+    } catch (error) {
+      await markAiSpendAmbiguous(options.billing.workspaceId, reservation.id, `usage_settlement_pending:${errorMessage(error)}`)
+        .catch((markError) => logger.error({ markError, reservationId: reservation.id }, 'AI usage settlement ambiguity could not be persisted'));
+      throw error;
+    }
+    return { provider: selectedProvider, response, params: bounded.params };
+  };
+
+  return {
+    create: async (params, options) => (await execute('responses', params, options)).response as ResponseResult,
+    createChat: async (params, options) => (await execute('chat', params, options)).response,
   };
 }
 
@@ -385,7 +553,7 @@ export function buildAssistantInstructions(context: AssistantContext) {
     'You are Lulu AI, the business operating assistant inside Lulu Growth OS.',
     'Give clear, practical answers grounded in the supplied company context.',
     'Never claim that an external action was executed unless a verified tool result explicitly confirms it.',
-    'Execute permitted actions autonomously. The only customer authorization boundary is adding prepaid paid-media budget.',
+    'Execute permitted actions autonomously. Paid media requires both prepaid funds and an active customer authorization for the exact provider account, campaign, currency, period and amount.',
     'Clearly distinguish observed data, inference, and recommendation.',
     `Company context: ${companyContext}`,
     `AI preferences: ${preferenceContext}`,
@@ -523,10 +691,11 @@ export async function generateAssistantResponseWithTools(
   },
   client: ResponsesClient = getOpenAIResponsesClient()
 ): Promise<AssistantLoopResult> {
+  const loopOperationId = crypto.randomUUID();
   const model = configuredModel(input.model);
   const instructions = [
     buildAssistantInstructions(input.context),
-    'Act within the backend policy: request write actions only when the user explicitly asks. Agent actions do not wait for human approval; paid media can execute only against already funded budget. Never claim success before the tool result confirms it.',
+    'Act within the backend policy: request write actions only when the user explicitly asks. Agent actions do not wait for routine human approval; paid media can execute only against funded budget and a campaign-specific customer authorization. Draft actions create drafts and never imply that a message was sent. Never claim success before the tool result confirms it.',
     'After analysis or actions, always give a clear structured report. Use these German sections where relevant: "Was ist passiert", "Gut / Schlecht", "Erledigt", "In Umsetzung", "Nächstes Ziel".',
     'Use markdown tables for tabular data. When numeric data benefits from a chart, add a fenced code block with the language "chart" containing JSON of the form {"type":"bar","title":"...","labels":["..."],"values":[numbers]}.',
   ].join('\n');
@@ -558,7 +727,12 @@ export async function generateAssistantResponseWithTools(
         tool_choice: 'auto',
         max_tokens: env.OPENAI_MAX_OUTPUT_TOKENS,
       },
-      { billing: { workspaceId: input.workspaceId, userId: input.userId } },
+      { billing: {
+        workspaceId: input.workspaceId,
+        userId: input.userId,
+        operation: 'assistant.tool-loop',
+        operationId: `${loopOperationId}:step:${step}`,
+      } },
     )) as {
       choices?: Array<{
         message?: {

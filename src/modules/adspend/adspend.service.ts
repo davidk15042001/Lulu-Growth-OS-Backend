@@ -3,12 +3,16 @@ import { createAdSpendProviderPayment, syncAdSpendProviderPayment } from '../bil
 import {
   AD_SPEND_FEE_BASIS_POINTS,
   createAdSpendTopup as createTopupRecord,
+  createAdBudgetAuthorization,
   failAdSpendTopup,
-  getAdSpendOverview,
+  getAdSpendOverview as getWalletOverview,
   getAdSpendTopup,
+  listAdBudgetAuthorizations,
   publicTopup,
+  revokeAdBudgetAuthorization,
   type AdSpendPaymentMethod,
 } from './adspend.repo.js';
+import { listGoogleAdsSpendAllocations } from './google-ads-spend.repo.js';
 
 export function calculateAdSpendCharge(amount: number) {
   if (![1, 10_000, 25_000, 50_000, 90_000].includes(amount)) {
@@ -29,7 +33,14 @@ export function calculateAdSpendCharge(amount: number) {
   };
 }
 
-export { getAdSpendOverview };
+export async function getAdSpendOverview(workspaceId: string) {
+  const [overview, allocations] = await Promise.all([
+    getWalletOverview(workspaceId),
+    listGoogleAdsSpendAllocations(workspaceId),
+  ]);
+  return { ...overview, allocations };
+}
+export { createAdBudgetAuthorization, listAdBudgetAuthorizations, revokeAdBudgetAuthorization };
 
 export async function startAdSpendTopup(input: {
   workspaceId: string;

@@ -148,7 +148,7 @@ export function buildAssistantTools(conversationId: string): AssistantTool[] {
     {
       name: ACTION_TOOL_NAME,
       description:
-        'Execute a real workspace action autonomously. The backend validates and stores the exact payload. Paid advertising runs only against a customer-funded ad spend wallet; no other action requires human approval.',
+        'Execute a real workspace action autonomously. The backend validates and stores the exact payload. Paid advertising requires both funded ad spend and an active customer authorization scoped to the exact provider account, campaign, currency, period and amount; no other routine action requires human approval.',
       parameters: {
         type: 'object',
         properties: {

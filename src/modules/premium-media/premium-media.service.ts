@@ -4,8 +4,17 @@ import { logger } from '../../config/logger.js';
 import { getObject, premiumProductMediaKey, productReferenceKey, putObject } from '../../storage/s3.service.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import { assertAiBillingAccess } from '../billing/payg-billing.repo.js';
+import {
+  fingerprintAiRequest,
+  markAiSpendAmbiguous,
+  markAiSpendSubmitted,
+  markAiSpendSubmitting,
+  releaseAiSpend,
+  reserveAiSpend,
+} from '../api-wallet/ai-spend-reservation.repo.js';
 import { recordMeteredUsage } from '../usage/usage.service.js';
 import {
+  classifyKiePostFailure,
   createMarketTask,
   createVeoTask,
   downloadGeneratedMedia,
@@ -21,6 +30,12 @@ import {
   uploadReferenceFile,
   uploadReferenceUrl,
 } from './kie-media.client.js';
+import {
+  getKieBillingCatalogReadiness,
+  maximumKieCustomerCostUsd,
+  resolveKieMaximumCreditVariant,
+  type KieCostVariant,
+} from './premium-media-cost-catalog.js';
 import * as repo from './premium-media.repo.js';
 import type { CreatePremiumMediaInput } from './premium-media.validator.js';
 import type {
@@ -219,6 +234,10 @@ async function assertRuntimeReady() {
   getPremiumImageModels();
   getPremiumTextImageModels();
   getPremiumVideoModels();
+  const billingCatalog = getKieBillingCatalogReadiness();
+  if (!billingCatalog.ready) {
+    throw new AppError(503, 'KIE_BILLING_CATALOG_UNREADY', 'Premium media is blocked until every configured Kie variant has a reviewed prepaid credit ceiling.', billingCatalog);
+  }
   const credits = await getKieCredits();
   if (credits <= 0) {
     throw new AppError(503, 'KIE_CREDITS_REQUIRED', 'The Kie.ai platform balance must be funded before premium production can start');
@@ -230,7 +249,8 @@ function marketImageParameters(model: string, prompt: string, urls: string[], as
     return { ...(urls.length ? { input_urls: urls } : {}), prompt, aspect_ratio: aspectRatio, resolution: env.KIE_IMAGE_RESOLUTION, nsfw_checker: true };
   }
   if (model.startsWith('seedream/')) {
-    return { ...(urls.length ? { image_urls: urls } : {}), prompt, aspect_ratio: aspectRatio, quality: 'basic', output_format: 'png', nsfw_checker: true };
+    return { ...(urls.length ? { image_urls: urls } : {}), prompt, aspect_ratio: aspectRatio,
+      quality: env.KIE_IMAGE_RESOLUTION === '2K' ? 'high' : 'basic', output_format: 'png', nsfw_checker: true };
   }
   return { ...(urls.length ? { input_urls: urls } : {}), prompt, aspect_ratio: aspectRatio, resolution: env.KIE_IMAGE_RESOLUTION, output_format: 'png', nsfw_checker: true };
 }
@@ -241,7 +261,7 @@ export function marketVideoParameters(model: string, prompt: string, imageUrl: s
       image_urls: [imageUrl],
       prompt,
       duration: '5',
-      resolution: '720p',
+      resolution: env.KIE_VIDEO_RESOLUTION,
     };
   }
   return {
@@ -256,6 +276,38 @@ export function marketVideoParameters(model: string, prompt: string, imageUrl: s
   };
 }
 
+function candidateBillingVariant(input: {
+  purpose: PremiumMediaPurpose;
+  model: string;
+}) {
+  if (input.purpose === 'IMAGE_GENERATION') {
+    return resolveKieMaximumCreditVariant({ purpose: input.purpose, model: input.model, resolution: env.KIE_IMAGE_RESOLUTION });
+  }
+  if (input.purpose === 'IMAGE_UPSCALE') {
+    return resolveKieMaximumCreditVariant({ purpose: input.purpose, model: input.model, resolution: `${env.KIE_IMAGE_UPSCALE_FACTOR}x` });
+  }
+  if (input.purpose === 'VIDEO_GENERATION') {
+    return resolveKieMaximumCreditVariant(input.model === 'veo3'
+      ? { purpose: input.purpose, model: input.model, resolution: '1080p', durationSeconds: 8 }
+      : { purpose: input.purpose, model: input.model, resolution: env.KIE_VIDEO_RESOLUTION, durationSeconds: 5 });
+  }
+  return resolveKieMaximumCreditVariant({
+    purpose: input.purpose,
+    model: input.model,
+    resolution: `${env.KIE_VIDEO_UPSCALE_FACTOR}x`,
+    durationSeconds: 5,
+  });
+}
+
+async function releaseProviderHold(
+  candidate: PremiumMediaCandidate,
+  reason: string,
+  disposition: 'BEFORE_SUBMISSION' | 'DEFINITIVE_REJECTION',
+) {
+  if (!candidate.reservationId) return;
+  await releaseAiSpend({ workspaceId: candidate.workspaceId, reservationId: candidate.reservationId, disposition, reason });
+}
+
 async function submitCandidate(input: {
   job: PremiumMediaJob;
   purpose: PremiumMediaPurpose;
@@ -268,7 +320,8 @@ async function submitCandidate(input: {
   parameters?: Record<string, unknown>;
   veoImageUrls?: string[];
 }) {
-  const candidate = await repo.createCandidate({
+  const billingVariant = candidateBillingVariant(input);
+  const candidateResult = await repo.createCandidate({
     job: input.job,
     purpose: input.purpose,
     mediaType: input.mediaType,
@@ -278,6 +331,86 @@ async function submitCandidate(input: {
     prompt: input.prompt,
     referenceUrls: input.qualityReferenceUrls,
   });
+  if (!candidateResult.created) {
+    return !['REJECTED', 'AMBIGUOUS'].includes(candidateResult.candidate.providerSubmissionState);
+  }
+  let candidate = candidateResult.candidate;
+  try {
+    const reservation = await reserveAiSpend({
+      workspaceId: input.job.workspaceId,
+      userId: input.job.requestedBy,
+      requestKey: `premium-media:${candidate.id}:provider:v1`,
+      requestFingerprint: fingerprintAiRequest({
+        candidateId: candidate.id,
+        jobId: input.job.id,
+        purpose: input.purpose,
+        model: input.model,
+        providerApi: input.providerApi,
+        prompt: input.prompt,
+        parameters: input.parameters ?? null,
+        veoImageUrls: input.veoImageUrls ?? null,
+        variant: billingVariant,
+      }),
+      operation: `premium_media.${input.purpose.toLowerCase()}`,
+      maximumCustomerCostUsd: maximumKieCustomerCostUsd(billingVariant),
+      usdCnyRate: env.API_USD_CNY_RATE,
+      pricingSnapshot: {
+        catalog: 'kie-prepaid-max-v1',
+        maximumCredits: billingVariant.maximumCredits,
+        providerCreditCostUsd: env.KIE_CREDIT_COST_USD,
+        customerMarkupMultiplier: env.KIE_CUSTOMER_MARKUP_MULTIPLIER,
+        resolution: billingVariant.resolution,
+        durationSeconds: billingVariant.durationSeconds,
+      },
+      provider: 'kie.ai',
+      model: input.model,
+    });
+    const bound = await repo.bindCandidateProviderFunding({
+      workspaceId: candidate.workspaceId,
+      candidateId: candidate.id,
+      reservationId: reservation.reservation?.id ?? null,
+      fundingMode: reservation.funding.mode,
+      variant: billingVariant,
+    });
+    if (!bound) {
+      if (reservation.reservation) {
+        await releaseAiSpend({
+          workspaceId: candidate.workspaceId,
+          reservationId: reservation.reservation.id,
+          disposition: 'BEFORE_SUBMISSION',
+          reason: 'premium_media_candidate_binding_failed',
+        });
+      }
+      throw new AppError(409, 'PREMIUM_MEDIA_FUNDING_BIND_FAILED', 'Premium media funding could not be bound to the candidate.');
+    }
+    candidate = bound;
+  } catch (error) {
+    await repo.markCandidateSubmissionRejected(
+      candidate.workspaceId,
+      candidate.id,
+      error instanceof AppError ? error.code : 'PREMIUM_MEDIA_RESERVATION_FAILED',
+      error instanceof Error ? error.message : 'Premium media funding reservation failed',
+    );
+    throw error;
+  }
+
+  const submitting = await repo.markCandidateSubmissionStarted(candidate.workspaceId, candidate.id);
+  if (!submitting) {
+    await releaseProviderHold(candidate, 'premium_media_provider_dispatch_not_started', 'BEFORE_SUBMISSION').catch(() => undefined);
+    await repo.markCandidateSubmissionRejected(candidate.workspaceId, candidate.id, 'KIE_SUBMISSION_STATE_CONFLICT', 'The premium media provider dispatch state changed before submission.');
+    return false;
+  }
+  candidate = submitting;
+  if (candidate.reservationId) {
+    try {
+      const marked = await markAiSpendSubmitting(candidate.workspaceId, candidate.reservationId);
+      if (!marked) throw new Error('AI reservation was not in a dispatchable state');
+    } catch (error) {
+      await releaseProviderHold(candidate, 'premium_media_provider_dispatch_not_started', 'BEFORE_SUBMISSION').catch(() => undefined);
+      await repo.markCandidateSubmissionRejected(candidate.workspaceId, candidate.id, 'AI_RESERVATION_STATE_CONFLICT', error instanceof Error ? error.message : 'AI reservation state conflict');
+      return false;
+    }
+  }
   try {
     const created = input.providerApi === 'VEO'
       ? await createVeoTask({
@@ -291,15 +424,44 @@ async function submitCandidate(input: {
           callbackUrl: callbackUrl(candidate.callbackToken),
           parameters: input.parameters ?? {},
         });
-    await repo.markCandidateSubmitted(candidate.id, created.taskId, created.payload);
+    const submitted = await repo.markCandidateSubmitted(candidate.workspaceId, candidate.id, created.taskId, created.payload);
+    if (!submitted) {
+      if (candidate.reservationId) {
+        await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, 'provider accepted task but candidate state could not persist').catch(() => undefined);
+      }
+      await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, 'KIE_SUBMISSION_PERSISTENCE_AMBIGUOUS', 'Kie.ai accepted a task but Lulu could not persist its task identity.');
+      return false;
+    }
+    if (candidate.reservationId) {
+      await markAiSpendSubmitted({
+        workspaceId: candidate.workspaceId,
+        reservationId: candidate.reservationId,
+        provider: 'kie.ai',
+        model: input.model,
+        providerRequestId: created.taskId,
+      }).catch(async (error) => {
+        await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId!, `provider task ${created.taskId} persisted; reservation transition failed: ${error instanceof Error ? error.message : String(error)}`).catch(() => undefined);
+        logger.error({ error, candidateId: candidate.id, reservationId: candidate.reservationId, providerTaskId: created.taskId }, 'Kie reservation submission state could not be persisted');
+      });
+    }
     return true;
   } catch (error) {
-    await repo.markCandidateSubmissionFailed(
-      candidate.id,
-      error instanceof AppError ? error.code : 'KIE_SUBMISSION_FAILED',
-      error instanceof Error ? error.message : 'Kie.ai task submission failed',
-    );
-    logger.error({ error, candidateId: candidate.id, model: input.model }, 'Premium media candidate submission failed');
+    const disposition = classifyKiePostFailure(error);
+    const code = error instanceof AppError ? error.code : 'KIE_SUBMISSION_FAILED';
+    const message = error instanceof Error ? error.message : 'Kie.ai task submission failed';
+    if (disposition === 'DEFINITIVE_REJECTION') {
+      try {
+        await releaseProviderHold(candidate, `kie_definitive_rejection:${code}`, 'DEFINITIVE_REJECTION');
+        await repo.markCandidateSubmissionRejected(candidate.workspaceId, candidate.id, code, message);
+      } catch (releaseError) {
+        if (candidate.reservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, `definitive provider rejection but hold release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`).catch(() => undefined);
+        await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, 'KIE_REJECTION_RELEASE_AMBIGUOUS', 'Kie.ai rejected the request, but Lulu could not safely release the prepaid hold.');
+      }
+    } else {
+      if (candidate.reservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, message).catch(() => undefined);
+      await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, code, message);
+    }
+    logger.error({ error, disposition, candidateId: candidate.id, model: input.model, reservationId: candidate.reservationId }, 'Premium media candidate submission failed');
     return false;
   }
 }
@@ -526,7 +688,7 @@ export async function getLatestPremiumMediaJob(workspaceId: string, productId: s
 export async function handleKieCallback(token: string, payload: unknown) {
   if (!/^[a-f0-9]{64}$/.test(token)) throw notFoundError('Premium media callback not found');
   const normalized = normalizeKieTask(payload);
-  return repo.applyProviderResult({
+  const candidate = await repo.applyProviderResult({
     callbackToken: token,
     providerTaskId: normalized.taskId,
     state: normalized.state,
@@ -536,6 +698,8 @@ export async function handleKieCallback(token: string, payload: unknown) {
     errorCode: normalized.errorCode,
     errorMessage: normalized.errorMessage,
   });
+  if (candidate && normalized.state !== 'pending') await settleCandidateProviderUsage(candidate);
+  return candidate;
 }
 
 export async function pollCandidate(candidate: PremiumMediaCandidate) {
@@ -545,7 +709,7 @@ export async function pollCandidate(candidate: PremiumMediaCandidate) {
     await repo.touchCandidate(candidate.id);
     return;
   }
-  await repo.applyProviderResult({
+  const updated = await repo.applyProviderResult({
     candidateId: candidate.id,
     providerTaskId: task.taskId,
     state: task.state,
@@ -555,6 +719,46 @@ export async function pollCandidate(candidate: PremiumMediaCandidate) {
     errorCode: task.errorCode,
     errorMessage: task.errorMessage,
   });
+  if (updated) await settleCandidateProviderUsage(updated);
+}
+
+export async function recoverStalePremiumMediaSubmissions(staleSeconds: number, providerTimeoutMinutes: number) {
+  const stale = await repo.listStaleSubmittingCandidates(staleSeconds);
+  for (const candidate of stale) {
+    if (candidate.providerSubmissionState === 'SUBMITTING') {
+      const message = 'Kie provider submission became stale after dispatch began; its prepaid hold remains for reconciliation.';
+      if (candidate.reservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, message).catch(() => undefined);
+      await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, 'KIE_SUBMISSION_TIMEOUT_AMBIGUOUS', message);
+      continue;
+    }
+    try {
+      await releaseProviderHold(candidate, 'premium_media_submission_not_dispatched', 'BEFORE_SUBMISSION');
+      await repo.markCandidateSubmissionRejected(candidate.workspaceId, candidate.id, 'KIE_SUBMISSION_NOT_DISPATCHED', 'The stale Kie candidate was safely cancelled before provider dispatch.');
+    } catch (error) {
+      const message = `The pre-dispatch Kie hold could not be released safely: ${error instanceof Error ? error.message : String(error)}`;
+      if (candidate.reservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, message).catch(() => undefined);
+      // RESERVED proves no provider call began, but a failed wallet release still
+      // requires operator reconciliation instead of pretending the funds moved.
+      await repo.markCandidateSubmissionStarted(candidate.workspaceId, candidate.id).catch(() => undefined);
+      await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, 'KIE_PRE_DISPATCH_RELEASE_AMBIGUOUS', message);
+    }
+  }
+
+  const timedOut = await repo.listTimedOutProviderCandidates(providerTimeoutMinutes);
+  for (const candidate of timedOut) {
+    const message = 'The accepted Kie task exceeded Lulu\'s provider deadline without exact terminal credit evidence.';
+    if (candidate.reservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, message).catch(() => undefined);
+    await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, 'KIE_TASK_TIMEOUT_AMBIGUOUS', message);
+  }
+
+  const staleQuality = await repo.listStaleQualitySubmissions(Math.max(staleSeconds, 600));
+  for (const candidate of staleQuality) {
+    const message = 'Kie quality-audit submission became stale after dispatch began; its prepaid hold remains for reconciliation.';
+    if (candidate.qualityReservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.qualityReservationId, message).catch(() => undefined);
+    await repo.markCandidateQualityAmbiguous({ workspaceId: candidate.workspaceId, candidateId: candidate.id,
+      workerId: null, code: 'KIE_QUALITY_TIMEOUT_AMBIGUOUS', message });
+  }
+  return { staleSubmissions: stale.length, timedOutTasks: timedOut.length, staleQualitySubmissions: staleQuality.length };
 }
 
 async function recordKieCost(input: {
@@ -562,11 +766,17 @@ async function recordKieCost(input: {
   userId: string | null;
   model: string;
   responseId: string;
+  providerRequestId: string;
   credits: number;
   operation: string;
+  reservationId?: string | null;
+  fundingMode: 'CUSTOMER_PREPAID' | 'PLATFORM_FUNDED';
 }) {
+  if (!Number.isFinite(input.credits) || input.credits <= 0) {
+    throw new AppError(409, 'KIE_EXACT_CREDITS_REQUIRED', 'Kie.ai usage cannot be settled without a strictly positive exact credit amount.');
+  }
   const providerCostUsd = input.credits * env.KIE_CREDIT_COST_USD;
-  await recordMeteredUsage({
+  const usage = await recordMeteredUsage({
     workspaceId: input.workspaceId,
     userId: input.userId,
     provider: 'kie.ai',
@@ -574,8 +784,56 @@ async function recordKieCost(input: {
     providerCostUsd,
     customerCostUsd: providerCostUsd * env.KIE_CUSTOMER_MARKUP_MULTIPLIER,
     responseId: input.responseId,
-    metadata: { creditsConsumed: input.credits, operation: input.operation },
+    providerRequestId: input.providerRequestId,
+    reservationId: input.reservationId ?? null,
+    fundingMode: input.fundingMode,
+    metadata: { creditsConsumed: input.credits, operation: input.operation, meteringEvidence: 'kie_exact_credits' },
   });
+  if (!usage) throw new AppError(409, 'KIE_USAGE_LEDGER_CONFLICT', 'Kie usage could not be correlated to its prepaid reservation.');
+}
+
+async function markProviderBillingAmbiguous(candidate: PremiumMediaCandidate, code: string, message: string) {
+  if (candidate.reservationId) {
+    await markAiSpendAmbiguous(candidate.workspaceId, candidate.reservationId, message).catch(() => undefined);
+  }
+  await repo.markCandidateSubmissionAmbiguous(candidate.workspaceId, candidate.id, code, message);
+}
+
+async function settleCandidateProviderUsage(candidate: PremiumMediaCandidate) {
+  if (candidate.usageRecorded || candidate.providerSubmissionState === 'REJECTED') return true;
+  if (!candidate.providerTaskId) {
+    await markProviderBillingAmbiguous(candidate, 'KIE_TASK_ID_MISSING', 'Kie.ai completed a candidate without a durable provider task identity.');
+    return false;
+  }
+  const credits = Number(candidate.creditsConsumed);
+  const maximumCredits = Number(candidate.billingMaxCredits);
+  if (!Number.isFinite(credits) || credits <= 0) {
+    await markProviderBillingAmbiguous(candidate, 'KIE_CREDITS_MISSING', 'Kie.ai returned a terminal task without a strictly positive exact creditsConsumed value.');
+    return false;
+  }
+  if (!Number.isFinite(maximumCredits) || maximumCredits <= 0 || credits > maximumCredits) {
+    await markProviderBillingAmbiguous(candidate, 'KIE_CREDITS_EXCEED_HOLD', 'Kie.ai reported credits outside the reviewed prepaid ceiling; the customer hold remains for reconciliation.');
+    return false;
+  }
+  if (candidate.fundingMode === 'UNRESOLVED'
+    || (candidate.fundingMode === 'CUSTOMER_PREPAID' && !candidate.reservationId)) {
+    await markProviderBillingAmbiguous(candidate, 'KIE_FUNDING_UNRESOLVED', 'The Kie task has no provable funding decision from before provider submission.');
+    return false;
+  }
+  await recordKieCost({
+    workspaceId: candidate.workspaceId,
+    userId: (await repo.getJobById(candidate.jobId))?.requestedBy ?? null,
+    model: candidate.model,
+    responseId: `kie-task:${candidate.providerTaskId}`,
+    providerRequestId: candidate.providerTaskId,
+    credits,
+    operation: candidate.purpose.toLowerCase(),
+    reservationId: candidate.reservationId,
+    fundingMode: candidate.fundingMode,
+  });
+  const recorded = await repo.markCandidateUsageRecorded(candidate.workspaceId, candidate.id);
+  if (!recorded) throw new AppError(409, 'KIE_USAGE_STATE_CONFLICT', 'Kie usage was recorded, but the candidate settlement state could not be finalized.');
+  return true;
 }
 
 async function storeFinalCandidate(
@@ -617,6 +875,139 @@ async function storeFinalCandidate(
   });
 }
 
+function qualityBillingVariant(candidate: PremiumMediaCandidate) {
+  return resolveKieMaximumCreditVariant({
+    purpose: 'QUALITY_AUDIT',
+    model: env.KIE_QUALITY_MODEL,
+    mediaType: candidate.mediaType,
+    resolution: candidate.mediaType,
+    durationSeconds: candidate.mediaType === 'VIDEO' ? 5 : null,
+  });
+}
+
+function persistedQualityReport(candidate: PremiumMediaCandidate) {
+  const report = candidate.qualityReport;
+  if (!report || typeof report !== 'object') {
+    throw new AppError(409, 'KIE_QUALITY_EVIDENCE_MISSING', 'The persisted Kie quality response is missing its report.');
+  }
+  const score = Number(report.score);
+  return {
+    report,
+    score: Number.isFinite(score) ? Math.max(0, Math.min(100, Math.round(score))) : 0,
+    accepted: report.accepted === true,
+  };
+}
+
+async function settleCandidateQualityUsage(candidate: PremiumMediaCandidate, job: PremiumMediaJob, workerId: string) {
+  if (candidate.qualitySubmissionState === 'SETTLED' && candidate.qualityUsageRecorded) return candidate;
+  const responseId = candidate.qualityProviderResponseId?.trim();
+  const credits = Number(candidate.qualityCreditsConsumed);
+  const maximumCredits = Number(candidate.qualityBillingMaxCredits);
+  if (!responseId || !Number.isFinite(credits) || credits <= 0
+    || !Number.isFinite(maximumCredits) || maximumCredits <= 0 || credits > maximumCredits
+    || candidate.qualityFundingMode === 'UNRESOLVED'
+    || (candidate.qualityFundingMode === 'CUSTOMER_PREPAID' && !candidate.qualityReservationId)) {
+    const message = credits > maximumCredits
+      ? 'Kie.ai quality-audit credits exceeded the reviewed prepaid ceiling.'
+      : 'Kie.ai quality audit did not return complete, exact funding and credit evidence.';
+    if (candidate.qualityReservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.qualityReservationId, message).catch(() => undefined);
+    await repo.markCandidateQualityAmbiguous({
+      workspaceId: candidate.workspaceId,
+      candidateId: candidate.id,
+      workerId,
+      code: credits > maximumCredits ? 'KIE_QUALITY_CREDITS_EXCEED_HOLD' : 'KIE_QUALITY_METERING_AMBIGUOUS',
+      message,
+    });
+    return null;
+  }
+  await recordKieCost({
+    workspaceId: candidate.workspaceId,
+    userId: job.requestedBy,
+    model: env.KIE_QUALITY_MODEL,
+    responseId: `kie-quality:${responseId}`,
+    providerRequestId: responseId,
+    credits,
+    operation: `${candidate.mediaType.toLowerCase()}_quality_gate`,
+    reservationId: candidate.qualityReservationId,
+    fundingMode: candidate.qualityFundingMode,
+  });
+  const settled = await repo.markCandidateQualitySettled(candidate.workspaceId, candidate.id, workerId);
+  if (!settled) throw new AppError(409, 'KIE_QUALITY_SETTLEMENT_STATE_CONFLICT', 'Kie quality usage was recorded, but its candidate state could not be finalized.');
+  return settled;
+}
+
+async function finishSettledQuality(
+  candidate: PremiumMediaCandidate,
+  job: PremiumMediaJob,
+  product: repo.ProductMediaContext,
+  workerId: string,
+) {
+  const quality = persistedQualityReport(candidate);
+  const finalPurpose = candidate.purpose === 'IMAGE_UPSCALE' || candidate.purpose === 'VIDEO_UPSCALE';
+  if (quality.accepted && finalPurpose) {
+    await storeFinalCandidate(candidate, job, product, workerId, quality.report, quality.score);
+    return;
+  }
+  await repo.finishCandidateQuality({
+    candidateId: candidate.id,
+    workerId,
+    accepted: quality.accepted,
+    score: quality.score,
+    report: quality.report,
+  });
+}
+
+async function reserveQualityAudit(candidate: PremiumMediaCandidate, job: PremiumMediaJob, workerId: string, variant: KieCostVariant) {
+  const resultUrl = candidate.resultUrls[0];
+  const reservation = await reserveAiSpend({
+    workspaceId: candidate.workspaceId,
+    userId: job.requestedBy,
+    requestKey: `premium-media:${candidate.id}:quality:v1`,
+    requestFingerprint: fingerprintAiRequest({
+      candidateId: candidate.id,
+      providerTaskId: candidate.providerTaskId,
+      resultUrl,
+      model: env.KIE_QUALITY_MODEL,
+      prompt: candidate.prompt,
+      referenceUrls: candidate.referenceUrls,
+      variant,
+    }),
+    operation: `premium_media.${candidate.mediaType.toLowerCase()}_quality_gate`,
+    maximumCustomerCostUsd: maximumKieCustomerCostUsd(variant),
+    usdCnyRate: env.API_USD_CNY_RATE,
+    pricingSnapshot: {
+      catalog: 'kie-prepaid-max-v1',
+      maximumCredits: variant.maximumCredits,
+      providerCreditCostUsd: env.KIE_CREDIT_COST_USD,
+      customerMarkupMultiplier: env.KIE_CUSTOMER_MARKUP_MULTIPLIER,
+      resolution: variant.resolution,
+      durationSeconds: variant.durationSeconds,
+    },
+    provider: 'kie.ai',
+    model: env.KIE_QUALITY_MODEL,
+  });
+  const bound = await repo.bindCandidateQualityFunding({
+    workspaceId: candidate.workspaceId,
+    candidateId: candidate.id,
+    workerId,
+    reservationId: reservation.reservation?.id ?? null,
+    fundingMode: reservation.funding.mode,
+    variant,
+  });
+  if (!bound) {
+    if (reservation.reservation) {
+      await releaseAiSpend({
+        workspaceId: candidate.workspaceId,
+        reservationId: reservation.reservation.id,
+        disposition: 'BEFORE_SUBMISSION',
+        reason: 'premium_media_quality_binding_failed',
+      });
+    }
+    throw new AppError(409, 'KIE_QUALITY_FUNDING_BIND_FAILED', 'Quality-audit funding could not be bound to its media candidate.');
+  }
+  return bound;
+}
+
 export async function processCandidate(candidate: PremiumMediaCandidate, workerId: string) {
   const job = await repo.getJobById(candidate.jobId);
   if (!job || ['COMPLETED', 'FAILED', 'CANCELLED'].includes(job.status)) {
@@ -637,66 +1028,134 @@ export async function processCandidate(candidate: PremiumMediaCandidate, workerI
     return;
   }
 
-  if (!candidate.usageRecorded && candidate.providerTaskId) {
-    await recordKieCost({
-      workspaceId: job.workspaceId,
-      userId: job.requestedBy,
-      model: candidate.model,
-      responseId: `kie-task:${candidate.providerTaskId}`,
-      credits: Number(candidate.creditsConsumed) || 0,
-      operation: candidate.purpose.toLowerCase(),
+  if (!candidate.usageRecorded || candidate.providerSubmissionState !== 'SETTLED') {
+    const settled = await settleCandidateProviderUsage(candidate);
+    if (!settled) return;
+  }
+
+  if (candidate.qualitySubmissionState === 'SETTLED') {
+    await finishSettledQuality(candidate, job, product, workerId);
+    return;
+  }
+  if (candidate.qualitySubmissionState === 'SUBMITTED') {
+    const settled = await settleCandidateQualityUsage(candidate, job, workerId);
+    if (settled) await finishSettledQuality(settled, job, product, workerId);
+    return;
+  }
+  if (candidate.qualitySubmissionState === 'AMBIGUOUS' || candidate.qualitySubmissionState === 'SUBMITTING') {
+    if (candidate.qualityReservationId) await markAiSpendAmbiguous(candidate.workspaceId, candidate.qualityReservationId, 'Quality audit submission has no safely replayable terminal evidence.').catch(() => undefined);
+    await repo.markCandidateQualityAmbiguous({
+      workspaceId: candidate.workspaceId,
+      candidateId: candidate.id,
+      workerId,
+      code: 'KIE_QUALITY_SUBMISSION_AMBIGUOUS',
+      message: 'Quality audit submission has no safely replayable terminal evidence; the prepaid hold remains.',
     });
-    await repo.markCandidateUsageRecorded(candidate.id);
+    return;
+  }
+
+  const variant = qualityBillingVariant(candidate);
+  if (candidate.qualitySubmissionState === 'NOT_STARTED') {
+    await reserveQualityAudit(candidate, job, workerId, variant);
+  }
+  const submitting = await repo.markCandidateQualitySubmitting(candidate.workspaceId, candidate.id, workerId);
+  if (!submitting) throw new AppError(409, 'KIE_QUALITY_SUBMISSION_STATE_CONFLICT', 'Quality-audit submission state changed before provider dispatch.');
+  if (submitting.qualityReservationId) {
+    const marked = await markAiSpendSubmitting(submitting.workspaceId, submitting.qualityReservationId);
+    if (!marked) {
+      await releaseAiSpend({
+        workspaceId: submitting.workspaceId,
+        reservationId: submitting.qualityReservationId,
+        disposition: 'BEFORE_SUBMISSION',
+        reason: 'premium_media_quality_dispatch_not_started',
+      });
+      throw new AppError(409, 'KIE_QUALITY_RESERVATION_STATE_CONFLICT', 'Quality-audit reservation was not dispatchable.');
+    }
   }
 
   const threshold = candidate.mediaType === 'IMAGE' ? job.imageQualityThreshold : job.videoQualityThreshold;
-  const quality = await evaluateMediaQuality({
-    mediaType: candidate.mediaType,
-    productName: product.name,
-    productDescription: productDescription(product),
-    prompt: candidate.prompt,
-    referenceUrls: candidate.referenceUrls,
-    candidateUrl: resultUrl,
-    threshold,
-  });
-  if (quality.responseId) {
-    await recordKieCost({
-      workspaceId: job.workspaceId,
-      userId: job.requestedBy,
-      model: env.KIE_QUALITY_MODEL,
-      responseId: `kie-quality:${quality.responseId}`,
-      credits: quality.creditsConsumed,
-      operation: `${candidate.mediaType.toLowerCase()}_quality_gate`,
+  try {
+    const quality = await evaluateMediaQuality({
+      mediaType: candidate.mediaType,
+      productName: product.name.slice(0, 300),
+      productDescription: productDescription(product).slice(0, 5_000),
+      prompt: candidate.prompt.slice(0, 5_000),
+      referenceUrls: candidate.referenceUrls.slice(0, 5),
+      candidateUrl: resultUrl,
+      threshold,
     });
+    if (!quality.responseId || !quality.creditsConsumed || quality.creditsConsumed <= 0) {
+      const message = 'Kie.ai returned a quality result without a response ID and strictly positive exact creditsConsumed value.';
+      if (submitting.qualityReservationId) await markAiSpendAmbiguous(submitting.workspaceId, submitting.qualityReservationId, message).catch(() => undefined);
+      await repo.markCandidateQualityAmbiguous({
+        workspaceId: submitting.workspaceId,
+        candidateId: submitting.id,
+        workerId,
+        code: 'KIE_QUALITY_METERING_MISSING',
+        message,
+      });
+      return;
+    }
+    const persisted = await repo.persistCandidateQualityResponse({
+      workspaceId: submitting.workspaceId,
+      candidateId: submitting.id,
+      workerId,
+      responseId: quality.responseId,
+      creditsConsumed: quality.creditsConsumed,
+      report: quality.report as unknown as Record<string, unknown>,
+    });
+    if (!persisted || persisted.qualitySubmissionState === 'AMBIGUOUS') {
+      const message = 'Kie.ai quality usage exceeded or could not be bound to its prepaid ceiling.';
+      if (submitting.qualityReservationId) await markAiSpendAmbiguous(submitting.workspaceId, submitting.qualityReservationId, message).catch(() => undefined);
+      await repo.markCandidateQualityAmbiguous({
+        workspaceId: submitting.workspaceId,
+        candidateId: submitting.id,
+        workerId,
+        code: 'KIE_QUALITY_RESPONSE_AMBIGUOUS',
+        message,
+      });
+      return;
+    }
+    if (persisted.qualityReservationId) {
+      await markAiSpendSubmitted({
+        workspaceId: persisted.workspaceId,
+        reservationId: persisted.qualityReservationId,
+        provider: 'kie.ai',
+        model: env.KIE_QUALITY_MODEL,
+        providerRequestId: quality.responseId,
+      });
+    }
+    const settled = await settleCandidateQualityUsage(persisted, job, workerId);
+    if (settled) await finishSettledQuality(settled, job, product, workerId);
+  } catch (error) {
+    const disposition = classifyKiePostFailure(error);
+    const message = error instanceof Error ? error.message : 'Kie.ai quality-audit submission failed';
+    const code = error instanceof AppError ? error.code : 'KIE_QUALITY_SUBMISSION_FAILED';
+    if (disposition === 'DEFINITIVE_REJECTION') {
+      try {
+        if (submitting.qualityReservationId) {
+          await releaseAiSpend({
+            workspaceId: submitting.workspaceId,
+            reservationId: submitting.qualityReservationId,
+            disposition: 'DEFINITIVE_REJECTION',
+            reason: `kie_quality_definitive_rejection:${code}`,
+          });
+        }
+        await repo.markCandidateQualityRejected({ workspaceId: submitting.workspaceId, candidateId: submitting.id, workerId, code, message });
+      } catch (releaseError) {
+        if (submitting.qualityReservationId) await markAiSpendAmbiguous(submitting.workspaceId, submitting.qualityReservationId, `quality rejection release failed: ${releaseError instanceof Error ? releaseError.message : String(releaseError)}`).catch(() => undefined);
+        await repo.markCandidateQualityAmbiguous({ workspaceId: submitting.workspaceId, candidateId: submitting.id, workerId,
+          code: 'KIE_QUALITY_REJECTION_RELEASE_AMBIGUOUS', message: 'The quality request was rejected, but Lulu could not safely release its prepaid hold.' });
+      }
+      return;
+    }
+    if (submitting.qualityReservationId) await markAiSpendAmbiguous(submitting.workspaceId, submitting.qualityReservationId, message).catch(() => undefined);
+    await repo.markCandidateQualityAmbiguous({ workspaceId: submitting.workspaceId, candidateId: submitting.id, workerId, code, message });
   }
-  const report = quality.report as unknown as Record<string, unknown>;
-  const finalPurpose = candidate.purpose === 'IMAGE_UPSCALE' || candidate.purpose === 'VIDEO_UPSCALE';
-  if (quality.report.accepted && finalPurpose) {
-    await storeFinalCandidate(candidate, job, product, workerId, report, quality.report.score);
-    return;
-  }
-  await repo.finishCandidateQuality({
-    candidateId: candidate.id,
-    workerId,
-    accepted: quality.report.accepted,
-    score: quality.report.score,
-    report,
-  });
 }
 
 export async function recordCandidateProviderUsage(candidate: PremiumMediaCandidate) {
-  if (candidate.usageRecorded || !candidate.providerTaskId || Number(candidate.creditsConsumed) <= 0) return;
-  const job = await repo.getJobById(candidate.jobId);
-  if (!job) return;
-  await recordKieCost({
-    workspaceId: candidate.workspaceId,
-    userId: job.requestedBy,
-    model: candidate.model,
-    responseId: `kie-task:${candidate.providerTaskId}`,
-    credits: Number(candidate.creditsConsumed),
-    operation: candidate.purpose.toLowerCase(),
-  });
-  await repo.markCandidateUsageRecorded(candidate.id);
+  await settleCandidateProviderUsage(candidate);
 }
 
 function currentCandidates(candidates: PremiumMediaCandidate[], purpose: PremiumMediaPurpose, round: number) {
@@ -704,7 +1163,10 @@ function currentCandidates(candidates: PremiumMediaCandidate[], purpose: Premium
 }
 
 function allTerminal(candidates: PremiumMediaCandidate[]) {
-  return candidates.length > 0 && candidates.every((candidate) => TERMINAL_CANDIDATE_STATUSES.has(candidate.status));
+  return candidates.length > 0 && candidates.every((candidate) => (
+    TERMINAL_CANDIDATE_STATUSES.has(candidate.status)
+    && ['REJECTED', 'SETTLED'].includes(candidate.providerSubmissionState)
+  ));
 }
 
 function bestAccepted(candidates: PremiumMediaCandidate[]) {

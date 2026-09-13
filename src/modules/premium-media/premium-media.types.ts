@@ -16,6 +16,16 @@ export type PremiumMediaJobStatus = typeof PREMIUM_MEDIA_JOB_STATUSES[number];
 export type PremiumMediaPurpose = 'IMAGE_GENERATION' | 'IMAGE_UPSCALE' | 'VIDEO_GENERATION' | 'VIDEO_UPSCALE';
 export type PremiumMediaType = 'IMAGE' | 'VIDEO';
 export type KieProviderApi = 'MARKET' | 'VEO';
+export type PremiumMediaFundingMode = 'UNRESOLVED' | 'CUSTOMER_PREPAID' | 'PLATFORM_FUNDED';
+export type PremiumMediaSubmissionState =
+  | 'UNRESERVED'
+  | 'RESERVED'
+  | 'SUBMITTING'
+  | 'SUBMITTED'
+  | 'AMBIGUOUS'
+  | 'REJECTED'
+  | 'SETTLED';
+export type PremiumMediaQualitySubmissionState = Exclude<PremiumMediaSubmissionState, 'UNRESERVED'> | 'NOT_STARTED';
 export type PremiumMediaCandidateStatus =
   | 'SUBMITTING'
   | 'SUBMITTED'
@@ -71,6 +81,12 @@ export type PremiumMediaCandidate = {
   model: string;
   providerApi: KieProviderApi;
   providerTaskId: string | null;
+  reservationId: string | null;
+  fundingMode: PremiumMediaFundingMode;
+  providerSubmissionState: PremiumMediaSubmissionState;
+  billingResolution: string | null;
+  billingDurationSeconds: number | null;
+  billingMaxCredits: string | number | null;
   callbackToken: string;
   status: PremiumMediaCandidateStatus;
   generationRound: number;
@@ -78,8 +94,17 @@ export type PremiumMediaCandidate = {
   referenceUrls: string[];
   resultUrls: string[];
   providerPayload: Record<string, unknown>;
-  creditsConsumed: string | number;
+  creditsConsumed: string | number | null;
   usageRecorded: boolean;
+  qualityReservationId: string | null;
+  qualityFundingMode: PremiumMediaFundingMode;
+  qualitySubmissionState: PremiumMediaQualitySubmissionState;
+  qualityProviderResponseId: string | null;
+  qualityCreditsConsumed: string | number | null;
+  qualityBillingResolution: string | null;
+  qualityBillingDurationSeconds: number | null;
+  qualityBillingMaxCredits: string | number | null;
+  qualityUsageRecorded: boolean;
   qualityScore: number | null;
   qualityReport: Record<string, unknown> | null;
   storageReference: string | null;

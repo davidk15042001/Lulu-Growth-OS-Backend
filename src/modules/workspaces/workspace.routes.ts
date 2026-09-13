@@ -30,6 +30,10 @@ import commercialDocumentRoutes from '../commercial-documents/commercial-documen
 import { supportRoutes } from '../support/support.routes.js';
 import adSpendRoutes from '../adspend/adspend.routes.js';
 import apiWalletRoutes from '../api-wallet/api-wallet.routes.js';
+import officeRoutes from '../office/office.routes.js';
+import financeRoutes from '../finance/finance.routes.js';
+import commerceRoutes from '../commerce/commerce.routes.js';
+import socialPublishingRoutes from '../social-publishing/social-publishing.routes.js';
 
 const router = Router();
 
@@ -65,6 +69,10 @@ router.use('/:workspaceId', workspaceAppRoutes);
 router.use('/:workspaceId/support', supportRoutes);
 router.use('/:workspaceId/adspend', adSpendRoutes);
 router.use('/:workspaceId/api-wallet', apiWalletRoutes);
+router.use('/:workspaceId/office', officeRoutes);
+router.use('/:workspaceId/finance', financeRoutes);
+router.use('/:workspaceId/commerce', commerceRoutes);
+router.use('/:workspaceId/social-publishing', socialPublishingRoutes);
 router.use('/:workspaceId/providers', workspaceProviderRoutes);
 router.use('/:workspaceId/products', productRoutes);
 router.use('/:workspaceId/onboarding', onboardingRoutes);

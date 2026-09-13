@@ -4,10 +4,45 @@ import { forbiddenError } from '../../utils/app-error.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import {
   ROLE_CAPABILITIES,
+  isWorkspaceCapability,
   type WorkspaceActorType,
   type WorkspaceCapability,
   type WorkspaceRole,
 } from './workspace-permissions.js';
+
+export type WorkspaceActorCapabilities = {
+  role: WorkspaceRole;
+  capabilities: ReadonlySet<WorkspaceCapability>;
+};
+
+/**
+ * Resolve the complete capability context for an authenticated workspace
+ * actor. Office projections contain data from multiple domains, so checking
+ * only `agents.read` at the route boundary is not sufficient.
+ */
+export async function getWorkspaceActorCapabilities(
+  workspaceId: string,
+  userId: string,
+  client?: PoolClient,
+): Promise<WorkspaceActorCapabilities> {
+  const { rows } = await query<{ role: WorkspaceRole; capabilityKey: string | null }>(
+    `SELECT wm.role,rc.capability_key AS "capabilityKey"
+       FROM workspace_members wm
+       JOIN workspaces w ON w.id=wm.workspace_id AND w.deleted_at IS NULL
+       JOIN users u ON u.id=wm.user_id AND u.deleted_at IS NULL
+       LEFT JOIN workspace_role_capabilities rc ON rc.role=wm.role
+      WHERE wm.workspace_id=$1 AND wm.user_id=$2`,
+    [workspaceId, userId],
+    client,
+  );
+  const membership = rows[0];
+  if (!membership) throw forbiddenError('Workspace membership required');
+  const capabilities = new Set<WorkspaceCapability>(ROLE_CAPABILITIES[membership.role] ?? []);
+  for (const row of rows) {
+    if (row.capabilityKey && isWorkspaceCapability(row.capabilityKey)) capabilities.add(row.capabilityKey);
+  }
+  return { role: membership.role, capabilities };
+}
 
 export type WorkspaceAuthorizationInput = {
   workspaceId: string;
@@ -81,4 +116,3 @@ export async function assertWorkspaceCapability(input: WorkspaceAuthorizationInp
   if (!decision.allowed) throw forbiddenError(`Workspace capability required: ${input.capability}`);
   return decision;
 }
-

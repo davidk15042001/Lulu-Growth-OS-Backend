@@ -4,7 +4,7 @@ import { isResourceType, type ResourceType } from '../../domain/resource-catalog
 import { query, withTransaction } from '../../db/pool.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import * as recordRepo from '../records/record.repo.js';
-import { createAiDraft, createDraft, sendDraft } from '../email/email.service.js';
+import { createAiDraft, createDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
 import { startContentRefresh } from '../content-generation/content-generation.service.js';
@@ -12,7 +12,6 @@ import { evaluateAgentActionPolicy } from '../agents/agent.autonomy-policy.js';
 import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import { assertWorkspaceCapability } from '../workspaces/workspace-authorization.service.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
-import { assertAdSpendFunded, consumeAdSpendReservation, releaseAdSpendReservation, reserveAdSpend } from '../adspend/adspend.repo.js';
 import { executeAdvertisingProviderOperation } from '../adspend/advertising.provider.service.js';
 import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
 import {
@@ -152,8 +151,7 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       bodyText: textValue(payload.bodyText, 100_000),
       replyToProviderMessageId: textValue(payload.replyToProviderMessageId, 1000) || null,
     });
-    const sent = await sendDraft(workspaceId, draft.id);
-    return { status: 'sent', resourceType: null, recordId: draft.id, message: 'Email sent.', providerMessageId: sent?.providerMessageId ?? null };
+    return { status: 'drafted', resourceType: null, recordId: draft.id, message: 'Email draft created. Sending requires an explicit send action.' };
   }
 
   if (action.type === 'email.create_ai_draft') {
@@ -173,8 +171,7 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       'automation',
       { generatedBy: 'ai_assistant' },
     );
-    const sent = await sendDraft(workspaceId, draft.id);
-    return { status: 'sent', resourceType: null, recordId: draft.id, message: 'AI email sent.', providerMessageId: sent?.providerMessageId ?? null };
+    return { status: 'drafted', resourceType: null, recordId: draft.id, message: 'AI email draft created. Sending requires an explicit send action.' };
   }
 
   if (action.type === 'omnichannel.send_message') {
@@ -201,18 +198,11 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'pause'});
       return {status:'executed',resourceType:'ad_optimizations' as ResourceType,recordId:null,message:'Google Ads campaign paused.',...result};
     }
-    const wallet=await assertAdSpendFunded(workspaceId);
-    const requested=Number(payload.budgetAmountCny)||wallet.availableAmount;
-    const amount=Math.min(requested,wallet.availableAmount);
-    const reservation=await reserveAdSpend({workspaceId,amount,idempotencyKey:`assistant:${action.id}:ad-spend`,platform:provider,campaignId:textValue(payload.campaignId),metadata:{assistantActionId:action.id}});
-    try{
-      const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'launch',campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount});
-      await consumeAdSpendReservation({workspaceId,reservationId:reservation.id,providerOperationId:result.providerOperationId,metadata:{providerResponse:result.response}});
-      return {status:'executed',resourceType:'ad_optimizations' as ResourceType,recordId:null,message:'Google Ads campaign launched.',reservationId:reservation.id,budgetAmountCny:amount,...result};
-    }catch(error){
-      await releaseAdSpendReservation({workspaceId,reservationId:reservation.id,reason:error instanceof Error?error.message:'Provider execution failed'});
-      throw error;
-    }
+    const amount=Number(payload.budgetAmountCny);
+    const authorizationId=textValue(payload.authorizationId);
+    if(!Number.isFinite(amount)||amount<=0||!authorizationId)throw new AppError(409,'AD_BUDGET_AUTHORIZATION_REQUIRED','Campaign launch requires an explicit amount and customer budget authorization.');
+    const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'launch',campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,authorizationId,operationKey:`assistant:${action.id}:ad-spend`});
+    return {status:'executed',resourceType:'ad_optimizations' as ResourceType,recordId:null,message:'Google Ads campaign launched.',...result};
   }
 
   if (action.type === 'website.publish_job') {
@@ -322,8 +312,8 @@ export async function requestAssistantAction(workspaceId: string, userId: string
   if (policy.decision === 'forbidden') throw new AppError(403, 'ASSISTANT_ACTION_FORBIDDEN', 'This action is not allowed');
   const row = await withTransaction(async (client) => {
     // Serialize identical requests before the upsert. Agent actions execute
-    // without per-action approvals; the only customer authorization boundary
-    // is the separately funded prepaid ad-spend wallet.
+    // without routine per-action approvals. Paid media is separately protected
+    // by both its prepaid wallet and a campaign-specific authorization.
     await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`${workspaceId}:${idempotencyKey}`], client);
     let stored = (await query<AssistantActionRow>(
       `INSERT INTO assistant_action_requests(workspace_id,conversation_id,requested_by,action_type,summary,payload,payload_digest,status,idempotency_key)

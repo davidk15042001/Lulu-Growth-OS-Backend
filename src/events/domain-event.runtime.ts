@@ -16,8 +16,13 @@ import {
   retryDomainEvent,
 } from './domain-event.repo.js';
 import type { DomainEvent } from './domain-event.types.js';
+import { createRuntimeWorkerMonitor } from '../operations/worker-liveness.js';
 
 const workerId = `events-${process.pid}-${randomUUID()}`;
+const runtimeMonitor = createRuntimeWorkerMonitor('domain-events', {
+  required: true,
+  staleAfterMs: Math.max(60_000, env.EVENT_WORKER_POLL_INTERVAL_MS * 4),
+});
 const liveEvents = new EventEmitter();
 liveEvents.setMaxListeners(1_000);
 
@@ -46,10 +51,20 @@ async function dispatchEvent(event: DomainEvent) {
 }
 
 async function processClaimedEvent(event: DomainEvent) {
+  const pendingHeartbeats = new Set<Promise<unknown>>();
   const heartbeat = setInterval(
-    () => void heartbeatDomainEvent(event.id, workerId).catch((error: unknown) => {
-      logger.warn({ error, eventId: event.id }, 'Domain event lease heartbeat failed');
-    }),
+    () => {
+      const task = heartbeatDomainEvent(event.id, workerId);
+      pendingHeartbeats.add(task);
+      task.then(
+        () => pendingHeartbeats.delete(task),
+        (error: unknown) => {
+          pendingHeartbeats.delete(task);
+          logger.warn({ error, eventId: event.id }, 'Domain event lease heartbeat failed');
+        },
+      );
+      runtimeMonitor.progress({ phase: 'processing', metadata: { eventId: event.id, eventType: event.type } });
+    },
     Math.max(5_000, Math.floor(env.EVENT_WORKER_LEASE_SECONDS * 1_000 / 3)),
   );
   heartbeat.unref();
@@ -62,6 +77,7 @@ async function processClaimedEvent(event: DomainEvent) {
     logger.error({ error, eventId: event.id, eventType: event.type, attempts: event.attempts }, 'Domain event delivery failed');
   } finally {
     clearInterval(heartbeat);
+    if (pendingHeartbeats.size > 0) await Promise.allSettled([...pendingHeartbeats]);
   }
 }
 
@@ -82,7 +98,11 @@ async function drainDomainEvents() {
 export function requestDomainEventDrain() {
   if (!processingEnabled || stopping || activeDrain) return activeDrain;
   activeDrain = drainDomainEvents()
-    .catch((error: unknown) => logger.error({ error }, 'Domain event worker cycle failed'))
+    .then(() => runtimeMonitor.progress({ phase: 'idle' }))
+    .catch((error: unknown) => {
+      runtimeMonitor.failed(error);
+      logger.error({ error }, 'Domain event worker cycle failed');
+    })
     .finally(() => { activeDrain = null; });
   return activeDrain;
 }
@@ -191,6 +211,7 @@ export async function startDomainEventRuntime(options: { processEvents?: boolean
   runtimeStarted = true;
   stopping = false;
   processingEnabled = options.processEvents !== false;
+  if (processingEnabled) runtimeMonitor.start({ workerId });
   lastBroadcastSequence = await latestDomainEventSequence();
   try {
     await connectListener();
@@ -218,6 +239,7 @@ export async function startDomainEventRuntime(options: { processEvents?: boolean
 }
 
 export async function stopDomainEventRuntime() {
+  const wasProcessing = processingEnabled;
   runtimeStarted = false;
   stopping = true;
   processingEnabled = false;
@@ -226,6 +248,7 @@ export async function stopDomainEventRuntime() {
   listenerReconnectAttempt = 0;
   if (fallbackTimer) clearInterval(fallbackTimer);
   fallbackTimer = null;
+  if (wasProcessing) await runtimeMonitor.stopping();
   if (activeDrain) await activeDrain;
   if (activeBroadcastDrain) await activeBroadcastDrain;
   if (listenerClient) {
@@ -233,4 +256,5 @@ export async function stopDomainEventRuntime() {
     listenerClient.release();
     listenerClient = null;
   }
+  if (wasProcessing) await runtimeMonitor.stopped();
 }
