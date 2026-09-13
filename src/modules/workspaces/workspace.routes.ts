@@ -34,6 +34,7 @@ import officeRoutes from '../office/office.routes.js';
 import financeRoutes from '../finance/finance.routes.js';
 import commerceRoutes from '../commerce/commerce.routes.js';
 import socialPublishingRoutes from '../social-publishing/social-publishing.routes.js';
+import qualityRoutes from '../quality/quality.routes.js';
 
 const router = Router();
 
@@ -70,6 +71,7 @@ router.use('/:workspaceId/support', supportRoutes);
 router.use('/:workspaceId/adspend', adSpendRoutes);
 router.use('/:workspaceId/api-wallet', apiWalletRoutes);
 router.use('/:workspaceId/office', officeRoutes);
+router.use('/:workspaceId/quality', qualityRoutes);
 router.use('/:workspaceId/finance', financeRoutes);
 router.use('/:workspaceId/commerce', commerceRoutes);
 router.use('/:workspaceId/social-publishing', socialPublishingRoutes);

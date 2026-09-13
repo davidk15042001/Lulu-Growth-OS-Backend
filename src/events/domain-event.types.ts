@@ -146,6 +146,18 @@ export const DOMAIN_EVENT_TYPES = {
   SOCIAL_PUBLICATION_BLOCKED: 'social.publication.blocked',
   SOCIAL_PUBLICATION_CANCELLED: 'social.publication.cancelled',
   NOTIFICATION_CREATED: 'notification.created',
+  QUALITY_ARTIFACT_CREATED: 'quality.artifact.created',
+  QUALITY_EVIDENCE_RECORDED: 'quality.evidence.recorded',
+  QUALITY_REVIEW_REQUESTED: 'quality.review.requested',
+  QUALITY_REVIEW_COMPLETED: 'quality.review.completed',
+  QUALITY_REPAIR_REQUESTED: 'quality.repair.requested',
+  QUALITY_REPAIR_COMPLETED: 'quality.repair.completed',
+  QUALITY_RELEASE_APPROVED: 'quality.release.approved',
+  QUALITY_ARTIFACT_RELEASED: 'quality.artifact.released',
+  QUALITY_RELEASE_WITHHELD: 'quality.release.withheld',
+  QUALITY_OUTCOME_OBSERVED: 'quality.outcome.observed',
+  QUALITY_FEEDBACK_RECORDED: 'quality.feedback.recorded',
+  QUALITY_CALIBRATION_COMPLETED: 'quality.calibration.completed',
 } as const;
 
 export type DomainEventType = typeof DOMAIN_EVENT_TYPES[keyof typeof DOMAIN_EVENT_TYPES] | (string & {});

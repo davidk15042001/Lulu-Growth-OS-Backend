@@ -29,6 +29,7 @@ const WRITE_CAPABILITIES = new Set<WorkspaceCapability>([
   'advertising.manage', 'advertising.budget_authorize', 'finance.manage',
   'payouts.request', 'payouts.manage', 'providers.connect', 'providers.manage',
   'agents.manage', 'agents.execute', 'settings.manage',
+  'quality.review', 'quality.repair', 'quality.release', 'quality.override', 'quality.admin',
 ]);
 
 export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
