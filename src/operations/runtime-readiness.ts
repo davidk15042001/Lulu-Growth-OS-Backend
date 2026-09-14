@@ -29,12 +29,16 @@ export function toPublicRuntimeReadiness(readiness: {
   status: string;
   checkedAt: string;
   blockers?: string[];
+  blockerDetails?: Record<string, unknown>;
 }) {
   return {
     ready: readiness.ready,
     status: readiness.status,
     checkedAt: readiness.checkedAt,
     ...(readiness.blockers && readiness.blockers.length > 0 ? { blockers: readiness.blockers } : {}),
+    ...(readiness.blockerDetails && Object.keys(readiness.blockerDetails).length > 0
+      ? { blockerDetails: readiness.blockerDetails }
+      : {}),
   };
 }
 
@@ -110,6 +114,17 @@ export async function getRuntimeReadiness() {
     .filter(([, state]) => state.required && !state.ready)
     .map(([name]) => name);
   const ready = blockers.length === 0;
+  const blockerDetails = blockers.includes('aiSpendReservations')
+    ? {
+      aiSpendReservations: {
+        reservedCount: components.aiSpendReservations.reservedCount,
+        unresolvedCount: components.aiSpendReservations.unresolvedCount,
+        staleUnresolvedCount: components.aiSpendReservations.staleUnresolvedCount,
+        walletHoldMismatchCount: components.aiSpendReservations.walletHoldMismatchCount,
+        walletHoldMismatchAmount: components.aiSpendReservations.walletHoldMismatchAmount,
+      },
+    }
+    : {};
   return {
     ready,
     status: ready ? 'ready' : 'not_ready',
@@ -117,6 +132,7 @@ export async function getRuntimeReadiness() {
     aiProviders,
     components,
     blockers,
+    blockerDetails,
     checkedAt: new Date().toISOString(),
   };
 }
