@@ -106,8 +106,13 @@ const salesSettingsSchema = z.object({
   salesActivityTrackingEnabled: z.boolean().optional(),
 }).strict();
 
+const agentSettingsSchema = z.object({
+  paused: z.boolean(),
+}).strict();
+
 export const updateWorkspaceSettingsSchema = z.object({
   sales: salesSettingsSchema.optional(),
+  agents: agentSettingsSchema.optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, 'At least one settings group must be provided');
 
 export const listGoogleReviewsQuerySchema = z.object({
