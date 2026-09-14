@@ -9,7 +9,7 @@ import * as repo from './quality.repo.js';
 import * as service from './quality.service.js';
 
 const workerId = `quality-intelligence-${process.pid}-${randomUUID()}`;
-const runtimeMonitor = createRuntimeWorkerMonitor('quality-intelligence', { required: true, staleAfterMs: 120_000 });
+const runtimeMonitor = createRuntimeWorkerMonitor('quality-intelligence', { required: true, staleAfterMs: 120_000, eventDriven: true });
 let started = false;
 let stopping = false;
 

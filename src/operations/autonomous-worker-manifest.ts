@@ -25,7 +25,7 @@ export const autonomousWorkerManifest = [
   { name: 'omnichannel-ai-reply', required: true },
   { name: 'social-publishing', required: true },
   { name: 'google-ads-spend-reconciliation', required: true, staleAfterMs: Math.max(180_000, env.GOOGLE_ADS_RECONCILIATION_WORKER_INTERVAL_MS * 4) },
-  { name: 'quality-intelligence', required: true, staleAfterMs: 120_000 },
+  { name: 'quality-intelligence', required: true, staleAfterMs: 120_000, eventDriven: true },
   { name: 'rate-limit-cleanup', required: false },
   { name: 'onboarding-cleanup', required: false },
 ] as const satisfies readonly RuntimeWorkerDefinition[];

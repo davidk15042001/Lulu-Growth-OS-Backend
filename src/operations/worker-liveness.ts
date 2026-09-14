@@ -12,12 +12,15 @@ export type RuntimeWorkerDefinition = {
   name: string;
   required?: boolean;
   staleAfterMs?: number;
+  /** Event-driven workers may remain idle without becoming unhealthy. */
+  eventDriven?: boolean;
 };
 
 type WorkerSignal = {
   name: string;
   required: boolean;
   staleAfterMs: number;
+  eventDriven: boolean;
   ready: boolean;
   phase: string;
   cycleCount: number;
@@ -39,11 +42,12 @@ let definitions: RuntimeWorkerDefinition[] = [];
 const signals = new Map<string, WorkerSignal>();
 
 function normalizedDefinition(definition: string | RuntimeWorkerDefinition): RuntimeWorkerDefinition {
-  if (typeof definition === 'string') return { name: definition, required: true, staleAfterMs: supervisorStaleAfterMs };
+  if (typeof definition === 'string') return { name: definition, required: true, staleAfterMs: supervisorStaleAfterMs, eventDriven: false };
   return {
     name: definition.name,
     required: definition.required ?? false,
     staleAfterMs: Math.max(heartbeatIntervalMs * 2, definition.staleAfterMs ?? supervisorStaleAfterMs),
+    eventDriven: definition.eventDriven ?? false,
   };
 }
 
@@ -90,6 +94,7 @@ async function persistWorkerSignal(signal: WorkerSignal, status: 'RUNNING' | 'ST
         workerName: signal.name,
         required: signal.required,
         staleAfterMs: signal.staleAfterMs,
+        eventDriven: signal.eventDriven,
         ready: status === 'RUNNING' && signal.ready,
         phase: signal.phase,
         cycleCount: signal.cycleCount,
@@ -102,7 +107,7 @@ async function persistWorkerSignal(signal: WorkerSignal, status: 'RUNNING' | 'ST
   );
 }
 
-function definitionFor(name: string, options?: { required?: boolean; staleAfterMs?: number }) {
+function definitionFor(name: string, options?: { required?: boolean; staleAfterMs?: number; eventDriven?: boolean }) {
   const manifest = definitions.find((definition) => definition.name === name);
   return {
     required: options?.required ?? manifest?.required ?? false,
@@ -110,6 +115,7 @@ function definitionFor(name: string, options?: { required?: boolean; staleAfterM
       heartbeatIntervalMs * 2,
       options?.staleAfterMs ?? manifest?.staleAfterMs ?? supervisorStaleAfterMs,
     ),
+    eventDriven: options?.eventDriven ?? manifest?.eventDriven ?? false,
   };
 }
 
@@ -117,7 +123,7 @@ function definitionFor(name: string, options?: { required?: boolean; staleAfterM
  * get refreshed by the process supervisor: only real worker cycles can do so. */
 export async function markRuntimeWorkerStarted(
   name: string,
-  options?: { required?: boolean; staleAfterMs?: number; metadata?: Record<string, unknown> },
+  options?: { required?: boolean; staleAfterMs?: number; eventDriven?: boolean; metadata?: Record<string, unknown> },
 ) {
   const definition = definitionFor(name, options);
   const now = new Date().toISOString();
@@ -147,6 +153,7 @@ export async function markRuntimeWorkerProgress(
     name,
     required: existing?.required ?? definition.required,
     staleAfterMs: existing?.staleAfterMs ?? definition.staleAfterMs,
+    eventDriven: existing?.eventDriven ?? definition.eventDriven,
     ready: true,
     phase: progress.phase ?? 'idle',
     cycleCount: (existing?.cycleCount ?? 0) + 1,
@@ -169,6 +176,7 @@ export async function markRuntimeWorkerFailed(name: string, error: unknown) {
     name,
     required: existing?.required ?? definition.required,
     staleAfterMs: existing?.staleAfterMs ?? definition.staleAfterMs,
+    eventDriven: existing?.eventDriven ?? definition.eventDriven,
     ready: false,
     phase: 'failed',
     cycleCount: existing?.cycleCount ?? 0,
@@ -187,6 +195,7 @@ export async function markRuntimeWorkerStopping(name: string) {
     name,
     required: existing?.required ?? definition.required,
     staleAfterMs: existing?.staleAfterMs ?? definition.staleAfterMs,
+    eventDriven: existing?.eventDriven ?? definition.eventDriven,
     ready: false,
     phase: 'stopping',
     cycleCount: existing?.cycleCount ?? 0,
@@ -205,6 +214,7 @@ export async function markRuntimeWorkerStopped(name: string) {
     name,
     required: existing?.required ?? definition.required,
     staleAfterMs: existing?.staleAfterMs ?? definition.staleAfterMs,
+    eventDriven: existing?.eventDriven ?? definition.eventDriven,
     ready: false,
     phase: 'stopped',
     cycleCount: existing?.cycleCount ?? 0,
@@ -222,7 +232,7 @@ export async function markRuntimeWorkerStopped(name: string) {
  * prevent the business cycle it observes from running. */
 export function createRuntimeWorkerMonitor(
   name: string,
-  options: { required?: boolean; staleAfterMs?: number } = {},
+  options: { required?: boolean; staleAfterMs?: number; eventDriven?: boolean } = {},
 ) {
   // Keep lifecycle writes ordered. In particular, a fire-and-forget start or
   // progress write must never land after an awaited STOPPED write during a
@@ -336,8 +346,9 @@ export async function getWorkerSupervisorHealth() {
     const workerMetadata = objectValue(row?.metadata);
     const declared = definitionRows.find((entry) => entry.name === name);
     const staleAfterMs = Number(workerMetadata.staleAfterMs ?? declared?.staleAfterMs ?? supervisorStaleAfterMs);
+    const eventDriven = workerMetadata.eventDriven === true || declared?.eventDriven === true;
     const lastProgressAt = typeof workerMetadata.lastProgressAt === 'string' ? workerMetadata.lastProgressAt : null;
-    const progressFresh = Boolean(lastProgressAt && now - new Date(lastProgressAt).getTime() <= staleAfterMs);
+    const progressFresh = eventDriven || Boolean(lastProgressAt && now - new Date(lastProgressAt).getTime() <= staleAfterMs);
     const ready = Boolean(
       supervisorLive
       && row?.status === 'RUNNING'
@@ -353,6 +364,7 @@ export async function getWorkerSupervisorHealth() {
       heartbeatAt: row?.heartbeatAt ?? null,
       lastProgressAt,
       staleAfterMs,
+      eventDriven,
       cycleCount: Number(workerMetadata.cycleCount ?? 0),
       lastError: typeof workerMetadata.lastError === 'string' ? workerMetadata.lastError : null,
     };
