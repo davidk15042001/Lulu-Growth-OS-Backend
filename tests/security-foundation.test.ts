@@ -458,7 +458,10 @@ describe('deterministic agent execution authorization',()=>{
     assert.ok(handler);
     await handler.handle({type:DOMAIN_EVENT_TYPES.RECORD_CREATED,workspaceId:f.context.workspaceId,aggregateId:f.record.id} as DomainEvent);
     const record=await records.findRecord(f.context.workspaceId,'crm_tasks',f.record.id);
-    assert.equal(record?.stage,'execution_failed');
+    assert.equal(record?.stage,'execution_paused');
+    assert.equal(record?.status,'active');
+    assert.equal(record?.data?.executionStatus,'paused');
+    assert.equal(record?.data?.executionRetryable,false);
     assert.match(String(record?.data?.executionError),/untrusted_action_packet/);
     assert.equal((await db.query(`SELECT id FROM workspace_records WHERE source='agent_executor' AND workspace_id=$1`,[f.context.workspaceId])).rows.length,0);
   });
