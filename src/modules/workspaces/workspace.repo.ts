@@ -74,6 +74,7 @@ export type WorkspaceProfile = {
   logoUrl: string | null;
   logoMimeType: string | null;
   logoFileName: string | null;
+  logoUpdatedAt: string | null;
 };
 
 const workspaceSelect = `
@@ -140,14 +141,16 @@ const workspaceProfileSelect = `
   w.logo_storage_reference AS "logoStorageReference",
   w.logo_mime_type AS "logoMimeType",
   w.logo_file_name AS "logoFileName",
+  w.logo_updated_at AS "logoUpdatedAt",
   ARRAY_REMOVE(ARRAY[
     CASE WHEN NULLIF(trim(w.name),'') IS NULL THEN 'companyName' END,
     CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END
   ],NULL) AS "missingRequiredFields"
 `;
 
-export function workspaceLogoUrl(workspaceId: string) {
-  return `/api/v1/public/workspaces/${encodeURIComponent(workspaceId)}/logo`;
+export function workspaceLogoUrl(workspaceId: string, version?: string | null) {
+  const suffix = version ? `?v=${encodeURIComponent(version)}` : '';
+  return `/api/v1/public/workspaces/${encodeURIComponent(workspaceId)}/logo${suffix}`;
 }
 
 export async function createWorkspace(
@@ -374,13 +377,13 @@ export async function findWorkspaceProfileForAdmin(workspaceId: string, userId: 
   if (!profile) return undefined;
   return {
     ...profile,
-    logoUrl: profile.logoMimeType ? workspaceLogoUrl(profile.workspaceId) : null,
+    logoUrl: profile.logoMimeType ? workspaceLogoUrl(profile.workspaceId, profile.logoUpdatedAt) : null,
   };
 }
 
 export async function findWorkspaceLogo(workspaceId: string) {
-  const { rows } = await query<{ storageReference: string | null; mimeType: string | null; fileName: string | null }>(
-    `SELECT logo_storage_reference AS "storageReference",logo_mime_type AS "mimeType",logo_file_name AS "fileName"
+  const { rows } = await query<{ storageReference: string | null; mimeType: string | null; fileName: string | null; updatedAt: string | null }>(
+    `SELECT logo_storage_reference AS "storageReference",logo_mime_type AS "mimeType",logo_file_name AS "fileName",logo_updated_at AS "updatedAt"
        FROM workspaces WHERE id=$1 AND deleted_at IS NULL LIMIT 1`,
     [workspaceId],
   );

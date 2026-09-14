@@ -94,7 +94,7 @@ export async function uploadWorkspaceLogo(
     if (previous?.storageReference && previous.storageReference !== storageReference) {
       await deleteObject(previous.storageReference).catch((error: unknown) => logger.warn({ error, workspaceId }, 'Previous workspace logo could not be deleted'));
     }
-    return { logoUrl: repo.workspaceLogoUrl(workspaceId), logoMimeType: mimeType, logoFileName: updated.fileName };
+    return { logoUrl: repo.workspaceLogoUrl(workspaceId, updated.updatedAt ?? new Date().toISOString()), logoMimeType: mimeType, logoFileName: updated.fileName };
   } catch (error) {
     await deleteObject(storageReference).catch((cleanupError: unknown) => logger.warn({ error: cleanupError, workspaceId }, 'Failed to clean up uncommitted workspace logo'));
     throw error;
