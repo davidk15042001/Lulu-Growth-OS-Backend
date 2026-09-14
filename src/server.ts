@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import app from './app.js';
-import { env, hasAiProvider, hasDb } from './config/env.js';
+import { env, hasDb } from './config/env.js';
 import { logger } from './config/logger.js';
 import { ensureMigrations } from './database/migrate.js';
 import { pool } from './db/pool.js';
@@ -23,7 +23,6 @@ import { startCommercialDocumentDeliveryWorker, stopCommercialDocumentDeliveryWo
 import { startPremiumMediaWorker, stopPremiumMediaWorker } from './modules/premium-media/premium-media.worker.js';
 import { startCompanyIntelligenceWorker, stopCompanyIntelligenceWorker } from './modules/crm-company/company-intelligence.worker.js';
 import { startOmnichannelAiReplyWorker, stopOmnichannelAiReplyWorker } from './modules/omnichannel/omnichannel.ai-reply.worker.js';
-import { probeAiRuntime } from './modules/ai/openai.service.js';
 import { startWorkerSupervisorHeartbeat, stopWorkerSupervisorHeartbeat } from './operations/worker-liveness.js';
 import { startSocialPublishingWorker, stopSocialPublishingWorker } from './modules/social-publishing/social-publishing.worker.js';
 import { startGoogleAdsSpendReconciliationWorker, stopGoogleAdsSpendReconciliationWorker } from './modules/adspend/google-ads-spend.worker.js';
@@ -78,12 +77,6 @@ async function bootstrap() {
 
   if (hasDb) {
     await syncResourceCatalog();
-  }
-
-  if (hasAiProvider) {
-    await probeAiRuntime().catch((error) => {
-      logger.error({ error }, 'AI startup probe failed; readiness will remain unavailable until a provider succeeds');
-    });
   }
 
   if (workersEnabled) {

@@ -56,7 +56,11 @@ export async function getRuntimeReadiness() {
     : { live: false, supervisorLive: false, staleAfterMs: 45_000, instanceId: null, heartbeatAt: null, startedAt: null, registeredWorkers: [] as string[], requiredWorkers: [] as string[], unhealthyRequiredWorkers: [] as string[], workers: [] };
   const components = {
     database: { required: true, ready: database.configured && database.connected },
-    ai: { required: true, ready: textAiReady, kind: 'text', operationalProviders: textProviders.filter((provider) => provider.operational).map((provider) => provider.provider) },
+    // Provider balance is not a process-readiness requirement. Customer-funded
+    // AI work is authorized and metered at execution time; an exhausted global
+    // provider account must degrade AI work without taking login, billing,
+    // onboarding, or the rest of the workspace API out of service.
+    ai: { required: false, ready: textAiReady, kind: 'text', operationalProviders: textProviders.filter((provider) => provider.operational).map((provider) => provider.provider) },
     aiSpendReservations: getAiSpendReservationReadiness(aiSpendReservations),
     primaryTextAi: { required: false, ready: Boolean(primaryTextProvider?.operational), provider: primaryTextProvider?.provider ?? env.AI_PROVIDER, configured: Boolean(primaryTextProvider?.configured), fallbackActive: textAiReady && !primaryTextProvider?.operational },
     workers: { required: isProd, ready: !isProd || (env.BACKGROUND_WORKERS_ENABLED && workerSupervisor.live), configured: env.BACKGROUND_WORKERS_ENABLED, supervisor: workerSupervisor },
