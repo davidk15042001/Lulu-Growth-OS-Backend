@@ -55,6 +55,10 @@ const EnvSchema = z
     REFRESH_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).optional(),
     BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
     OTP_TTL_MINUTES: z.coerce.number().int().positive().default(10),
+    // Admin email MFA remains enabled by default. Operators may explicitly
+    // disable only this additional challenge when a transactional SMTP
+    // transport is intentionally not part of the deployment.
+    ADMIN_MFA_ENABLED: booleanString.default(true),
     MAILCOW_SMTP_HOST: z.string().min(1).optional(),
     MAILCOW_SMTP_PORT: z.coerce.number().int().min(1).max(65_535).default(587),
     MAILCOW_SMTP_SECURE: booleanString.default(false),

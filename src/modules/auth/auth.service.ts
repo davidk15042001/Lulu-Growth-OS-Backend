@@ -96,7 +96,7 @@ export async function loginUser(email: string, password: string, options?: Login
     return {unverified:true};
   }
 
-  if(user.role==='admin') {
+  if(user.role==='admin' && env.ADMIN_MFA_ENABLED) {
     const code=await repo.issueOtp(user.id,'login');
     if(!code) return {invalid:true};
     await (options?.sendAdminCode??sendAdminLoginOtpEmail)(user.email,code);
