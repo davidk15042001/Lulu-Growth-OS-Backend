@@ -296,7 +296,10 @@ export function selectAgentTeam(input: {
     if (eventSpecific) { score += 120; reasons.push('source event responsibility match'); }
     if (integrationRelevant) { score += 32; reasons.push('connected system match'); }
     if (hasDomainData) { score += 28; reasons.push('live domain data'); }
-    if (failed) { score += 24; reasons.push('recovery required'); }
+    // A failed specialist is paused until a person explicitly resumes it.
+    // Selecting it again from the scheduled team would silently spend more AI
+    // budget on the same broken path.
+    if (failed) reasons.push('paused after failure');
     if (neverRun) { score += 10; reasons.push('coverage gap'); }
     else if (ageHours >= 24) { score += Math.min(18, Math.floor(ageHours / 24) * 3); reasons.push('stale evidence'); }
     score += Math.round((performance - 50) * 0.25);
@@ -306,7 +309,14 @@ export function selectAgentTeam(input: {
     if ((signal?.selectionCount ?? 0) > 0) reasons.push('rotation pressure applied');
     const operationalPage = !LEGACY_AUTOMATIC_PAGE_IDS.has(definition.pageId ?? '');
     if (!operationalPage) reasons.push('legacy route alias excluded from scheduling');
-    return { definition, score, reasons, eligible: operationalPage && (core || eventRelevant || eventSpecific || integrationRelevant || hasDomainData || failed) };
+    return {
+      definition,
+      score,
+      reasons,
+      eligible: operationalPage
+        && !failed
+        && (core || eventRelevant || eventSpecific || integrationRelevant || hasDomainData),
+    };
   }).filter((candidate) => candidate.eligible)
     .sort((left, right) => right.score - left.score || left.definition.id.localeCompare(right.definition.id));
 

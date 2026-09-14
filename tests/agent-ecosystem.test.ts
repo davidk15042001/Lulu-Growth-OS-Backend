@@ -69,6 +69,27 @@ describe('agent ecosystem', () => {
     assert.equal(team.specialists.some((entry) => entry.definition.id === repeatedlySelected.id), false);
   });
 
+  it('does not automatically select a failed specialist for another paid run', () => {
+    const failed = agentRegistry.find((agent) => agent.tier === 'specialist' && agent.module === 'marketing');
+    assert.ok(failed?.pageId);
+    const team = selectAgentTeam({
+      connectedSignals: ['Instagram'],
+      resourceTypes: ['marketing_campaigns'],
+      activity: [{
+        pageId: failed.pageId,
+        lastStatus: 'failed',
+        lastRunAt: '2026-09-14T00:00:00.000Z',
+        performanceScore: 50,
+        selectionCount: 1,
+      }],
+      preferredModules: ['marketing'],
+      preferredPageIds: [failed.pageId],
+      maxSpecialists: 8,
+      now: new Date('2026-09-14T01:00:00.000Z'),
+    });
+    assert.equal(team.specialists.some((entry) => entry.definition.id === failed.id), false);
+  });
+
   it('turns the selected team into a bounded set of relevant specialist collaborators', () => {
     const primary = agentRegistry.find((agent) => agent.tier === 'specialist' && agent.module === 'marketing');
     const website = agentRegistry.find((agent) => agent.tier === 'specialist' && agent.module === 'website');

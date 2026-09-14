@@ -364,18 +364,23 @@ export async function getRun(workspaceId: string, runId: string) {
   return rows[0];
 }
 
-export async function claimNextRunnableRun(workerId: string, leaseSeconds: number, maxAttempts: number) {
+export async function claimNextRunnableRun(workerId: string, leaseSeconds: number, _maxAttempts: number) {
+  // Agent runs are deliberately single-attempt. A crashed worker can leave a
+  // lease behind, but replaying the run may charge the AI provider twice and
+  // can repeat an external side effect. Recovery is an explicit Office
+  // Resume/Retry action, never an automatic worker decision.
+  const automaticAttemptLimit = 1;
   return withTransaction(async (client) => {
     const exhausted = await query<{ id: string; workspaceId: string; attemptCount: number }>(
       `UPDATE agent_runs
-       SET status='failed', error_code='AGENT_RUN_RETRY_EXHAUSTED',
-           error_message='The agent run exceeded its crash-recovery retry limit.',
+       SET status='failed', error_code='AGENT_RUN_AUTO_PAUSED',
+           error_message='The agent run was paused after one failed execution. Resume it manually to try again.',
            finished_at=NOW(), worker_id=NULL, locked_at=NULL, heartbeat_at=NULL
        WHERE status IN ('queued','planning','running')
          AND attempt_count >= $2
          AND (worker_id IS NULL OR COALESCE(heartbeat_at, locked_at, updated_at) < NOW() - ($1::integer * INTERVAL '1 second'))
        RETURNING id, workspace_id AS "workspaceId", attempt_count AS "attemptCount"`,
-      [leaseSeconds, maxAttempts],
+       [leaseSeconds, automaticAttemptLimit],
       client,
     );
     for (const run of exhausted.rows) {
@@ -384,9 +389,9 @@ export async function claimNextRunnableRun(workerId: string, leaseSeconds: numbe
         type: DOMAIN_EVENT_TYPES.AGENT_RUN_FAILED,
         aggregateType: 'agent_run',
         aggregateId: run.id,
-        payload: { runId: run.id, code: 'AGENT_RUN_RETRY_EXHAUSTED', attemptCount: run.attemptCount },
-        metadata: { source: 'agents.worker' },
-        idempotencyKey: `agent-run:${run.id}:failed:retry-exhausted:v1`,
+        payload: { runId: run.id, code: 'AGENT_RUN_AUTO_PAUSED', attemptCount: run.attemptCount, automaticRetry: false },
+        metadata: { source: 'agents.worker', automaticRetry: false },
+        idempotencyKey: `agent-run:${run.id}:failed:auto-paused:v1`,
       }, client);
     }
     const { rows } = await query<AgentRun>(
@@ -408,7 +413,7 @@ export async function claimNextRunnableRun(workerId: string, leaseSeconds: numbe
        FROM candidate
        WHERE run.id=candidate.candidate_id
        RETURNING ${runSelect}`,
-      [workerId, leaseSeconds, maxAttempts],
+       [workerId, leaseSeconds, automaticAttemptLimit],
       client,
     );
     return rows[0] ?? null;

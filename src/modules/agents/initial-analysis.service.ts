@@ -28,7 +28,7 @@ async function hasInitialAnalysis(workspaceId: string) {
     `SELECT EXISTS(
        SELECT 1 FROM agent_runs
        WHERE workspace_id=$1 AND goal=$2
-         AND status IN ('queued','planning','running','waiting_approval','completed')
+         AND status IN ('queued','planning','running','waiting_approval','completed','failed')
      ) AS exists`,
     [workspaceId, INITIAL_ANALYSIS_GOAL],
   );

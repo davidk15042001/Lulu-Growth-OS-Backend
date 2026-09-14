@@ -36,7 +36,6 @@ import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js'
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
-const maxExecutionAttempts = 3;
 let timer: NodeJS.Timeout | undefined;
 let activeCycle: Promise<void> | null = null;
 let stopping = false;
@@ -102,10 +101,6 @@ function numberValue(value: unknown, fallback = 0) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
-}
-
-function isoAfterMinutes(minutes: number) {
-  return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
 function resolveDomainArtifactType(targetSystem: string): ResourceType | null {
@@ -802,27 +797,29 @@ function classifyExecutionError(error: unknown) {
     normalized.includes('forbidden') ||
     normalized.includes('invalid')
   ) {
-    return { retryable: false, errorClass: 'validation', message };
+    return { errorClass: 'validation', message };
   }
-  return { retryable: true, errorClass: 'transient', message };
+  return { errorClass: 'transient', message };
 }
 
 async function failRecord(record: recordRepo.WorkspaceRecord, error: unknown) {
   const failure = classifyExecutionError(error);
-  const attempts = Math.max(1, numberValue(record.data?.executionAttempts, 1));
-  const canRetry = failure.retryable && attempts < maxExecutionAttempts;
-  const nextRetryAt = canRetry ? isoAfterMinutes(Math.max(1, attempts * 2)) : null;
   const update = await recordRepo.updateRecord(record.workspaceId, record.resourceType, record.id, record.createdBy, {
-    status: canRetry ? 'approved' : 'failed',
-    stage: canRetry ? 'queued_for_execution' : 'execution_failed',
+    // Never put a failed AI action packet back on the worker queue. The Office
+    // exposes this as Paused and a user can explicitly Resume it after fixing
+    // the underlying issue.
+    status: 'active',
+    stage: 'execution_paused',
     data: {
       ...(record.data ?? {}),
-      executionStatus: canRetry ? 'queued_retry' : 'failed',
+      executionStatus: 'paused',
       executionFailedAt: new Date().toISOString(),
       executionError: failure.message,
       executionErrorClass: failure.errorClass,
-      executionRetryable: canRetry,
-      executionNextAttemptAt: nextRetryAt,
+      executionRetryable: false,
+      executionNextAttemptAt: null,
+      executionPausedAt: new Date().toISOString(),
+      executionPauseReason: 'automatic_retry_disabled_after_failure',
     },
     expectedVersion: record.version,
   });
