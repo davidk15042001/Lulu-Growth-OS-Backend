@@ -44,6 +44,11 @@ export type AgentExecutionCommand = {
   targetEntityId: string | null;
   payload: Record<string, unknown>;
   idempotencyKey: string;
+  quality?: {
+    confidence: 'high' | 'medium' | 'low';
+    evidenceRefs: string[];
+    limitations: string[];
+  };
 };
 
 export type AgentExecutionCommandPolicyDecision = 'allow' | 'require_budget' | 'forbidden';
@@ -95,6 +100,11 @@ const agentExecutionCommandSchema = z.object({
   targetEntityId: z.string().trim().min(1).max(200).nullable().optional(),
   payload: z.record(z.string(), z.unknown()).default({}),
   idempotencyKey: z.string().trim().min(8).max(200),
+  quality: z.object({
+    confidence: z.enum(['high', 'medium', 'low']).default('low'),
+    evidenceRefs: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
+    limitations: z.array(z.string().trim().min(1).max(1_000)).max(20).default([]),
+  }).default({ confidence: 'low', evidenceRefs: [], limitations: [] }),
 });
 
 function textValue(value: unknown, maxLength = 240) {

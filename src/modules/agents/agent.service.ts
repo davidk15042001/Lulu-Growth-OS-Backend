@@ -19,6 +19,7 @@ import { registerAgentTools } from './agent.tools.js';
 import { authorizeAgentTool, authorizeAgentIdentity } from './agent.authorization.js';
 import { agentExecutionCommandTypeSchema } from './agent.execution-command.js';
 import { serviceCapabilityScopeForModule } from './agent.command-capabilities.js';
+import { assessAgentReasoningQuality } from '../quality/agent-quality-gate.js';
 import {
   agentRegistry,
   agentRegistrySummary,
@@ -129,6 +130,7 @@ function buildPipeline(
             'Use canonical entity, account, thread, campaign, site, job and recipient identifiers only when those exact values appear in live evidence.',
             'Do not guess provider identifiers, recipients, monetary amounts, customer intent or publishing targets.',
             'If a safe action cannot be fully materialized from the available evidence, return an empty commands array and explain the missing evidence.',
+            'Every non-empty command must include quality metadata: quality.confidence (never low for an executable action), quality.evidenceRefs pointing to exact supplied records or source references, and quality.limitations. Never create a command from an unsupported inference.',
           ].join(' '),
           successCriteria: ['registered command types only', 'evidence-backed payload values', 'zero invented identifiers or monetary amounts'],
         }]
@@ -559,9 +561,9 @@ async function executeReasoningStep(input: {
   const preExecutionReview = input.step.taskType === 'pre_execution_policy_gate';
   const commandMaterialization = input.step.taskType === 'materialize_execution_commands';
   const outputShape = reviewer
-    ? '{"verdict":"verified"|"failed","summary":string,"evidence":string[],"issues":string[],"nextAction":string|null}'
+    ? '{"verdict":"verified"|"failed","summary":string,"evidence":string[],"issues":string[],"confidence":"high"|"medium"|"low","limitations":string[],"nextAction":string|null}'
     : commandMaterialization
-      ? '{"summary":string,"commands":[{"type":string,"summary":string,"targetSystem":string,"provider":string|null,"riskLevel":"low"|"medium"|"high","approvalPolicy":"allow"|"budget_required","budgetAuthority":"none"|"prepaid_ad_spend_wallet"|"customer_authorization_required","targetEntityType":string|null,"targetEntityId":string|null,"payload":object,"idempotencyKey":string}],"noActionReason":string|null}'
+      ? '{"summary":string,"commands":[{"type":string,"summary":string,"targetSystem":string,"provider":string|null,"riskLevel":"low"|"medium"|"high","approvalPolicy":"allow"|"budget_required","budgetAuthority":"none"|"prepaid_ad_spend_wallet"|"customer_authorization_required","targetEntityType":string|null,"targetEntityId":string|null,"payload":object,"idempotencyKey":string,"quality":{"confidence":"high"|"medium"|"low","evidenceRefs":string[],"limitations":string[]}}],"noActionReason":string|null}'
     : '{"summary":string,"observations":string[],"decisions":string[],"nextActions":string[],"confidence":"high"|"medium"|"low"}';
   const context = JSON.stringify(input.priorOutputs).slice(0, 40_000);
   const response = await withTimeout(getOpenAIResponsesClient().create({
@@ -594,9 +596,13 @@ async function executeReasoningStep(input: {
     operationId: `${input.runId}:${input.step.id}:reasoning`,
   } }), TOOL_TIMEOUT_MS, 'AGENT_REASONING_TIMEOUT');
   const result = parseReasoningOutput(response.output_text ?? '');
-  if (reviewer && result.verdict !== 'verified') {
-    const issue = Array.isArray(result.issues) ? result.issues.filter((value): value is string => typeof value === 'string').slice(0, 3).join('; ') : '';
-    throw new AppError(422, 'AGENT_OUTCOME_NOT_VERIFIED', issue || 'The independent outcome auditor did not verify the result.');
+  const quality = assessAgentReasoningQuality({ taskType: input.step.taskType, reviewer, availableEvidence: input.priorOutputs, result });
+  if (reviewer && (result.verdict !== 'verified' || !quality.passed)) {
+    const issue = quality.issues.slice(0, 4).join('; ');
+    throw new AppError(422, 'AGENT_QUALITY_GATE_BLOCKED', issue || 'The independent quality gate did not verify the result.');
+  }
+  if (commandMaterialization && !quality.passed) {
+    throw new AppError(422, 'AGENT_QUALITY_GATE_BLOCKED', quality.issues.slice(0, 4).join('; ') || 'The action packet is not grounded in sufficient evidence.');
   }
   return {
     reasoningStatus: reviewer ? 'verified' : 'completed',

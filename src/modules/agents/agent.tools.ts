@@ -22,6 +22,7 @@ import {
   summarizeExecutionReviewReason,
   type AgentExecutionCommand,
 } from './agent.execution-command.js';
+import { assessAgentReasoningQuality } from '../quality/agent-quality-gate.js';
 
 type AgentSnapshotInput = {
   module?: string;
@@ -643,6 +644,16 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       noActionReason: compactText(input.noActionReason, 1000) || 'No evidence-backed executable command was available.',
       delegatedContext,
     };
+  }
+  if (executionMode === 'autonomous' && Array.isArray(input.commands) && input.commands.length > 0) {
+    const quality = assessAgentReasoningQuality({
+      taskType: 'materialize_execution_commands',
+      availableEvidence: delegatedContext,
+      result: { commands: input.commands },
+    });
+    if (!quality.passed) {
+      throw new AppError(422, 'AGENT_QUALITY_GATE_BLOCKED', quality.issues.slice(0, 4).join('; ') || 'The autonomous action is not grounded in sufficient evidence.');
+    }
   }
   const normalizedCommands = normalizeAgentExecutionCommands(input.commands, {
     module,
