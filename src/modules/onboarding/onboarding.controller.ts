@@ -23,7 +23,6 @@ import {
   updateCustomerSegmentSchema,
   updateOfferingSchema,
   updatePlatformSchema,
-  whatsappEmbeddedSignupCompleteSchema,
 } from './onboarding.validator.js';
 import * as twilioWorkspace from '../provider-control/twilio-workspace.service.js';
 
@@ -428,14 +427,14 @@ export async function whatsappConnection(req: WorkspaceRequest, res: Response, n
   } catch (error) { next(error); }
 }
 
-export async function completeWhatsAppEmbeddedSignup(req: WorkspaceRequest, res: Response, next: NextFunction) {
+export async function completeWhatsAppEmbeddedSignup(req: WorkspaceRequest, _res: Response, next: NextFunction) {
   try {
-    const input = whatsappEmbeddedSignupCompleteSchema.parse(req.body);
-    return successResponse(res, 'WhatsApp sender onboarding started', await twilioWorkspace.provisionWorkspaceWhatsApp({
-      workspaceId: workspaceId(req),
-      userId: req.user!.id,
-      ...input,
-    }));
+    // The former Meta/Twilio Embedded Signup endpoint is kept as a guarded
+    // compatibility route so old clients fail clearly instead of silently
+    // creating a second WhatsApp transport. WhatsApp is now administered via
+    // the canonical UnifyPort account.
+    void req;
+    throw new AppError(410, 'WHATSAPP_UNIFYPORT_ADMIN_MANAGED', 'WhatsApp workspace self-service is unavailable. Ask an administrator to connect the workspace through UnifyPort.');
   } catch (error) { next(error); }
 }
 

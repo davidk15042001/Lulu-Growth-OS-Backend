@@ -138,7 +138,7 @@ export async function twilioRegisterIdentity(req: Request, res: Response, next: 
   try {
     const input = twilioIdentitySchema.parse(req.body);
     if (input.channelType === 'WHATSAPP') {
-      throw new AppError(409, 'TWILIO_WHATSAPP_LEGACY_REGISTRATION_DISABLED', 'Use the verified Lulu admin sender or workspace Embedded Signup for WhatsApp.');
+      throw new AppError(409, 'WHATSAPP_UNIFYPORT_ADMIN_MANAGED', 'Use the verified Lulu admin sender managed through UnifyPort for WhatsApp.');
     }
     const address = twilio.asTwilioAddress(input.channelType, input.address);
     const identity = await omniRepo.registerTwilioIdentity({ workspaceId: input.workspaceId, channelType: input.channelType, address, displayName: input.displayName, ...(input.defaultLanguage === undefined ? {} : { defaultLanguage: input.defaultLanguage }) });

@@ -63,41 +63,6 @@ async function loadWorkspaceAccount(workspaceId: string, client?: PoolClient) {
   return rows[0] ?? null;
 }
 
-async function refreshWorkspaceSenderStatus(account: WorkspaceTwilioAccount) {
-  if (account.status === 'DISABLED' || account.status === 'DISCONNECTED') return account;
-  const lastCheck = Date.parse(account.updatedAt);
-  if (Number.isFinite(lastCheck) && Date.now() - lastCheck < 60_000) return account;
-  try {
-    const sender = (await listWhatsAppSenders(workspaceAuth(account)))
-      .find((item) => item.senderId.toLowerCase() === account.senderAddress.toLowerCase());
-    if (!sender) return account;
-    const nextStatus = senderIsOnline(sender) ? 'CONNECTED' : 'PROVISIONING';
-    if (account.senderSid === sender.sid && account.senderStatus === sender.status && account.status === nextStatus) {
-      const { rows } = await query<WorkspaceTwilioAccount>(
-        `UPDATE twilio_workspace_accounts SET updated_at=NOW() WHERE workspace_id=$1 RETURNING ${accountSelect}`,
-        [account.workspaceId],
-      );
-      return rows[0] ?? account;
-    }
-    return withTransaction(async (client) => {
-      const { rows } = await query<WorkspaceTwilioAccount>(
-        `UPDATE twilio_workspace_accounts SET sender_sid=$2,sender_status=$3,status=$4,
-           last_error=NULL,updated_at=NOW() WHERE workspace_id=$1 RETURNING ${accountSelect}`,
-        [account.workspaceId, sender.sid, sender.status, nextStatus],
-        client,
-      );
-      const refreshed = rows[0] ?? account;
-      await upsertWorkspaceIdentity({ account: refreshed, client });
-      await upsertWorkspacePlatform({ workspaceId: account.workspaceId, account: refreshed, connected: nextStatus === 'CONNECTED', client });
-      return refreshed;
-    });
-  } catch {
-    // A status refresh must never turn a working fallback into a page error.
-    // Registration errors remain persisted by the provisioning command itself.
-    return account;
-  }
-}
-
 async function upsertWorkspacePlatform(input: {
   workspaceId: string;
   account: WorkspaceTwilioAccount;
@@ -251,10 +216,8 @@ export async function configureAdminWhatsAppSender(input: { address: string; dis
   return { id: identity.id, address: identity.external_identity_id, displayName: identity.display_name, status: identity.status };
 }
 
-export async function getWorkspaceWhatsAppConnection(workspaceId: string) {
-  const [permission, storedAccount, fallback] = await Promise.all([
-    query<{ allowed: boolean }>(`SELECT allowed FROM workspace_oauth_self_service_permissions WHERE workspace_id=$1 AND provider='whatsapp'`, [workspaceId]),
-    loadWorkspaceAccount(workspaceId),
+export async function getWorkspaceWhatsAppConnection(_workspaceId: string) {
+  const [fallback, permission] = await Promise.all([
     query<{ address: string; displayName: string; status: string }>(
       `SELECT COALESCE(NULLIF(i.metadata->>'phone',''),i.external_identity_id) AS address,
               i.display_name AS "displayName",i.status
@@ -263,39 +226,34 @@ export async function getWorkspaceWhatsAppConnection(workspaceId: string) {
        JOIN omni_channels channel ON channel.id=i.channel_id
        WHERE c.singleton=TRUE AND channel.provider='unifyport' AND channel.channel_type='WHATSAPP'`,
     ),
+    query<{ allowed: boolean }>(
+      `SELECT allowed FROM workspace_oauth_self_service_permissions
+       WHERE workspace_id=$1 AND provider='whatsapp'`,
+      [_workspaceId],
+    ),
   ]);
-  const allowed = permission.rows[0]?.allowed === true;
-  const account = storedAccount && allowed ? await refreshWorkspaceSenderStatus(storedAccount) : storedAccount;
-  const embeddedSignupConfigured = Boolean(
-    env.META_CLIENT_ID && env.META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID && env.TWILIO_PARTNER_SOLUTION_ID,
-  );
+  // WhatsApp is intentionally central-admin managed. Workspace self-service
+  // previously provisioned a Twilio subaccount and Meta sender, which is not
+  // the canonical transport anymore. Keep the response shape stable for old
+  // clients, but make the provider and capability explicit and never expose a
+  // legacy customer-owned connection as active.
   return {
-    selfServiceAllowed: allowed,
-    embeddedSignupConfigured,
-    embeddedSignup: allowed && embeddedSignupConfigured ? {
-      appId: env.META_CLIENT_ID!,
-      configurationId: env.META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID!,
-      partnerSolutionId: env.TWILIO_PARTNER_SOLUTION_ID!,
-      graphVersion: env.META_GRAPH_VERSION,
-    } : null,
-    customerConnection: account ? {
-      address: account.senderAddress,
-      displayName: account.displayName,
-      senderStatus: account.senderStatus,
-      contentSid: account.contentSid,
-      contentApprovalStatus: account.contentApprovalStatus,
-      status: account.status,
-      lastError: account.lastError,
-    } : null,
+    provider: 'unifyport' as const,
+    // Keep the administrator's workspace permission visible to existing
+    // clients. It is a policy signal only; the actual WhatsApp transport and
+    // sender remain UnifyPort-managed and never fall back to Twilio/Meta.
+    selfServiceAllowed: permission.rows[0]?.allowed === true,
+    embeddedSignupConfigured: false,
+    embeddedSignup: null,
+    customerConnection: null,
     adminFallback: fallback.rows[0] ? {
       configured: fallback.rows[0].status === 'ACTIVE',
       address: fallback.rows[0].address,
       displayName: fallback.rows[0].displayName,
       status: fallback.rows[0].status,
-    } : { configured: false, address: null, displayName: null, status: 'NOT_CONFIGURED' },
-    effectiveMode: allowed && account?.status === 'CONNECTED' && account.senderStatus.toUpperCase() === 'ONLINE'
-      ? 'CUSTOMER_OWNED'
-      : 'LULU_MANAGED',
+      provider: 'unifyport' as const,
+    } : { configured: false, address: null, displayName: null, status: 'NOT_CONFIGURED', provider: 'unifyport' as const },
+    effectiveMode: 'LULU_MANAGED' as const,
   };
 }
 
