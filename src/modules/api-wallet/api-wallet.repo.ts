@@ -6,6 +6,7 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { applyPendingAirwallexWalletReversals } from '../billing/airwallex-wallet-reversal.repo.js';
 import { resolveAiFundingMode } from './ai-funding-policy.js';
+import { API_TOPUP_PACKAGES } from './api-wallet.validator.js';
 
 export type ApiPaymentMethod = 'card' | 'alipaycn' | 'wechatpay';
 export type ApiTopupStatus = 'CREATED' | 'PENDING_PAYMENT' | 'REQUIRES_CUSTOMER_ACTION' | 'SUCCEEDED' | 'CANCELLED' | 'FAILED' | 'EXPIRED' | 'REFUNDED' | 'CHARGEBACK';
@@ -22,7 +23,7 @@ async function ensureWallet(workspaceId:string,client?:PoolClient){
   const row=(await query<WalletRow>(`SELECT ${walletSelect} FROM workspace_api_wallets WHERE workspace_id=$1`,[workspaceId],client)).rows[0];
   if(!row) throw new Error('AI wallet could not be created'); return row;
 }
-export async function getApiWalletOverview(workspaceId:string){const wallet=await ensureWallet(workspaceId);const topups=await query<ApiTopupRow>(`SELECT ${topupSelect} FROM workspace_api_topups WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 25`,[workspaceId]);return {wallet:publicWallet(wallet),topups:topups.rows.map(publicApiTopup),packages:[1,1000,2500,5000,9000],currency:'CNY' as const};}
+export async function getApiWalletOverview(workspaceId:string){const wallet=await ensureWallet(workspaceId);const topups=await query<ApiTopupRow>(`SELECT ${topupSelect} FROM workspace_api_topups WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT 25`,[workspaceId]);return {wallet:publicWallet(wallet),topups:topups.rows.map(publicApiTopup),packages:[...API_TOPUP_PACKAGES],currency:'CNY' as const};}
 export async function assertApiWalletFunded(workspaceId:string){const wallet=await ensureWallet(workspaceId);if(Number(wallet.reversalDebtAmount)>0)throw new AppError(409,'AI_REVERSAL_DEBT','AI execution is paused until the outstanding refund or chargeback balance is covered.');if(Number(wallet.availableAmount)<=0) throw new AppError(402,'AI_FUNDS_REQUIRED','AI execution is paused until the AI wallet is funded.');return publicWallet(wallet);}
 export async function isApiWalletMeteredWorkspace(workspaceId:string,userId?:string|null){return (await resolveAiFundingMode(workspaceId,userId)).mode==='CUSTOMER_PREPAID';}
 export async function createApiTopup(input:{workspaceId:string;userId:string;amount:number;paymentMethod:ApiPaymentMethod}){const id=crypto.randomUUID();const row=(await query<ApiTopupRow>(`INSERT INTO workspace_api_topups(id,workspace_id,created_by,amount,payment_method,merchant_order_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING ${topupSelect}`,[id,input.workspaceId,input.userId,input.amount.toFixed(2),input.paymentMethod,`lulu-api-${id}`])).rows[0];if(!row) throw new Error('AI top-up was not created');return row;}

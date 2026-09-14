@@ -17,6 +17,7 @@ import type {
   UpdateSavedViewInput,
 } from './workspace-app.validator.js';
 import type { WorkspaceRole } from '../workspaces/workspace-permissions.js';
+import { API_TOPUP_PACKAGES } from '../api-wallet/api-wallet.validator.js';
 
 export type WorkspaceSettings = {
   workspaceId: string;
@@ -618,8 +619,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       reservedAmount: Number(apiWallet.rows[0].reservedAmount),
       reversalDebtAmount: Number(apiWallet.rows[0].reversalDebtAmount),
       totalFundedAmount: Number(apiWallet.rows[0].totalFundedAmount), currency: apiWallet.rows[0].currency,
-      packages: [1, 1000, 2500, 5000, 9000], enabled: Number(apiWallet.rows[0].availableAmount) > 0 && Number(apiWallet.rows[0].reversalDebtAmount) === 0,
-    } : { availableAmount: 0, reservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [1,1000,2500,5000,9000], enabled: false },
+      packages: [...API_TOPUP_PACKAGES], enabled: Number(apiWallet.rows[0].availableAmount) > 0 && Number(apiWallet.rows[0].reversalDebtAmount) === 0,
+    } : { availableAmount: 0, reservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [...API_TOPUP_PACKAGES], enabled: false },
     storagePricing: {
       currency: 'USD', freeTierDeduction: false, providerMarkupPercent: 10,
       additionalStoragePerGbMonthUsd: 0.2,
