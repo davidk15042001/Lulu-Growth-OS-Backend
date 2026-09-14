@@ -9,6 +9,7 @@ process.env.DATABASE_URL='postgres://test:test@127.0.0.1:1/security_tests_only';
 process.env.JWT_SECRET='security-tests-only-not-a-production-key';
 process.env.BCRYPT_ROUNDS='10';
 process.env.PROVIDER_CREDENTIAL_KEY='42'.repeat(32);
+process.env.ADMIN_MFA_ENABLED='true';
 const { pool }=await import('../src/db/pool.js');
 const auth=await import('../src/modules/auth/auth.repo.js');
 const service=await import('../src/modules/auth/auth.service.js');
