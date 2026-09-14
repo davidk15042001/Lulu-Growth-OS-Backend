@@ -30,7 +30,8 @@ describe('HTTP application', () => {
     assert.equal(response.body.data.ready, false);
     assert.equal(response.body.data.status, 'not_ready');
     assert.equal(typeof response.body.data.checkedAt, 'string');
-    assert.deepEqual(Object.keys(response.body.data).sort(), ['checkedAt', 'ready', 'status']);
+    assert.deepEqual(Object.keys(response.body.data).sort(), ['blockers', 'checkedAt', 'ready', 'status']);
+    assert.ok(Array.isArray(response.body.data.blockers));
   });
 
   it('reports not ready when DATABASE_URL is not configured', async () => {
@@ -40,7 +41,7 @@ describe('HTTP application', () => {
     assert.equal(response.body.success, false);
     assert.equal(response.body.data.ready, false);
     assert.equal(response.body.data.status, 'not_ready');
-    assert.deepEqual(Object.keys(response.body.data).sort(), ['checkedAt', 'ready', 'status']);
+    assert.deepEqual(Object.keys(response.body.data).sort(), ['blockers', 'checkedAt', 'ready', 'status']);
   });
 
   it('blocks readiness for stale AI spend holds and wallet hold mismatches', () => {
@@ -70,11 +71,13 @@ describe('HTTP application', () => {
       ready: false,
       status: 'not_ready',
       checkedAt: '2026-09-13T00:00:00.000Z',
+      blockers: ['workers'],
     });
     assert.deepEqual(summary, {
       ready: false,
       status: 'not_ready',
       checkedAt: '2026-09-13T00:00:00.000Z',
+      blockers: ['workers'],
     });
   });
 

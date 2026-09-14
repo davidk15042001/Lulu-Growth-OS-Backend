@@ -28,11 +28,13 @@ export function toPublicRuntimeReadiness(readiness: {
   ready: boolean;
   status: string;
   checkedAt: string;
+  blockers?: string[];
 }) {
   return {
     ready: readiness.ready,
     status: readiness.status,
     checkedAt: readiness.checkedAt,
+    ...(readiness.blockers && readiness.blockers.length > 0 ? { blockers: readiness.blockers } : {}),
   };
 }
 
