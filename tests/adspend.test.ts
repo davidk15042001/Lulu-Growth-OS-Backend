@@ -14,7 +14,7 @@ describe('autonomous advertising wallet', () => {
     });
   });
 
-  it('accepts the test package and four customer authorization packages', () => {
+  it('accepts preset packages and a custom amount', () => {
     for (const amount of [1, 10_000, 25_000, 50_000, 90_000]) assert.equal(calculateAdSpendCharge(amount).netAmount, amount);
     assert.deepEqual(calculateAdSpendCharge(1), {
       netAmount: 1,
@@ -24,6 +24,15 @@ describe('autonomous advertising wallet', () => {
       feePercent: 4,
       currency: 'CNY',
     });
-    assert.throws(() => calculateAdSpendCharge(123.45), { code: 'AD_SPEND_PACKAGE_INVALID' });
+    assert.deepEqual(calculateAdSpendCharge(123.45), {
+      netAmount: 123.45,
+      feeAmount: 4.94,
+      totalAmount: 128.39,
+      feeBasisPoints: 400,
+      feePercent: 4,
+      currency: 'CNY',
+    });
+    assert.throws(() => calculateAdSpendCharge(0.99), { code: 'AD_SPEND_AMOUNT_INVALID' });
+    assert.throws(() => calculateAdSpendCharge(1_000_000_000.01), { code: 'AD_SPEND_AMOUNT_INVALID' });
   });
 });

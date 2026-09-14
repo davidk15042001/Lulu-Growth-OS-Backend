@@ -15,11 +15,8 @@ import {
 import { listGoogleAdsSpendAllocations } from './google-ads-spend.repo.js';
 
 export function calculateAdSpendCharge(amount: number) {
-  if (![1, 10_000, 25_000, 50_000, 90_000].includes(amount)) {
-    throw new AppError(422, 'AD_SPEND_PACKAGE_INVALID', 'Choose an available advertising package.');
-  }
   const netMinor = Math.round(amount * 100);
-  if (!Number.isSafeInteger(netMinor) || netMinor < 100) {
+  if (!Number.isFinite(amount) || amount < 1 || amount > 1_000_000_000 || !Number.isSafeInteger(netMinor) || netMinor < 100) {
     throw new AppError(422, 'AD_SPEND_AMOUNT_INVALID', 'Ad spend must be at least CNY 1.00.');
   }
   const feeMinor = Math.round(netMinor * AD_SPEND_FEE_BASIS_POINTS / 10_000);

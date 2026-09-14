@@ -5,7 +5,10 @@ export const adSpendTopupParamsSchema = z.object({ workspaceId: z.string().uuid(
 export const adBudgetAuthorizationParamsSchema = z.object({ workspaceId: z.string().uuid(), authorizationId: z.string().uuid() });
 
 export const createAdSpendTopupSchema = z.object({
-  amount: z.coerce.number().refine((value) => [1, 10_000, 25_000, 50_000, 90_000].includes(value), 'Choose an available advertising package.'),
+  // Preset packages remain available in the UI, but customers may also fund
+  // an exact amount. Keep the same server-side floor and a hard ceiling so a
+  // malformed or abusive request can never create an unbounded payment.
+  amount: z.coerce.number().finite().min(1, 'Ad spend must be at least CNY 1.00.').max(1_000_000_000, 'Ad spend exceeds the maximum top-up amount.'),
   currency: z.literal('CNY').default('CNY'),
   paymentMethod: z.enum(['card', 'alipaycn', 'wechatpay']),
   returnUrl: z.string().url().max(2000),
