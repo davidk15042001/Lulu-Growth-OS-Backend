@@ -110,6 +110,10 @@ router.route('/whatsapp/connection')
   .delete(requireWorkspaceEditor, controller.disconnectWhatsApp)
   .all(methodNotAllowed);
 
+router.route('/whatsapp/connect')
+  .post(requireWorkspaceEditor, controller.connectWhatsApp)
+  .all(methodNotAllowed);
+
 router.route('/whatsapp/embedded-signup/complete')
   .post(requireWorkspaceEditor, controller.completeWhatsAppEmbeddedSignup)
   .all(methodNotAllowed);

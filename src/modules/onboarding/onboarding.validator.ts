@@ -247,6 +247,14 @@ export const whatsappEmbeddedSignupCompleteSchema = z.object({
   phoneNumberId: z.string().trim().regex(/^[0-9]{5,100}$/),
 }).strict();
 
+/** Starts the canonical UnifyPort WhatsApp self-service flow. The phone is
+ * deliberately collected by Lulu and sent only to UnifyPort as provider_data
+ * for the pairing-code flow; no Meta or Twilio credentials are accepted. */
+export const whatsappUnifyPortConnectSchema = z.object({
+  phone: z.string().trim().regex(/^\+?[1-9][0-9]{6,14}$/),
+  displayName: z.string().trim().min(1).max(160).optional(),
+}).strict();
+
 export type CompanyInformationInput = z.infer<typeof companyInformationSchema>;
 export type KnowledgeActivationInput = z.infer<typeof knowledgeActivationSchema>;
 export type BusinessDescriptionInput = z.infer<typeof businessDescriptionSchema>;

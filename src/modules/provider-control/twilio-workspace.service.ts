@@ -5,6 +5,8 @@ import { AppError } from '../../utils/app-error.js';
 import { decryptSecret, encryptSecret } from '../../utils/secret-box.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { upsertLegacyPlatformControlConnection } from './provider.repo.js';
+import * as omniRepo from '../omnichannel/omnichannel.repo.js';
+import * as unifyPort from './unifyport.client.js';
 import {
   asTwilioAddress,
   createTwilioSubaccount,
@@ -52,6 +54,22 @@ function workspaceAuth(account: WorkspaceTwilioAccount): TwilioRestCredentials {
 
 function senderIsOnline(sender: TwilioWhatsAppSender) {
   return sender.status.toUpperCase() === 'ONLINE';
+}
+
+function normalizeUnifyPortPhone(value: string) {
+  const phone = value.trim().replace(/[^0-9+]/g, '');
+  if (!/^\+?[1-9][0-9]{6,14}$/.test(phone)) {
+    throw new AppError(422, 'UNIFYPORT_WHATSAPP_PHONE_INVALID', 'Use an international WhatsApp phone number in E.164 format, for example +491701234567.');
+  }
+  return phone.replace(/^\+/, '');
+}
+
+function asUnifyPortRecord(value: unknown) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function truthyUnifyPortState(value: unknown, allowed: string[]) {
+  return allowed.includes(String(value ?? '').trim().toLowerCase());
 }
 
 async function loadWorkspaceAccount(workspaceId: string, client?: PoolClient) {
@@ -216,8 +234,8 @@ export async function configureAdminWhatsAppSender(input: { address: string; dis
   return { id: identity.id, address: identity.external_identity_id, displayName: identity.display_name, status: identity.status };
 }
 
-export async function getWorkspaceWhatsAppConnection(_workspaceId: string) {
-  const [fallback, permission] = await Promise.all([
+export async function getWorkspaceWhatsAppConnection(workspaceId: string) {
+  const [fallback, permission, workspacePlatform, workspaceIdentity] = await Promise.all([
     query<{ address: string; displayName: string; status: string }>(
       `SELECT COALESCE(NULLIF(i.metadata->>'phone',''),i.external_identity_id) AS address,
               i.display_name AS "displayName",i.status
@@ -229,23 +247,121 @@ export async function getWorkspaceWhatsAppConnection(_workspaceId: string) {
     query<{ allowed: boolean }>(
       `SELECT allowed FROM workspace_oauth_self_service_permissions
        WHERE workspace_id=$1 AND provider='whatsapp'`,
-      [_workspaceId],
+      [workspaceId],
+    ),
+    query<{ accountId: string | null; displayName: string | null; phone: string | null; connectionStatus: string; lastError: string | null; settings: Record<string, unknown> }>(
+      `SELECT external_account_id AS "accountId", settings->>'displayName' AS "displayName",
+              settings->>'phone' AS phone, connection_status AS "connectionStatus",
+              last_error AS "lastError", settings
+       FROM workspace_platforms
+       WHERE workspace_id=$1 AND integration_key='whatsapp' AND deleted_at IS NULL
+       ORDER BY updated_at DESC LIMIT 1`,
+      [workspaceId],
+    ),
+    query<{ accountId: string; address: string; displayName: string; senderStatus: string; status: string; lastError: string | null }>(
+      `SELECT i.external_identity_id AS "accountId",
+              COALESCE(NULLIF(i.metadata->>'phone',''),i.external_identity_id) AS address,
+              i.display_name AS "displayName", i.status AS "senderStatus",
+              i.status, NULL::text AS "lastError"
+       FROM omni_channel_identities i
+       JOIN omni_channels c ON c.id=i.channel_id
+       WHERE i.workspace_id=$1 AND c.provider='unifyport' AND c.channel_type='WHATSAPP'
+       ORDER BY i.updated_at DESC LIMIT 1`,
+      [workspaceId],
     ),
   ]);
-  // WhatsApp is intentionally central-admin managed. Workspace self-service
-  // previously provisioned a Twilio subaccount and Meta sender, which is not
-  // the canonical transport anymore. Keep the response shape stable for old
-  // clients, but make the provider and capability explicit and never expose a
-  // legacy customer-owned connection as active.
+
+  const selfServiceAllowed = permission.rows[0]?.allowed === true;
+  const platform = workspacePlatform.rows[0] ?? null;
+  let customerConnection = workspaceIdentity.rows[0] && workspaceIdentity.rows[0].senderStatus === 'ACTIVE'
+    ? {
+        address: workspaceIdentity.rows[0].address,
+        displayName: workspaceIdentity.rows[0].displayName,
+        senderStatus: workspaceIdentity.rows[0].senderStatus,
+        status: 'CONNECTED',
+        lastError: workspaceIdentity.rows[0].lastError,
+      }
+    : null;
+  let pending: {
+    accountId: string;
+    authStatus: string;
+    runtimeStatus: string;
+    authPayload: Record<string, unknown> | null;
+    lastError: string | null;
+    phone: string | null;
+  } | null = null;
+
+  // The account is persisted on the tenant's platform row. Reconcile the
+  // provider state on each read so a successful phone pairing becomes a real
+  // OmniChannel identity without a privileged admin callback.
+  if (platform?.accountId && selfServiceAllowed && !customerConnection) {
+    try {
+      const [account, auth] = await Promise.all([
+        unifyPort.getAccount(platform.accountId),
+        unifyPort.getAccountAuth(platform.accountId),
+      ]);
+      const providerData = asUnifyPortRecord(account.provider_data);
+      const phone = typeof providerData.phone === 'string' ? providerData.phone : platform.phone;
+      const authStatus = String(auth.status ?? 'pending_auth');
+      const runtimeStatus = String(account.runtime_status ?? 'unknown');
+      const authorized = truthyUnifyPortState(authStatus, ['authorized', 'authenticated', 'connected', 'succeeded', 'success']);
+      const running = truthyUnifyPortState(runtimeStatus, ['running', 'ready', 'connected']);
+      const displayName = platform.displayName || String(account.name ?? 'WhatsApp');
+      if (authorized && running) {
+        const identity = await omniRepo.registerUnifyPortIdentity({
+          workspaceId,
+          accountId: platform.accountId,
+          displayName,
+          phone: phone ? `+${phone.replace(/^\+/, '')}` : null,
+        });
+        if (identity) {
+          await query(
+            `UPDATE workspace_platforms SET connection_status='connected', external_account_id=$2,
+               settings=settings || jsonb_build_object('transport','unifyport','customerOwned',true),
+               last_error=NULL,last_synced_at=NOW(),updated_at=NOW()
+             WHERE workspace_id=$1 AND integration_key='whatsapp' AND deleted_at IS NULL`,
+            [workspaceId, platform.accountId],
+          );
+          customerConnection = {
+            address: phone ? `+${phone.replace(/^\+/, '')}` : platform.accountId,
+            displayName,
+            senderStatus: 'ACTIVE',
+            status: 'CONNECTED',
+            lastError: null,
+          };
+        }
+      } else {
+        pending = {
+          accountId: platform.accountId,
+          authStatus,
+          runtimeStatus,
+          authPayload: asUnifyPortRecord(auth.auth_payload),
+          lastError: typeof auth.last_error === 'string' ? auth.last_error : platform.lastError,
+          phone: phone ? `+${phone.replace(/^\+/, '')}` : null,
+        };
+        if (authStatus.toLowerCase() === 'failed' || runtimeStatus.toLowerCase() === 'error') {
+          await query(`UPDATE workspace_platforms SET connection_status='error',last_error=$2,updated_at=NOW() WHERE workspace_id=$1 AND integration_key='whatsapp' AND deleted_at IS NULL`, [workspaceId, pending.lastError ?? 'UnifyPort authentication failed']);
+        }
+      }
+    } catch (error) {
+      pending = {
+        accountId: platform.accountId,
+        authStatus: 'unknown',
+        runtimeStatus: 'unknown',
+        authPayload: null,
+        lastError: error instanceof AppError ? error.message : 'UnifyPort status could not be refreshed.',
+        phone: platform.phone,
+      };
+    }
+  }
+
   return {
     provider: 'unifyport' as const,
-    // Keep the administrator's workspace permission visible to existing
-    // clients. It is a policy signal only; the actual WhatsApp transport and
-    // sender remain UnifyPort-managed and never fall back to Twilio/Meta.
-    selfServiceAllowed: permission.rows[0]?.allowed === true,
+    selfServiceAllowed,
     embeddedSignupConfigured: false,
     embeddedSignup: null,
-    customerConnection: null,
+    customerConnection,
+    pendingConnection: pending,
     adminFallback: fallback.rows[0] ? {
       configured: fallback.rows[0].status === 'ACTIVE',
       address: fallback.rows[0].address,
@@ -253,8 +369,73 @@ export async function getWorkspaceWhatsAppConnection(_workspaceId: string) {
       status: fallback.rows[0].status,
       provider: 'unifyport' as const,
     } : { configured: false, address: null, displayName: null, status: 'NOT_CONFIGURED', provider: 'unifyport' as const },
-    effectiveMode: 'LULU_MANAGED' as const,
+    effectiveMode: customerConnection ? 'CUSTOMER_OWNED' as const : 'LULU_MANAGED' as const,
   };
+}
+
+export async function startWorkspaceUnifyPortConnection(input: { workspaceId: string; userId: string; phone: string; displayName?: string }) {
+  const phone = normalizeUnifyPortPhone(input.phone);
+  const permission = await query<{ allowed: boolean }>(
+    `SELECT allowed FROM workspace_oauth_self_service_permissions WHERE workspace_id=$1 AND provider='whatsapp'`,
+    [input.workspaceId],
+  );
+  if (permission.rows[0]?.allowed !== true) {
+    throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'An administrator must enable WhatsApp self-service for this workspace.');
+  }
+  const workspace = await query<{ name: string }>(`SELECT name FROM workspaces WHERE id=$1 AND deleted_at IS NULL`, [input.workspaceId]);
+  if (!workspace.rows[0]) throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Workspace not found.');
+
+  const existing = await query<{ id: string; externalAccountId: string | null; settings: Record<string, unknown> }>(
+    `SELECT id,external_account_id AS "externalAccountId",settings FROM workspace_platforms
+     WHERE workspace_id=$1 AND integration_key='whatsapp' AND deleted_at IS NULL LIMIT 1`,
+    [input.workspaceId],
+  );
+  const existingPlatform = existing.rows[0] ?? null;
+  let accountId = existingPlatform?.externalAccountId ?? null;
+  let account: unifyPort.UnifyPortAccount | null = null;
+  let existingAuth: unifyPort.UnifyPortAuthState | null = null;
+  if (accountId) {
+    try {
+      [account, existingAuth] = await Promise.all([unifyPort.getAccount(accountId), unifyPort.getAccountAuth(accountId)]);
+    } catch { account = null; existingAuth = null; }
+  }
+  if (!accountId || !account) {
+    const regions = await unifyPort.listProviderRegions('whatsapp').catch(() => [] as unknown[]);
+    const regionRecords: Array<Record<string, unknown>> = Array.isArray(regions)
+      ? regions.filter((value) => Boolean(value && typeof value === 'object' && !Array.isArray(value))).map((value) => value as Record<string, unknown>)
+      : [];
+    const selected = regionRecords.find((value) => value.allocatable === true && String(value.region ?? value.id ?? '').toLowerCase() === 'global')
+      ?? regionRecords.find((value) => value.allocatable === true)
+      ?? regionRecords.find((value) => String(value.region ?? value.id ?? '').toLowerCase() === 'global');
+    const region = String(selected?.region ?? selected?.id ?? 'global');
+    account = await unifyPort.createAccount({
+      name: input.displayName?.trim() || `WhatsApp · ${workspace.rows[0].name}`,
+      provider: 'whatsapp',
+      region,
+      status: 'active',
+      auth_mode: 'code',
+      provider_data: { phone },
+    });
+    accountId = String(account.id ?? '');
+    if (!accountId) throw new AppError(502, 'UNIFYPORT_ACCOUNT_ID_MISSING', 'UnifyPort did not return an account id.');
+  }
+
+  const displayName = input.displayName?.trim() || String(account.name ?? `WhatsApp · ${workspace.rows[0].name}`);
+  await query(
+    `INSERT INTO workspace_platforms(workspace_id,integration_key,name,category,connection_status,external_account_id,granted_scopes,settings,last_error)
+     VALUES($1,'whatsapp','WhatsApp','messaging','pending',$2,$3,$4::jsonb,NULL)
+     ON CONFLICT(workspace_id,integration_key) WHERE integration_key IS NOT NULL AND deleted_at IS NULL
+     DO UPDATE SET name='WhatsApp',category='messaging',connection_status='pending',external_account_id=EXCLUDED.external_account_id,
+       granted_scopes=EXCLUDED.granted_scopes,settings=EXCLUDED.settings,last_error=NULL,updated_at=NOW()`,
+    [input.workspaceId, accountId, ['messages.read', 'messages.send', 'messages.inbound_webhook'], JSON.stringify({ transport: 'unifyport', customerOwned: true, displayName, phone: `+${phone}`, region: account.region ?? null })],
+  );
+
+  const existingAuthStatus = String(existingAuth?.status ?? '').toLowerCase();
+  const auth = existingAuth && ['authorized', 'authenticated', 'connected', 'awaiting_code', 'awaiting_qr_scan', 'awaiting_password', 'passkey_required', 'passkey_pending', 'passkey_confirmation', 'passkey_confirmation_sent'].includes(existingAuthStatus)
+    ? existingAuth
+    : await unifyPort.startCodeAuth(accountId);
+  const connection = await getWorkspaceWhatsAppConnection(input.workspaceId);
+  return { accountId, auth, connection };
 }
 
 export async function listWorkspaceWhatsAppAccounts() {
@@ -383,6 +564,26 @@ export async function provisionWorkspaceWhatsApp(input: {
 }
 
 export async function disconnectWorkspaceWhatsApp(workspaceId: string, userId: string) {
+  // UnifyPort is the canonical WhatsApp transport. Disconnecting only removes
+  // Lulu's tenant identity and local routing; it never deletes or reuses the
+  // customer's virtual device in UnifyPort.
+  await query(
+    `UPDATE omni_channel_identities i SET status='DISCONNECTED',updated_at=NOW()
+     FROM omni_channels c
+     WHERE i.channel_id=c.id AND i.workspace_id=$1 AND c.provider='unifyport' AND c.channel_type='WHATSAPP'`,
+    [workspaceId],
+  );
+  await query(
+    `UPDATE workspace_platforms SET connection_status='disconnected',last_error=NULL,updated_at=NOW()
+     WHERE workspace_id=$1 AND integration_key='whatsapp' AND deleted_at IS NULL`,
+    [workspaceId],
+  );
+  await query(
+    `UPDATE provider_connections SET status='DISCONNECTED',authorization_state='NOT_AUTHORIZED',
+       health_status='DISCONNECTED',updated_at=NOW()
+     WHERE workspace_id=$1 AND provider_key='unifyport'`,
+    [workspaceId],
+  );
   await withTransaction(async (client) => {
     const account = await loadWorkspaceAccount(workspaceId, client);
     if (!account) return;

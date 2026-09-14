@@ -23,6 +23,7 @@ import {
   updateCustomerSegmentSchema,
   updateOfferingSchema,
   updatePlatformSchema,
+  whatsappUnifyPortConnectSchema,
 } from './onboarding.validator.js';
 import * as twilioWorkspace from '../provider-control/twilio-workspace.service.js';
 
@@ -424,6 +425,18 @@ export async function oauthSelfServicePermissions(req: WorkspaceRequest, res: Re
 export async function whatsappConnection(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     return successResponse(res, 'Workspace WhatsApp connection loaded', await twilioWorkspace.getWorkspaceWhatsAppConnection(workspaceId(req)));
+  } catch (error) { next(error); }
+}
+
+export async function connectWhatsApp(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const input = whatsappUnifyPortConnectSchema.parse(req.body);
+    return createdResponse(res, 'UnifyPort WhatsApp pairing started', await twilioWorkspace.startWorkspaceUnifyPortConnection({
+      workspaceId: workspaceId(req),
+      userId: req.user!.id,
+      phone: input.phone,
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+    }));
   } catch (error) { next(error); }
 }
 
