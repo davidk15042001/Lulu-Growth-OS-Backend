@@ -78,7 +78,13 @@ export async function getRuntimeReadiness() {
       ready: !isProd || Boolean(env.PROVIDER_CREDENTIAL_KEY),
     },
     email: {
-      required: isProd,
+      // Transactional email is an optional capability, not a platform
+      // dependency. Lulu can run onboarding, billing, integrations and
+      // autonomous work without Mailcow (or any other global SMTP server).
+      // Email actions fail explicitly at the action boundary until an SMTP
+      // transport is configured, while connected Gmail/Outlook/SMTP accounts
+      // remain independent workspace integrations.
+      required: false,
       ready: configured(env.MAILCOW_SMTP_HOST, env.MAILCOW_SMTP_USER, env.MAILCOW_SMTP_PASS, env.EMAIL_FROM),
     },
     twilio: {

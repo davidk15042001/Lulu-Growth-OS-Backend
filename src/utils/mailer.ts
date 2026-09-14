@@ -29,7 +29,7 @@ function getTransporter() {
     !env.EMAIL_FROM ? 'EMAIL_FROM' : null,
   ].filter((value): value is string => Boolean(value));
   if (missing.length > 0) {
-    throw new AppError(503, 'MAILCOW_SMTP_CONFIGURATION_MISSING', 'Mailcow SMTP configuration is incomplete', { missingEnv: missing });
+    throw new AppError(503, 'MAILCOW_SMTP_CONFIGURATION_MISSING', 'Transactional email is not configured', { missingEnv: missing });
   }
   if (!transporter) {
     transporter = nodemailer.createTransport({
@@ -54,14 +54,14 @@ export async function sendMail(to: string, subject: string, html: string, attach
     });
   } catch (error) {
     if (error instanceof AppError) throw error;
-    throw new AppError(502, 'MAILCOW_SMTP_SEND_FAILED', 'Mailcow rejected the outgoing email', {
+    throw new AppError(502, 'MAILCOW_SMTP_SEND_FAILED', 'The transactional email provider rejected the message', {
       recipient: to,
       subject,
       attachmentCount: attachments.length,
       providerMessage: error instanceof Error ? error.message : 'unknown_error',
     });
   }
-  logger.info({ to, subject, attachmentCount: attachments.length }, 'Email sent via Mailcow SMTP');
+  logger.info({ to, subject, attachmentCount: attachments.length }, 'Email sent via transactional SMTP');
 }
 
 export async function sendOtpEmail(to: string, code: string) {
