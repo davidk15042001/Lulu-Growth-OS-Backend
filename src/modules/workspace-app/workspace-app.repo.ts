@@ -736,7 +736,7 @@ export async function updateWorkspaceSettings(
     await query(
       `INSERT INTO audit_log (
          workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data
-       ) VALUES ($1, $2, 'workspace_settings.updated', 'workspace_settings', $1, $3::jsonb, $4::jsonb)`,
+       ) VALUES ($1, $2, 'workspace_settings.updated', 'workspace_settings', $1::text, $3::jsonb, $4::jsonb)`,
       [workspaceId, userId, JSON.stringify(before?.settings ?? {}), JSON.stringify(settings.settings)],
       client,
     );
