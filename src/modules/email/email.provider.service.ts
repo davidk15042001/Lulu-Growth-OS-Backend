@@ -7,6 +7,7 @@ import PostalMime, { type Address } from 'postal-mime';
 import { AppError } from '../../utils/app-error.js';
 import { decryptSecret, encryptSecret } from '../../utils/secret-box.js';
 import { env } from '../../config/env.js';
+import { logger } from '../../config/logger.js';
 import * as repo from './email.repo.js';
 import { refreshEmailOAuthToken } from './email.oauth.service.js';
 import type { EmailAccountCredential, EmailAddress, ProviderFolder, ProviderMessage, ProviderSyncResult, SendEmailInput } from './email.types.js';
@@ -225,6 +226,19 @@ function imapCredentials(account: EmailAccountCredential) {
   return { host: account.imapHost, port: account.imapPort, secure: account.imapSecure, auth: { user: account.emailAddress, pass: decryptSecret(account.encryptedPassword) }, logger: false as const };
 }
 
+/**
+ * ImapFlow emits transport errors asynchronously. Without a listener an
+ * account whose server resets the connection can terminate the entire Node
+ * process instead of failing only that sync/send operation.
+ */
+function createImapClient(account: EmailAccountCredential) {
+  const client = new ImapFlow(imapCredentials(account));
+  client.on('error', (error) => {
+    logger.warn({ error, provider: 'imap', host: account.imapHost }, 'IMAP connection error; keeping the API process alive');
+  });
+  return client;
+}
+
 function postalAddresses(value?: Address | Address[] | null): EmailAddress[] {
   const values = value ? (Array.isArray(value) ? value : [value]) : [];
   return values.flatMap((item) => Array.isArray(item.group) ? item.group : item.address ? [item] : []).map((item) => ({ address: item.address.toLowerCase(), name: item.name || null })).filter((item) => item.address);
@@ -250,7 +264,7 @@ function sendMailAsync(transport: nodemailer.Transporter, options: SendMailOptio
 
 async function syncImap(account: EmailAccountCredential): Promise<ProviderSyncResult> {
   await assertPublicMailHosts([account.imapHost]);
-  const client = new ImapFlow(imapCredentials(account));
+  const client = createImapClient(account);
   await client.connect();
   try {
     const mailboxes = (await client.list()).filter((mailbox) => !mailbox.flags.has('\\Noselect')).slice(0, 30);
@@ -324,7 +338,7 @@ export async function setProviderMessageState(account: EmailAccountCredential, p
     return;
   }
   await assertPublicMailHosts([account.imapHost]);
-  const parsed = parseImapMessageId(providerMessageId); const client = new ImapFlow(imapCredentials(account)); await client.connect();
+  const parsed = parseImapMessageId(providerMessageId); const client = createImapClient(account); await client.connect();
   try { const lock = await client.getMailboxLock(parsed.path); try {
     if (state.isRead !== undefined) await (state.isRead ? client.messageFlagsAdd(parsed.uid, ['\\Seen'], { uid: true }) : client.messageFlagsRemove(parsed.uid, ['\\Seen'], { uid: true }));
     if (state.starred !== undefined) await (state.starred ? client.messageFlagsAdd(parsed.uid, ['\\Flagged'], { uid: true }) : client.messageFlagsRemove(parsed.uid, ['\\Flagged'], { uid: true }));
@@ -359,7 +373,7 @@ export async function sendProviderEmail(account: EmailAccountCredential, input: 
 
 export async function verifyImapConnection(account: EmailAccountCredential) {
   await assertPublicMailHosts([account.imapHost, account.smtpHost]);
-  const client = new ImapFlow(imapCredentials(account));
+  const client = createImapClient(account);
   await client.connect();
   try { await client.list(); } finally { await client.logout().catch(() => undefined); }
   if (!account.encryptedPassword || !account.smtpHost || !account.smtpPort) throw providerError('EMAIL_SMTP_CONFIGURATION_INVALID', 'SMTP configuration is incomplete');
