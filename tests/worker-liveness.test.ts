@@ -133,7 +133,7 @@ describe('per-worker runtime readiness', () => {
     );
     await verifyDrain(
       'agent-runs',
-      "SET status='failed', error_code='AGENT_RUN_RETRY_EXHAUSTED'",
+      "SET status='failed', error_code='AGENT_RUN_AUTO_PAUSED'",
       runWorker.runAgentRunWorkerCycle,
       runWorker.stopAgentRunWorker,
     );
