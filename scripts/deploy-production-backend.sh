@@ -4,6 +4,8 @@ set -eu
 backend_dir=/var/www/lulu-growth-os/backend
 environment_file=/etc/lulu-growth-backend.env
 migration_unit="lulu-growth-backend-migration-$$"
+reset_unit="lulu-growth-backend-test-reset-$$"
+reset_marker="$backend_dir/.run-test-data-reset"
 
 # A migration must never leave the production process stopped if the database
 # is locked or the release runner disappears. The trap restores the service
@@ -43,6 +45,22 @@ systemd-run --quiet --wait --pipe --collect \
   --property=WorkingDirectory="$backend_dir" \
   --property=EnvironmentFile="$environment_file" \
   /usr/bin/node "$backend_dir/dist/database/run.js"
+
+# A one-time, explicitly authorized test-data reset can be requested by the
+# deployment workflow through a marker file. It runs while the API is stopped,
+# inside its own long-lived systemd unit, and the marker is removed only after
+# the transaction commits successfully. Normal deployments never execute this.
+if [ -f "$reset_marker" ]; then
+  systemd-run --quiet --wait --pipe --collect \
+    --unit="$reset_unit" \
+    --property=Type=oneshot \
+    --property=TimeoutStartSec=8h \
+    --property=RuntimeMaxSec=8h \
+    --property=WorkingDirectory="$backend_dir" \
+    --property=EnvironmentFile="$environment_file" \
+    /usr/bin/node "$backend_dir/scripts/lulu-fast-reset.mjs"
+  rm -f "$reset_marker"
+fi
 
 /usr/bin/systemctl start lulu-growth-backend
 /usr/bin/systemctl is-active --quiet lulu-growth-backend
