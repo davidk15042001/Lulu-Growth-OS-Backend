@@ -27,6 +27,7 @@ import {
 } from './payg-billing.repo.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import { reconcileUnsettledApiUsage } from '../usage/usage.service.js';
+import { createPaidStorageInvoice, reconcilePaidBillingInvoices } from './paid-billing-invoice.service.js';
 
 const MAX_PERIODS_PER_CYCLE = 50;
 let interval: NodeJS.Timeout | null = null;
@@ -46,6 +47,14 @@ function invoiceAmount(value: string) {
 async function settleFinalizedInvoice(period: PaygPeriod, invoiceId: string, invoice: Record<string, any>) {
   if (String(invoice.payment_status ?? '').toUpperCase() === 'PAID') {
     await finalizePaygPeriod(period, invoice);
+    await createPaidStorageInvoice({
+      periodId: period.id,
+      workspaceId: period.workspaceId,
+      amount: invoiceAmount(period.serverCostUsd),
+      currency: period.currency,
+      paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
+      providerInvoiceId: invoiceId,
+    });
     return;
   }
   if (!period.paymentSourceId) {
@@ -56,6 +65,16 @@ async function settleFinalizedInvoice(period: PaygPeriod, invoiceId: string, inv
   try {
     const paid = await payPaygInvoice(invoiceId, period.paymentSourceId);
     await finalizePaygPeriod(period, paid, true);
+    if (String(paid.payment_status ?? '').toUpperCase() === 'PAID') {
+      await createPaidStorageInvoice({
+        periodId: period.id,
+        workspaceId: period.workspaceId,
+        amount: invoiceAmount(period.serverCostUsd),
+        currency: period.currency,
+        paidAt: typeof paid.paid_at === 'string' ? paid.paid_at : null,
+        providerInvoiceId: invoiceId,
+      });
+    }
   } catch (error) {
     const latest = await fetchAirwallexInvoice(invoiceId, `payg-payment-failure:${period.id}`).catch(() => null);
     await finalizePaygPeriod(period, latest ?? invoice, true);
@@ -135,6 +154,7 @@ export function runPaygBillingCycle(): Promise<void> {
     await repairCompletedProfilePointers();
     const apiSettlement = await reconcileUnsettledApiUsage();
     const walletInvoiceReconciliation = await reconcilePendingWalletInvoicePayments();
+    const paidInvoiceReconciliation = await reconcilePaidBillingInvoices();
     if (!stopping && Date.now() - lastStorageInventoryAt >= STORAGE_INVENTORY_INTERVAL_MS) {
       const inventory = await reconcileStoredObjectInventory();
       if (inventory.scanned) lastStorageInventoryAt = Date.now();
@@ -161,6 +181,8 @@ export function runPaygBillingCycle(): Promise<void> {
         walletInvoicesChecked: walletInvoiceReconciliation.checked,
         walletInvoicesCredited: walletInvoiceReconciliation.credited,
         walletInvoiceFailures: walletInvoiceReconciliation.failed,
+        paidInvoicesChecked: paidInvoiceReconciliation.checked,
+        paidInvoicesCreated: paidInvoiceReconciliation.created,
       },
     });
   })()

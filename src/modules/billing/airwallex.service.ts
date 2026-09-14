@@ -47,6 +47,11 @@ import {
   type ApiTopupRow,
 } from '../api-wallet/api-wallet.repo.js';
 import { recordAirwallexWalletReversal } from './airwallex-wallet-reversal.repo.js';
+import {
+  createPaidAdSpendInvoice,
+  createPaidAiCreditInvoice,
+  createPaidStorageInvoice,
+} from './paid-billing-invoice.service.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -882,12 +887,27 @@ export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
   if (topup.status === 'SUCCEEDED') return topup;
   if (topup.providerPaymentIntentId) {
     const intent = await airwallexGet(`/api/v1/pa/payment_intents/${encodeURIComponent(topup.providerPaymentIntentId)}`, 'AD_SPEND_PAYMENT_STATUS');
-    return applyAdSpendProviderStatus({
+    const updated = await applyAdSpendProviderStatus({
       providerPaymentIntentId: topup.providerPaymentIntentId,
       providerStatus: String(intent.status ?? 'PENDING'),
       paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null,
       providerResponse: intent,
     });
+    if (updated?.status === 'SUCCEEDED') {
+      await createPaidAdSpendInvoice({
+        topupId: updated.id,
+        workspaceId: updated.workspaceId,
+        amount: Number(updated.netAmount),
+        feeAmount: Number(updated.feeAmount),
+        totalAmount: Number(updated.totalAmount),
+        currency: updated.currency,
+        paymentMethod: updated.paymentMethod,
+        paidAt: updated.paidAt,
+        providerInvoiceId: updated.providerInvoiceId,
+        providerPaymentIntentId: updated.providerPaymentIntentId,
+      });
+    }
+    return updated;
   }
   if (topup.providerInvoiceId) {
     const invoice = await airwallexGet(`/api/v1/billing/invoices/${encodeURIComponent(topup.providerInvoiceId)}`, 'AD_SPEND_INVOICE_STATUS');
@@ -896,13 +916,28 @@ export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
       invoiceId: topup.providerInvoiceId,
       expectedAmount: topup.totalAmount,
     });
-    return applyAdSpendProviderStatus({
+    const updated = await applyAdSpendProviderStatus({
       providerInvoiceId: topup.providerInvoiceId,
       providerPaymentIntentId: verified.proof?.paymentIntentId ?? null,
       providerStatus: verified.providerStatus,
       paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
       providerResponse: { ...invoice, walletPaymentProof: verified.proof },
     });
+    if (updated?.status === 'SUCCEEDED') {
+      await createPaidAdSpendInvoice({
+        topupId: updated.id,
+        workspaceId: updated.workspaceId,
+        amount: Number(updated.netAmount),
+        feeAmount: Number(updated.feeAmount),
+        totalAmount: Number(updated.totalAmount),
+        currency: updated.currency,
+        paymentMethod: updated.paymentMethod,
+        paidAt: updated.paidAt,
+        providerInvoiceId: updated.providerInvoiceId,
+        providerPaymentIntentId: updated.providerPaymentIntentId,
+      });
+    }
+    return updated;
   }
   return topup;
 }
@@ -959,7 +994,20 @@ export async function syncApiWalletProviderPayment(topup: ApiTopupRow) {
   if (topup.status === 'SUCCEEDED') return topup;
   if (topup.providerPaymentIntentId) {
     const intent = await airwallexGet(`/api/v1/pa/payment_intents/${encodeURIComponent(topup.providerPaymentIntentId)}`, 'API_WALLET_PAYMENT_STATUS');
-    return applyApiProviderStatus({ providerPaymentIntentId: topup.providerPaymentIntentId, providerStatus: String(intent.status ?? 'PENDING'), paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null, providerResponse: intent });
+    const updated = await applyApiProviderStatus({ providerPaymentIntentId: topup.providerPaymentIntentId, providerStatus: String(intent.status ?? 'PENDING'), paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null, providerResponse: intent });
+    if (updated?.status === 'SUCCEEDED') {
+      await createPaidAiCreditInvoice({
+        topupId: updated.id,
+        workspaceId: updated.workspaceId,
+        amount: Number(updated.amount),
+        currency: updated.currency,
+        paymentMethod: updated.paymentMethod,
+        paidAt: updated.paidAt,
+        providerInvoiceId: updated.providerInvoiceId,
+        providerPaymentIntentId: updated.providerPaymentIntentId,
+      });
+    }
+    return updated;
   }
   if (topup.providerInvoiceId) {
     const invoice = await airwallexGet(`/api/v1/billing/invoices/${encodeURIComponent(topup.providerInvoiceId)}`, 'API_WALLET_INVOICE_STATUS');
@@ -968,13 +1016,26 @@ export async function syncApiWalletProviderPayment(topup: ApiTopupRow) {
       invoiceId: topup.providerInvoiceId,
       expectedAmount: topup.amount,
     });
-    return applyApiProviderStatus({
+    const updated = await applyApiProviderStatus({
       providerInvoiceId: topup.providerInvoiceId,
       providerPaymentIntentId: verified.proof?.paymentIntentId ?? null,
       providerStatus: verified.providerStatus,
       paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
       providerResponse: { ...invoice, walletPaymentProof: verified.proof },
     });
+    if (updated?.status === 'SUCCEEDED') {
+      await createPaidAiCreditInvoice({
+        topupId: updated.id,
+        workspaceId: updated.workspaceId,
+        amount: Number(updated.amount),
+        currency: updated.currency,
+        paymentMethod: updated.paymentMethod,
+        paidAt: updated.paidAt,
+        providerInvoiceId: updated.providerInvoiceId,
+        providerPaymentIntentId: updated.providerPaymentIntentId,
+      });
+    }
+    return updated;
   }
   return topup;
 }
@@ -1791,6 +1852,18 @@ export async function handleWebhook(event: AirwallexObject) {
         providerResponse,
       });
       if (!handled) throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex AI wallet top-up was not found.', { apiWalletTopupId }, 409);
+      if (handled.status === 'SUCCEEDED') {
+        await createPaidAiCreditInvoice({
+          topupId: handled.id,
+          workspaceId: handled.workspaceId,
+          amount: Number(handled.amount),
+          currency: handled.currency,
+          paymentMethod: handled.paymentMethod,
+          paidAt: handled.paidAt,
+          providerInvoiceId: handled.providerInvoiceId,
+          providerPaymentIntentId: handled.providerPaymentIntentId,
+        });
+      }
       await markWebhookProcessed(eventId);
       return { processed: true, eventId, apiWalletTopupId, status: handled.status.toLowerCase() };
     }
@@ -1832,24 +1905,62 @@ export async function handleWebhook(event: AirwallexObject) {
         providerResponse,
       });
       if (!handled) throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex advertising wallet top-up was not found.', { adSpendTopupId }, 409);
+      if (handled.status === 'SUCCEEDED') {
+        await createPaidAdSpendInvoice({
+          topupId: handled.id,
+          workspaceId: handled.workspaceId,
+          amount: Number(handled.netAmount),
+          feeAmount: Number(handled.feeAmount),
+          totalAmount: Number(handled.totalAmount),
+          currency: handled.currency,
+          paymentMethod: handled.paymentMethod,
+          paidAt: handled.paidAt,
+          providerInvoiceId: handled.providerInvoiceId,
+          providerPaymentIntentId: handled.providerPaymentIntentId,
+        });
+      }
       await markWebhookProcessed(eventId);
       return { processed: true, eventId, adSpendTopupId, status: handled.status.toLowerCase() };
     }
 
     const paygPeriodId = typeof metadata.payg_period_id === 'string' ? metadata.payg_period_id : null;
     if (paygPeriodId) {
+      const paygPaymentStatus = String(invoice.payment_status
+        ?? (normalizedEventType.includes('paid') || normalizedEventType.includes('succeeded') ? 'PAID' : 'UNPAID'));
       const handled = await applyPaygInvoiceWebhook({
         periodId: paygPeriodId,
         providerInvoiceId: typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null,
-        paymentStatus: String(invoice.payment_status ?? (eventType.includes('PAID') ? 'PAID' : 'UNPAID')),
+        paymentStatus: paygPaymentStatus,
         hostedUrl: typeof invoice.hosted_url === 'string' ? invoice.hosted_url : null,
         pdfUrl: typeof invoice.pdf_url === 'string' ? invoice.pdf_url : null,
         paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
         paymentSourceId: typeof invoice.payment_source_id === 'string' ? invoice.payment_source_id : null,
         eventType,
       });
+      if (handled) {
+        const paidAt = typeof invoice.paid_at === 'string' ? invoice.paid_at : null;
+        const period = await query<{ workspaceId: string; amount: string; currency: string; paidAt: string | null }>(
+          `SELECT workspace_id AS "workspaceId", server_cost_usd::text AS amount, currency,
+                  paid_at AS "paidAt"
+             FROM workspace_payg_periods
+            WHERE id=$1
+            LIMIT 1`,
+          [paygPeriodId],
+        );
+        const periodRow = period.rows[0];
+        if (paygPaymentStatus.toUpperCase() === 'PAID' && periodRow && Number(periodRow.amount) > 0) {
+          await createPaidStorageInvoice({
+            periodId: paygPeriodId,
+            workspaceId: periodRow.workspaceId,
+            amount: Number(periodRow.amount),
+            currency: periodRow.currency,
+            paidAt: paidAt ?? periodRow.paidAt,
+            providerInvoiceId: typeof invoice.id === 'string' ? invoice.id : typeof data.invoice_id === 'string' ? data.invoice_id : null,
+          });
+        }
+      }
       await query(`UPDATE airwallex_webhook_events SET processed_at=NOW(), processing_at=NULL, last_error_code=NULL WHERE event_id=$1`, [eventId]);
-      return { processed: handled, eventId, paygPeriodId, status: String(invoice.payment_status ?? 'UNPAID').toLowerCase() };
+      return { processed: handled, eventId, paygPeriodId, status: paygPaymentStatus.toLowerCase() };
     }
 
     const subscription = (data.subscription ?? data) as AirwallexObject;
