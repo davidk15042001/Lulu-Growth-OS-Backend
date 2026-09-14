@@ -9,6 +9,7 @@ import {
   workspaceProfileUpdateSchema,
   workspaceIdParamsSchema,
 } from './workspace.validator.js';
+import { AppError } from '../../utils/app-error.js';
 
 export async function list(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
@@ -69,4 +70,33 @@ export async function updateProfile(req: WorkspaceRequest, res: Response, next: 
   } catch (error) {
     next(error);
   }
+}
+
+export async function uploadLogo(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = workspaceIdParamsSchema.parse(req.params);
+    const file = req.file as Express.Multer.File | undefined;
+    if (!file) throw new AppError(422, 'WORKSPACE_LOGO_REQUIRED', 'Select a logo image to upload');
+    return successResponse(res, 'Workspace logo uploaded', await service.uploadWorkspaceLogo(workspaceId, req.user!.id, file));
+  } catch (error) { next(error); }
+}
+
+export async function deleteLogo(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = workspaceIdParamsSchema.parse(req.params);
+    return successResponse(res, 'Workspace logo removed', await service.deleteWorkspaceLogo(workspaceId, req.user!.id));
+  } catch (error) { next(error); }
+}
+
+export async function publicLogo(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = workspaceIdParamsSchema.parse(req.params);
+    const logo = await service.getWorkspaceLogo(workspaceId);
+    if (!logo?.storageReference || !logo.mimeType) return res.status(404).json({ success: false, error: { code: 'WORKSPACE_LOGO_NOT_FOUND', message: 'No company logo is configured.' } });
+    const content = await (await import('../../storage/s3.service.js')).getObject(logo.storageReference);
+    res.setHeader('Content-Type', logo.mimeType);
+    res.setHeader('Content-Disposition', 'inline');
+    res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=3600');
+    return res.send(content);
+  } catch (error) { next(error); }
 }

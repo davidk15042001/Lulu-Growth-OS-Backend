@@ -63,6 +63,11 @@ export function productImageKey(workspaceId: string, imageId: string) {
   return `workspaces/${workspaceId}/product-images/${imageId}.png`;
 }
 
+export function workspaceLogoKey(workspaceId: string, logoId: string, extension: string) {
+  const safeExtension = extension.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'png';
+  return `workspaces/${workspaceId}/branding/logo/${logoId}.${safeExtension}`;
+}
+
 export function premiumProductMediaKey(
   workspaceId: string,
   productId: string,

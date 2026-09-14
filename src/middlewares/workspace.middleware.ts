@@ -161,7 +161,7 @@ export async function requireWorkspaceActivationGate(req: WorkspaceRequest,_res:
       : workspace.onboardingStep==='billing'
         ? (suffix==='/onboarding'||suffix.startsWith('/billing'))
         : workspace.onboardingStep==='profile_completion'
-          ? suffix==='/profile'
+          ? suffix==='/profile' || suffix==='/profile/logo'
           : workspace.onboardingStep==='knowledge_base'
             ? knowledgeRoute
             : false;

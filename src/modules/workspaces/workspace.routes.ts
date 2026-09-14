@@ -35,6 +35,9 @@ import financeRoutes from '../finance/finance.routes.js';
 import commerceRoutes from '../commerce/commerce.routes.js';
 import socialPublishingRoutes from '../social-publishing/social-publishing.routes.js';
 import qualityRoutes from '../quality/quality.routes.js';
+import multer from 'multer';
+
+const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 
 const router = Router();
 
@@ -64,6 +67,11 @@ router.route('/:workspaceId/profile')
   // editable before a paid workspace plan is active. Role authorization still
   // protects the endpoint; ordinary workspace writes remain entitlement-gated.
   .patch(requireWorkspaceRole('owner', 'admin'), controller.updateProfile)
+  .all(methodNotAllowed);
+
+router.route('/:workspaceId/profile/logo')
+  .put(requireWorkspaceRole('owner', 'admin'), logoUpload.single('file'), controller.uploadLogo)
+  .delete(requireWorkspaceRole('owner', 'admin'), controller.deleteLogo)
   .all(methodNotAllowed);
 
 router.use('/:workspaceId', workspaceAppRoutes);

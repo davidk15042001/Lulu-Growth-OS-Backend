@@ -71,3 +71,5 @@ export const workspaceProfileUpdateSchema = z
 export type CreateWorkspaceInput = z.infer<typeof createWorkspaceSchema>;
 export type UpdateWorkspaceInput = z.infer<typeof updateWorkspaceSchema>;
 export type WorkspaceProfileUpdateInput = z.infer<typeof workspaceProfileUpdateSchema>;
+
+export const workspaceLogoParamsSchema = workspaceIdParamsSchema;

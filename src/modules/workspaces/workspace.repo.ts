@@ -71,6 +71,9 @@ export type WorkspaceProfile = {
   onboardingStep: string;
   profileCompletedAt: string | null;
   missingRequiredFields: string[];
+  logoUrl: string | null;
+  logoMimeType: string | null;
+  logoFileName: string | null;
 };
 
 const workspaceSelect = `
@@ -134,11 +137,18 @@ const workspaceProfileSelect = `
   w.bank_code AS "bankCode",
   w.onboarding_step AS "onboardingStep",
   w.profile_completed_at AS "profileCompletedAt",
+  w.logo_storage_reference AS "logoStorageReference",
+  w.logo_mime_type AS "logoMimeType",
+  w.logo_file_name AS "logoFileName",
   ARRAY_REMOVE(ARRAY[
     CASE WHEN NULLIF(trim(w.name),'') IS NULL THEN 'companyName' END,
     CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END
   ],NULL) AS "missingRequiredFields"
 `;
+
+export function workspaceLogoUrl(workspaceId: string) {
+  return `/api/v1/public/workspaces/${encodeURIComponent(workspaceId)}/logo`;
+}
 
 export async function createWorkspace(
   userId: string,
@@ -360,7 +370,50 @@ export async function findWorkspaceProfileForAdmin(workspaceId: string, userId: 
       LIMIT 1`,
     [workspaceId, userId],
   );
-  return rows[0];
+  const profile = rows[0];
+  if (!profile) return undefined;
+  return {
+    ...profile,
+    logoUrl: profile.logoMimeType ? workspaceLogoUrl(profile.workspaceId) : null,
+  };
+}
+
+export async function findWorkspaceLogo(workspaceId: string) {
+  const { rows } = await query<{ storageReference: string | null; mimeType: string | null; fileName: string | null }>(
+    `SELECT logo_storage_reference AS "storageReference",logo_mime_type AS "mimeType",logo_file_name AS "fileName"
+       FROM workspaces WHERE id=$1 AND deleted_at IS NULL LIMIT 1`,
+    [workspaceId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function updateWorkspaceLogo(
+  workspaceId: string,
+  userId: string,
+  input: { storageReference: string; mimeType: string; fileName: string },
+) {
+  const result = await query<{ previousStorageReference: string | null }>(
+    `UPDATE workspaces w
+        SET logo_storage_reference=$3,logo_mime_type=$4,logo_file_name=$5,logo_updated_at=NOW(),updated_at=NOW()
+      WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS (
+        SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=w.id AND wm.user_id=$2 AND wm.role IN ('owner','admin')
+      )
+      RETURNING NULL::text AS "previousStorageReference"`,
+    [workspaceId, userId, input.storageReference, input.mimeType, input.fileName],
+  );
+  return result.rowCount ? findWorkspaceLogo(workspaceId) : null;
+}
+
+export async function clearWorkspaceLogo(workspaceId: string, userId: string) {
+  const current = await findWorkspaceLogo(workspaceId);
+  const result = await query(
+    `UPDATE workspaces w SET logo_storage_reference=NULL,logo_mime_type=NULL,logo_file_name=NULL,logo_updated_at=NULL,updated_at=NOW()
+      WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS (
+        SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=w.id AND wm.user_id=$2 AND wm.role IN ('owner','admin')
+      )`,
+    [workspaceId, userId],
+  );
+  return result.rowCount ? current : null;
 }
 
 const profileColumnMap: Record<keyof WorkspaceProfileUpdateInput, string> = {
