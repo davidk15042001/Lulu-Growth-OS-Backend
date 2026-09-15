@@ -62,6 +62,23 @@ if [ -f "$reset_marker" ]; then
   rm -f "$reset_marker"
 fi
 
+# Backfill customer-facing Lulu invoices for every already-confirmed prepaid
+# top-up and paid storage period before the API starts serving the release.
+# The operation ledger and invoice-payment idempotency keys make this safe to
+# run on every deployment, while the worker continues retrying transient
+# provider/profile failures after startup.
+if [ -f "$backend_dir/scripts/reconcile-paid-billing-invoices.mjs" ]; then
+  systemd-run --quiet --wait --pipe --collect \
+    --unit="lulu-paid-billing-reconcile-$$" \
+    --property=Type=oneshot \
+    --property=TimeoutStartSec=30min \
+    --property=RuntimeMaxSec=30min \
+    --property=WorkingDirectory="$backend_dir" \
+    --property=EnvironmentFile="$environment_file" \
+    /usr/bin/node "$backend_dir/scripts/reconcile-paid-billing-invoices.mjs" || \
+    echo "Paid billing invoice reconciliation reported failures; the worker will retry after startup."
+fi
+
 /usr/bin/systemctl start lulu-growth-backend
 /usr/bin/systemctl is-active --quiet lulu-growth-backend
 

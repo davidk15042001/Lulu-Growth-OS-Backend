@@ -162,8 +162,12 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
   const key = operationKey(input);
   const prior = await query<{ documentId: string }>(
     `SELECT document_id AS "documentId"
-       FROM commercial_document_idempotency
-      WHERE workspace_id=$1 AND operation_key=$2
+       FROM commercial_document_operations
+      WHERE workspace_id=$1
+        AND operation_key=$2
+        AND operation_type='invoice.create'
+        AND status='COMPLETED'
+        AND document_id IS NOT NULL
       LIMIT 1`,
     [input.workspaceId, key],
   );
@@ -329,23 +333,57 @@ export async function createPaidStorageInvoice(input: {
 
 export async function reconcilePaidBillingInvoices(limit = 50) {
   const bounded = Math.max(1, Math.min(200, Math.trunc(limit)));
-  const candidates = await query<{ kind: PaidBillingKind; referenceId: string; workspaceId: string }>(
-    `SELECT 'AI_CREDITS'::text AS kind, id::text AS "referenceId", workspace_id AS "workspaceId"
-       FROM workspace_api_topups
-      WHERE status='SUCCEEDED' AND credited_at IS NOT NULL
+  const candidates = await query<{ kind: PaidBillingKind; referenceId: string; workspaceId: string; occurredAt: string }>(
+    `SELECT 'AI_CREDITS'::text AS kind, t.id::text AS "referenceId", t.workspace_id AS "workspaceId",
+            COALESCE(t.paid_at,t.credited_at,t.created_at) AS "occurredAt"
+       FROM workspace_api_topups t
+      WHERE t.status='SUCCEEDED' AND t.credited_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM commercial_document_operations o
+            JOIN invoices i ON i.workspace_id=o.workspace_id AND i.id=o.document_id
+           WHERE o.workspace_id=t.workspace_id
+             AND o.operation_key='billing-invoice:ai_credits:' || t.id::text
+             AND o.operation_type='invoice.create'
+             AND o.status='COMPLETED'
+             AND i.status='PAID'
+        )
      UNION ALL
-     SELECT 'AD_SPEND'::text, id::text, workspace_id
-       FROM workspace_ad_spend_topups
-      WHERE status='SUCCEEDED' AND credited_at IS NOT NULL
+     SELECT 'AD_SPEND'::text, t.id::text, t.workspace_id,
+            COALESCE(t.paid_at,t.credited_at,t.created_at)
+       FROM workspace_ad_spend_topups t
+      WHERE t.status='SUCCEEDED' AND t.credited_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM commercial_document_operations o
+            JOIN invoices i ON i.workspace_id=o.workspace_id AND i.id=o.document_id
+           WHERE o.workspace_id=t.workspace_id
+             AND o.operation_key='billing-invoice:ad_spend:' || t.id::text
+             AND o.operation_type='invoice.create'
+             AND o.status='COMPLETED'
+             AND i.status='PAID'
+        )
      UNION ALL
-     SELECT 'STORAGE'::text, id::text, workspace_id
-       FROM workspace_payg_periods
-      WHERE status='paid' AND server_cost_usd > 0
-      ORDER BY "referenceId"
+     SELECT 'STORAGE'::text, p.id::text, p.workspace_id,
+            COALESCE(p.paid_at,p.finalized_at,p.created_at)
+       FROM workspace_payg_periods p
+      WHERE p.status='paid' AND p.server_cost_usd > 0
+        AND NOT EXISTS (
+          SELECT 1
+            FROM commercial_document_operations o
+            JOIN invoices i ON i.workspace_id=o.workspace_id AND i.id=o.document_id
+           WHERE o.workspace_id=p.workspace_id
+             AND o.operation_key='billing-invoice:storage:' || p.id::text
+             AND o.operation_type='invoice.create'
+             AND o.status='COMPLETED'
+             AND i.status='PAID'
+        )
+      ORDER BY "occurredAt" ASC NULLS LAST, "referenceId"
       LIMIT $1`,
     [bounded],
   );
   let created = 0;
+  let failed = 0;
   for (const candidate of candidates.rows) {
     try {
       const result = candidate.kind === 'AI_CREDITS'
@@ -362,8 +400,9 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
           : await createPaidStorageInvoice({ ...row, periodId: row.id });
       if (invoice) created += 1;
     } catch (error) {
+      failed += 1;
       logger.warn({ error, kind: candidate.kind, referenceId: candidate.referenceId }, 'Paid billing invoice reconciliation candidate failed');
     }
   }
-  return { checked: candidates.rows.length, created };
+  return { checked: candidates.rows.length, created, failed };
 }
