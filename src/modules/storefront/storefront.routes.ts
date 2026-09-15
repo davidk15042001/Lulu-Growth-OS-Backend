@@ -12,5 +12,6 @@ router.route('/:slug/products/:productSlug').get(controller.product).all(methodN
 router.route('/:slug/cart').get(controller.getCart).post(controller.createCart).all(methodNotAllowed);
 router.route('/:slug/cart/items').post(controller.addCartItem).all(methodNotAllowed);
 router.route('/:slug/checkout').post(controller.checkout).all(methodNotAllowed);
+router.route('/:slug/contact').post(controller.contact).all(methodNotAllowed);
 
 export default router;

@@ -3,6 +3,7 @@ import { query, withTransaction } from '../../db/pool.js';
 import { createOrder } from '../commerce/commerce.service.js';
 import * as recordService from '../records/record.service.js';
 import type { StorefrontCart, StorefrontCartItem, StorefrontProduct, StorefrontSite } from './storefront.types.js';
+import type { StorefrontRequestDetails } from './storefront.validator.js';
 
 const hashToken = (value: string) => createHash('sha256').update(value).digest('hex');
 const slugify = (value: string) => value.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 180) || 'product';
@@ -158,6 +159,28 @@ async function ensureStorefrontContact(workspaceId: string, email: string) {
   return contact.id;
 }
 
+function requestDetailsForPersistence(details: StorefrontRequestDetails) {
+  const { attachment, ...rest } = details;
+  return {
+    ...rest,
+    ...(attachment ? { attachment: { fileName: attachment.fileName, mimeType: attachment.mimeType, sizeBytes: attachment.sizeBytes } } : {}),
+  };
+}
+
+async function persistContactRequest(site: { id: string; workspaceId: string }, email: string, details: StorefrontRequestDetails, checkoutSessionId: string | null) {
+  const attachment = details.attachment;
+  const content = attachment ? Buffer.from(attachment.dataBase64, 'base64') : null;
+  if (attachment && (!content || content.length !== attachment.sizeBytes)) throw new Error('The uploaded file is invalid or incomplete');
+  const result = await query<{ id: string }>(
+    `INSERT INTO storefront_contact_requests(site_id,workspace_id,checkout_session_id,customer_email,website_url,whatsapp_number,note,attachment_file_name,attachment_mime_type,attachment_size_bytes,attachment_content)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+    [site.id, site.workspaceId, checkoutSessionId, email, details.websiteUrl ?? null, details.whatsappNumber ?? null, details.note ?? '', attachment?.fileName ?? null, attachment?.mimeType ?? null, attachment?.sizeBytes ?? null, content],
+  );
+  const row = result.rows[0];
+  if (!row) throw new Error('Storefront contact request insert did not return a row');
+  return row.id;
+}
+
 export async function getCart(slug: string, token: string): Promise<StorefrontCart | null> {
   const site = await siteBySlug(slug);
   if (!site) return null;
@@ -205,11 +228,14 @@ export async function createCheckout(slug: string, token: string, email: string,
     const previous = existing.rows[0];
     return { id: previous.id, orderId: previous.orderId, status: previous.status, amount: previous.amount, currency: previous.currency, paymentProvider: null, paymentRequired: false, requestType: 'order_request', message: 'Anfrage bereits erhalten. Das Unternehmen meldet sich zur Bestätigung.' };
   }
-  const result = await query<{ id: string }>(`INSERT INTO storefront_checkout_sessions(site_id,workspace_id,cart_id,customer_email,currency,amount,metadata) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) RETURNING id`, [site.id, site.workspaceId, cart.id, email, cart.currency, cart.subtotal, JSON.stringify({ shippingAddress, paymentStatus: 'NOT_APPLICABLE', requestType: 'order_request' })]);
+  const requestDetails = shippingAddress as StorefrontRequestDetails;
+  const persistedDetails = requestDetailsForPersistence(requestDetails);
+  const result = await query<{ id: string }>(`INSERT INTO storefront_checkout_sessions(site_id,workspace_id,cart_id,customer_email,currency,amount,metadata) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb) RETURNING id`, [site.id, site.workspaceId, cart.id, email, cart.currency, cart.subtotal, JSON.stringify({ shippingAddress: persistedDetails, paymentStatus: 'NOT_APPLICABLE', requestType: 'order_request' })]);
   await query(`UPDATE storefront_carts SET status='CHECKOUT',updated_at=NOW() WHERE id=$1`, [cart.id]);
   const row = result.rows[0];
   if (!row) throw new Error('Storefront checkout insert did not return a row');
   try {
+    await persistContactRequest(site, email, requestDetails, row.id);
     const customerRecordId = await ensureStorefrontContact(site.workspaceId, email).catch(() => null);
     const order = await createOrder(site.workspaceId, { actorType: 'SYSTEM', actorRef: `storefront:${site.id}` }, {
       idempotencyKey: `storefront-request:${row.id}`,
@@ -220,7 +246,7 @@ export async function createCheckout(slug: string, token: string, email: string,
       sourceProvider: 'lulu-storefront',
       externalReference: row.id,
       notes: `Storefront order request from ${email}`,
-      shippingAddress,
+      shippingAddress: persistedDetails,
       billingAddress: {},
       metadata: { storefrontSiteId: site.id, storefrontCheckoutId: row.id, customerEmail: email, requestType: 'order_request' },
       lines: cart.items.map((item) => ({ productId: item.id, variantId: item.variantId, inventoryLocationId: null, quantity: item.quantity, quantityUnit: 'unit', unitPrice: item.unitPrice, discount: '0', tax: '0', metadata: { storefront: true } })),
@@ -232,4 +258,12 @@ export async function createCheckout(slug: string, token: string, email: string,
     await query(`UPDATE storefront_checkout_sessions SET status='FAILED',metadata=metadata||$2::jsonb,updated_at=NOW() WHERE id=$1`, [row.id, JSON.stringify({ orderCreationFailed: true })]).catch(() => undefined);
     throw error;
   }
+}
+
+export async function createContactRequest(slug: string, email: string, requestDetails: StorefrontRequestDetails) {
+  const site = await siteBySlug(slug);
+  if (!site) return null;
+  const id = await persistContactRequest(site, email, requestDetails, null);
+  await ensureStorefrontContact(site.workspaceId, email).catch(() => null);
+  return { id, status: 'NEW', message: 'Anfrage erhalten. Das Unternehmen meldet sich bald.' };
 }
