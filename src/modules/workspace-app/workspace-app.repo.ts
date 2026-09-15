@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { env } from '../../config/env.js';
+import { logger } from '../../config/logger.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { AWS_USAGE_CUSTOMER_MULTIPLIER, getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
@@ -711,7 +712,11 @@ export async function updateWorkspaceSettings(
   userId: string,
   input: UpdateWorkspaceSettingsInput,
 ): Promise<WorkspaceSettings> {
-  return withTransaction(async (client) => {
+  // Persist the operational control independently from its audit projection.
+  // A malformed/legacy audit row must never make a valid agent pause/resume
+  // command look like it failed, otherwise the UI retries and can create
+  // duplicate paid work. The setting itself remains fully atomic.
+  const result = await withTransaction(async (client) => {
     const beforeResult = await query<WorkspaceSettings>(
       `SELECT workspace_id AS "workspaceId", settings,
               created_at AS "createdAt", updated_at AS "updatedAt"
@@ -726,22 +731,29 @@ export async function updateWorkspaceSettings(
       `INSERT INTO workspace_settings (workspace_id, settings)
        VALUES ($1, $2::jsonb)
        ON CONFLICT (workspace_id) DO UPDATE
-         SET settings = workspace_settings.settings || EXCLUDED.settings
+         SET settings = COALESCE(workspace_settings.settings, '{}'::jsonb) || EXCLUDED.settings,
+             updated_at = NOW()
        RETURNING workspace_id AS "workspaceId", settings,
                  created_at AS "createdAt", updated_at AS "updatedAt"`,
       [workspaceId, JSON.stringify(input)],
       client,
     );
     const settings = rows[0]!;
+    return { settings, before: before?.settings ?? {} };
+  });
+
+  try {
     await query(
       `INSERT INTO audit_log (
          workspace_id, actor_id, action, entity_type, entity_id, before_data, after_data
        ) VALUES ($1, $2, 'workspace_settings.updated', 'workspace_settings', $1::text, $3::jsonb, $4::jsonb)`,
-      [workspaceId, userId, JSON.stringify(before?.settings ?? {}), JSON.stringify(settings.settings)],
-      client,
+      [workspaceId, userId, JSON.stringify(result.before), JSON.stringify(result.settings.settings)],
     );
-    return settings;
-  });
+  } catch (error) {
+    logger.error({ error, workspaceId, userId }, 'Workspace settings audit could not be recorded');
+  }
+
+  return result.settings;
 }
 
 export async function queueIntegrationSync(workspaceId: string, platformId: string) {
