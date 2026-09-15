@@ -4,6 +4,7 @@ import * as repo from './website.repo.js';
 import { createWordpressPage, createWebflowItem, publishWebflowSite, publishWordpressPage, setWordpressPageStatus, updateWordpressFrontPage, updateWordpressPage, updateWordpressSiteIdentity, updateWordpressTemplatePart, wordpressPages, wordpressSiteDetails, wordpressTemplateParts, webflowCustomDomains, withProviderConnectionError } from './website.provider.service.js';
 import { appendGenerationActivity, type WebsiteGenerationActivity } from './website.activity.js';
 import type { WebsiteGenerationTargetMode } from './website.types.js';
+import { publishManagedWebsiteJob } from './managed-website.service.js';
 
 const WORDPRESS_THEME_KEY = 'lulu-base';
 const WORDPRESS_FONT_LINKS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">`;
@@ -466,7 +467,7 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
   const publishingJob = await repo.updateJob(siteId, jobId, { status: 'publishing', preview: appendGenerationActivity(job.preview, { id: 'publishing-started', code: 'publishing_started', tone: 'info', params: { provider: site.provider } }) });
   if (!publishingJob) await assertPublishingNotCancelled(siteId, jobId);
   try {
-    if (site.provider === 'managed') throw new AppError(503, 'WEBSITE_MANAGED_HOSTING_NOT_CONFIGURED', 'Managed website hosting is not configured yet');
+    if (site.provider === 'managed') return await publishManagedWebsiteJob(workspaceId, siteId, jobId);
     if (site.provider === 'wordpress') {
       const externalSiteId = site.externalSiteId;
       if (!externalSiteId) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_ID_MISSING', 'The connected WordPress site ID is missing');

@@ -14,6 +14,7 @@ import * as adminOAuthRepo from './admin-oauth.repo.js';
 import * as providerControlService from '../provider-control/provider.service.js';
 import { connectionParamsSchema, providerAccessSchema } from '../provider-control/provider.validator.js';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { getObject } from '../../storage/s3.service.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { ensurePaygProfile } from '../billing/payg-billing.repo.js';
@@ -265,6 +266,66 @@ export async function addWorkspaceCredits(req: AuthedRequest, res: Response, nex
     const note = typeof req.body?.note === 'string' ? req.body.note.trim().slice(0, 500) : undefined;
     const balance = await repo.addWorkspaceCredits(workspaceId, amount, req.user!.id, note);
     return successResponse(res, 'Credits added', { workspaceId, balance, added: amount });
+  } catch (error) { next(error); }
+}
+
+export async function getWorkspaceFunding(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    return successResponse(res, 'Workspace funding loaded', { workspaceId, funding: await repo.getWorkspaceFunding(workspaceId) });
+  } catch (error) { next(error); }
+}
+
+export async function addWorkspaceManualFundingAdjustment(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const workspaceId = typeof req.params.workspaceId === 'string' ? req.params.workspaceId : '';
+    if (!workspaceId) return res.status(400).json({ success: false, error: { code: 'INVALID_WORKSPACE_ID', message: 'Workspace ID is required' } });
+    const wallet = req.body?.wallet;
+    const direction = req.body?.direction;
+    if (!['ai', 'ad_spend', 'storage'].includes(wallet)) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_FUNDING_WALLET', message: 'Wallet must be ai, ad_spend or storage' } });
+    }
+    if (!['credit', 'debit'].includes(direction)) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_FUNDING_DIRECTION', message: 'Direction must be credit or debit' } });
+    }
+    const amount = Number(req.body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_FUNDING_AMOUNT', message: 'Amount must be greater than 0 and no more than 1,000,000,000' } });
+    }
+    const precision = wallet === 'ai' ? 6 : 2;
+    if (Math.abs(amount * (10 ** precision) - Math.round(amount * (10 ** precision))) > 1e-7) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_FUNDING_PRECISION', message: `Amount supports at most ${precision} decimal places` } });
+    }
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim().slice(0, 500) : '';
+    if (!reason) return res.status(422).json({ success: false, error: { code: 'FUNDING_REASON_REQUIRED', message: 'A reason is required for every funding adjustment' } });
+    const paymentMethod = typeof req.body?.paymentMethod === 'string' ? req.body.paymentMethod : 'other';
+    if (!['wechat', 'bank_transfer', 'cash', 'other'].includes(paymentMethod)) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_FUNDING_PAYMENT_METHOD', message: 'Payment method must be wechat, bank_transfer, cash or other' } });
+    }
+    const paymentReference = typeof req.body?.paymentReference === 'string' ? req.body.paymentReference.trim().slice(0, 240) : null;
+    const requestedIdempotency = typeof req.headers['idempotency-key'] === 'string' ? req.headers['idempotency-key'] : req.body?.idempotencyKey;
+    const idempotencyKey = typeof requestedIdempotency === 'string' && requestedIdempotency.trim().length >= 8
+      ? requestedIdempotency.trim().slice(0, 240)
+      : `admin-funding:${randomUUID()}`;
+    const result = await repo.addWorkspaceManualFundingAdjustment({
+      workspaceId,
+      wallet,
+      direction,
+      amount,
+      reason,
+      paymentMethod,
+      paymentReference,
+      adminUserId: req.user!.id,
+      idempotencyKey,
+    });
+    return successResponse(res, result.idempotent ? 'Funding adjustment already applied' : 'Funding adjustment applied', {
+      workspaceId,
+      ...result,
+      funding: await repo.getWorkspaceFunding(workspaceId),
+    });
   } catch (error) { next(error); }
 }
 

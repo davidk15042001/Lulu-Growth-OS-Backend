@@ -16,6 +16,7 @@ import { providerWebhookRoutes } from './provider-control/provider.routes.js';
 import { publicOmniRouter } from './omnichannel/omnichannel.routes.js';
 import { publicCommercialDocumentRoutes } from './commercial-documents/commercial-documents.routes.js';
 import { publicLogo } from './workspaces/workspace.controller.js';
+import storefrontRoutes from './storefront/storefront.routes.js';
 
 const router = Router();
 
@@ -65,6 +66,10 @@ router.use('/public', publicRoutes);
 router.use('/provider-webhooks', providerWebhookRoutes);
 router.use('/public/omnichannel', publicOmniRouter);
 router.use('/public/commercial-documents', publicCommercialDocumentRoutes);
+// Public Lulu-owned websites and storefronts. These routes only expose
+// published, tenant-scoped projections; all workspace mutation remains behind
+// the authenticated workspace routes.
+router.use('/public/storefront', storefrontRoutes);
 router.get('/public/workspaces/:workspaceId/logo', publicLogo);
 router.use('/workspaces', workspaceRoutes);
 

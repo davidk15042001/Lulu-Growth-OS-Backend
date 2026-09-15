@@ -2,6 +2,8 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { revokeSessionsInTransaction } from '../auth/auth.repo.js';
 import { AppError } from '../../utils/app-error.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 
 export async function listCustomerBillingOverview(periodStart: string, periodEnd: string) {
   const { rows } = await query(`
@@ -148,6 +150,10 @@ export async function addWorkspaceCredits(workspaceId: string, amount: number, g
  */
 export type UsageAdjustmentMetric = 'api' | 'server' | 'storage';
 
+export type ManualFundingWallet = 'ai' | 'ad_spend' | 'storage';
+export type ManualFundingDirection = 'credit' | 'debit';
+export type ManualFundingPaymentMethod = 'wechat' | 'bank_transfer' | 'cash' | 'other';
+
 export async function listWorkspaceUsageAdjustments(workspaceId: string) {
   const { rows } = await query(`
     SELECT a.id,
@@ -158,6 +164,8 @@ export async function listWorkspaceUsageAdjustments(workspaceId: string) {
            a.payg_period_id AS "paygPeriodId",
            a.applied_at AS "appliedAt",
            a.reason,
+           a.source,
+           a.payment_reference AS "paymentReference",
            a.created_by AS "createdBy",
            u.email AS "createdByEmail",
            a.created_at AS "createdAt"
@@ -291,6 +299,206 @@ export async function addWorkspaceUsageAdjustment(
       client,
     );
     return adjustment;
+  });
+}
+
+export async function getWorkspaceFunding(workspaceId: string) {
+  const [api, adSpend, paygUsage, adjustments] = await Promise.all([
+    query(`
+      SELECT currency,
+             available_amount AS "availableAmount",
+             reserved_amount AS "reservedAmount",
+             spent_amount AS "spentAmount",
+             reversal_debt_amount AS "reversalDebtAmount",
+             total_funded_amount AS "totalFundedAmount"
+      FROM workspace_api_wallets
+      WHERE workspace_id = $1
+    `, [workspaceId]),
+    query(`
+      SELECT currency,
+             available_amount AS "availableAmount",
+             reserved_amount AS "reservedAmount",
+             spent_amount AS "spentAmount",
+             reversal_debt_amount AS "reversalDebtAmount",
+             total_funded_amount AS "totalFundedAmount"
+      FROM workspace_ad_spend_wallets
+      WHERE workspace_id = $1
+    `, [workspaceId]),
+    getWorkspacePaygUsage(workspaceId),
+    listWorkspaceUsageAdjustments(workspaceId),
+  ]);
+  const zeroWallet = { currency: 'CNY', availableAmount: 0, reservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0 };
+  const normalizeWallet = (row: Record<string, unknown> | undefined) => row
+    ? Object.fromEntries(Object.entries(row).map(([key, value]) => key === 'currency' ? [key, value] : [key, Number(value ?? 0)]))
+    : zeroWallet;
+  return {
+    ai: normalizeWallet(api.rows[0]),
+    adSpend: normalizeWallet(adSpend.rows[0]),
+    storage: {
+      currency: 'USD',
+      availableCreditUsd: Number(paygUsage?.storageCreditUsd ?? 0),
+      billableUsd: Number(paygUsage?.serverBillableUsd ?? 0),
+    },
+    adjustments,
+  };
+}
+
+/**
+ * Apply an administrator's verified off-platform payment or correction to the
+ * canonical funding source. This deliberately does not create a top-up row or
+ * call Airwallex: the metadata and audit log make the settlement source clear.
+ */
+export async function addWorkspaceManualFundingAdjustment(input: {
+  workspaceId: string;
+  wallet: ManualFundingWallet;
+  direction: ManualFundingDirection;
+  amount: number;
+  reason: string;
+  paymentMethod?: ManualFundingPaymentMethod;
+  paymentReference?: string | null;
+  adminUserId: string;
+  idempotencyKey: string;
+}) {
+  return withTransaction(async (client) => {
+    const workspace = await query<{ id: string }>(
+      `SELECT id FROM workspaces WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`,
+      [input.workspaceId],
+      client,
+    );
+    if (!workspace.rows[0]) throw new AppError(404, 'WORKSPACE_NOT_FOUND', 'Workspace not found');
+
+    if (input.wallet === 'storage') {
+      if (input.direction !== 'credit') {
+        throw new AppError(422, 'STORAGE_DEBIT_NOT_SUPPORTED', 'Storage can only receive a PAYG credit; raw storage usage is never deleted.');
+      }
+      const existing = await query(`
+        SELECT id, metric, amount_usd AS "amountUsd", period_start AS "periodStart", period_end AS "periodEnd",
+               reason, source, payment_reference AS "paymentReference", created_by AS "createdBy", created_at AS "createdAt"
+        FROM workspace_usage_adjustments
+        WHERE workspace_id = $1 AND idempotency_key = $2
+        LIMIT 1
+      `, [input.workspaceId, input.idempotencyKey], client);
+      if (existing.rows[0]) return { wallet: input.wallet, direction: input.direction, amount: input.amount, adjustment: existing.rows[0], idempotent: true, funding: null };
+
+      const profile = await query<{ periodStart: string; periodEnd: string }>(
+        `SELECT current_period_start AS "periodStart", current_period_end AS "periodEnd"
+         FROM workspace_payg_profiles
+         WHERE workspace_id = $1 AND enabled = TRUE
+         FOR UPDATE`,
+        [input.workspaceId],
+        client,
+      );
+      const current = profile.rows[0];
+      if (!current) throw new AppError(409, 'PAYG_USAGE_NOT_CONFIGURED', 'PAYG usage is not configured for this workspace.');
+      if (new Date(current.periodEnd).getTime() <= Date.now()) throw new AppError(409, 'PAYG_PERIOD_CLOSED', 'The current PAYG usage period is already closed.');
+      const inserted = await query(`
+        INSERT INTO workspace_usage_adjustments(
+          workspace_id, period_start, period_end, metric, amount_usd, reason, created_by,
+          idempotency_key, source, payment_reference
+        ) VALUES($1, $2, $3, 'storage', $4, $5, $6, $7, 'admin_manual_offline', $8)
+        RETURNING id, metric, amount_usd AS "amountUsd", period_start AS "periodStart", period_end AS "periodEnd",
+                  reason, source, payment_reference AS "paymentReference", created_by AS "createdBy", created_at AS "createdAt"
+      `, [input.workspaceId, current.periodStart, current.periodEnd, input.amount, input.reason, input.adminUserId, input.idempotencyKey, input.paymentReference ?? null], client);
+      const adjustment = inserted.rows[0];
+      if (!adjustment) throw new AppError(500, 'FUNDING_ADJUSTMENT_NOT_CREATED', 'The storage credit could not be recorded.');
+      await query(
+        `INSERT INTO audit_log(workspace_id, actor_id, action, entity_type, entity_id, after_data)
+         VALUES($1, $2, 'admin.manual_funding_adjusted', 'workspace_usage_adjustment', $3, $4::jsonb)`,
+        [input.workspaceId, input.adminUserId, adjustment.id, JSON.stringify({ ...input, amountUsd: input.amount, source: 'admin_manual_offline', paymentMethod: input.paymentMethod ?? null })],
+        client,
+      );
+      return { wallet: input.wallet, direction: input.direction, amount: input.amount, adjustment, idempotent: false, funding: null };
+    }
+
+    const table = input.wallet === 'ai' ? 'workspace_api_wallets' : 'workspace_ad_spend_wallets';
+    const ledger = input.wallet === 'ai' ? 'workspace_api_wallet_ledger' : 'workspace_ad_spend_ledger';
+    await query(`INSERT INTO ${table}(workspace_id) VALUES($1) ON CONFLICT DO NOTHING`, [input.workspaceId], client);
+    const prior = (await query<Record<string, string>>(
+      `SELECT id, entry_type AS "entryType", amount_delta AS "amountDelta", balance_after AS "balanceAfter", created_at AS "createdAt"
+       FROM ${ledger} WHERE workspace_id = $1 AND idempotency_key = $2 LIMIT 1`,
+      [input.workspaceId, input.idempotencyKey],
+      client,
+    )).rows[0];
+    if (prior) {
+      const currentFunding = (await query<Record<string, string>>(
+        `SELECT currency, available_amount AS "availableAmount", reserved_amount AS "reservedAmount", spent_amount AS "spentAmount",
+                reversal_debt_amount AS "reversalDebtAmount", total_funded_amount AS "totalFundedAmount"
+         FROM ${table} WHERE workspace_id = $1`,
+        [input.workspaceId],
+        client,
+      )).rows[0];
+      return { wallet: input.wallet, direction: input.direction, amount: input.amount, ledgerEntry: prior, funding: currentFunding, idempotent: true };
+    }
+    const current = (await query<Record<string, string>>(
+      `SELECT available_amount AS "availableAmount", reversal_debt_amount AS "reversalDebtAmount", total_funded_amount AS "totalFundedAmount"
+       FROM ${table} WHERE workspace_id = $1 FOR UPDATE`,
+      [input.workspaceId],
+      client,
+    )).rows[0];
+    if (!current) throw new AppError(500, 'FUNDING_WALLET_NOT_CREATED', 'The funding wallet could not be created.');
+    const available = Number(current.availableAmount);
+    if (input.direction === 'debit' && available < input.amount) {
+      throw new AppError(409, 'FUNDING_BALANCE_TOO_LOW', 'The requested debit is larger than the available balance. Reserved and spent funds cannot be removed.');
+    }
+    const amountSql = input.amount.toFixed(input.wallet === 'ai' ? 6 : 2);
+    const updated = input.direction === 'credit'
+      ? await query<Record<string, string>>(
+        `UPDATE ${table}
+         SET available_amount = available_amount + GREATEST(0, $2 - reversal_debt_amount),
+             reversal_debt_amount = GREATEST(0, reversal_debt_amount - $2),
+             total_funded_amount = total_funded_amount + $2,
+             version = version + 1
+         WHERE workspace_id = $1
+         RETURNING currency, available_amount AS "availableAmount", reserved_amount AS "reservedAmount", spent_amount AS "spentAmount",
+                   reversal_debt_amount AS "reversalDebtAmount", total_funded_amount AS "totalFundedAmount"`,
+        [input.workspaceId, amountSql],
+        client,
+      )
+      : await query<Record<string, string>>(
+        `UPDATE ${table}
+         SET available_amount = available_amount - $2,
+             total_funded_amount = GREATEST(0, total_funded_amount - $2),
+             version = version + 1
+         WHERE workspace_id = $1
+         RETURNING currency, available_amount AS "availableAmount", reserved_amount AS "reservedAmount", spent_amount AS "spentAmount",
+                   reversal_debt_amount AS "reversalDebtAmount", total_funded_amount AS "totalFundedAmount"`,
+        [input.workspaceId, amountSql],
+        client,
+      );
+    const funding = updated.rows[0];
+    if (!funding) throw new AppError(500, 'FUNDING_WALLET_UPDATE_FAILED', 'The funding wallet could not be updated.');
+    const entryType = 'ADJUSTMENT';
+    const amountDelta = input.direction === 'credit' ? input.amount : -input.amount;
+    const inserted = await query(
+      `INSERT INTO ${ledger}(workspace_id, entry_type, amount_delta, balance_after, idempotency_key, metadata)
+       VALUES($1, $2, $3, $4, $5, $6::jsonb)
+       ON CONFLICT (idempotency_key) DO NOTHING
+       RETURNING id, entry_type AS "entryType", amount_delta AS "amountDelta", balance_after AS "balanceAfter", created_at AS "createdAt"`,
+      [input.workspaceId, entryType, amountDelta.toFixed(input.wallet === 'ai' ? 6 : 2), funding.availableAmount, input.idempotencyKey, JSON.stringify({
+        source: 'admin_manual_offline', direction: input.direction, reason: input.reason,
+        paymentMethod: input.paymentMethod ?? 'other', paymentReference: input.paymentReference ?? null, adminUserId: input.adminUserId,
+      })],
+      client,
+    );
+    const ledgerEntry = inserted.rows[0] ?? { id: input.idempotencyKey, entryType, amountDelta, balanceAfter: funding.availableAmount };
+    await query(
+      `INSERT INTO audit_log(workspace_id, actor_id, action, entity_type, entity_id, after_data)
+       VALUES($1, $2, 'admin.manual_funding_adjusted', $3, $4, $5::jsonb)`,
+      [input.workspaceId, input.adminUserId, `${input.wallet}_wallet`, String(ledgerEntry.id), JSON.stringify({ ...input, source: 'admin_manual_offline', ledgerEntry })],
+      client,
+    );
+    if (input.direction === 'credit' && Number(funding.availableAmount) > 0 && Number(funding.reversalDebtAmount ?? 0) === 0) {
+      await appendDomainEvent({
+        workspaceId: input.workspaceId,
+        type: input.wallet === 'ai' ? DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED : DOMAIN_EVENT_TYPES.AD_SPEND_FUNDED,
+        aggregateType: input.wallet === 'ai' ? 'api_wallet' : 'ad_spend_wallet',
+        aggregateId: input.workspaceId,
+        payload: { amount: input.amount, availableAmount: Number(funding.availableAmount), source: 'admin_manual_offline', paymentMethod: input.paymentMethod ?? 'other' },
+        metadata: { actorId: input.adminUserId, source: 'admin_manual_offline' },
+        idempotencyKey: `${input.idempotencyKey}:funded`,
+      }, client);
+    }
+    return { wallet: input.wallet, direction: input.direction, amount: input.amount, ledgerEntry, funding, idempotent: false };
   });
 }
 
@@ -1034,7 +1242,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
   `, [workspaceId]);
   if (!wsResult.rows[0]) return null;
 
-  const [members, records, websites, usage, credits, paygUsage, usageAdjustments] = await Promise.all([
+  const [members, records, websites, usage, credits, paygUsage, usageAdjustments, funding] = await Promise.all([
     query(`
       SELECT u.id, u.email, u.first_name AS "firstName", u.last_name AS "lastName",
              wm.role, wm.joined_at AS "joinedAt"
@@ -1068,6 +1276,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
     `, [workspaceId]),
     getWorkspacePaygUsage(workspaceId),
     listWorkspaceUsageAdjustments(workspaceId),
+    getWorkspaceFunding(workspaceId),
   ]);
 
   return {
@@ -1079,6 +1288,7 @@ export async function getWorkspaceDetail(workspaceId: string) {
     creditBalance: Number(credits.rows[0]?.balance ?? 0),
     paygUsage,
     usageAdjustments,
+    funding,
   };
 }
 

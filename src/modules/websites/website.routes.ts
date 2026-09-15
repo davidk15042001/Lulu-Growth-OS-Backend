@@ -1,9 +1,11 @@
 import { Router } from 'express';
+import multer from 'multer';
 import { requireWorkspaceEditor, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './website.controller.js';
 
 const router = Router({ mergeParams: true });
+const assetUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 router.use(requireWorkspaceMember);
 router.route('/').get(controller.list).post(requireWorkspaceEditor, controller.create).all(methodNotAllowed);
 router.route('/:siteId/provider-content').get(controller.providerContent).all(methodNotAllowed);
@@ -15,6 +17,7 @@ router.route('/cleanup-provider').post(requireWorkspaceEditor, controller.cleanu
 router.route('/:siteId/domains').post(requireWorkspaceEditor, controller.addDomain).all(methodNotAllowed);
 router.route('/:siteId/domains/:domainId/verify').post(requireWorkspaceEditor, controller.verifyDomain).all(methodNotAllowed);
 router.route('/:siteId/domains/:domainId/renew').post(requireWorkspaceEditor, controller.renewDomain).all(methodNotAllowed);
+router.route('/:siteId/assets').get(controller.listAssets).post(requireWorkspaceEditor, assetUpload.single('file'), controller.uploadAsset).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs').post(requireWorkspaceEditor, controller.createJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/active').get(controller.getActiveJob).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs/:jobId').get(controller.getJob).all(methodNotAllowed);

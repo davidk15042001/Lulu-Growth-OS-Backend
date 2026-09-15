@@ -28,11 +28,25 @@ export type WebsiteDomain = {
   expiresAt: string;
   recordName: string;
   verificationMethod: 'dns_txt' | 'dns_cname';
+  cnameTarget: string | null;
   status: DomainStatus;
   verifiedAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type ManagedWebsiteAsset = {
+  id: string;
+  siteId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  altText: string;
+  placement: 'website' | 'hero' | 'product' | 'logo' | 'gallery';
+  crop: Record<string, unknown>;
+  publicUrl: string;
+  createdAt: string;
 };
 
 export type WebsiteGenerationJob = {

@@ -3,13 +3,13 @@ import { env } from '../../config/env.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
-import type { WebsiteDomain, WebsiteGenerationJob, WebsiteGenerationWorkItem, WebsiteSite } from './website.types.js';
+import type { ManagedWebsiteAsset, WebsiteDomain, WebsiteGenerationJob, WebsiteGenerationWorkItem, WebsiteSite } from './website.types.js';
 import type { WebsiteGenerationActivity } from './website.activity.js';
 
 function mapSite(row: any, domains: WebsiteDomain[] = []): WebsiteSite {
   return { id: row.id, workspaceId: row.workspaceId, provider: row.provider, ownershipMode: row.ownershipMode, name: row.name, externalSiteId: row.externalSiteId ?? null, externalSiteUrl: row.externalSiteUrl ?? null, status: row.status, settings: row.settings ?? {}, domains, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
-function mapDomain(row: any): WebsiteDomain { return { id: row.id, siteId: row.siteId, hostname: row.hostname, verificationToken: row.verificationToken, recordName: `_lulu-verification.${row.hostname}`, expiresAt: row.expiresAt, verificationMethod: row.verificationMethod, status: row.status, verifiedAt: row.verifiedAt ?? null, lastError: row.lastError ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt }; }
+function mapDomain(row: any): WebsiteDomain { return { id: row.id, siteId: row.siteId, hostname: row.hostname, verificationToken: row.verificationToken, recordName: `_lulu-verification.${row.hostname}`, expiresAt: row.expiresAt, verificationMethod: row.verificationMethod, cnameTarget: env.LULU_MANAGED_WEBSITE_HOSTNAME ?? null, status: row.status, verifiedAt: row.verifiedAt ?? null, lastError: row.lastError ?? null, createdAt: row.createdAt, updatedAt: row.updatedAt }; }
 function mapJob(row: any): WebsiteGenerationJob {
   return {
     id: row.id,
@@ -139,6 +139,61 @@ export async function createJob(input: { siteId: string; prompt: string; created
   });
   if (createdJobId) return { job: await getJob(input.siteId, createdJobId), created: true };
   return { job: await findActiveJob(input.siteId), created: false };
+}
+
+function mapAsset(row: any): ManagedWebsiteAsset {
+  return {
+    id: row.id,
+    siteId: row.siteId,
+    fileName: row.fileName,
+    mimeType: row.mimeType,
+    sizeBytes: Number(row.sizeBytes ?? 0),
+    altText: row.altText ?? '',
+    placement: row.placement,
+    crop: row.crop ?? {},
+    publicUrl: `/api/v1/public/storefront/assets/${encodeURIComponent(row.id)}`,
+    createdAt: row.createdAt,
+  };
+}
+
+const assetSelect = `SELECT id, site_id AS "siteId", file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", alt_text AS "altText", placement, crop, created_at AS "createdAt" FROM managed_website_assets`;
+
+export async function listManagedWebsiteAssets(workspaceId: string, siteId: string) {
+  const result = await query<any>(`${assetSelect} WHERE workspace_id=$1 AND site_id=$2 ORDER BY created_at DESC`, [workspaceId, siteId]);
+  return result.rows.map(mapAsset);
+}
+
+export async function createManagedWebsiteAsset(input: {
+  workspaceId: string;
+  siteId: string;
+  uploadedBy: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  altText: string;
+  placement: ManagedWebsiteAsset['placement'];
+  crop: Record<string, unknown>;
+  content: Buffer;
+}) {
+  const site = await query<{ id: string }>(`SELECT id FROM workspace_sites WHERE workspace_id=$1 AND id=$2 AND provider='managed'`, [input.workspaceId, input.siteId]);
+  if (!site.rows[0]) return null;
+  const result = await query<any>(
+    `INSERT INTO managed_website_assets(workspace_id,site_id,uploaded_by,file_name,mime_type,size_bytes,alt_text,placement,crop,content)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING id,site_id AS "siteId",file_name AS "fileName",mime_type AS "mimeType",size_bytes AS "sizeBytes",alt_text AS "altText",placement,crop,created_at AS "createdAt"`,
+    [input.workspaceId, input.siteId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.altText, input.placement, JSON.stringify(input.crop), input.content],
+  );
+  return result.rows[0] ? mapAsset(result.rows[0]) : null;
+}
+
+export async function getPublicManagedWebsiteAsset(assetId: string) {
+  const result = await query<{ mimeType: string; fileName: string; content: Buffer }>(
+    `SELECT a.mime_type AS "mimeType", a.file_name AS "fileName", a.content
+       FROM managed_website_assets a
+       JOIN workspace_sites s ON s.id=a.site_id AND s.provider='managed' AND s.status='published'
+      WHERE a.id=$1 LIMIT 1`,
+    [assetId],
+  );
+  return result.rows[0] ?? null;
 }
 export async function findActiveJob(siteId: string) {
   const result = await query<any>(`${jobSelect} WHERE site_id = $1 AND status IN ('queued','planning','generated','preview','publishing') ORDER BY created_at DESC LIMIT 1`, [siteId]);

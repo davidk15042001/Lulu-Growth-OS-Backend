@@ -126,6 +126,10 @@ const EnvSchema = z
     AIRWALLEX_PAYG_DIRECT_PAYMENT_METHODS: z.string().default('card,alipaycn,wechatpay'),
     EMAIL_FROM: z.string().optional(),
     FRONTEND_BASE_URL: z.string().url().optional(),
+    // DNS target for Lulu-managed websites. The edge/load-balancer must point
+    // this hostname at the production storefront router before custom domains
+    // can be activated.
+    LULU_MANAGED_WEBSITE_HOSTNAME: z.string().trim().min(1).optional(),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     CORS_ORIGIN: z.string().optional(),
     TRUST_PROXY: booleanString.default(false),

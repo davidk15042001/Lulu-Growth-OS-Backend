@@ -12,6 +12,11 @@ export const createSiteSchema = z.object({
 });
 export const createDomainSchema = z.object({ hostname: z.string().trim().toLowerCase().regex(/^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/) });
 export const createJobSchema = z.object({ prompt: z.string().trim().min(10).max(20000) });
+export const managedWebsiteAssetSchema = z.object({
+  altText: z.string().trim().max(500).default(''),
+  placement: z.enum(['website', 'hero', 'product', 'logo', 'gallery']).default('website'),
+  crop: z.record(z.string(), z.unknown()).default({}),
+});
 export const automaticGenerationSchema = z.object({
   provider: z.enum(['wordpress', 'webflow']),
   targetMode: z.enum(['existing', 'new']),

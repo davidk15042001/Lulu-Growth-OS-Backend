@@ -3,7 +3,7 @@ import { AppError } from '../../utils/app-error.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as repo from './website.repo.js';
 import { verifyDomainOwnership, renewDomainChallenge } from './domain-verification.service.js';
-import { automaticGenerationSchema, createDomainSchema, createJobSchema, createSiteSchema, domainParams, jobParams, siteIdParams } from './website.validator.js';
+import { automaticGenerationSchema, createDomainSchema, createJobSchema, createSiteSchema, domainParams, jobParams, managedWebsiteAssetSchema, siteIdParams } from './website.validator.js';
 import { publishWebsiteJob, verifyWordpressSetup } from './website.publish.service.js';
 import { getActiveWebsiteGenerationJob, resetWebsiteProviderState, startAutomaticWebsiteGeneration, syncWordpressProviderSites } from './website.automation.service.js';
 import { webflowCollections, webflowCustomDomains, webflowSites, wordpressMedia, wordpressPages, wordpressPosts } from './website.provider.service.js';
@@ -90,6 +90,25 @@ export async function automaticGenerate(req: WorkspaceRequest, res: Response, ne
 export async function cleanupProvider(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const input = automaticGenerationSchema.pick({ provider: true }).parse(req.body); await resetWebsiteProviderState(workspaceId(req), input.provider); return successResponse(res, 'Website provider cleanup completed'); } catch (error) { next(error); } }
 export async function create(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const input = createSiteSchema.parse(req.body); if (input.provider === 'managed' && input.ownershipMode !== 'managed') throw new AppError(400, 'WEBSITE_OWNERSHIP_MODE_INVALID', 'Managed provider sites must use managed ownership'); if (input.provider !== 'managed' && input.ownershipMode !== 'connected') throw new AppError(400, 'WEBSITE_OWNERSHIP_MODE_INVALID', 'WordPress and Webflow sites must use connected ownership'); return createdResponse(res, 'Website site created', await repo.createSite({ workspaceId: workspaceId(req), ...input })); } catch (error) { next(error); } }
 export async function addDomain(req: Request, res: Response, next: NextFunction) { try { const params = siteIdParams.parse(req.params); const site = await repo.getSite(params.workspaceId, params.siteId); if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found'); return createdResponse(res, 'Domain verification created', await repo.createDomain(params.siteId, createDomainSchema.parse(req.body).hostname)); } catch (error) { next(error); } }
+export async function listAssets(req: Request, res: Response, next: NextFunction) { try { const params = siteIdParams.parse(req.params); const site = await repo.getSite(params.workspaceId, params.siteId); if (!site || site.provider !== 'managed') throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Managed website site was not found'); return successResponse(res, 'Website assets loaded', { items: await repo.listManagedWebsiteAssets(params.workspaceId, params.siteId) }); } catch (error) { next(error); } }
+export async function uploadAsset(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.parse(req.params);
+    const site = await repo.getSite(params.workspaceId, params.siteId);
+    if (!site || site.provider !== 'managed') throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Managed website site was not found');
+    const file = req.file;
+    if (!file) throw new AppError(422, 'WEBSITE_ASSET_REQUIRED', 'Select an image to upload');
+    if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.mimetype)) throw new AppError(422, 'WEBSITE_ASSET_TYPE_INVALID', 'Only JPEG, PNG, WebP and GIF images are supported');
+    let crop: unknown = req.body?.crop;
+    if (typeof crop === 'string') {
+      try { crop = JSON.parse(crop); } catch { throw new AppError(422, 'WEBSITE_ASSET_CROP_INVALID', 'The crop data is invalid'); }
+    }
+    const input = managedWebsiteAssetSchema.parse({ ...req.body, crop });
+    const asset = await repo.createManagedWebsiteAsset({ workspaceId: params.workspaceId, siteId: params.siteId, uploadedBy: req.user!.id, fileName: file.originalname.slice(0, 255), mimeType: file.mimetype, sizeBytes: file.size, altText: input.altText, placement: input.placement, crop: input.crop, content: file.buffer });
+    if (!asset) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Managed website site was not found');
+    return createdResponse(res, 'Website asset uploaded', asset);
+  } catch (error) { next(error); }
+}
 export async function verifyDomain(req: WorkspaceRequest, res: Response, next: NextFunction) { try { return successResponse(res, 'Domain verification checked', await verifyDomainOwnership({...domainParams.parse(req.params),userId:req.user!.id})); } catch (error) { next(error); } }
 export async function renewDomain(req: WorkspaceRequest, res: Response, next: NextFunction) { try { return successResponse(res, 'Domain challenge renewed', await renewDomainChallenge({...domainParams.parse(req.params),userId:req.user!.id})); } catch (error) { next(error); } }
 export async function createJob(req: WorkspaceRequest, res: Response, next: NextFunction) {

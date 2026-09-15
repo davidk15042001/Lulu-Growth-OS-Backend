@@ -3,6 +3,7 @@ import { env } from '../../config/env.js';
 import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import * as repo from './agent.repo.js';
+import { classifyAgentFailure } from './agent-prerequisite.js';
 import type { AgentRole, AgentRun, AgentTool } from './agent.types.js';
 import { getAgentCapabilities, type AgentModule, isAgentModule } from './agent.capabilities.js';
 import { buildAgentExecutionProfile } from './agent.domain.js';
@@ -759,13 +760,20 @@ async function executeRun(
     });
   } catch (error) {
     const appError = error instanceof AppError ? error : new AppError(500, 'AGENT_RUN_FAILED', error instanceof Error ? error.message : 'Agent run failed');
+    const classification = appError.code === 'AGENT_RUN_CANCELLED'
+      ? { blocked: false as const, code: appError.code, originalCode: appError.code, message: appError.message }
+      : classifyAgentFailure(appError);
     const status = appError.code === 'AGENT_RUN_CANCELLED' ? 'cancelled' : 'failed';
     await repo.finalizeRun({
       runId,
       workspaceId,
       status,
-      patch: { error_code: appError.code, error_message: appError.message, finished_at: new Date() },
-      eventPayload: { code: appError.code, message: appError.message },
+      patch: { error_code: classification.code, error_message: classification.message, finished_at: new Date() },
+      eventPayload: {
+        code: classification.code,
+        message: classification.message,
+        ...(classification.blocked ? { blocked: true, originalCode: classification.originalCode } : {}),
+      },
       pageId: page?.pageId ?? null,
       actorId: userId === 'system' ? null : userId,
     });

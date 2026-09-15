@@ -27,6 +27,7 @@ router.route('/workspaces/:workspaceId').get(requireAuth, requireAdminCapabiliti
 router.route('/workspaces/:workspaceId/plan').patch(requireAuth, requireAdminCapabilities('billing.manage'), controller.changePlan).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId/subscription-price').patch(requireAuth, requireAdminCapabilities('billing.manage'), controller.setWorkspaceSubscriptionPrice).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId/credits').get(requireAuth, requireAdminCapabilities('billing.read'), controller.getWorkspaceCredits).post(requireAuth, requireAdminCapabilities('billing.manage'), controller.addWorkspaceCredits).all(methodNotAllowed);
+router.route('/workspaces/:workspaceId/funding').get(requireAuth, requireAdminCapabilities('billing.read'), controller.getWorkspaceFunding).post(requireAuth, requireAdminCapabilities('billing.manage'), controller.addWorkspaceManualFundingAdjustment).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId/usage-adjustments').get(requireAuth, requireAdminCapabilities('billing.read'), controller.getWorkspaceUsageAdjustments).post(requireAuth, requireAdminCapabilities('billing.manage'), controller.addWorkspaceUsageAdjustment).all(methodNotAllowed);
 router.route('/workspaces/:workspaceId/usage-costs').put(requireAuth, requireAdminCapabilities('billing.manage'), controller.setWorkspaceUsageCosts).all(methodNotAllowed);
 

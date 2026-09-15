@@ -318,6 +318,23 @@ export async function getTriggeredPageRun(
 }
 
 /**
+ * A failed autonomous run is a durable stop condition. New domain events must
+ * not create another paid run for the same employee until the user fixes the
+ * requirement (when one is missing) and explicitly resumes the paused Office
+ * item. This also protects against repeating non-idempotent provider work.
+ */
+export async function getBlockedPageRun(workspaceId: string, pageId: string, client?: PoolClient) {
+  const { rows } = await query<AgentRun>(`SELECT ${runSelect}
+    FROM agent_runs
+    WHERE workspace_id=$1
+      AND plan -> 'page' ->> 'pageId' = $2
+      AND status='failed'
+    ORDER BY updated_at DESC
+    LIMIT 1`, [workspaceId, pageId], client);
+  return rows[0] ?? null;
+}
+
+/**
  * Domain-event delivery is at-least-once. This lock plus persisted source-event
  * identity guarantees that a retry cannot create a second run for the same
  * employee and event, even after the first run has completed or failed.
@@ -344,6 +361,8 @@ export async function createOrReuseTriggeredPageRun(input: {
       client,
     );
     if (existingRun) return { run: existingRun, created: false as const };
+    const blockedRun = await getBlockedPageRun(input.workspaceId, input.pageId, client);
+    if (blockedRun) return { run: blockedRun, created: false as const };
     const run = await createRun(input.workspaceId, input.userId, input.goal, input.initialPlan, client, input.executionIdentity);
     return { run, created: true as const };
   });
