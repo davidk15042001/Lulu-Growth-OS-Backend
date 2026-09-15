@@ -68,9 +68,12 @@ export async function storefront(req: Request, res: Response, next: NextFunction
 export async function hostStorefront(req: Request, res: Response, next: NextFunction) {
   try {
     const value = await repo.getPublicStorefrontByHostname(requestHostname(req));
-    if (!value) throw new AppError(404, 'STOREFRONT_DOMAIN_NOT_FOUND', 'This domain is not connected to a published Lulu storefront');
+    if (!value) throw new AppError(404, 'STOREFRONT_DOMAIN_NOT_FOUND', 'This domain is not connected to a Lulu website');
     req.params.slug = value.slug;
-    return render(req, res, next);
+    // A verified domain is allowed to render the neutral template before the
+    // first publication. The same site record is used after publication, so
+    // the domain automatically reflects every later website update.
+    return renderStorefront(req, res, next, true);
   } catch (error) { next(error); }
 }
 
@@ -85,9 +88,9 @@ export async function asset(req: Request, res: Response, next: NextFunction) {
   } catch (error) { next(error); }
 }
 
-export async function render(req: Request, res: Response, next: NextFunction) {
+async function renderStorefront(req: Request, res: Response, next: NextFunction, allowUnpublished = false) {
   try {
-    const value = await repo.getPublicStorefront(slug(req));
+    const value = await repo.getPublicStorefront(slug(req), { allowUnpublished });
     if (!value) throw new AppError(404, 'STOREFRONT_NOT_FOUND', 'The published Lulu storefront was not found');
     const locale = storefrontLocale(req);
     const ui = STOREFRONT_UI[locale];
@@ -124,6 +127,10 @@ export async function render(req: Request, res: Response, next: NextFunction) {
     res.setHeader('Content-Security-Policy', `default-src 'none'; img-src https: data:; style-src 'unsafe-inline'; script-src 'nonce-${scriptNonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'`);
     return res.type('html').send(renderedHtml.replace('<section class="request">', `${assetGallery}<section class="request">`));
   } catch (error) { next(error); }
+}
+
+export async function render(req: Request, res: Response, next: NextFunction) {
+  return renderStorefront(req, res, next, false);
 }
 
 export async function products(req: Request, res: Response, next: NextFunction) {

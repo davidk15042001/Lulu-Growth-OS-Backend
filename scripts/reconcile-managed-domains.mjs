@@ -79,7 +79,10 @@ try {
     SELECT DISTINCT lower(d.hostname) AS hostname
     FROM workspace_site_domains d
     JOIN workspace_sites s ON s.id=d.site_id
-    WHERE d.status='verified' AND s.provider='managed' AND s.status='published'
+    -- A verified domain is routable before the first publication as well. The
+    -- storefront endpoint serves Lulu's neutral template until the same site
+    -- record is published, so DNS and certificates never need to be re-bound.
+    WHERE d.status='verified' AND s.provider='managed' AND s.status <> 'disconnected'
     ORDER BY hostname`);
   const domains = result.rows
     .map((row) => String(row.hostname).trim().replace(/\.$/, '').toLowerCase())

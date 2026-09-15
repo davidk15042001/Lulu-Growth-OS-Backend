@@ -44,20 +44,31 @@ const productSelect = `
 const productProjection = productSelect.slice(0, productSelect.indexOf('FROM products p'));
 const productJoins = productSelect.slice(productSelect.indexOf('FROM products p') + 'FROM products p'.length);
 
-async function siteBySlug(slug: string) {
+type PublicSiteLookupOptions = {
+  /**
+   * A verified custom domain may be connected before the first publication.
+   * The host renderer needs to serve the neutral template in that state, while
+   * slug-based public APIs must continue to expose published sites only.
+   */
+  allowUnpublished?: boolean;
+};
+
+async function siteBySlug(slug: string, options: PublicSiteLookupOptions = {}) {
+  const statusPredicate = options.allowUnpublished ? "s.status <> 'disconnected'" : "s.status='published'";
   const result = await query<any>(`
     SELECT s.id, s.workspace_id AS "workspaceId", s.name, s.status, s.settings,
       COALESCE(NULLIF(s.settings->'managedWebsite'->>'publicSlug',''), s.id::text) AS slug,
       COALESCE(NULLIF(s.settings->'managedWebsite'->>'templateKey',''), 'lulu-standard-v1') AS "templateKey",
       COALESCE(s.external_site_url, '') AS "externalSiteUrl"
     FROM workspace_sites s
-    WHERE s.provider='managed' AND s.status='published'
+    WHERE s.provider='managed' AND ${statusPredicate}
       AND (s.id::text=$1 OR lower(s.settings->'managedWebsite'->>'publicSlug')=lower($1))
     LIMIT 1`, [slug]);
   return result.rows[0] ?? null;
 }
 
-async function siteByHostname(hostname: string) {
+async function siteByHostname(hostname: string, options: PublicSiteLookupOptions = {}) {
+  const statusPredicate = options.allowUnpublished ? "s.status <> 'disconnected'" : "s.status='published'";
   const result = await query<any>(`
     SELECT s.id, s.workspace_id AS "workspaceId", s.name, s.status, s.settings,
       COALESCE(NULLIF(s.settings->'managedWebsite'->>'publicSlug',''), s.id::text) AS slug,
@@ -65,14 +76,14 @@ async function siteByHostname(hostname: string) {
       COALESCE(s.external_site_url, '') AS "externalSiteUrl"
     FROM workspace_site_domains d
     JOIN workspace_sites s ON s.id=d.site_id
-    WHERE s.provider='managed' AND s.status='published'
+    WHERE s.provider='managed' AND ${statusPredicate}
       AND d.status='verified' AND lower(d.hostname)=lower($1)
     LIMIT 1`, [hostname]);
   return result.rows[0] ?? null;
 }
 
-export async function getPublicStorefront(slug: string): Promise<StorefrontSite | null> {
-  const site = await siteBySlug(slug);
+export async function getPublicStorefront(slug: string, options: PublicSiteLookupOptions = {}): Promise<StorefrontSite | null> {
+  const site = await siteBySlug(slug, options);
   if (!site) return null;
   const [products, domains] = await Promise.all([
     query<any>(`SELECT ${productSelect} WHERE p.workspace_id=$1 AND p.status='ACTIVE' AND p.visibility='PUBLIC' AND p.deleted_at IS NULL ORDER BY p.updated_at DESC`, [site.workspaceId]),
@@ -96,11 +107,19 @@ export async function getPublicStorefront(slug: string): Promise<StorefrontSite 
   };
 }
 
-/** Resolve a published managed storefront from the verified HTTP Host header. */
+/**
+ * Resolve a managed storefront from a verified HTTP Host header.
+ *
+ * Domain ownership is the authorization boundary here. Once DNS verification
+ * succeeds, the domain can serve Lulu's neutral template immediately, even
+ * while the site record is still in draft/generating/preview state. A later
+ * publication updates the same site record, so the domain automatically serves
+ * the new version without reconnecting DNS.
+ */
 export async function getPublicStorefrontByHostname(hostname: string): Promise<StorefrontSite | null> {
-  const site = await siteByHostname(hostname);
+  const site = await siteByHostname(hostname, { allowUnpublished: true });
   if (!site) return null;
-  return getPublicStorefront(site.slug);
+  return getPublicStorefront(site.slug, { allowUnpublished: true });
 }
 
 export async function listPublicProducts(slug: string) {
