@@ -172,10 +172,11 @@ export function wordpressSiteChrome(plan: unknown, publishedPages: unknown[], si
   };
   const navigation = pages.map((page, index) => {
     const slug = String(page.slug ?? '').trim().toLowerCase();
+    if (slug === 'services' && contentProfile.hasServices === false) return null;
     const record = published.find((candidate) => String(candidate.slug ?? '').trim().toLowerCase() === slug);
     const href = index === 0 ? baseUrl : safeWebsiteUrl(record?.url, `/${slug}/`);
     return { href, slug, label: shortLabel(slug, String(page.title ?? '').trim() || slug) };
-  });
+  }).filter((item): item is { href: string; slug: string; label: string } => Boolean(item));
   const headerLinks = navigation.map((item) => `<a href="${escapeWordpressHtml(item.href)}" style="display:inline-block;padding:8px 4px;color:${escapeWordpressHtml(ink)};font-size:14px;font-weight:600;text-decoration:none;white-space:nowrap">${escapeWordpressHtml(item.label)}</a>`).join('');
   const footerLinks = navigation.map((item) => `<p style="display:block;margin:0 0 10px"><a href="${escapeWordpressHtml(item.href)}" style="display:inline-block;color:#dbe3ea;font-size:14px;text-decoration:none">${escapeWordpressHtml(item.label)}</a></p>`).join('');
   const contactItem = navigation.find((item) => item.slug === 'contact') ?? navigation.at(-1);

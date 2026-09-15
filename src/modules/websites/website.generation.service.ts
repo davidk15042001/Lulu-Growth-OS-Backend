@@ -47,6 +47,8 @@ type WebsiteContentProfile = {
   tagline: string;
   brandVoice: string;
   primaryLanguage: string;
+  hasServices: boolean;
+  hasProducts: boolean;
   globalSeo: { title: string; description: string; keywords: string[] };
   home: {
     eyebrow: string;
@@ -441,6 +443,8 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
     tagline: stringValue(value.tagline, fallbackIntro, 220),
     brandVoice: stringValue(value.brandVoice, 'Clear, confident and helpful', 120),
     primaryLanguage: stringValue(value.primaryLanguage, language, 20),
+    hasServices: context.offerings.some((offering) => offering.type.trim().toLowerCase() === 'service' && ['active', 'draft'].includes(offering.status.trim().toLowerCase())),
+    hasProducts: context.offerings.some((offering) => offering.type.trim().toLowerCase() === 'product' && ['active', 'draft'].includes(offering.status.trim().toLowerCase())),
     globalSeo: { title: stringValue(seo.title, `${company} | ${context.workspace.industry ?? 'Business solutions'}`, 70), description: stringValue(seo.description, fallbackIntro, 170), keywords: stringArray(seo.keywords, context.workspace.positioningTags, 15) },
     home: {
       eyebrow: stringValue(home.eyebrow, context.workspace.industry ?? 'Welcome', 100),
@@ -577,15 +581,19 @@ export function renderHome(profile: WebsiteContentProfile, palette: ThemePalette
   const home = profile.home;
   const labels = templateLabels(profile.primaryLanguage);
   const formLabels = contactFormLabels(profile.primaryLanguage);
+  // Older stored/test profiles do not carry the explicit flag; preserve their
+  // existing template output while newly generated profiles are authoritative.
+  const hasServices = profile.hasServices !== false;
   const genericCard: ContentCard = { title: home.servicesHeading, description: home.servicesIntroduction, cta: home.secondaryCta };
-  const audienceCardData = exactValues(home.audienceCards, [...profile.services.items, ...home.featureCards, genericCard], 4, (card) => `${card.title}|${card.description}`);
-  const serviceCardData = exactValues(profile.services.items, [...home.audienceCards, ...home.featureCards, genericCard], 4, (card) => `${card.title}|${card.description}`);
-  const featureCardData = exactValues(home.featureCards, [...home.audienceCards, ...profile.services.items, genericCard], 3, (card) => `${card.title}|${card.description}`);
+  const verifiedServiceCards = hasServices ? profile.services.items : [];
+  const audienceCardData = exactValues(home.audienceCards, [...verifiedServiceCards, ...home.featureCards, genericCard], 4, (card) => `${card.title}|${card.description}`);
+  const serviceCardData = hasServices ? exactValues(profile.services.items, [...home.audienceCards, ...home.featureCards, genericCard], 4, (card) => `${card.title}|${card.description}`) : [];
+  const featureCardData = exactValues(home.featureCards, [...home.audienceCards, ...verifiedServiceCards, genericCard], 3, (card) => `${card.title}|${card.description}`);
   const processStepData = exactValues(home.processSteps, profile.services.processSteps, 3, (step) => `${step.title}|${step.description}`);
-  const capabilityCardData = exactValues(home.capabilityCards, [...home.featureCards, ...profile.services.items, genericCard], 2, (card) => `${card.title}|${card.description}`);
+  const capabilityCardData = exactValues(home.capabilityCards, [...home.featureCards, ...verifiedServiceCards, genericCard], 2, (card) => `${card.title}|${card.description}`);
   const faqData = exactValues(home.faqs, [{ question: home.finalCtaTitle, answer: home.finalCtaText }], 3, (faq) => `${faq.question}|${faq.answer}`);
-  const trustItemData = exactValues(home.trustItems, [...profile.services.items.map((card) => card.title), profile.siteTitle], 5, (item) => item);
-  const splitItemData = exactValues(home.splitItems, [...profile.services.items.map((card) => card.title), ...home.trustItems], 6, (item) => item);
+  const trustItemData = exactValues(home.trustItems, [...verifiedServiceCards.map((card) => card.title), profile.siteTitle], 5, (item) => item);
+  const splitItemData = exactValues(home.splitItems, [...verifiedServiceCards.map((card) => card.title), ...home.trustItems], 6, (item) => item);
   const preparationItemData = exactValues(profile.contact.preparationItems, splitItemData, 4, (item) => item);
   const heroImage = safeImageUrl(images[0]?.url);
   const heroBackground = heroImage ? `background-image:linear-gradient(90deg,rgba(24,32,43,.90),rgba(24,32,43,.48)),url('${escapeHtml(heroImage)}');background-position:center;background-size:cover;` : `background:linear-gradient(125deg,${palette.secondary},${palette.primary});`;
@@ -606,7 +614,7 @@ export function renderHome(profile: WebsiteContentProfile, palette: ThemePalette
       renderedSection('hero', home.eyebrow, `${TEMPLATE_FONT_LINKS}<section data-lulu-template="${TEMPLATE_KEY}" data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}" data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}" data-lulu-section="hero" style="width:100%;margin:0;overflow:hidden;${heroBackground}color:#fff"><div style="max-width:1280px;margin:0 auto;padding:clamp(80px,10vw,112px) 16px"><div style="max-width:850px"><p style="margin:0;color:${palette.accent};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:500;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(home.eyebrow)}</p><h1 style="max-width:780px;margin:16px 0 0;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(40px,7vw,72px);font-weight:700;letter-spacing:-.01em;line-height:1.03">${escapeHtml(home.headline)}</h1><p style="max-width:680px;margin:20px 0 0;color:rgba(255,255,255,.82);font-size:18px;line-height:1.65">${escapeHtml(home.introduction)}</p><div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:32px">${button(home.primaryCta, websiteCtaDestination(home.primaryCta, '/contact/'), palette)}${button(home.secondaryCta, websiteCtaDestination(home.secondaryCta, '/services/'), palette, true)}</div></div></div></section>`),
       renderedSection('trust', labels.trust, trust),
       renderedSection('buyer-routing', home.audienceHeading, `<section data-lulu-section="buyer-routing" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.surface}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(labels.solutions, home.audienceHeading, home.audienceIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px">${audienceCards}</div></div></section>`),
-      renderedSection('portfolio', home.servicesHeading, `<section data-lulu-section="portfolio" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.background}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(labels.services, home.servicesHeading, home.servicesIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px">${serviceCards}</div><div style="margin-top:32px">${button(home.secondaryCta, '/services/', palette)}</div></div></section>`),
+      ...(hasServices ? [renderedSection('portfolio', home.servicesHeading, `<section data-lulu-section="portfolio" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.background}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(labels.services, home.servicesHeading, home.servicesIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:16px">${serviceCards}</div><div style="margin-top:32px">${button(home.secondaryCta, '/services/', palette)}</div></div></section>`)] : []),
       renderedSection('core-strengths', home.featureHeading, `<section data-lulu-section="core-strengths" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.surface}"><div style="max-width:1280px;margin:0 auto">${sectionTitle(home.featureEyebrow, home.featureHeading, home.featureIntroduction, palette)}<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px">${featureCards}</div></div></section>`),
       renderedSection('differentiator', home.highlightTitle, `<section data-lulu-section="differentiator" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.secondary};color:#fff"><div style="display:grid;max-width:1280px;margin:0 auto;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:center;gap:40px"><div><p style="margin:0;color:${palette.accent};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(home.highlightEyebrow)}</p><h2 style="margin:12px 0 0;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(32px,5vw,48px);font-weight:700;line-height:1.08">${escapeHtml(home.highlightTitle)}</h2><p style="margin:16px 0 0;color:rgba(255,255,255,.78);font-size:16px;line-height:1.7">${escapeHtml(home.highlightText)}</p><div style="margin-top:28px">${button(profile.services.ctaLabel, '/contact/', palette)}</div></div>${featureImage}</div></section>`),
       renderedSection('split-feature', home.splitTitle, `<section data-lulu-section="split-feature" style="width:100%;margin:0;padding:clamp(64px,8vw,80px) 16px;background:${palette.background}"><div style="display:grid;max-width:1280px;margin:0 auto;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:center;gap:40px">${splitImage}<div><p style="margin:0;color:${palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(home.splitEyebrow)}</p><h2 style="margin:12px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(32px,5vw,48px);font-weight:700;line-height:1.08">${escapeHtml(home.splitTitle)}</h2><p style="margin:16px 0 0;color:${palette.muted};font-size:16px;line-height:1.7">${escapeHtml(home.splitText)}</p><ul style="display:grid;margin:20px 0 0;padding:0;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px 18px;list-style:none">${splitItems}</ul><div style="margin-top:28px">${button(home.secondaryCta, '/services/', palette)}</div></div></div></section>`),
@@ -641,6 +649,17 @@ function renderAbout(profile: WebsiteContentProfile, palette: ThemePalette, imag
 }
 
 function renderServices(profile: WebsiteContentProfile, palette: ThemePalette, image?: WebsiteImageAsset) {
+  if (!profile.hasServices) {
+    return renderStandardPage({
+      eyebrow: profile.siteTitle,
+      title: profile.about.title,
+      introduction: profile.about.introduction,
+      sections: profile.about.sections.map((section, index) => renderedSection(`company-focus-${index + 1}`, section.heading, `<section data-lulu-section="company-focus-${index + 1}" style="width:100%;margin:0;padding:16px;background:${index % 2 === 0 ? palette.surface : palette.background}"><div style="max-width:1280px;margin:0 auto;border:1px solid #dce2e8;border-left:3px solid ${palette.accent};background:${palette.surface};padding:32px"><h2 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:32px;font-weight:700;line-height:1.15">${escapeHtml(section.heading)}</h2><p style="margin:12px 0 0;color:${palette.muted};line-height:1.7">${escapeHtml(section.body)}</p></div></section>`)),
+      palette,
+      imageTitle: templateLabels(profile.primaryLanguage).companyImage,
+      ...(image ? { image } : {}),
+    });
+  }
   const cards = profile.services.items.map((item) => `<article style="display:flex;min-width:0;flex-direction:column;border:1px solid #dce2e8;background:${palette.surface};padding:28px"><h2 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:29px;font-weight:600;line-height:1.15">${escapeHtml(item.title)}</h2><p style="margin:12px 0 0;flex:1;color:${palette.muted};line-height:1.7">${escapeHtml(item.description)}</p><a href="${websiteCtaDestination(item.cta, '/contact/')}" style="margin-top:20px;color:${palette.primary};font-weight:700;text-decoration:none">${escapeHtml(item.cta)} →</a></article>`).join('');
   const steps = profile.services.processSteps.map((step, index) => `<li style="display:grid;grid-template-columns:44px 1fr;gap:14px;padding:20px 0;border-bottom:1px solid #dce2e8"><strong style="color:${palette.primary};font-family:'IBM Plex Mono',ui-monospace,monospace">${String(index + 1).padStart(2, '0')}</strong><div><h3 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:23px;font-weight:600">${escapeHtml(step.title)}</h3><p style="margin:8px 0 0;color:${palette.muted};line-height:1.65">${escapeHtml(step.description)}</p></div></li>`).join('');
   const sections = [
@@ -687,9 +706,12 @@ function occurrenceCount(content: string, marker: string) {
 }
 
 function hasExactHomeTemplateContract(content: string) {
-  return HOME_TEMPLATE_SECTIONS.every((key) => occurrenceCount(content, `data-lulu-section="${key}"`) === 1)
+  const portfolioCount = occurrenceCount(content, 'data-lulu-section="portfolio"');
+  const serviceCardCount = occurrenceCount(content, 'data-lulu-card="service"');
+  const hasServices = portfolioCount === 1 || serviceCardCount > 0;
+  return HOME_TEMPLATE_SECTIONS.filter((key) => key !== 'portfolio' || hasServices).every((key) => occurrenceCount(content, `data-lulu-section="${key}"`) === 1)
     && occurrenceCount(content, 'data-lulu-card="audience"') === 4
-    && occurrenceCount(content, 'data-lulu-card="service"') === 4
+    && (hasServices ? serviceCardCount === 4 : portfolioCount === 0 && serviceCardCount === 0)
     && occurrenceCount(content, 'data-lulu-card="feature"') === 3
     && occurrenceCount(content, 'data-lulu-card="process"') === 3
     && occurrenceCount(content, 'data-lulu-card="capability"') === 2
@@ -723,11 +745,13 @@ async function loadWebsiteContext(workspaceId: string, userId: string): Promise<
   const workspace = await findWorkspaceForUser(workspaceId, userId);
   if (!workspace) throw new AppError(404, 'WEBSITE_WORKSPACE_NOT_FOUND', 'The workspace context was not found');
   const [offerings, platforms, initialAnalysis, canonicalProducts] = await Promise.all([listOfferings(workspaceId), listPlatforms(workspaceId), agentRepo.getLatestCompletedInitialAnalysis(workspaceId), listCanonicalProductsForWebsite(workspaceId)]);
+  const normalizedOfferings = [
+    ...offerings.filter((offering) => offering.status === 'active' || offering.status === 'draft').map((offering) => ({ name: offering.name, type: offering.offeringType, category: offering.category, description: offering.description, targetCustomer: offering.targetCustomer, valueProposition: offering.valueProposition, status: offering.status })),
+    ...canonicalProducts.slice(0, 24).map((product) => ({ name: product.name, type: 'product', category: null, description: (product.longDescription ?? product.shortDescription ?? null) as string | null, targetCustomer: null, valueProposition: null, status: String(product.status ?? 'active') })),
+  ];
   return {
     workspace: { companyName: workspace.companyName, industry: workspace.industry, companySize: workspace.companySize, countryRegion: workspace.countryRegion, businessDescription: workspace.businessDescription, valueProposition: workspace.valueProposition, targetMarket: workspace.targetMarket, shortBrandDescription: workspace.shortBrandDescription, positioningTags: workspace.positioningTags ?? [] },
-    offerings: (canonicalProducts.length > 0
-      ? canonicalProducts.slice(0, 24).map((product) => ({ name: product.name, type: String(product.productType ?? 'product'), category: null, description: (product.longDescription ?? product.shortDescription ?? null) as string | null, targetCustomer: null, valueProposition: null, status: String(product.status ?? 'active') }))
-      : offerings.filter((offering) => offering.status === 'active' || offering.status === 'draft').slice(0, 24).map((offering) => ({ name: offering.name, type: offering.offeringType, category: offering.category, description: offering.description, targetCustomer: offering.targetCustomer, valueProposition: offering.valueProposition, status: offering.status }))),
+    offerings: normalizedOfferings.slice(0, 48),
     connectedPlatforms: platforms.filter((platform) => platform.connectionStatus === 'connected' || platform.connectionStatus === 'active').slice(0, 20).map((platform) => ({ name: platform.name, category: platform.category, status: platform.connectionStatus })),
     initialAnalysis: compactValue(initialAnalysis?.result ?? null),
   };
