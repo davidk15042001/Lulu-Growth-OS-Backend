@@ -2,6 +2,7 @@ import { Router } from 'express';
 import {
   requireOnboardingComplete,
   requireWorkspaceAdmin,
+  requireWorkspaceAdminRead,
   requireWorkspaceEditor,
   requireWorkspaceMember,
 } from '../../middlewares/workspace.middleware.js';
@@ -85,7 +86,11 @@ router.route('/business-identity')
 
 router.route('/settings')
   .get(requireWorkspaceMember, controller.settings)
-  .patch(requireWorkspaceAdmin, controller.settings)
+  // Operational controls such as the agent execution pause switch must remain
+  // available to a workspace owner/admin even before a paid write entitlement
+  // is active. The execution authorization layer still enforces AI entitlement
+  // and prepaid wallet policy when work actually starts.
+  .patch(requireWorkspaceAdminRead, controller.settings)
   .all(methodNotAllowed);
 
 router.route('/billing')
