@@ -3,6 +3,7 @@ import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.
 import * as controller from './storefront.controller.js';
 
 const router = Router();
+router.route('/host').get(controller.hostStorefront).all(methodNotAllowed);
 router.route('/:slug').get(controller.storefront).all(methodNotAllowed);
 router.route('/assets/:assetId').get(controller.asset).all(methodNotAllowed);
 router.route('/:slug/render').get(controller.render).all(methodNotAllowed);

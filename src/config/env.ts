@@ -130,6 +130,9 @@ const EnvSchema = z
     // this hostname at the production storefront router before custom domains
     // can be activated.
     LULU_MANAGED_WEBSITE_HOSTNAME: z.string().trim().min(1).optional(),
+    // Optional ACME registration address for automatically issued custom-domain
+    // certificates. If omitted, the reconciler uses the ACME no-email mode.
+    LULU_DOMAIN_CERTBOT_EMAIL: z.string().email().optional(),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     CORS_ORIGIN: z.string().optional(),
     TRUST_PROXY: booleanString.default(false),

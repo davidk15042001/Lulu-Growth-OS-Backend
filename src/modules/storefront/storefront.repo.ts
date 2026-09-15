@@ -56,6 +56,20 @@ async function siteBySlug(slug: string) {
   return result.rows[0] ?? null;
 }
 
+async function siteByHostname(hostname: string) {
+  const result = await query<any>(`
+    SELECT s.id, s.workspace_id AS "workspaceId", s.name, s.status, s.settings,
+      COALESCE(NULLIF(s.settings->'managedWebsite'->>'publicSlug',''), s.id::text) AS slug,
+      COALESCE(NULLIF(s.settings->'managedWebsite'->>'templateKey',''), 'lulu-standard-v1') AS "templateKey",
+      COALESCE(s.external_site_url, '') AS "externalSiteUrl"
+    FROM workspace_site_domains d
+    JOIN workspace_sites s ON s.id=d.site_id
+    WHERE s.provider='managed' AND s.status='published'
+      AND d.status='verified' AND lower(d.hostname)=lower($1)
+    LIMIT 1`, [hostname]);
+  return result.rows[0] ?? null;
+}
+
 export async function getPublicStorefront(slug: string): Promise<StorefrontSite | null> {
   const site = await siteBySlug(slug);
   if (!site) return null;
@@ -79,6 +93,13 @@ export async function getPublicStorefront(slug: string): Promise<StorefrontSite 
     products: products.rows.map(productFromRow),
     assets: assets.rows.map((asset) => ({ id: asset.id, publicUrl: `/api/v1/public/storefront/assets/${encodeURIComponent(asset.id)}`, altText: asset.altText ?? '', placement: asset.placement })),
   };
+}
+
+/** Resolve a published managed storefront from the verified HTTP Host header. */
+export async function getPublicStorefrontByHostname(hostname: string): Promise<StorefrontSite | null> {
+  const site = await siteByHostname(hostname);
+  if (!site) return null;
+  return getPublicStorefront(site.slug);
 }
 
 export async function listPublicProducts(slug: string) {

@@ -1,0 +1,10 @@
+[Unit]
+Description=Lulu managed-domain routing and certificate reconciliation
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/var/www/lulu-growth-os/backend
+EnvironmentFile=/etc/lulu-growth-backend.env
+ExecStart=/usr/bin/node /var/www/lulu-growth-os/backend/scripts/reconcile-managed-domains.mjs

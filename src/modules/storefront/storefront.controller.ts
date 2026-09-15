@@ -7,6 +7,9 @@ import * as websiteRepo from '../websites/website.repo.js';
 import { cartItemSchema, checkoutSchema, createCartSchema, storefrontSlugSchema } from './storefront.validator.js';
 
 function slug(req: Request) { return storefrontSlugSchema.parse(req.params).slug; }
+function requestHostname(req: Request): string {
+  return String(req.hostname || req.get('host') || '').trim().toLowerCase().replace(/\.$/, '').split(':')[0] ?? '';
+}
 function cartToken(req: Request, body?: unknown) {
   const header = req.header('x-lulu-cart-token');
   if (header) return header;
@@ -34,6 +37,16 @@ export async function storefront(req: Request, res: Response, next: NextFunction
     const value = await repo.getPublicStorefront(slug(req));
     if (!value) throw new AppError(404, 'STOREFRONT_NOT_FOUND', 'The published Lulu storefront was not found');
     return successResponse(res, 'Lulu storefront loaded', value);
+  } catch (error) { next(error); }
+}
+
+/** Render the storefront bound to a verified custom domain. */
+export async function hostStorefront(req: Request, res: Response, next: NextFunction) {
+  try {
+    const value = await repo.getPublicStorefrontByHostname(requestHostname(req));
+    if (!value) throw new AppError(404, 'STOREFRONT_DOMAIN_NOT_FOUND', 'This domain is not connected to a published Lulu storefront');
+    req.params.slug = value.slug;
+    return render(req, res, next);
   } catch (error) { next(error); }
 }
 

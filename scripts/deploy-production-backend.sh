@@ -64,4 +64,14 @@ fi
 
 /usr/bin/systemctl start lulu-growth-backend
 /usr/bin/systemctl is-active --quiet lulu-growth-backend
+
+# Keep verified Lulu domains routed to their canonical managed storefront and
+# let ACME certificates be issued without granting the API process root access.
+if [ -f "$backend_dir/deploy/lulu-managed-domain-reconcile.service" ] && [ -f "$backend_dir/deploy/lulu-managed-domain-reconcile.timer" ]; then
+  /usr/bin/install -m 0644 "$backend_dir/deploy/lulu-managed-domain-reconcile.service" /etc/systemd/system/lulu-managed-domain-reconcile.service
+  /usr/bin/install -m 0644 "$backend_dir/deploy/lulu-managed-domain-reconcile.timer" /etc/systemd/system/lulu-managed-domain-reconcile.timer
+  /usr/bin/systemctl daemon-reload
+  /usr/bin/systemctl enable --now lulu-managed-domain-reconcile.timer
+  /usr/bin/systemctl start lulu-managed-domain-reconcile.service
+fi
 trap - EXIT

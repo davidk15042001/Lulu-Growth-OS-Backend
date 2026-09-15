@@ -1,0 +1,11 @@
+[Unit]
+Description=Reconcile verified Lulu website domains every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+Unit=lulu-managed-domain-reconcile.service
+
+[Install]
+WantedBy=timers.target
