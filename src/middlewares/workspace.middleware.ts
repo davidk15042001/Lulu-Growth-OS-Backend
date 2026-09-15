@@ -174,3 +174,22 @@ export const requireWorkspaceMember = requireWorkspaceCapability('workspace.read
 export const requireWorkspaceEditor = requireWorkspaceCapability('workspace.write');
 export const requireWorkspaceAdmin = requireWorkspaceCapability('workspace.manage');
 export const requireWorkspaceAdminRead = requireWorkspaceCapability('workspace.manage', { enforceWriteEntitlement: false });
+
+/**
+ * The workspace-wide agent pause switch is an operational safety control, not
+ * a billing or profile mutation. Every workspace member may use that one
+ * setting, while all other settings mutations retain administrator authority.
+ */
+export function requireWorkspaceSettingsMutation(
+  req: WorkspaceRequest,
+  res: Response,
+  next: NextFunction,
+) {
+  const body = req.body;
+  const isAgentExecutionToggle = Boolean(
+    body && typeof body === 'object' && !Array.isArray(body)
+      && Object.keys(body).length === 1
+      && Object.prototype.hasOwnProperty.call(body, 'agents'),
+  );
+  return (isAgentExecutionToggle ? requireWorkspaceMember : requireWorkspaceAdminRead)(req, res, next);
+}

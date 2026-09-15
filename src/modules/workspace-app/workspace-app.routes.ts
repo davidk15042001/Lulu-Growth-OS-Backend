@@ -2,9 +2,9 @@ import { Router } from 'express';
 import {
   requireOnboardingComplete,
   requireWorkspaceAdmin,
-  requireWorkspaceAdminRead,
   requireWorkspaceEditor,
   requireWorkspaceMember,
+  requireWorkspaceSettingsMutation,
 } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './workspace-app.controller.js';
@@ -86,11 +86,11 @@ router.route('/business-identity')
 
 router.route('/settings')
   .get(requireWorkspaceMember, controller.settings)
-  // Operational controls such as the agent execution pause switch must remain
-  // available to a workspace owner/admin even before a paid write entitlement
-  // is active. The execution authorization layer still enforces AI entitlement
-  // and prepaid wallet policy when work actually starts.
-  .patch(requireWorkspaceAdminRead, controller.settings)
+  // The workspace-wide agent pause switch is available to every workspace
+  // member. Other settings mutations remain restricted by the middleware,
+  // while the execution authorization layer still enforces AI entitlement and
+  // prepaid-wallet policy when work actually starts.
+  .patch(requireWorkspaceSettingsMutation, controller.settings)
   .all(methodNotAllowed);
 
 router.route('/billing')
