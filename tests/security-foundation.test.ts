@@ -64,25 +64,23 @@ async function newUser(verified=false) {
 const rotate=(token:string)=>{const [selector,validator]=token.split('.');return auth.rotateRefreshToken(selector!,validator!);};
 
 describe('email verification security',()=>{
-  it('public registration requires email ownership before the first workspace and session are created',async()=>{
+  it('public registration creates a verified account without an email challenge',async()=>{
     const email=`${crypto.randomUUID()}@example.test`;
-    let code='';
-    const registered=await service.registerUser(email,'Test-password-2026!','Public','Founder',async(_email,value)=>{code=value;});
+    const registered=await service.registerUser(email,'Test-password-2026!','Public','Founder');
     assert.equal('ok' in registered,true);
-    assert.match(code,/^\d{6}$/);
     const stored=await auth.getUserByEmail(email);
-    assert.equal(stored?.verified_at,null);
-    assert.equal((await db.query(`SELECT id FROM workspaces WHERE created_by=$1`,[stored!.id])).rows.length,0);
-    assert.deepEqual(await service.verifyEmailOtp(email,code),{ok:true});
+    assert.ok(stored?.verified_at);
+    assert.equal((await db.query(`SELECT id FROM workspaces WHERE created_by=$1`,[stored!.id])).rows.length,1);
     const login=await service.loginUser(email,'Test-password-2026!');
     assert.equal('ok' in login,true);
-    assert.equal((await db.query(`SELECT id FROM workspaces WHERE created_by=$1`,[stored!.id])).rows.length,1);
   });
-  it('new account stays unverified and cannot log in or open a session',async()=>{
+  it('legacy unverified accounts are promoted after a successful password login',async()=>{
     const user=await newUser();
     assert.equal((await auth.getUserById(user.id))?.verified_at,null);
-    assert.deepEqual(await service.loginUser(user.email,'Test-password-2026!'),{unverified:true});
     await assert.rejects(auth.createAdditionalSession(user.id),{code:'ACCOUNT_UNVERIFIED'});
+    const login=await service.loginUser(user.email,'Test-password-2026!');
+    assert.equal('ok' in login,true);
+    assert.ok((await auth.getUserById(user.id))?.verified_at);
   });
   it('valid code verifies atomically, cannot be reused, and already verified is handled',async()=>{
     const user=await newUser();

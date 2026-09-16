@@ -17,6 +17,9 @@ export async function getUserByEmail(email: string) {
 export async function getUserById(id: string) {
   return (await query<User>(`SELECT ${userColumns} FROM users WHERE id=$1 AND deleted_at IS NULL`,[id])).rows[0];
 }
+export async function markUserVerified(id: string) {
+  await query('UPDATE users SET verified_at=COALESCE(verified_at,NOW()),updated_at=NOW() WHERE id=$1 AND deleted_at IS NULL',[id]);
+}
 export async function updateUserProfile(id: string, input: { firstName?: string | undefined; lastName?: string | undefined }) {
   await query('UPDATE users SET first_name=COALESCE($2,first_name),last_name=COALESCE($3,last_name) WHERE id=$1 AND deleted_at IS NULL',[id,input.firstName ?? null,input.lastName ?? null]);
   return getUserById(id);

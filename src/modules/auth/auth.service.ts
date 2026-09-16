@@ -7,7 +7,7 @@ import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 
-export type RegisterResult = { ok: true; userId: string; verificationRequired: true } | { conflict: true };
+export type RegisterResult = { ok: true; userId: string; verificationRequired: false } | { conflict: true };
 type SessionUser = {
   id: string;
   email: string;
@@ -54,17 +54,15 @@ function signSessionToken(
   });
 }
 
-export async function registerUser(email: string, password: string, firstName: string, lastName: string, sendVerificationCode:typeof sendOtpEmail=sendOtpEmail): Promise<RegisterResult> {
+export async function registerUser(email: string, password: string, firstName: string, lastName: string): Promise<RegisterResult> {
   const existingUser = await repo.getUserByEmail(email);
   if (existingUser) return { conflict: true };
 
   const passwordHash = await bcrypt.hash(password, env.BCRYPT_ROUNDS);
   let user;
-  try { user = await repo.createUnverifiedUser(email, passwordHash, firstName, lastName); }
+  try { user = await repo.createVerifiedUser(email, passwordHash, firstName, lastName); }
   catch(error) { if((error as {code?:string}).code==='23505') return {conflict:true}; throw error; }
-  await sendVerificationCode(email, user.code);
-  await recordSecurityEvent({eventType:'EMAIL_VERIFICATION_SENT',userId:user.id,metadata:{reason:'registration'}});
-  return { ok: true, userId: user.id, verificationRequired: true };
+  return { ok: true, userId: user.id, verificationRequired: false };
 }
 
 export type VerifyResult = { ok: true } | { alreadyVerified:true } | { invalid: true } | { used: true } | { expired: true };
@@ -91,9 +89,12 @@ export async function loginUser(email: string, password: string, options?: Login
   const ok = await bcrypt.compare(password, user.password_hash);
   if (!ok) { await recordSecurityEvent({eventType:'LOGIN_FAILURE',userId:user.id,metadata:{reason:'invalid_credentials'}}); return { invalid: true }; }
 
+  // Registration no longer requires email ownership verification. Existing
+  // accounts created by older releases may still have a null verified_at;
+  // promote them on their first successful password login so they are not
+  // stranded behind the retired email-OTP gate.
   if (!user.verified_at) {
-    await recordSecurityEvent({eventType:'LOGIN_FAILURE',userId:user.id,metadata:{reason:'unverified'}});
-    return {unverified:true};
+    await repo.markUserVerified(user.id);
   }
 
   if(user.role==='admin' && env.ADMIN_MFA_ENABLED) {
