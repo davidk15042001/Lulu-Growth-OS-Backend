@@ -177,8 +177,11 @@ async function createMissionFromSignalWithClient(input: {
   )).rows[0];
   if (!signal) return null;
   const missionResult = await query<BrainMission>(
-    `INSERT INTO company_brain_missions(workspace_id,signal_id,title,objective,priority,created_by)
-     SELECT $1,id,$3,$4,$5,$6 FROM company_brain_signals WHERE workspace_id=$1 AND id=$2
+    `INSERT INTO company_brain_missions(workspace_id,signal_id,title,objective,priority,owner_employee_id,created_by)
+     SELECT $1,id,$3,$4,$5,
+       (SELECT id FROM digital_employees WHERE workspace_id=$1 AND employee_key='executive-orchestrator' AND active LIMIT 1),
+       $6
+     FROM company_brain_signals WHERE workspace_id=$1 AND id=$2
      ON CONFLICT(workspace_id,signal_id) DO UPDATE SET title=EXCLUDED.title,objective=EXCLUDED.objective,priority=EXCLUDED.priority
      RETURNING ${missionSelect}`,
     [input.workspaceId,input.signalId,input.title,input.objective,input.priority,input.createdBy ?? null], client,
@@ -212,22 +215,33 @@ async function createMissionFromSignalWithClient(input: {
   }
 
   for (const spec of delegatedTaskPlan(signal.signalType)) {
+    const employee = (await query<{ id: string }>(
+      `SELECT id FROM digital_employees
+        WHERE workspace_id=$1 AND employee_key=$2 AND active
+        LIMIT 1`,
+      [input.workspaceId, spec.employeeKey], client,
+    )).rows[0] ?? null;
+    const assignmentStatus = employee ? 'PROPOSED' : 'BLOCKED';
+    const assignmentError = employee ? null : 'DIGITAL_EMPLOYEE_NOT_CONFIGURED';
+    const assignmentMessage = employee
+      ? null
+      : `The delegated digital employee ${spec.employeeKey} is not configured for this workspace. Lulu will not dispatch this task automatically.`;
     const childResult = await query<BrainTask>(
       `INSERT INTO company_brain_tasks(
-         workspace_id,mission_id,parent_task_id,assigned_employee_id,task_type,title,objective,priority,
-         context,max_attempts,idempotency_key
+         workspace_id,mission_id,parent_task_id,assigned_employee_id,task_type,title,objective,priority,status,
+         context,max_attempts,idempotency_key,error_code,error_message,blocked_reason
        ) VALUES(
          $1,$2,$3,
-         (SELECT id FROM digital_employees WHERE workspace_id=$1 AND employee_key=$4 LIMIT 1),
-         $5,$6,$7,$8,$9::jsonb,1,$10
+         $4,
+         $5,$6,$7,$8,$9,$10::jsonb,1,$11,$12,$13,$14
        )
        ON CONFLICT (workspace_id,idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
        RETURNING ${taskSelect}`,
       [
-        input.workspaceId, mission.id, task.id, spec.employeeKey, spec.taskType, spec.title, spec.objective,
-        Math.max(0, input.priority - 5),
-        { module: spec.module, pageId: spec.pageId, employeeKey: spec.employeeKey, delegated: true, signalType: signal.signalType },
-        `brain-mission:${mission.id}:delegate:${spec.key}`,
+        input.workspaceId, mission.id, task.id, employee?.id ?? null, spec.taskType, spec.title, spec.objective,
+        Math.max(0, input.priority - 5), assignmentStatus,
+        { module: spec.module, pageId: spec.pageId, employeeKey: spec.employeeKey, delegated: true, signalType: signal.signalType, assignmentStatus: employee ? 'assigned' : 'missing' },
+        `brain-mission:${mission.id}:delegate:${spec.key}`, assignmentError, assignmentMessage, assignmentError,
       ], client,
     );
     const child = childResult.rows[0] ?? (await query<BrainTask>(
@@ -238,11 +252,11 @@ async function createMissionFromSignalWithClient(input: {
     if (childResult.rows[0]) {
       await appendTaskEvent({
         workspaceId: input.workspaceId, taskId: child.id, eventType: 'CREATED', actorType: 'system',
-        actorId: 'company-brain', payload: { missionId: mission.id, parentTaskId: task.id, delegatedTo: spec.employeeKey },
+        actorId: 'company-brain', payload: { missionId: mission.id, parentTaskId: task.id, delegatedTo: spec.employeeKey, assignedEmployeeId: child.assignedEmployeeId, status: child.status, blockedReason: child.blockedReason },
       }, client);
       await appendDomainEvent({
         workspaceId: input.workspaceId, type: 'brain.task.created', aggregateType: 'company_brain_task', aggregateId: child.id,
-        payload: { missionId: mission.id, taskType: child.taskType, parentTaskId: task.id, delegatedTo: spec.employeeKey },
+        payload: { missionId: mission.id, taskType: child.taskType, parentTaskId: task.id, delegatedTo: spec.employeeKey, assignedEmployeeId: child.assignedEmployeeId, status: child.status, blockedReason: child.blockedReason },
         metadata: { actorType: 'system', actorId: 'company-brain', source: 'company-brain.delegation' },
         idempotencyKey: `brain-task:${child.id}:created:v1`,
       }, client);
@@ -258,6 +272,9 @@ async function createMissionFromSignalWithClient(input: {
      WHERE workspace_id=$1 AND id=$2`,
     [input.workspaceId, task.id], client,
   );
+  // A missing employee is a durable setup blocker, not a task that should
+  // remain silently proposed or be picked up by a later retry cycle.
+  await syncMissionStateWithClient(input.workspaceId, mission.id, client);
   return { mission, task: task ?? null };
 }
 

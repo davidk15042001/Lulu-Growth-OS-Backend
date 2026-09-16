@@ -92,7 +92,10 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   });
   assert.equal(mission?.mission.id, replayedMission?.mission.id);
   assert.equal(mission?.task?.id, replayedMission?.task?.id);
-  assert.equal((await brain.listTasksForMission(workspaceId, mission!.mission.id)).length, 4);
+  const delegatedTasks = await brain.listTasksForMission(workspaceId, mission!.mission.id);
+  assert.equal(delegatedTasks.length, 4);
+  assert.ok(mission?.mission.ownerEmployeeId);
+  assert.ok(delegatedTasks.slice(1).every((task) => task.assignedEmployeeId && task.status === 'PROPOSED'));
 
   const child = await brain.createTask({
     workspaceId, missionId: mission!.mission.id, parentTaskId: mission!.task!.id,
@@ -193,4 +196,24 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   assert.equal(linked?.agentRunId, runId);
   const resolved = await brain.getTaskForAgentRun(workspaceId, runId);
   assert.equal(resolved?.id, dispatchTask!.task.id);
+
+  // A workspace missing a delegated specialist must be visibly blocked once,
+  // rather than creating an unassigned task that the worker can keep replaying.
+  await db.query(`UPDATE digital_employees SET active=FALSE WHERE workspace_id=$1 AND employee_key='integration-manager'`, [workspaceId]);
+  const missingObservation = await brain.upsertObservation({
+    workspaceId, sourceType: 'user', sourceKey: 'brain-missing-employee-observation',
+    subjectType: 'company_brain_test', summary: 'Missing employee test', evidence: { test: true },
+  });
+  const missingSignal = await brain.upsertSignal({
+    workspaceId, observationId: missingObservation.id, signalType: 'provider_change', severity: 3,
+    materiality: 0.7, explanation: 'Missing employee test signal',
+  });
+  const missingMission = await brain.createMissionFromSignal({
+    workspaceId, signalId: missingSignal.id, title: 'Missing employee mission', objective: 'Verify setup blocker.', priority: 80,
+  });
+  const missingTasks = await brain.listTasksForMission(workspaceId, missingMission!.mission.id);
+  const blockedSpecialist = missingTasks.find((item) => item.taskType === 'provider-review');
+  assert.equal(blockedSpecialist?.status, 'BLOCKED');
+  assert.equal(blockedSpecialist?.blockedReason, 'DIGITAL_EMPLOYEE_NOT_CONFIGURED');
+  assert.equal((await brain.listMissions(workspaceId, 20)).find((item) => item.id === missingMission!.mission.id)?.status, 'BLOCKED');
 });
