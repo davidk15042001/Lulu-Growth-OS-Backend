@@ -124,6 +124,25 @@ const EnvSchema = z
     PAYG_SERVER_COST_USD_PER_DAY: z.coerce.number().min(0).max(100_000).default(0),
     PAYG_INVOICE_DAYS_UNTIL_DUE: z.coerce.number().int().min(1).max(30).default(7),
     AIRWALLEX_PAYG_DIRECT_PAYMENT_METHODS: z.string().default('card,alipaycn,wechatpay'),
+    // Automatic prepaid-balance invoices are issued by Lulu, not by the
+    // customer workspace that is being credited. A dedicated seller
+    // workspace can be configured when Lulu maintains its legal profile in
+    // the same database; otherwise the explicit profile fields below provide
+    // a stable platform-level seller snapshot.
+    LULU_BILLING_SELLER_WORKSPACE_ID: z.string().trim().min(1).optional(),
+    LULU_BILLING_SELLER_COMPANY_NAME: optionalNonEmptyString,
+    LULU_BILLING_SELLER_INDUSTRY: optionalNonEmptyString,
+    LULU_BILLING_SELLER_COUNTRY_REGION: optionalNonEmptyString,
+    LULU_BILLING_SELLER_TAX_ID: optionalNonEmptyString,
+    LULU_BILLING_SELLER_ADDRESS: optionalNonEmptyString,
+    LULU_BILLING_SELLER_LEGAL_FORM: optionalNonEmptyString,
+    LULU_BILLING_SELLER_LEGAL_REPRESENTATIVE: optionalNonEmptyString,
+    LULU_BILLING_SELLER_PHONE_NUMBER: optionalNonEmptyString,
+    LULU_BILLING_SELLER_BANK_ACCOUNT_NUMBER: optionalNonEmptyString,
+    LULU_BILLING_SELLER_BANK_OPENING_BANK: optionalNonEmptyString,
+    LULU_BILLING_SELLER_BANK_BRANCH: optionalNonEmptyString,
+    LULU_BILLING_SELLER_BANK_CODE: optionalNonEmptyString,
+    LULU_BILLING_SELLER_LOGO_URL: optionalNonEmptyString,
     EMAIL_FROM: z.string().optional(),
     FRONTEND_BASE_URL: z.string().url().optional(),
     // DNS target for Lulu-managed websites. The edge/load-balancer must point

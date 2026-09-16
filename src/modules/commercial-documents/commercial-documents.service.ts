@@ -1,6 +1,7 @@
 import { assertWorkspaceCapability } from '../workspaces/workspace-authorization.service.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import * as repo from './commercial-documents.repo.js';
+import { renderInvoicePdf } from './commercial-invoice-pdf.service.js';
 import type { CreateInvoiceInput, CreateQuoteInput, PolicyInput, RecordInvoicePaymentInput, SendDocumentInput } from './commercial-documents.validator.js';
 
 type DocumentCapability = 'quotes.read'|'quotes.create'|'quotes.update'|'quotes.send'|'quotes.approve'|'invoices.read'|'invoices.create'|'invoices.issue'|'invoices.send'|'invoices.cancel'|'commercial_policy.read'|'commercial_policy.manage'|'finance.manage';
@@ -33,6 +34,13 @@ export async function sendQuote(workspaceId:string,userId:string,id:string,input
 export async function listInvoices(workspaceId:string,userId:string,filters:Parameters<typeof repo.listInvoices>[1]){await authorize(workspaceId,userId,'invoices.read');return repo.listInvoices(workspaceId,filters);}
 export async function getDocumentSellerProfile(workspaceId:string,userId:string){await authorize(workspaceId,userId,'invoices.read');const profile=await repo.getDocumentSellerProfile(workspaceId);if(!profile)throw notFoundError('Company profile not found');return profile;}
 export async function getInvoice(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.read');const result=await repo.getInvoice(workspaceId,id);if(!result)throw notFoundError('Invoice not found');return result;}
+export async function downloadInvoicePdf(workspaceId: string, userId: string, id: string) {
+  await authorize(workspaceId, userId, 'invoices.read');
+  const detail = await repo.getInvoice(workspaceId, id);
+  if (!detail) throw notFoundError('Invoice not found');
+  const pdf = await renderInvoicePdf(detail);
+  return { filename: `${detail.invoice.invoiceNumber || 'invoice'}.pdf`, pdf };
+}
 export async function createInvoice(
   workspaceId: string,
   userId: string,
@@ -50,4 +58,14 @@ export async function recordInvoicePayment(workspaceId:string,userId:string,id:s
 export async function getPolicy(workspaceId:string,userId:string){await authorize(workspaceId,userId,'commercial_policy.read');return repo.getPolicy(workspaceId);}
 export async function updatePolicy(workspaceId:string,userId:string,input:PolicyInput){await authorize(workspaceId,userId,'commercial_policy.manage');return repo.updatePolicy(workspaceId,input,userId);}
 export async function publicDocument(token:string){return repo.getPublicDocument(token);}
+export async function downloadPublicInvoicePdf(token: string) {
+  const document = await repo.getPublicDocument(token) as { type?: string; number?: string; status?: string; currency?: string; language?: string; issueDate?: unknown; dueDate?: unknown; subtotal?: unknown; discountTotal?: unknown; shippingTotal?: unknown; taxTotal?: unknown; grandTotal?: unknown; amountPaid?: unknown; amountDue?: unknown; sellerProfile?: repo.DocumentSellerProfile | null; lines?: Array<Record<string, unknown>> } | null;
+  if (!document || document.type !== 'INVOICE') throw notFoundError('Invoice not found');
+  const pdf = await renderInvoicePdf({
+    invoice: document,
+    sellerProfile: document.sellerProfile ?? null,
+    lines: (document.lines ?? []) as Array<Record<string, unknown>>,
+  });
+  return { filename: `${document.number || 'invoice'}.pdf`, pdf };
+}
 export async function acceptPublicQuote(token:string,decision:'ACCEPTED'|'DECLINED',comment:string|null){const result=await repo.acceptQuote(token,decision,comment);if(!result)throw notFoundError('Quote link not found or expired');return result;}

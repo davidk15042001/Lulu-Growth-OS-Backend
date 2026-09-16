@@ -160,6 +160,7 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
   const amount = normalizeAmount(input.amount);
   if (amount <= 0 || input.lines.length === 0) return null;
   const key = operationKey(input);
+  const platformSellerProfile = await commercialDocumentsRepo.getPlatformBillingSellerProfile();
   const prior = await query<{ documentId: string }>(
     `SELECT document_id AS "documentId"
        FROM commercial_document_operations
@@ -172,6 +173,9 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
     [input.workspaceId, key],
   );
   if (prior.rows[0]) {
+    // Reconciliation also repairs invoices created by older releases, where
+    // the customer workspace was incorrectly captured as the seller.
+    await commercialDocumentsRepo.setInvoiceSellerProfile(input.workspaceId, prior.rows[0].documentId, platformSellerProfile);
     return commercialDocumentsRepo.getInvoice(input.workspaceId, prior.rows[0].documentId);
   }
 
@@ -211,7 +215,7 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
     let current = invoice;
     if (current.invoice.status === 'DRAFT' || current.invoice.status === 'READY') {
       try {
-        const issued = await commercialDocumentsRepo.issueInvoice(input.workspaceId, current.invoice.id, customer.actorId);
+        const issued = await commercialDocumentsRepo.issueInvoice(input.workspaceId, current.invoice.id, customer.actorId, platformSellerProfile);
         if (!issued) {
           logger.warn({ workspaceId: input.workspaceId, invoiceId: current.invoice.id, referenceId: input.referenceId }, 'Automatic billing invoice could not be loaded after issuing');
           return current;
@@ -245,6 +249,39 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
     logger.error({ error, workspaceId: input.workspaceId, kind: input.kind, referenceId: input.referenceId }, 'Automatic paid billing invoice creation failed; reconciliation will retry it');
     return null;
   }
+}
+
+/**
+ * Repair seller snapshots on automatic billing invoices already in the
+ * database. This is deliberately separate from payment reconciliation so it
+ * also covers invoices that were paid successfully before the seller-role fix.
+ */
+export async function reconcileAutomaticBillingInvoiceSellers(limit = 500) {
+  const bounded = Math.max(1, Math.min(2_000, Math.trunc(limit)));
+  const sellerProfile = await commercialDocumentsRepo.getPlatformBillingSellerProfile();
+  const candidates = await query<{ workspaceId: string; id: string }>(
+    `SELECT i.workspace_id AS "workspaceId", i.id
+       FROM invoices i
+      WHERE i.source='api'
+        AND i.creation_mode='AUTOMATIC'
+        AND i.status NOT IN ('CANCELLED','VOID')
+        AND i.metadata->'sellerProfile' IS DISTINCT FROM $2::jsonb
+      ORDER BY i.created_at ASC
+      LIMIT $1`,
+    [bounded, JSON.stringify(sellerProfile)],
+  );
+  let repaired = 0;
+  let failed = 0;
+  for (const invoice of candidates.rows) {
+    try {
+      const result = await commercialDocumentsRepo.setInvoiceSellerProfile(invoice.workspaceId, invoice.id, sellerProfile);
+      if (result) repaired += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn({ error, workspaceId: invoice.workspaceId, invoiceId: invoice.id }, 'Automatic billing invoice seller repair failed');
+    }
+  }
+  return { checked: candidates.rows.length, repaired, failed };
 }
 
 function topupPaymentMethod(value: string | null | undefined): NonNullable<PaidBillingInvoiceInput['paymentMethod']> {
@@ -333,6 +370,7 @@ export async function createPaidStorageInvoice(input: {
 
 export async function reconcilePaidBillingInvoices(limit = 50) {
   const bounded = Math.max(1, Math.min(200, Math.trunc(limit)));
+  const sellerRepair = await reconcileAutomaticBillingInvoiceSellers();
   const candidates = await query<{ kind: PaidBillingKind; referenceId: string; workspaceId: string; occurredAt: string }>(
     `SELECT 'AI_CREDITS'::text AS kind, t.id::text AS "referenceId", t.workspace_id AS "workspaceId",
             COALESCE(t.paid_at,t.credited_at,t.created_at) AS "occurredAt"
@@ -404,5 +442,5 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
       logger.warn({ error, kind: candidate.kind, referenceId: candidate.referenceId }, 'Paid billing invoice reconciliation candidate failed');
     }
   }
-  return { checked: candidates.rows.length, created, failed };
+  return { checked: candidates.rows.length, created, failed, sellerRepair };
 }

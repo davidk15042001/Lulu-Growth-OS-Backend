@@ -13,6 +13,7 @@ import {
   finalizePaygInvoice,
   payPaygInvoice,
   reconcilePendingWalletInvoicePayments,
+  reconcilePendingWalletPaymentIntents,
 } from './airwallex.service.js';
 import {
   claimDuePaygPeriod,
@@ -154,6 +155,7 @@ export function runPaygBillingCycle(): Promise<void> {
     await repairCompletedProfilePointers();
     const apiSettlement = await reconcileUnsettledApiUsage();
     const walletInvoiceReconciliation = await reconcilePendingWalletInvoicePayments();
+    const walletIntentReconciliation = await reconcilePendingWalletPaymentIntents();
     const paidInvoiceReconciliation = await reconcilePaidBillingInvoices();
     if (!stopping && Date.now() - lastStorageInventoryAt >= STORAGE_INVENTORY_INTERVAL_MS) {
       const inventory = await reconcileStoredObjectInventory();
@@ -174,13 +176,16 @@ export function runPaygBillingCycle(): Promise<void> {
       }
     }
     runtimeMonitor.progress({
-      phase: processedCount || apiSettlement.settled || walletInvoiceReconciliation.credited ? 'processed' : 'idle',
-      processed: processedCount + apiSettlement.settled + walletInvoiceReconciliation.credited,
+      phase: processedCount || apiSettlement.settled || walletInvoiceReconciliation.credited || walletIntentReconciliation.credited ? 'processed' : 'idle',
+      processed: processedCount + apiSettlement.settled + walletInvoiceReconciliation.credited + walletIntentReconciliation.credited,
       metadata: {
         apiUsageSettled: apiSettlement.settled,
         walletInvoicesChecked: walletInvoiceReconciliation.checked,
         walletInvoicesCredited: walletInvoiceReconciliation.credited,
         walletInvoiceFailures: walletInvoiceReconciliation.failed,
+        walletIntentsChecked: walletIntentReconciliation.checked,
+        walletIntentsCredited: walletIntentReconciliation.credited,
+        walletIntentFailures: walletIntentReconciliation.failed,
         paidInvoicesChecked: paidInvoiceReconciliation.checked,
         paidInvoicesCreated: paidInvoiceReconciliation.created,
       },

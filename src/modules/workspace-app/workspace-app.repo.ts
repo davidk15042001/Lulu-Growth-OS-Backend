@@ -605,9 +605,14 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       [workspaceId],
     ),
     getLatestPaygPaymentMethodSetup(workspaceId),
-    query<{availableAmount:string;reservedAmount:string;spentAmount:string;reversalDebtAmount:string;totalFundedAmount:string;currency:string}>(
-      `SELECT available_amount AS "availableAmount",reserved_amount AS "reservedAmount",spent_amount AS "spentAmount",reversal_debt_amount AS "reversalDebtAmount",total_funded_amount AS "totalFundedAmount",currency
-       FROM workspace_api_wallets WHERE workspace_id=$1`, [workspaceId]),
+    query<{availableAmount:string;reservedAmount:string;paymentReservedAmount:string;spentAmount:string;reversalDebtAmount:string;totalFundedAmount:string;currency:string}>(
+      `SELECT COALESCE(w.available_amount,0) AS "availableAmount",COALESCE(w.reserved_amount,0) AS "reservedAmount",
+              (SELECT COALESCE(SUM(t.amount),0) FROM workspace_api_topups t
+                WHERE t.workspace_id=$1 AND t.credited_at IS NULL
+                  AND t.status IN ('CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')) AS "paymentReservedAmount",
+              COALESCE(w.spent_amount,0) AS "spentAmount",COALESCE(w.reversal_debt_amount,0) AS "reversalDebtAmount",
+              COALESCE(w.total_funded_amount,0) AS "totalFundedAmount",COALESCE(w.currency,'CNY') AS currency
+       FROM (SELECT $1::uuid AS workspace_id) x LEFT JOIN workspace_api_wallets w ON w.workspace_id=x.workspace_id`, [workspaceId]),
   ]);
   const current = paygCurrent.rows[0];
   const subscriptionRow = subscription.rows[0] ?? null;
@@ -617,11 +622,11 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     usage: usage.rows,
     apiWallet: apiWallet.rows[0] ? {
       availableAmount: Number(apiWallet.rows[0].availableAmount), spentAmount: Number(apiWallet.rows[0].spentAmount),
-      reservedAmount: Number(apiWallet.rows[0].reservedAmount),
+      reservedAmount: Number(apiWallet.rows[0].reservedAmount), paymentReservedAmount: Number(apiWallet.rows[0].paymentReservedAmount),
       reversalDebtAmount: Number(apiWallet.rows[0].reversalDebtAmount),
       totalFundedAmount: Number(apiWallet.rows[0].totalFundedAmount), currency: apiWallet.rows[0].currency,
       packages: [...API_TOPUP_PACKAGES], enabled: Number(apiWallet.rows[0].availableAmount) > 0 && Number(apiWallet.rows[0].reversalDebtAmount) === 0,
-    } : { availableAmount: 0, reservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [...API_TOPUP_PACKAGES], enabled: false },
+    } : { availableAmount: 0, reservedAmount: 0, paymentReservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [...API_TOPUP_PACKAGES], enabled: false },
     storagePricing: {
       currency: 'USD', freeTierDeduction: false, providerMarkupPercent: 10,
       additionalStoragePerGbMonthUsd: 0.2,

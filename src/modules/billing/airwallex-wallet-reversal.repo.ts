@@ -339,7 +339,12 @@ async function updateTopupAggregateStatus(topup: Topup, client: PoolClient) {
       : ['REFUNDED','CHARGEBACK'].includes(topup.status)
         ? 'PENDING_PAYMENT'
         : topup.status;
-  await query(`UPDATE ${table} SET status=$2 WHERE id=$1`, [topup.id, status], client);
+  await query(`UPDATE ${table} SET status=$2::varchar,
+      payment_status=CASE WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') THEN $2::varchar WHEN $2::varchar='SUCCEEDED' THEN 'SUCCEEDED' ELSE payment_status END,
+      credit_status=CASE WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'REVERSED' WHEN $2::varchar='SUCCEEDED' THEN 'AVAILABLE' ELSE credit_status END,
+      provider_status=COALESCE(provider_status,$2::varchar),
+      cancelled_at=CASE WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') THEN COALESCE(cancelled_at,NOW()) ELSE cancelled_at END
+    WHERE id=$1`, [topup.id, status], client);
   return status;
 }
 

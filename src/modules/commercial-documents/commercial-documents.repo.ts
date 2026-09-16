@@ -1,6 +1,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
+import { env } from '../../config/env.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AppError, conflictError, notFoundError } from '../../utils/app-error.js';
@@ -68,6 +69,39 @@ async function getCurrentDocumentSellerProfile(workspaceId: string, client?: Poo
   return {
     ...profile,
     logoUrl: profile.logoMimeType ? `/api/v1/public/workspaces/${encodeURIComponent(workspaceId)}/logo` : null,
+  };
+}
+
+/**
+ * Resolve the legal seller for platform-generated billing documents.
+ *
+ * Billing documents are stored in the customer workspace so the customer can
+ * see them, but that workspace is the buyer.  Never use its company profile as
+ * the seller for Lulu's own prepaid-balance invoices.  A dedicated Lulu
+ * workspace may be configured for a complete legal/logo profile; otherwise we
+ * use the explicit platform seller settings and a safe Lulu fallback.
+ */
+export async function getPlatformBillingSellerProfile(client?: PoolClient): Promise<DocumentSellerProfile> {
+  const configuredWorkspaceId = env.LULU_BILLING_SELLER_WORKSPACE_ID?.trim();
+  if (configuredWorkspaceId) {
+    const configuredProfile = await getCurrentDocumentSellerProfile(configuredWorkspaceId, client);
+    if (configuredProfile) return configuredProfile;
+  }
+
+  return {
+    companyName: env.LULU_BILLING_SELLER_COMPANY_NAME ?? 'Lulu AI',
+    industry: env.LULU_BILLING_SELLER_INDUSTRY ?? 'Artificial intelligence software',
+    countryRegion: env.LULU_BILLING_SELLER_COUNTRY_REGION ?? null,
+    taxId: env.LULU_BILLING_SELLER_TAX_ID ?? null,
+    address: env.LULU_BILLING_SELLER_ADDRESS ?? null,
+    legalForm: env.LULU_BILLING_SELLER_LEGAL_FORM ?? null,
+    legalRepresentative: env.LULU_BILLING_SELLER_LEGAL_REPRESENTATIVE ?? null,
+    phoneNumber: env.LULU_BILLING_SELLER_PHONE_NUMBER ?? null,
+    bankAccountNumber: env.LULU_BILLING_SELLER_BANK_ACCOUNT_NUMBER ?? null,
+    bankOpeningBank: env.LULU_BILLING_SELLER_BANK_OPENING_BANK ?? null,
+    bankBranch: env.LULU_BILLING_SELLER_BANK_BRANCH ?? null,
+    bankCode: env.LULU_BILLING_SELLER_BANK_CODE ?? null,
+    logoUrl: env.LULU_BILLING_SELLER_LOGO_URL ?? null,
   };
 }
 
@@ -382,6 +416,41 @@ export async function listInvoices(workspaceId: string, filters: { page:number; 
 export async function getDocumentSellerProfile(workspaceId: string) {
   return getCurrentDocumentSellerProfile(workspaceId);
 }
+
+/** Replace the seller snapshot on an already-created platform billing invoice. */
+export async function setInvoiceSellerProfile(workspaceId: string, id: string, sellerProfile: DocumentSellerProfile) {
+  return withTransaction(async (client) => {
+    const invoice = (await query<{ id: string }>(
+      `SELECT id FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+      [workspaceId, id],
+      client,
+    )).rows[0];
+    if (!invoice) return null;
+    const updated = await query(
+      `UPDATE invoices
+          SET metadata=jsonb_set(
+            jsonb_set(COALESCE(metadata,'{}'::jsonb), '{sellerProfile}', $3::jsonb, true),
+            '{sellerType}', '"LULU_PLATFORM"'::jsonb, true
+          ),
+              updated_at=NOW(),
+              version=version+1
+        WHERE workspace_id=$1 AND id=$2
+          AND (
+            metadata->'sellerProfile' IS DISTINCT FROM $3::jsonb
+            OR metadata->>'sellerType' IS DISTINCT FROM 'LULU_PLATFORM'
+          )`,
+      [workspaceId, id, JSON.stringify(sellerProfile)],
+      client,
+    );
+    if (updated.rowCount) {
+      await audit(client, workspaceId, null, 'invoice.seller_profile_reconciled', 'invoice', id, {
+        sellerProfile,
+        sellerType: 'LULU_PLATFORM',
+      });
+    }
+    return getInvoice(workspaceId, id, client);
+  });
+}
 export async function listAllQuotes(filters: { workspaceId?: string | undefined; status?: string | undefined; search?: string | undefined; limit?: number | undefined }) {
   const params: unknown[] = []; const where: string[] = [];
   if (filters.workspaceId) { params.push(filters.workspaceId); where.push(`q.workspace_id=$${params.length}`); }
@@ -444,8 +513,8 @@ export async function listAllInvoices(filters: { workspaceId?: string | undefine
   if (filters.workspaceId) { params.push(filters.workspaceId); where.push(`i.workspace_id=$${params.length}`); }
   if (filters.status) { params.push(filters.status); where.push(`i.status=$${params.length}`); }
   if (filters.search) { params.push(`%${filters.search}%`); where.push(`(i.invoice_number ILIKE $${params.length} OR i.currency ILIKE $${params.length} OR w.name ILIKE $${params.length})`); }
-  params.push(Math.min(filters.limit ?? 200, 500));
-  const rows = await query(`SELECT ${invoiceSelect},w.name AS "workspaceName" FROM invoices i JOIN workspaces w ON w.id=i.workspace_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY i.created_at DESC LIMIT $${params.length}`, params);
+  params.push(Math.min(filters.limit ?? 5000, 5000));
+  const rows = await query(`SELECT ${invoiceSelect},w.name AS "workspaceName" FROM invoices i JOIN workspaces w ON w.id=i.workspace_id ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY i.invoice_number DESC, i.created_at DESC LIMIT $${params.length}`, params);
   return rows.rows;
 }
 
@@ -599,7 +668,7 @@ export async function createInvoice(
   return invoice ? { ...invoice, idempotent: result.idempotent } : invoice;
 }
 
-export async function issueInvoice(workspaceId:string,id:string,actorId:string){return withTransaction(async(client)=>{const row=(await query<any>(`SELECT * FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,id],client)).rows[0];if(!row)throw notFoundError('Invoice not found');if(!['DRAFT','READY'].includes(row.status))throw conflictError('Only a ready invoice can be issued');const lines=await query(`SELECT 1 FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 LIMIT 1`,[workspaceId,id],client);if(!lines.rows[0])throw conflictError('Invoice requires at least one line item');const sellerProfile=await getCurrentDocumentSellerProfile(workspaceId,client);if(!sellerProfile)throw conflictError('A company profile is required before issuing an invoice');await query(`UPDATE invoices SET status='ISSUED',issue_date=COALESCE(issue_date,CURRENT_DATE),issued_at=NOW(),amount_due=grand_total,metadata=metadata || jsonb_build_object('sellerProfile',$4::jsonb),updated_by=$3 WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,actorId,JSON.stringify(sellerProfile)],client);await audit(client,workspaceId,actorId,'invoice.issued','invoice',id,{status:'ISSUED',sellerProfileCaptured:true});await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_ISSUED,aggregateType:'invoice',aggregateId:id,payload:{invoiceId:id},metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${id}:issued`},client);return getInvoice(workspaceId,id,client);});}
+export async function issueInvoice(workspaceId:string,id:string,actorId:string,sellerProfileOverride?:DocumentSellerProfile){return withTransaction(async(client)=>{const row=(await query<any>(`SELECT * FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,id],client)).rows[0];if(!row)throw notFoundError('Invoice not found');if(!['DRAFT','READY'].includes(row.status))throw conflictError('Only a ready invoice can be issued');const lines=await query(`SELECT 1 FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 LIMIT 1`,[workspaceId,id],client);if(!lines.rows[0])throw conflictError('Invoice requires at least one line item');const sellerProfile=sellerProfileOverride??await getCurrentDocumentSellerProfile(workspaceId,client);if(!sellerProfile)throw conflictError('A company profile is required before issuing an invoice');const sellerType=sellerProfileOverride?'LULU_PLATFORM':'WORKSPACE';await query(`UPDATE invoices SET status='ISSUED',issue_date=COALESCE(issue_date,CURRENT_DATE),issued_at=NOW(),amount_due=grand_total,metadata=jsonb_set(jsonb_set(COALESCE(metadata,'{}'::jsonb),'{sellerProfile}',$4::jsonb,true),'{sellerType}',$5::jsonb,true),updated_by=$3 WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,actorId,JSON.stringify(sellerProfile),JSON.stringify(sellerType)],client);await audit(client,workspaceId,actorId,'invoice.issued','invoice',id,{status:'ISSUED',sellerProfileCaptured:true,sellerType});await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_ISSUED,aggregateType:'invoice',aggregateId:id,payload:{invoiceId:id},metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${id}:issued`},client);return getInvoice(workspaceId,id,client);});}
 export async function sendInvoice(workspaceId:string,id:string,actorId:string,input:SendDocumentInput){return withTransaction(async(client)=>{const row=(await query<any>(`SELECT * FROM invoices WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,id],client)).rows[0];if(!row)throw notFoundError('Invoice not found');if(!['ISSUED','SENT','PARTIALLY_PAID','OVERDUE'].includes(row.status))throw conflictError('Only an issued invoice can be sent');const key=input.operationKey??`invoice:${id}:send`;const prior=(await query(`SELECT result FROM commercial_document_idempotency WHERE workspace_id=$1 AND operation_key=$2`,[workspaceId,key],client)).rows[0];if(prior?.result)return {...(prior.result as Record<string,unknown>),idempotent:true};if(input.conversationId){const conversation=(await query(`SELECT 1 FROM omni_conversations WHERE workspace_id=$1 AND id=$2`,[workspaceId,input.conversationId],client)).rows[0];if(!conversation)throw notFoundError('Conversation not found');}const link=await createLink(client,workspaceId,'INVOICE',id,null);const reference=`/documents/commercial/${link}`;const hashValue=hash(JSON.stringify({invoiceId:id,total:row.grand_total}));await query(`UPDATE invoices SET status='SENT',document_status='READY',document_storage_reference=$3,document_hash=$4,sent_at=NOW(),updated_by=$5 WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,reference,hashValue,actorId],client);const delivery=(await query<{id:string}>(`INSERT INTO document_deliveries(workspace_id,document_type,document_id,conversation_id,channel,recipient,actor_type,actor_id,status,sent_at) VALUES($1,'INVOICE',$2,$3,$4,$5,'USER',$6,'QUEUED',NOW()) RETURNING id`,[workspaceId,id,input.conversationId??null,input.channel,input.recipient??null,actorId],client)).rows[0];const result={invoiceId:id,deliveryId:delivery?.id??null,documentPath:reference};await query(`INSERT INTO commercial_document_idempotency(workspace_id,operation_key,document_type,document_id,result) VALUES($1,$2,'DELIVERY',$3,$4::jsonb)`,[workspaceId,key,id,JSON.stringify(result)],client);await audit(client,workspaceId,actorId,'invoice.sent','invoice',id,result);await appendDomainEvent({workspaceId,type:DOMAIN_EVENT_TYPES.INVOICE_SENT,aggregateType:'invoice',aggregateId:id,payload:result,metadata:{actorId,source:'commercial-documents'},idempotencyKey:`invoice:${id}:sent`},client);return result;});}
 
 export async function getPublicDocument(token:string){const result=await query<any>(`SELECT l.workspace_id,l.document_type,l.document_id,${documentSellerProfileSelect},q.quote_number,q.status AS quote_status,q.currency AS quote_currency,q.language AS quote_language,qv.version_number,qv.subtotal,qv.discount_total,qv.shipping_total,qv.tax_total,qv.grand_total,qv.valid_until,qv.terms_snapshot, i.invoice_number,i.status AS invoice_status,i.currency AS invoice_currency,i.language AS invoice_language,i.issue_date,i.due_date,i.subtotal AS invoice_subtotal,i.discount_total AS invoice_discount_total,i.shipping_total AS invoice_shipping_total,i.tax_total AS invoice_tax_total,i.grand_total AS invoice_grand_total,i.amount_paid,i.amount_due,i.metadata AS invoice_metadata FROM commercial_document_links l JOIN workspaces w ON w.id=l.workspace_id LEFT JOIN quotes q ON l.document_type='QUOTE' AND q.workspace_id=l.workspace_id AND q.id=l.document_id LEFT JOIN quote_versions qv ON qv.workspace_id=q.workspace_id AND qv.id=q.current_version_id LEFT JOIN invoices i ON l.document_type='INVOICE' AND i.workspace_id=l.workspace_id AND i.id=l.document_id WHERE l.token_hash=$1 AND l.revoked_at IS NULL AND (l.expires_at IS NULL OR l.expires_at>NOW())`,[hash(token)]);const row=result.rows[0];if(!row)return null;const logoUrl=row.logoMimeType?`/api/v1/public/workspaces/${encodeURIComponent(row.workspace_id)}/logo`:null;const sellerProfile=isDocumentSellerProfile(row.invoice_metadata?.sellerProfile)?{...row.invoice_metadata.sellerProfile,logoUrl:row.invoice_metadata.sellerProfile.logoUrl??logoUrl}:{companyName:row.companyName,industry:row.industry,countryRegion:row.countryRegion,taxId:row.taxId,address:row.address,legalForm:row.legalForm,legalRepresentative:row.legalRepresentative,phoneNumber:row.phoneNumber,bankAccountNumber:row.bankAccountNumber,bankOpeningBank:row.bankOpeningBank,bankBranch:row.bankBranch,bankCode:row.bankCode,logoUrl};if(row.document_type==='QUOTE'){const lines=await query(`SELECT product_name_snapshot AS "productName",description_snapshot AS "description",quantity,quantity_unit AS "quantityUnit",unit_price AS "unitPrice",discount,tax,line_total AS "lineTotal" FROM quote_lines WHERE workspace_id=$1 AND quote_version_id=(SELECT current_version_id FROM quotes WHERE workspace_id=$1 AND id=$2) ORDER BY sort_order`,[row.workspace_id,row.document_id]);return {type:'QUOTE',number:row.quote_number,status:row.quote_status,currency:row.quote_currency,language:row.quote_language,versionNumber:row.version_number,validUntil:row.valid_until,subtotal:row.subtotal,discountTotal:row.discount_total,shippingTotal:row.shipping_total,taxTotal:row.tax_total,grandTotal:row.grand_total,terms:row.terms_snapshot,sellerProfile,lines:lines.rows};}const lines=await query(`SELECT product_name_snapshot AS "productName",description_snapshot AS "description",quantity,quantity_unit AS "quantityUnit",unit_price AS "unitPrice",discount,tax,line_total AS "lineTotal" FROM invoice_lines WHERE workspace_id=$1 AND invoice_id=$2 ORDER BY sort_order`,[row.workspace_id,row.document_id]);const snapshot=isDocumentSellerProfile(row.invoice_metadata?.sellerProfile)?{...row.invoice_metadata.sellerProfile,logoUrl:row.invoice_metadata.sellerProfile.logoUrl??logoUrl}:sellerProfile;return {type:'INVOICE',number:row.invoice_number,status:row.invoice_status,currency:row.invoice_currency,language:row.invoice_language,issueDate:row.issue_date,dueDate:row.due_date,subtotal:row.invoice_subtotal,discountTotal:row.invoice_discount_total,shippingTotal:row.invoice_shipping_total,taxTotal:row.invoice_tax_total,grandTotal:row.invoice_grand_total,amountPaid:row.amount_paid,amountDue:row.amount_due,sellerProfile:snapshot,lines:lines.rows};}

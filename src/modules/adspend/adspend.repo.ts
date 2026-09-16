@@ -16,6 +16,7 @@ type WalletRow = {
   currency: 'CNY';
   availableAmount: string;
   reservedAmount: string;
+  paymentReservedAmount: string;
   spentAmount: string;
   refundedAmount: string;
   reversalDebtAmount: string;
@@ -39,6 +40,13 @@ export type AdSpendTopupRow = {
   paymentMethod: AdSpendPaymentMethod;
   provider: 'airwallex';
   status: AdSpendTopupStatus;
+  providerStatus: string | null;
+  paymentStatus: 'PENDING'|'SUCCEEDED'|'FAILED'|'CANCELLED'|'EXPIRED'|'REFUNDED'|'CHARGEBACK'|'UNKNOWN';
+  creditStatus: 'NOT_CREDITED'|'AVAILABLE'|'REVERSED';
+  settlementStatus: 'PENDING'|'COMPLETED'|'NOT_APPLICABLE';
+  confirmedAt: string | null;
+  cancelledAt: string | null;
+  settledAt: string | null;
   merchantOrderId: string;
   providerInvoiceId: string | null;
   providerPaymentIntentId: string | null;
@@ -79,7 +87,7 @@ type AdBudgetAuthorizationRow = {
 };
 
 const walletSelect = `workspace_id AS "workspaceId",currency,available_amount AS "availableAmount",
-  reserved_amount AS "reservedAmount",spent_amount AS "spentAmount",refunded_amount AS "refundedAmount",
+  reserved_amount AS "reservedAmount",payment_reserved_amount AS "paymentReservedAmount",spent_amount AS "spentAmount",refunded_amount AS "refundedAmount",
   reversal_debt_amount AS "reversalDebtAmount",
   total_funded_amount AS "totalFundedAmount",total_fee_amount AS "totalFeeAmount",
   fee_basis_points AS "feeBasisPoints",version,created_at AS "createdAt",updated_at AS "updatedAt"`;
@@ -87,6 +95,8 @@ const walletSelect = `workspace_id AS "workspaceId",currency,available_amount AS
 const topupSelect = `id,workspace_id AS "workspaceId",created_by AS "createdBy",net_amount AS "netAmount",
   fee_basis_points AS "feeBasisPoints",fee_amount AS "feeAmount",total_amount AS "totalAmount",currency,
   payment_method AS "paymentMethod",provider,status,merchant_order_id AS "merchantOrderId",
+  provider_status AS "providerStatus",payment_status AS "paymentStatus",credit_status AS "creditStatus",settlement_status AS "settlementStatus",
+  confirmed_at AS "confirmedAt",cancelled_at AS "cancelledAt",settled_at AS "settledAt",
   provider_invoice_id AS "providerInvoiceId",provider_payment_intent_id AS "providerPaymentIntentId",
   checkout_url AS "checkoutUrl",qr_payload AS "qrPayload",expires_at AS "expiresAt",paid_at AS "paidAt",
   credited_at AS "creditedAt",provider_response AS "providerResponse",error_code AS "errorCode",
@@ -103,6 +113,7 @@ function publicWallet(row: WalletRow) {
     ...row,
     availableAmount: Number(row.availableAmount),
     reservedAmount: Number(row.reservedAmount),
+    paymentReservedAmount: Number(row.paymentReservedAmount),
     spentAmount: Number(row.spentAmount),
     refundedAmount: Number(row.refundedAmount),
     reversalDebtAmount: Number(row.reversalDebtAmount),
@@ -186,7 +197,13 @@ async function auditBudgetAuthorization(
 }
 
 async function ensureWallet(workspaceId: string, client?: PoolClient) {
-  await query(`INSERT INTO workspace_ad_spend_wallets(workspace_id) VALUES($1) ON CONFLICT DO NOTHING`, [workspaceId], client);
+  // Materialize lazily and seed any still-pending payment reserve. This keeps
+  // a customer with only an unconfirmed payment from looking funded while
+  // still exposing the reserve once the wallet is requested.
+  await query(`INSERT INTO workspace_ad_spend_wallets(workspace_id,payment_reserved_amount)
+    SELECT $1,COALESCE((SELECT SUM(net_amount) FROM workspace_ad_spend_topups
+      WHERE workspace_id=$1 AND credited_at IS NULL AND status IN ('CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')),0)
+    ON CONFLICT DO NOTHING`, [workspaceId], client);
   const row = (await query<WalletRow>(`SELECT ${walletSelect} FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspaceId], client)).rows[0];
   if (!row) throw new Error('Ad spend wallet could not be created');
   return row;
@@ -220,19 +237,36 @@ export async function createAdSpendTopup(input: {
   totalAmount: number;
   paymentMethod: AdSpendPaymentMethod;
 }) {
-  const id = crypto.randomUUID();
-  const merchantOrderId = `lulu-adspend-${id}`;
-  const row = (await query<AdSpendTopupRow>(
-    `INSERT INTO workspace_ad_spend_topups(
-       id,workspace_id,created_by,net_amount,fee_basis_points,fee_amount,total_amount,currency,
-       payment_method,merchant_order_id
-     ) VALUES($1,$2,$3,$4,$5,$6,$7,'CNY',$8,$9)
-     RETURNING ${topupSelect}`,
-    [id, input.workspaceId, input.userId, input.netAmount.toFixed(2), AD_SPEND_FEE_BASIS_POINTS,
-      input.feeAmount.toFixed(2), input.totalAmount.toFixed(2), input.paymentMethod, merchantOrderId],
-  )).rows[0];
-  if (!row) throw new Error('Ad spend top-up was not created');
-  return row;
+  return withTransaction(async (client) => {
+    const id = crypto.randomUUID();
+    const merchantOrderId = `lulu-adspend-${id}`;
+    const row = (await query<AdSpendTopupRow>(
+      `INSERT INTO workspace_ad_spend_topups(
+         id,workspace_id,created_by,net_amount,fee_basis_points,fee_amount,total_amount,currency,
+         payment_method,merchant_order_id,payment_status,credit_status,settlement_status
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,'CNY',$8,$9,'PENDING','NOT_CREDITED','PENDING')
+       RETURNING ${topupSelect}`,
+      [id, input.workspaceId, input.userId, input.netAmount.toFixed(2), AD_SPEND_FEE_BASIS_POINTS,
+        input.feeAmount.toFixed(2), input.totalAmount.toFixed(2), input.paymentMethod, merchantOrderId],
+      client,
+    )).rows[0];
+    if (!row) throw new Error('Ad spend top-up was not created');
+    const existing = (await query<WalletRow>(`SELECT ${walletSelect} FROM workspace_ad_spend_wallets WHERE workspace_id=$1 FOR UPDATE`, [input.workspaceId], client)).rows[0];
+    const wallet = existing ? (await query<WalletRow>(
+      `UPDATE workspace_ad_spend_wallets
+       SET payment_reserved_amount=payment_reserved_amount+$2,version=version+1
+       WHERE workspace_id=$1 RETURNING ${walletSelect}`,
+      [input.workspaceId, input.netAmount.toFixed(2)], client,
+    )).rows[0] : null;
+    await query(
+      `INSERT INTO workspace_ad_spend_ledger(workspace_id,topup_id,entry_type,amount_delta,balance_after,reserved_after,currency,idempotency_key,metadata)
+       VALUES($1,NULL,'DEPOSIT_RESERVED',0,$2,$3,'CNY',$4,$5::jsonb) ON CONFLICT DO NOTHING`,
+      [input.workspaceId, existing?.availableAmount ?? '0', wallet?.paymentReservedAmount ?? input.netAmount.toFixed(2),
+        `adspend-topup:${id}:deposit-reserved`, JSON.stringify({ provider: 'airwallex', netAmount: input.netAmount, totalCharged: input.totalAmount })],
+      client,
+    );
+    return row;
+  });
 }
 
 export async function getAdSpendTopup(workspaceId: string, topupId: string) {
@@ -253,7 +287,7 @@ export async function attachAdSpendProviderPayment(input: {
   providerResponse?: Record<string, unknown>;
 }) {
   const row = (await query<AdSpendTopupRow>(
-    `UPDATE workspace_ad_spend_topups SET status=$2,
+    `UPDATE workspace_ad_spend_topups SET status=$2,provider_status=$2,
        provider_invoice_id=COALESCE($3,provider_invoice_id),
        provider_payment_intent_id=COALESCE($4,provider_payment_intent_id),
        checkout_url=COALESCE($5,checkout_url),qr_payload=COALESCE($6,qr_payload),
@@ -317,7 +351,7 @@ export async function applyAdSpendProviderStatus(input: {
     }
     const mappedStatus = mapProviderStatus(input.providerStatus);
     const reversal = mappedStatus === 'REFUNDED' || mappedStatus === 'CHARGEBACK';
-    const wasReversed = topup.status === 'REFUNDED' || topup.status === 'CHARGEBACK';
+    const wasReversed = topup.creditStatus === 'REVERSED' || topup.status === 'REFUNDED' || topup.status === 'CHARGEBACK';
     // Provider events can arrive out of order. Once funds were credited, a
     // delayed pending/failed event must never downgrade the successful top-up.
     // Reversal is terminal even if it is observed before the corresponding
@@ -330,23 +364,31 @@ export async function applyAdSpendProviderStatus(input: {
           ? 'SUCCEEDED'
           : mappedStatus;
     const successful = status === 'SUCCEEDED';
-    const newlyCredited = successful && !topup.creditedAt;
-    const newlyReversed = reversal && Boolean(topup.creditedAt) && !wasReversed;
+    const newlyCredited = successful && topup.creditStatus !== 'AVAILABLE';
+    const newlyReleased = !topup.creditedAt && ['FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK'].includes(status);
+    const newlyReversed = reversal && topup.creditStatus === 'AVAILABLE' && !wasReversed;
+    const paymentStatus = status === 'SUCCEEDED' ? 'SUCCEEDED' : ['CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION'].includes(status) ? 'PENDING' : status;
     await query(
-      `UPDATE workspace_ad_spend_topups SET status=$2::varchar,
-       paid_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(paid_at,$3::timestamptz,NOW()) ELSE paid_at END,
+      `UPDATE workspace_ad_spend_topups SET status=$2::varchar,provider_status=$3,payment_status=$4,
+       credit_status=CASE WHEN $2::varchar='SUCCEEDED' THEN 'AVAILABLE' WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'REVERSED' ELSE credit_status END,
+       settlement_status=CASE WHEN $2::varchar='SUCCEEDED' THEN 'COMPLETED' WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'COMPLETED' WHEN $2::varchar IN ('FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK') THEN 'NOT_APPLICABLE' ELSE settlement_status END,
+       paid_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(paid_at,$5::timestamptz,NOW()) ELSE paid_at END,
+       confirmed_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(confirmed_at,$5::timestamptz,NOW()) ELSE confirmed_at END,
+       settled_at=CASE WHEN $2::varchar='SUCCEEDED' OR ($2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL) THEN COALESCE(settled_at,$5::timestamptz,NOW()) ELSE settled_at END,
        credited_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(credited_at,NOW()) ELSE credited_at END,
-       provider_response=provider_response || $4::jsonb,
-       provider_payment_intent_id=COALESCE(provider_payment_intent_id,$5),
-       provider_invoice_id=COALESCE(provider_invoice_id,$6)
+       cancelled_at=CASE WHEN $4::varchar IN ('FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK') THEN COALESCE(cancelled_at,NOW()) ELSE cancelled_at END,
+       provider_response=provider_response || $6::jsonb,
+       provider_payment_intent_id=COALESCE(provider_payment_intent_id,$7),
+       provider_invoice_id=COALESCE(provider_invoice_id,$8)
        WHERE id=$1`,
-      [topup.id, status, input.paidAt ?? null, JSON.stringify(input.providerResponse ?? {}),
+      [topup.id, status, input.providerStatus, paymentStatus, input.paidAt ?? null, JSON.stringify(input.providerResponse ?? {}),
         input.providerPaymentIntentId ?? null, input.providerInvoiceId ?? null], client,
     );
     if (newlyCredited) {
       await ensureWallet(topup.workspaceId, client);
       const wallet = (await query<WalletRow>(
         `UPDATE workspace_ad_spend_wallets SET
+           payment_reserved_amount=GREATEST(0,payment_reserved_amount-$2),
            available_amount=available_amount+GREATEST(0,$2-reversal_debt_amount),
            reversal_debt_amount=GREATEST(0,reversal_debt_amount-$2),
            total_funded_amount=total_funded_amount+$2,
@@ -358,9 +400,9 @@ export async function applyAdSpendProviderStatus(input: {
       if (!wallet) throw new Error('Ad spend wallet credit failed');
       await query(
         `INSERT INTO workspace_ad_spend_ledger(
-          workspace_id,topup_id,entry_type,amount_delta,balance_after,currency,idempotency_key,metadata
-        ) VALUES($1,$2,'TOPUP_CREDIT',$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
-        [topup.workspaceId, topup.id, topup.netAmount, wallet.availableAmount, `adspend-topup:${topup.id}:credit`,
+          workspace_id,topup_id,entry_type,amount_delta,balance_after,reserved_after,currency,idempotency_key,metadata
+        ) VALUES($1,$2,'TOPUP_CREDIT',$3,$4,$5,'CNY',$6,$7::jsonb) ON CONFLICT DO NOTHING`,
+        [topup.workspaceId, topup.id, topup.netAmount, wallet.availableAmount, wallet.paymentReservedAmount, `adspend-topup:${topup.id}:credit`,
           JSON.stringify({
             feeAmount: Number(topup.feeAmount),
             totalCharged: Number(topup.totalAmount),
@@ -382,6 +424,20 @@ export async function applyAdSpendProviderStatus(input: {
         }, client);
       }
     }
+    if (newlyReleased) {
+      await ensureWallet(topup.workspaceId, client);
+      const wallet = (await query<WalletRow>(
+        `UPDATE workspace_ad_spend_wallets SET payment_reserved_amount=GREATEST(0,payment_reserved_amount-$2),version=version+1
+         WHERE workspace_id=$1 RETURNING ${walletSelect}`,
+        [topup.workspaceId, topup.netAmount], client,
+      )).rows[0];
+      if (!wallet) throw new Error('Ad spend payment reserve release failed');
+      await query(
+        `INSERT INTO workspace_ad_spend_ledger(workspace_id,topup_id,entry_type,amount_delta,balance_after,reserved_after,currency,idempotency_key,metadata)
+         VALUES($1,$2,'RESERVATION_RELEASED',0,$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
+        [topup.workspaceId, topup.id, wallet.availableAmount, wallet.paymentReservedAmount, `adspend-topup:${topup.id}:deposit-release`, JSON.stringify({ provider: 'airwallex', status, reason: 'payment_not_succeeded' })], client,
+      );
+    }
     if (newlyReversed) {
       await ensureWallet(topup.workspaceId, client);
       const wallet = (await query<WalletRow>(
@@ -398,9 +454,9 @@ export async function applyAdSpendProviderStatus(input: {
       if (!wallet) throw new Error('Ad spend wallet reversal failed');
       await query(
         `INSERT INTO workspace_ad_spend_ledger(
-           workspace_id,topup_id,entry_type,amount_delta,balance_after,currency,idempotency_key,metadata
-         ) VALUES($1,$2,'REFUND',$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
-        [topup.workspaceId, topup.id, (-Number(topup.netAmount)).toFixed(2), wallet.availableAmount,
+           workspace_id,topup_id,entry_type,amount_delta,balance_after,reserved_after,currency,idempotency_key,metadata
+         ) VALUES($1,$2,'REFUND',$3,$4,$5,'CNY',$6,$7::jsonb) ON CONFLICT DO NOTHING`,
+        [topup.workspaceId, topup.id, (-Number(topup.netAmount)).toFixed(2), wallet.availableAmount, wallet.paymentReservedAmount,
           `adspend-topup:${topup.id}:reversal`, JSON.stringify({
             provider: 'airwallex', status, originalAmount: Number(topup.netAmount),
             reversalDebtAmount: Number(wallet.reversalDebtAmount),
@@ -415,11 +471,27 @@ export async function applyAdSpendProviderStatus(input: {
 }
 
 export async function failAdSpendTopup(topupId: string, code: string, message: string) {
-  await query(
-    `UPDATE workspace_ad_spend_topups SET status='FAILED',error_code=$2,error_message=$3
-     WHERE id=$1 AND status IN ('CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')`,
-    [topupId, code.slice(0, 120), message.slice(0, 2000)],
-  );
+  return withTransaction(async (client) => {
+    const row = (await query<AdSpendTopupRow>(`SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE id=$1 FOR UPDATE`, [topupId], client)).rows[0];
+    if (!row || row.creditedAt || ['FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK'].includes(row.status)) return row ?? null;
+    await query(
+      `UPDATE workspace_ad_spend_topups SET status='FAILED',provider_status=$2,payment_status='FAILED',settlement_status='NOT_APPLICABLE',cancelled_at=COALESCE(cancelled_at,NOW()),error_code=$3,error_message=$4 WHERE id=$1`,
+      [topupId, code, code.slice(0, 120), message.slice(0, 2000)], client,
+    );
+    await ensureWallet(row.workspaceId, client);
+    const wallet = (await query<WalletRow>(
+      `UPDATE workspace_ad_spend_wallets SET payment_reserved_amount=GREATEST(0,payment_reserved_amount-$2),version=version+1
+       WHERE workspace_id=$1 RETURNING ${walletSelect}`,
+      [row.workspaceId, row.netAmount], client,
+    )).rows[0];
+    if (!wallet) throw new Error('Ad spend payment reserve release failed');
+    await query(
+      `INSERT INTO workspace_ad_spend_ledger(workspace_id,topup_id,entry_type,amount_delta,balance_after,reserved_after,currency,idempotency_key,metadata)
+       VALUES($1,$2,'RESERVATION_RELEASED',0,$3,$4,'CNY',$5,$6::jsonb) ON CONFLICT DO NOTHING`,
+      [row.workspaceId, row.id, wallet.availableAmount, wallet.paymentReservedAmount, `adspend-topup:${row.id}:deposit-release`, JSON.stringify({ source: 'payment_creation_failure', code })], client,
+    );
+    return (await query<AdSpendTopupRow>(`SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE id=$1`, [row.id], client)).rows[0] ?? null;
+  });
 }
 
 export async function createAdBudgetAuthorization(input: {

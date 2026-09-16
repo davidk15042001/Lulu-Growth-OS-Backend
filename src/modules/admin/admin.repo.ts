@@ -305,29 +305,35 @@ export async function addWorkspaceUsageAdjustment(
 export async function getWorkspaceFunding(workspaceId: string) {
   const [api, adSpend, paygUsage, adjustments] = await Promise.all([
     query(`
-      SELECT currency,
-             available_amount AS "availableAmount",
-             reserved_amount AS "reservedAmount",
-             spent_amount AS "spentAmount",
-             reversal_debt_amount AS "reversalDebtAmount",
-             total_funded_amount AS "totalFundedAmount"
-      FROM workspace_api_wallets
-      WHERE workspace_id = $1
+      SELECT COALESCE(w.currency,'CNY') AS currency,
+             COALESCE(w.available_amount,0) AS "availableAmount",
+             COALESCE(w.reserved_amount,0) AS "reservedAmount",
+             (SELECT COALESCE(SUM(t.amount),0) FROM workspace_api_topups t
+               WHERE t.workspace_id=$1 AND t.credited_at IS NULL
+                 AND t.status IN ('CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')) AS "paymentReservedAmount",
+             COALESCE(w.spent_amount,0) AS "spentAmount",
+             COALESCE(w.reversal_debt_amount,0) AS "reversalDebtAmount",
+             COALESCE(w.total_funded_amount,0) AS "totalFundedAmount"
+      FROM (SELECT $1::uuid AS workspace_id) x
+      LEFT JOIN workspace_api_wallets w ON w.workspace_id=x.workspace_id
     `, [workspaceId]),
     query(`
-      SELECT currency,
-             available_amount AS "availableAmount",
-             reserved_amount AS "reservedAmount",
-             spent_amount AS "spentAmount",
-             reversal_debt_amount AS "reversalDebtAmount",
-             total_funded_amount AS "totalFundedAmount"
-      FROM workspace_ad_spend_wallets
-      WHERE workspace_id = $1
+      SELECT COALESCE(w.currency,'CNY') AS currency,
+             COALESCE(w.available_amount,0) AS "availableAmount",
+             COALESCE(w.reserved_amount,0) AS "reservedAmount",
+             (SELECT COALESCE(SUM(t.net_amount),0) FROM workspace_ad_spend_topups t
+               WHERE t.workspace_id=$1 AND t.credited_at IS NULL
+                 AND t.status IN ('CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')) AS "paymentReservedAmount",
+             COALESCE(w.spent_amount,0) AS "spentAmount",
+             COALESCE(w.reversal_debt_amount,0) AS "reversalDebtAmount",
+             COALESCE(w.total_funded_amount,0) AS "totalFundedAmount"
+      FROM (SELECT $1::uuid AS workspace_id) x
+      LEFT JOIN workspace_ad_spend_wallets w ON w.workspace_id=x.workspace_id
     `, [workspaceId]),
     getWorkspacePaygUsage(workspaceId),
     listWorkspaceUsageAdjustments(workspaceId),
   ]);
-  const zeroWallet = { currency: 'CNY', availableAmount: 0, reservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0 };
+  const zeroWallet = { currency: 'CNY', availableAmount: 0, reservedAmount: 0, paymentReservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0 };
   const normalizeWallet = (row: Record<string, unknown> | undefined) => row
     ? Object.fromEntries(Object.entries(row).map(([key, value]) => key === 'currency' ? [key, value] : [key, Number(value ?? 0)]))
     : zeroWallet;
@@ -341,6 +347,52 @@ export async function getWorkspaceFunding(workspaceId: string) {
     },
     adjustments,
   };
+}
+
+/** Cross-workspace Airwallex payment ledger for finance operations.  This is
+ * read-only: credits still move only through verified provider transitions. */
+export async function listAirwallexPayments(input: {
+  limit?: number;
+  offset?: number;
+  status?: string;
+  wallet?: 'ai' | 'ad_spend';
+  search?: string;
+}) {
+  const limit = Math.max(1, Math.min(Math.floor(input.limit ?? 100), 500));
+  const offset = Math.max(0, Math.floor(input.offset ?? 0));
+  const params: unknown[] = [];
+  const where: string[] = [];
+  if (input.status?.trim()) { params.push(input.status.trim().toUpperCase()); where.push(`p.payment_status = $${params.length}`); }
+  if (input.wallet) { params.push(input.wallet); where.push(`p.wallet_type = $${params.length}`); }
+  if (input.search?.trim()) {
+    params.push(`%${input.search.trim()}%`);
+    where.push(`(p.workspace_id::text ILIKE $${params.length} OR p.workspace_name ILIKE $${params.length} OR COALESCE(p.provider_payment_intent_id,'') ILIKE $${params.length} OR COALESCE(p.provider_invoice_id,'') ILIKE $${params.length} OR p.merchant_order_id ILIKE $${params.length})`);
+  }
+  const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  params.push(limit, offset);
+  const rows = await query(`
+    SELECT p.id,p.wallet_type AS "walletType",p.workspace_id AS "workspaceId",p.workspace_name AS "workspaceName",
+           p.amount,p.currency,p.payment_method AS "paymentMethod",p.status,p.provider_status AS "providerStatus",
+           p.payment_status AS "paymentStatus",p.credit_status AS "creditStatus",p.settlement_status AS "settlementStatus",
+           p.merchant_order_id AS "merchantOrderId",p.provider_invoice_id AS "providerInvoiceId",
+           p.provider_payment_intent_id AS "providerPaymentIntentId",p.paid_at AS "paidAt",p.confirmed_at AS "confirmedAt",
+           p.credited_at AS "creditedAt",p.cancelled_at AS "cancelledAt",p.created_at AS "createdAt"
+    FROM (
+      SELECT t.id,'ai'::text AS wallet_type,t.workspace_id,w.name AS workspace_name,t.amount,t.currency,t.payment_method,
+             t.status,t.provider_status,t.payment_status,t.credit_status,t.settlement_status,t.merchant_order_id,
+             t.provider_invoice_id,t.provider_payment_intent_id,t.paid_at,t.confirmed_at,t.credited_at,t.cancelled_at,t.created_at
+      FROM workspace_api_topups t JOIN workspaces w ON w.id=t.workspace_id
+      UNION ALL
+      SELECT t.id,'ad_spend'::text AS wallet_type,t.workspace_id,w.name AS workspace_name,t.net_amount AS amount,t.currency,t.payment_method,
+             t.status,t.provider_status,t.payment_status,t.credit_status,t.settlement_status,t.merchant_order_id,
+             t.provider_invoice_id,t.provider_payment_intent_id,t.paid_at,t.confirmed_at,t.credited_at,t.cancelled_at,t.created_at
+      FROM workspace_ad_spend_topups t JOIN workspaces w ON w.id=t.workspace_id
+    ) p
+    ${clause}
+    ORDER BY p.created_at DESC,p.id DESC
+    LIMIT $${params.length - 1} OFFSET $${params.length}`,
+  params);
+  return rows.rows;
 }
 
 /**

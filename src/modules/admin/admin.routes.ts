@@ -16,6 +16,7 @@ router.route('/dashboard').get(requireAuth, requireAdminCapabilities('users.read
 router.route('/search').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read', 'providers.read'), controller.searchAll).all(methodNotAllowed);
 
 router.route('/billing-overview').get(requireAuth, requireAdminCapabilities('billing.read'), controller.overview).all(methodNotAllowed);
+router.route('/payments/airwallex').get(requireAuth, requireAdminCapabilities('billing.read'), controller.airwallexPayments).all(methodNotAllowed);
 
 router.route('/users').get(requireAuth, requireAdminCapabilities('users.read'), controller.getUsers).all(methodNotAllowed);
 router.route('/user-deletion-jobs/:jobId').get(requireAuth, requireAdminCapabilities('users.manage'), controller.getUserDeletionJob).all(methodNotAllowed);
@@ -65,6 +66,7 @@ router.route('/omnichannel/channels').get(requireAuth, requireAdminCapabilities(
 router.route('/omnichannel/analytics').get(requireAuth, requireAdminCapabilities('admin.omnichannel.read_all'), omni.adminAnalytics).all(methodNotAllowed);
 router.route('/quotes').get(requireAuth, requireAdminCapabilities('admin.quotes.read_all'), commercialDocuments.adminQuotes).all(methodNotAllowed);
 router.route('/invoices').get(requireAuth, requireAdminCapabilities('admin.invoices.read_all'), commercialDocuments.adminInvoices).all(methodNotAllowed);
+router.route('/invoices/:workspaceId/:documentId/pdf').get(requireAuth, requireAdminCapabilities('admin.invoices.read_all'), commercialDocuments.adminInvoicePdf).all(methodNotAllowed);
 router.route('/files').get(requireAuth, requireAdminCapabilities('workspaces.read'), controller.getFiles).all(methodNotAllowed);
 router.route('/files/:source/:fileId/download').get(requireAuth, requireAdminCapabilities('files.read'), controller.downloadFile).all(methodNotAllowed);
 router.use('/support', requireAuth, adminSupportRoutes);

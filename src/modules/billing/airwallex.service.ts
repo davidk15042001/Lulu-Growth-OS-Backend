@@ -1085,6 +1085,41 @@ export async function reconcilePendingWalletInvoicePayments(limit = 50) {
   return { checked, credited, failed };
 }
 
+/** Backup reconciliation for QR PaymentIntents when a webhook is delayed or
+ * lost.  Unknown provider states remain pending and therefore keep their
+ * payment reserve; this routine never credits based on a missing response. */
+export async function reconcilePendingWalletPaymentIntents(limit = 50) {
+  const boundedLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  const pending = await query<{ walletType: 'API' | 'AD_SPEND'; workspaceId: string; topupId: string; createdAt: string }>(
+    `SELECT 'API'::text AS "walletType",workspace_id AS "workspaceId",id::text AS "topupId",created_at AS "createdAt"
+       FROM workspace_api_topups
+      WHERE provider_payment_intent_id IS NOT NULL AND status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+     UNION ALL
+     SELECT 'AD_SPEND'::text AS "walletType",workspace_id AS "workspaceId",id::text AS "topupId",created_at AS "createdAt"
+       FROM workspace_ad_spend_topups
+      WHERE provider_payment_intent_id IS NOT NULL AND status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+      ORDER BY "createdAt","topupId" LIMIT $1`, [boundedLimit],
+  );
+  let checked = 0; let credited = 0; let failed = 0;
+  for (const candidate of pending.rows) {
+    try {
+      const topup = candidate.walletType === 'API'
+        ? await getApiTopup(candidate.workspaceId, candidate.topupId)
+        : await getAdSpendTopup(candidate.workspaceId, candidate.topupId);
+      if (!topup) continue;
+      checked += 1;
+      const updated = candidate.walletType === 'API'
+        ? await syncApiWalletProviderPayment(topup as ApiTopupRow)
+        : await syncAdSpendProviderPayment(topup as AdSpendTopupRow);
+      if (updated?.status === 'SUCCEEDED') credited += 1;
+    } catch (error) {
+      failed += 1;
+      logger.warn({ error, ...candidate }, 'Pending Airwallex wallet PaymentIntent reconciliation failed');
+    }
+  }
+  return { checked, credited, failed };
+}
+
 /**
  * Creates a one-time, provider-hosted QR payment for the currently accrued
  * API usage. The amount is calculated entirely on the server and the QR

@@ -10,6 +10,7 @@ router.route('/quotes/:documentId/revisions').post(requireWorkspaceCapability('q
 router.route('/quotes/:documentId/send').post(requireWorkspaceCapability('quotes.send'), controller.sendQuote).all(methodNotAllowed);
 router.route('/invoices').get(requireWorkspaceCapability('invoices.read'), controller.listInvoices).post(requireWorkspaceCapability('invoices.create'), controller.createInvoice).all(methodNotAllowed);
 router.route('/seller-profile').get(requireWorkspaceCapability('invoices.read'), controller.getDocumentSellerProfile).all(methodNotAllowed);
+router.route('/invoices/:documentId/pdf').get(requireWorkspaceCapability('invoices.read'), controller.downloadInvoicePdf).all(methodNotAllowed);
 router.route('/invoices/:documentId').get(requireWorkspaceCapability('invoices.read'), controller.getInvoice).all(methodNotAllowed);
 router.route('/invoices/:documentId/issue').post(requireWorkspaceCapability('invoices.issue'), controller.issueInvoice).all(methodNotAllowed);
 router.route('/invoices/:documentId/send').post(requireWorkspaceCapability('invoices.send'), controller.sendInvoice).all(methodNotAllowed);
@@ -18,5 +19,6 @@ router.route('/commercial-policy').get(requireWorkspaceCapability('commercial_po
 export default router;
 
 export const publicCommercialDocumentRoutes = Router();
+publicCommercialDocumentRoutes.route('/:token/pdf').get(controller.publicInvoicePdf).all(methodNotAllowed);
 publicCommercialDocumentRoutes.route('/:token').get(controller.publicDocument).all(methodNotAllowed);
 publicCommercialDocumentRoutes.route('/:token/decision').post(controller.acceptPublicQuote).all(methodNotAllowed);

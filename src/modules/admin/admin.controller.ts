@@ -53,6 +53,25 @@ export async function overview(req: AuthedRequest, res: Response, next: NextFunc
   } catch (error) { next(error); }
 }
 
+export async function airwallexPayments(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const wallet = req.query.wallet === 'ai' || req.query.wallet === 'ad_spend' ? req.query.wallet : undefined;
+    const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const limit = Number(req.query.limit);
+    const offset = Number(req.query.offset);
+    const options: Parameters<typeof repo.listAirwallexPayments>[0] = {
+      ...(wallet ? { wallet } : {}),
+      ...(status ? { status } : {}),
+      ...(search ? { search } : {}),
+      ...(Number.isFinite(limit) ? { limit } : {}),
+      ...(Number.isFinite(offset) ? { offset } : {}),
+    };
+    return successResponse(res, 'Airwallex payments loaded', { payments: await repo.listAirwallexPayments(options) });
+  } catch (error) { next(error); }
+}
+
 export async function changePlan(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     if (!requireAdmin(req, res)) return;
