@@ -28,6 +28,7 @@ import { startSocialPublishingWorker, stopSocialPublishingWorker } from './modul
 import { startGoogleAdsSpendReconciliationWorker, stopGoogleAdsSpendReconciliationWorker } from './modules/adspend/google-ads-spend.worker.js';
 import { startQualityIntelligenceWorker, stopQualityIntelligenceWorker } from './modules/quality/quality.worker.js';
 import { registerCompanyBrainEventHandler } from './modules/company-brain/company-brain.event-handler.js';
+import { startCompanyBrainTaskWorker, stopCompanyBrainTaskWorker } from './modules/company-brain/company-brain.worker.js';
 import { autonomousWorkerManifest } from './operations/autonomous-worker-manifest.js';
 import {
   createIdempotentShutdown,
@@ -63,6 +64,7 @@ async function stopBackgroundWorkers() {
       stopSocialPublishingWorker(),
       stopGoogleAdsSpendReconciliationWorker(),
       stopQualityIntelligenceWorker(),
+      stopCompanyBrainTaskWorker(),
     ] : []),
   ]);
   const failures = results
@@ -103,6 +105,7 @@ async function bootstrap() {
       startSocialPublishingWorker();
       startGoogleAdsSpendReconciliationWorker();
       startQualityIntelligenceWorker();
+      startCompanyBrainTaskWorker();
       await startWorkerSupervisorHeartbeat(autonomousWorkerManifest);
     }
   }

@@ -14,7 +14,8 @@ const missionSelect = `id,workspace_id AS "workspaceId",signal_id AS "signalId",
   completed_at AS "completedAt",created_at AS "createdAt",updated_at AS "updatedAt"`;
 const taskSelect = `id,workspace_id AS "workspaceId",mission_id AS "missionId",parent_task_id AS "parentTaskId",
   assigned_employee_id AS "assignedEmployeeId",task_type AS "taskType",title,objective,status,priority,dependency_count AS "dependencyCount",
-  idempotency_key AS "idempotencyKey",due_at AS "dueAt",attempt_count AS "attemptCount",max_attempts AS "maxAttempts",
+  idempotency_key AS "idempotencyKey",agent_run_id AS "agentRunId",dispatch_key AS "dispatchKey",claimed_by AS "claimedBy",
+  claimed_at AS "claimedAt",dispatched_at AS "dispatchedAt",due_at AS "dueAt",attempt_count AS "attemptCount",max_attempts AS "maxAttempts",
   confidence::float AS confidence,blocked_reason AS "blockedReason",last_error AS "lastError",
   context,result,error_code AS "errorCode",error_message AS "errorMessage",created_at AS "createdAt",updated_at AS "updatedAt"`;
 const taskDependencySelect = `d.task_id AS "taskId",d.depends_on_task_id AS "dependsOnTaskId",d.dependency_type AS "dependencyType",
@@ -159,6 +160,107 @@ export async function getTask(workspaceId: string, taskId: string, client?: Pool
   return rows[0] ?? null;
 }
 
+/** Claim one dependency-ready task without ever replaying a task that already
+ * has a canonical agent run. A claim is a durable state transition and is
+ * therefore observable through both the task timeline and domain events. */
+export async function claimNextRunnableTask(workerId: string, leaseSeconds = 120) {
+  return withTransaction(async (client) => {
+    const { rows } = await query<BrainTask>(
+      `WITH candidate AS (
+         SELECT t.id
+         FROM company_brain_tasks t
+         WHERE (
+           t.status IN ('PROPOSED','READY')
+           OR (t.status='RUNNING' AND t.agent_run_id IS NULL AND t.claimed_at < NOW() - ($1::integer * INTERVAL '1 second'))
+         )
+           AND t.agent_run_id IS NULL
+           AND t.attempt_count < t.max_attempts
+           AND (t.due_at IS NULL OR t.due_at <= NOW())
+           AND (t.claimed_by IS NULL OR t.claimed_at < NOW() - ($1::integer * INTERVAL '1 second'))
+           AND NOT EXISTS (
+             SELECT 1
+             FROM company_brain_task_dependencies d
+             JOIN company_brain_tasks dependency
+               ON dependency.workspace_id=d.workspace_id AND dependency.id=d.depends_on_task_id
+             WHERE d.workspace_id=t.workspace_id AND d.task_id=t.id AND dependency.status <> 'COMPLETED'
+           )
+         ORDER BY t.priority DESC, t.due_at NULLS FIRST, t.created_at ASC
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE company_brain_tasks t
+       SET status='RUNNING', attempt_count=t.attempt_count + 1,
+           claimed_by=$2, claimed_at=NOW(), dispatched_at=NOW(),
+           dispatch_key=COALESCE(t.dispatch_key, 'brain-task:' || t.id::text), updated_at=NOW()
+       FROM candidate
+       WHERE t.id=candidate.id
+       RETURNING ${taskSelect}`,
+      [leaseSeconds, workerId], client,
+    );
+    const task = rows[0];
+    if (!task) return null;
+    await appendTaskEvent({
+      workspaceId: task.workspaceId, taskId: task.id, eventType: 'CLAIMED', actorType: 'system', actorId: workerId,
+      payload: { attemptCount: task.attemptCount, claimedBy: workerId },
+    }, client);
+    await appendDomainEvent({
+      workspaceId: task.workspaceId, type: 'brain.task.claimed', aggregateType: 'company_brain_task', aggregateId: task.id,
+      payload: { missionId: task.missionId, attemptCount: task.attemptCount, claimedBy: workerId },
+      metadata: { actorType: 'system', actorId: workerId, source: 'company-brain.dispatcher' },
+      idempotencyKey: `brain-task:${task.id}:claimed:${task.attemptCount}`,
+    }, client);
+    return task;
+  });
+}
+
+export async function attachAgentRun(input: { workspaceId: string; taskId: string; runId: string; workerId: string }) {
+  return withTransaction(async (client) => {
+    const task = (await query<BrainTask>(`SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, [input.workspaceId, input.taskId], client)).rows[0];
+    if (!task) return null;
+    const run = (await query<{ id: string }>(`SELECT id FROM agent_runs WHERE workspace_id=$1 AND id=$2`, [input.workspaceId, input.runId], client)).rows[0];
+    if (!run) return null;
+    if (task.agentRunId && task.agentRunId !== input.runId) return null;
+    const result = await query<BrainTask>(
+      `UPDATE company_brain_tasks
+       SET agent_run_id=$3,claimed_by=NULL,claimed_at=NULL,updated_at=NOW()
+       WHERE workspace_id=$1 AND id=$2 AND status='RUNNING' AND (agent_run_id IS NULL OR agent_run_id=$3)
+       RETURNING ${taskSelect}`,
+      [input.workspaceId, input.taskId, input.runId], client,
+    );
+    const linked = result.rows[0] ?? null;
+    if (!linked || task.agentRunId === input.runId) return linked;
+    await appendTaskEvent({ workspaceId: input.workspaceId, taskId: input.taskId, eventType: 'AGENT_RUN_LINKED', actorType: 'system', actorId: input.workerId, payload: { runId: input.runId } }, client);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId, type: 'brain.task.agent_run_linked', aggregateType: 'company_brain_task', aggregateId: input.taskId,
+      payload: { missionId: linked.missionId, runId: input.runId }, metadata: { actorType: 'system', actorId: input.workerId, source: 'company-brain.dispatcher' },
+      idempotencyKey: `brain-task:${input.taskId}:run:${input.runId}:linked`,
+    }, client);
+    return linked;
+  });
+}
+
+/** Resolve a task from either the explicit link or the immutable run plan.
+ * The plan fallback closes the small race between run creation and linking. */
+export async function getTaskForAgentRun(workspaceId: string, runId: string) {
+  const { rows } = await query<BrainTask>(
+    `SELECT ${taskSelect}
+     FROM company_brain_tasks
+     WHERE workspace_id=$1 AND agent_run_id=$2
+     UNION ALL
+     SELECT ${taskSelect}
+     FROM (
+       SELECT t.*
+       FROM company_brain_tasks t
+       JOIN agent_runs r ON r.workspace_id=t.workspace_id AND r.id=$2
+       WHERE t.workspace_id=$1 AND t.agent_run_id IS NULL
+         AND r.plan -> 'companyBrainTask' ->> 'taskId' = t.id::text
+     ) AS t
+     LIMIT 1`,
+    [workspaceId, runId],
+  );
+  return rows[0] ?? null;
+}
+
 export async function createTask(input: {
   workspaceId: string; missionId: string; parentTaskId?: string | null | undefined; assignedEmployeeId?: string | null | undefined;
   taskType: string; title: string; objective?: string; priority: number; context?: Record<string, unknown>;
@@ -241,7 +343,8 @@ export async function addTaskDependency(input: {
 
 export async function updateTask(input: {
   workspaceId: string; taskId: string; status?: string | undefined; result?: Record<string, unknown> | null | undefined; errorCode?: string | null | undefined;
-  errorMessage?: string | null | undefined; blockedReason?: string | null | undefined; confidence?: number | null | undefined; actorType?: 'system' | 'agent' | 'human' | undefined; actorId?: string | null | undefined;
+  errorMessage?: string | null | undefined; blockedReason?: string | null | undefined; confidence?: number | null | undefined; agentRunId?: string | null | undefined;
+  actorType?: 'system' | 'agent' | 'human' | undefined; actorId?: string | null | undefined;
 }) {
   return withTransaction(async (client) => {
     const current = await getTask(input.workspaceId, input.taskId, client);
@@ -253,9 +356,12 @@ export async function updateTask(input: {
     const { rows } = await query<BrainTask>(
       `UPDATE company_brain_tasks SET status=$3,result=COALESCE($4::jsonb,result),error_code=$5,error_message=$6,
          blocked_reason=$7,confidence=COALESCE($8,confidence),attempt_count=$9,
+         agent_run_id=COALESCE($10,agent_run_id),
+         claimed_by=CASE WHEN $3 IN ('COMPLETED','FAILED','CANCELLED','BLOCKED') THEN NULL ELSE claimed_by END,
+         claimed_at=CASE WHEN $3 IN ('COMPLETED','FAILED','CANCELLED','BLOCKED') THEN NULL ELSE claimed_at END,
          last_error=CASE WHEN $3='FAILED' THEN COALESCE($6,last_error) ELSE NULL END,updated_at=NOW()
        WHERE workspace_id=$1 AND id=$2 RETURNING ${taskSelect}`,
-      [input.workspaceId,input.taskId,nextStatus,input.result === undefined ? null : input.result,input.errorCode ?? null,input.errorMessage ?? null,input.blockedReason ?? null,input.confidence ?? null,nextAttemptCount], client,
+      [input.workspaceId,input.taskId,nextStatus,input.result === undefined ? null : input.result,input.errorCode ?? null,input.errorMessage ?? null,input.blockedReason ?? null,input.confidence ?? null,nextAttemptCount,input.agentRunId ?? null], client,
     );
     const task = rows[0];
     if (!task) return null;
@@ -265,8 +371,60 @@ export async function updateTask(input: {
       payload: { status: task.status, attemptCount: task.attemptCount }, metadata: { actorId: input.actorId ?? null, actorType: input.actorType ?? 'system', source: 'company-brain' },
       idempotencyKey: `brain-task:${task.id}:status:${task.updatedAt}`,
     }, client);
+    await syncMissionStateWithClient(input.workspaceId, task.missionId, client);
     return task;
   });
+}
+
+async function syncMissionStateWithClient(workspaceId: string, missionId: string, client: PoolClient) {
+  const mission = (await query<{ status: string; signalId: string | null }>(
+    `SELECT status,signal_id AS "signalId" FROM company_brain_missions WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+    [workspaceId, missionId], client,
+  )).rows[0];
+  if (!mission || mission.status === 'CANCELLED') return null;
+  const counts = (await query<{ total: string; completed: string; running: string; blocked: string; failed: string }>(
+    `SELECT count(*)::text AS total,
+       count(*) FILTER (WHERE status='COMPLETED')::text AS completed,
+       count(*) FILTER (WHERE status='RUNNING')::text AS running,
+       count(*) FILTER (WHERE status='BLOCKED')::text AS blocked,
+       count(*) FILTER (WHERE status='FAILED')::text AS failed
+     FROM company_brain_tasks WHERE workspace_id=$1 AND mission_id=$2`,
+    [workspaceId, missionId], client,
+  )).rows[0];
+  const total = Number(counts?.total ?? 0);
+  const completed = Number(counts?.completed ?? 0);
+  const nextStatus = total > 0 && completed === total
+    ? 'COMPLETED'
+    : Number(counts?.blocked ?? 0) > 0 || Number(counts?.failed ?? 0) > 0
+      ? 'BLOCKED'
+      : Number(counts?.running ?? 0) > 0
+        ? 'RUNNING'
+        : 'PLANNED';
+  if (nextStatus === mission.status) return mission;
+  const updated = (await query<BrainMission>(
+    `UPDATE company_brain_missions SET status=$3,
+       started_at=CASE WHEN $3='RUNNING' THEN COALESCE(started_at,NOW()) ELSE started_at END,
+       completed_at=CASE WHEN $3='COMPLETED' THEN COALESCE(completed_at,NOW()) ELSE NULL END,
+       updated_at=NOW()
+     WHERE workspace_id=$1 AND id=$2 RETURNING ${missionSelect}`,
+    [workspaceId, missionId, nextStatus], client,
+  )).rows[0];
+  if (updated) {
+    await appendDomainEvent({
+      workspaceId, type: 'brain.mission.updated', aggregateType: 'company_brain_mission', aggregateId: missionId,
+      payload: { status: nextStatus, completedTasks: completed, totalTasks: total }, metadata: { actorType: 'system', source: 'company-brain' },
+      idempotencyKey: `brain-mission:${missionId}:status:${nextStatus}`,
+    }, client);
+    if (nextStatus === 'COMPLETED' && mission.signalId) {
+      await query(`UPDATE company_brain_signals SET status='ACTIONED',resolved_at=COALESCE(resolved_at,NOW())
+        WHERE workspace_id=$1 AND id=$2 AND status IN ('OPEN','ACTIONED')`, [workspaceId, mission.signalId], client);
+    }
+  }
+  return updated ?? null;
+}
+
+export async function syncMissionState(workspaceId: string, missionId: string) {
+  return withTransaction((client) => syncMissionStateWithClient(workspaceId, missionId, client));
 }
 
 export async function getTaskGraph(workspaceId: string, missionId: string) {

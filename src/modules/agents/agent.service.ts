@@ -952,6 +952,7 @@ export async function startAutomaticRun(
   dedupeMinutes?: number,
   actorUserId?: string,
   teamContext?: AgentTeamContext,
+  dispatchContext?: { taskId: string; missionId: string; taskType: string },
 ) {
   const subscription = await repo.getWorkspacePlan(workspaceId);
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
@@ -963,12 +964,15 @@ export async function startAutomaticRun(
   if (!['active', 'trialing', 'billing_skipped'].includes(subscription.status) || !capabilities.automatic || !capabilities.analyze) return null;
   const automaticCapabilities = { ...capabilities };
   const executionMode = automaticCapabilities.autonomous ? 'autonomous' : 'analysis_only';
-  const initialPlan = buildInitialPlan(resolvedModule, automaticCapabilities, executionMode, page, teamContext);
+  const initialPlan = {
+    ...buildInitialPlan(resolvedModule, automaticCapabilities, executionMode, page, teamContext),
+    ...(dispatchContext ? { companyBrainTask: dispatchContext } : {}),
+  };
   const executionIdentity = {
     actorType: 'WORKFLOW' as const,
     actorRef: teamContext?.trigger?.eventId
       ? `lulu:reactive:${teamContext.trigger.eventId}:${page?.pageId ?? resolvedModule}`
-      : `lulu:automatic:${resolvedModule}:${page?.pageId ?? 'global'}`,
+      : `lulu:automatic:${resolvedModule}:${page?.pageId ?? 'global'}${dispatchContext ? `:task:${dispatchContext.taskId}` : ''}`,
     capabilityScope: serviceCapabilityScopeForModule(resolvedModule),
   };
   let run;

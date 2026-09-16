@@ -69,6 +69,11 @@ export type BrainTask = {
   priority: number;
   dependencyCount: number;
   idempotencyKey: string | null;
+  agentRunId: string | null;
+  dispatchKey: string | null;
+  claimedBy: string | null;
+  claimedAt: string | null;
+  dispatchedAt: string | null;
   dueAt: string | null;
   attemptCount: number;
   maxAttempts: number;
