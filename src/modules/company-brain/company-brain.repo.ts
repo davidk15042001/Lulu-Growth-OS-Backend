@@ -182,7 +182,8 @@ async function createMissionFromSignalWithClient(input: {
        (SELECT id FROM digital_employees WHERE workspace_id=$1 AND employee_key='executive-orchestrator' AND active LIMIT 1),
        $6
      FROM company_brain_signals WHERE workspace_id=$1 AND id=$2
-     ON CONFLICT(workspace_id,signal_id) DO UPDATE SET title=EXCLUDED.title,objective=EXCLUDED.objective,priority=EXCLUDED.priority
+     ON CONFLICT(workspace_id,signal_id) DO UPDATE SET title=EXCLUDED.title,objective=EXCLUDED.objective,priority=EXCLUDED.priority,
+       owner_employee_id=COALESCE(company_brain_missions.owner_employee_id,EXCLUDED.owner_employee_id)
      RETURNING ${missionSelect}`,
     [input.workspaceId,input.signalId,input.title,input.objective,input.priority,input.createdBy ?? null], client,
   );
