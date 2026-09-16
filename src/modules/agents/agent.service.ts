@@ -952,7 +952,7 @@ export async function startAutomaticRun(
   dedupeMinutes?: number,
   actorUserId?: string,
   teamContext?: AgentTeamContext,
-  dispatchContext?: { taskId: string; missionId: string; taskType: string },
+  dispatchContext?: { taskId: string; missionId: string; taskType: string; employeeKey?: string; assignedEmployeeId?: string | null },
 ) {
   const subscription = await repo.getWorkspacePlan(workspaceId);
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
@@ -972,7 +972,7 @@ export async function startAutomaticRun(
     actorType: 'WORKFLOW' as const,
     actorRef: teamContext?.trigger?.eventId
       ? `lulu:reactive:${teamContext.trigger.eventId}:${page?.pageId ?? resolvedModule}`
-      : `lulu:automatic:${resolvedModule}:${page?.pageId ?? 'global'}${dispatchContext ? `:task:${dispatchContext.taskId}` : ''}`,
+      : `lulu:automatic:${resolvedModule}:${page?.pageId ?? 'global'}${dispatchContext ? `:task:${dispatchContext.taskId}${dispatchContext.employeeKey ? `:employee:${dispatchContext.employeeKey}` : ''}` : ''}`,
     capabilityScope: serviceCapabilityScopeForModule(resolvedModule),
   };
   let run;

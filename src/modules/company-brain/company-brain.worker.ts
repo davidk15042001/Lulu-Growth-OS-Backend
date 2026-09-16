@@ -30,13 +30,21 @@ function taskContext(task: Awaited<ReturnType<typeof repo.claimNextRunnableTask>
   const module: AgentModule = isAgentModule(contextModule) ? contextModule : task?.taskType === 'provider-diagnosis' ? 'settings' : 'general';
   const pageId = textValue(context.pageId, 120);
   const page = pageId ? automaticPageProfiles.find((entry) => entry.pageId === pageId) : undefined;
-  return { module, page };
+  const employeeKey = textValue(context.employeeKey, 160) || null;
+  return { module, page, employeeKey };
 }
 
 async function dispatchTask(task: NonNullable<Awaited<ReturnType<typeof repo.claimNextRunnableTask>>>) {
-  const { module, page } = taskContext(task);
+  const { module, page, employeeKey } = taskContext(task);
   const requestedGoal = `${task.title}: ${task.objective || 'Inspect the live canonical state, resolve the issue safely, and verify the outcome.'}`.slice(0, 4_000);
   try {
+    const dispatchContext: { taskId: string; missionId: string; taskType: string; employeeKey?: string; assignedEmployeeId?: string | null } = {
+      taskId: task.id,
+      missionId: task.missionId,
+      taskType: task.taskType,
+      assignedEmployeeId: task.assignedEmployeeId,
+    };
+    if (employeeKey) dispatchContext.employeeKey = employeeKey;
     const run = await startAutomaticRun(
       task.workspaceId,
       requestedGoal,
@@ -45,7 +53,7 @@ async function dispatchTask(task: NonNullable<Awaited<ReturnType<typeof repo.cla
       undefined,
       undefined,
       undefined,
-      { taskId: task.id, missionId: task.missionId, taskType: task.taskType },
+      dispatchContext,
     );
     if (!run) {
       await repo.updateTask({

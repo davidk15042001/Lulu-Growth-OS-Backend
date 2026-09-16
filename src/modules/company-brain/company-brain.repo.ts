@@ -87,9 +87,95 @@ export async function createMissionFromSignal(input: {
   return withTransaction((client) => createMissionFromSignalWithClient(input, client));
 }
 
+type DelegatedTaskSpec = {
+  key: string;
+  employeeKey: string;
+  taskType: string;
+  title: string;
+  objective: string;
+  module: string;
+  pageId: string;
+};
+
+/**
+ * Material signals are decomposed into bounded specialist work before the
+ * mission's executive synthesis task can run. This is deliberately
+ * deterministic: the graph is auditable and provider failures never cause an
+ * LLM to invent a new execution branch.
+ */
+function delegatedTaskPlan(signalType: string): DelegatedTaskSpec[] {
+  switch (signalType) {
+    case 'execution_failure':
+      return [
+        {
+          key: 'security', employeeKey: 'security-policy-auditor', taskType: 'security-review',
+          title: 'Audit the failed execution safely',
+          objective: 'Inspect the persisted failure, policy boundary, and duplicate-side-effect risk. Return evidence and a safe recommendation; do not repeat the source action.',
+          module: 'settings', pageId: 'proud-rain-4772',
+        },
+        {
+          key: 'provider', employeeKey: 'integration-manager', taskType: 'provider-diagnosis',
+          title: 'Diagnose the provider or integration',
+          objective: 'Inspect the connected provider state, credentials, rate limits, and recent delivery evidence. Identify the smallest verified recovery step.',
+          module: 'settings', pageId: 'fresh-tide-9404',
+        },
+        {
+          key: 'quality', employeeKey: 'outcome-quality-auditor', taskType: 'outcome-verification',
+          title: 'Verify the persisted outcome',
+          objective: 'Check canonical records and event evidence to determine what actually succeeded, what did not, and what must remain paused.',
+          module: 'general', pageId: 'fresh-moon-5374',
+        },
+      ];
+    case 'provider_change':
+      return [
+        {
+          key: 'provider', employeeKey: 'integration-manager', taskType: 'provider-review',
+          title: 'Review the provider change',
+          objective: 'Validate the provider state transition and identify affected autonomous workflows without creating duplicate connections or side effects.',
+          module: 'settings', pageId: 'fresh-tide-9404',
+        },
+        {
+          key: 'security', employeeKey: 'security-policy-auditor', taskType: 'policy-review',
+          title: 'Check policy impact of the provider change',
+          objective: 'Confirm permissions, tenant isolation, and budget boundaries remain enforced after the integration change.',
+          module: 'settings', pageId: 'proud-rain-4772',
+        },
+      ];
+    case 'financial_change':
+      return [
+        {
+          key: 'billing', employeeKey: 'billing-usage-manager', taskType: 'billing-reconciliation',
+          title: 'Reconcile the financial change',
+          objective: 'Reconcile the payment or ledger event against the canonical wallet, invoice, and usage records. Report any mismatch without changing balances.',
+          module: 'finance', pageId: 'pure-minute-5446',
+        },
+        {
+          key: 'security', employeeKey: 'security-policy-auditor', taskType: 'financial-policy-review',
+          title: 'Verify financial policy boundaries',
+          objective: 'Verify that the financial event respects authorization, prepaid budget, and audit requirements before any follow-up action.',
+          module: 'settings', pageId: 'proud-rain-4772',
+        },
+      ];
+    default:
+      return [
+        {
+          key: 'quality', employeeKey: 'outcome-quality-auditor', taskType: 'evidence-review',
+          title: 'Review the business evidence',
+          objective: 'Validate the observed business event against canonical records and return a concise, evidence-linked recommendation.',
+          module: 'general', pageId: 'fresh-moon-5374',
+        },
+      ];
+  }
+}
+
 async function createMissionFromSignalWithClient(input: {
   workspaceId: string; signalId: string; title: string; objective: string; priority: number; createdBy?: string | null;
 }, client: PoolClient) {
+  const signal = (await query<{ signalType: string }>(
+    `SELECT signal_type AS "signalType" FROM company_brain_signals WHERE workspace_id=$1 AND id=$2`,
+    [input.workspaceId, input.signalId], client,
+  )).rows[0];
+  if (!signal) return null;
   const missionResult = await query<BrainMission>(
     `INSERT INTO company_brain_missions(workspace_id,signal_id,title,objective,priority,created_by)
      SELECT $1,id,$3,$4,$5,$6 FROM company_brain_signals WHERE workspace_id=$1 AND id=$2
@@ -110,6 +196,68 @@ async function createMissionFromSignalWithClient(input: {
     `SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND mission_id=$2 ORDER BY created_at ASC LIMIT 1`,
     [input.workspaceId,mission.id], client,
   )).rows[0];
+  if (!task) return { mission, task: null };
+
+  if (taskResult.rows[0]) {
+    await appendTaskEvent({
+      workspaceId: input.workspaceId, taskId: task.id, eventType: 'CREATED', actorType: 'system',
+      actorId: 'company-brain', payload: { missionId: mission.id, taskType: task.taskType, root: true },
+    }, client);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId, type: 'brain.task.created', aggregateType: 'company_brain_task', aggregateId: task.id,
+      payload: { missionId: mission.id, taskType: task.taskType, root: true },
+      metadata: { actorType: 'system', actorId: 'company-brain', source: 'company-brain' },
+      idempotencyKey: `brain-task:${task.id}:created:v1`,
+    }, client);
+  }
+
+  for (const spec of delegatedTaskPlan(signal.signalType)) {
+    const childResult = await query<BrainTask>(
+      `INSERT INTO company_brain_tasks(
+         workspace_id,mission_id,parent_task_id,assigned_employee_id,task_type,title,objective,priority,
+         context,max_attempts,idempotency_key
+       ) VALUES(
+         $1,$2,$3,
+         (SELECT id FROM digital_employees WHERE workspace_id=$1 AND employee_key=$4 LIMIT 1),
+         $5,$6,$7,$8,$9::jsonb,1,$10
+       )
+       ON CONFLICT (workspace_id,idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
+       RETURNING ${taskSelect}`,
+      [
+        input.workspaceId, mission.id, task.id, spec.employeeKey, spec.taskType, spec.title, spec.objective,
+        Math.max(0, input.priority - 5),
+        { module: spec.module, pageId: spec.pageId, employeeKey: spec.employeeKey, delegated: true, signalType: signal.signalType },
+        `brain-mission:${mission.id}:delegate:${spec.key}`,
+      ], client,
+    );
+    const child = childResult.rows[0] ?? (await query<BrainTask>(
+      `SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND idempotency_key=$2`,
+      [input.workspaceId, `brain-mission:${mission.id}:delegate:${spec.key}`], client,
+    )).rows[0];
+    if (!child) continue;
+    if (childResult.rows[0]) {
+      await appendTaskEvent({
+        workspaceId: input.workspaceId, taskId: child.id, eventType: 'CREATED', actorType: 'system',
+        actorId: 'company-brain', payload: { missionId: mission.id, parentTaskId: task.id, delegatedTo: spec.employeeKey },
+      }, client);
+      await appendDomainEvent({
+        workspaceId: input.workspaceId, type: 'brain.task.created', aggregateType: 'company_brain_task', aggregateId: child.id,
+        payload: { missionId: mission.id, taskType: child.taskType, parentTaskId: task.id, delegatedTo: spec.employeeKey },
+        metadata: { actorType: 'system', actorId: 'company-brain', source: 'company-brain.delegation' },
+        idempotencyKey: `brain-task:${child.id}:created:v1`,
+      }, client);
+    }
+    await query(
+      `INSERT INTO company_brain_task_dependencies(workspace_id,task_id,depends_on_task_id,dependency_type)
+       VALUES($1,$2,$3,'BLOCKS') ON CONFLICT DO NOTHING`,
+      [input.workspaceId, task.id, child.id], client,
+    );
+  }
+  await query(
+    `UPDATE company_brain_tasks SET dependency_count=(SELECT count(*) FROM company_brain_task_dependencies WHERE workspace_id=$1 AND task_id=$2),updated_at=NOW()
+     WHERE workspace_id=$1 AND id=$2`,
+    [input.workspaceId, task.id], client,
+  );
   return { mission, task: task ?? null };
 }
 
@@ -169,10 +317,13 @@ export async function claimNextRunnableTask(workerId: string, leaseSeconds = 120
       `WITH candidate AS (
          SELECT t.id AS candidate_id
          FROM company_brain_tasks t
+         JOIN company_brain_missions m
+           ON m.workspace_id=t.workspace_id AND m.id=t.mission_id
          WHERE (
            t.status IN ('PROPOSED','READY')
            OR (t.status='RUNNING' AND t.agent_run_id IS NULL AND t.claimed_at < NOW() - ($1::integer * INTERVAL '1 second'))
          )
+           AND m.status NOT IN ('BLOCKED','CANCELLED','COMPLETED')
            AND t.agent_run_id IS NULL
            AND t.attempt_count < t.max_attempts
            AND (t.due_at IS NULL OR t.due_at <= NOW())
@@ -199,6 +350,12 @@ export async function claimNextRunnableTask(workerId: string, leaseSeconds = 120
     );
     const task = rows[0];
     if (!task) return null;
+    await query(
+      `UPDATE company_brain_missions
+       SET status='RUNNING', started_at=COALESCE(started_at,NOW()), updated_at=NOW()
+       WHERE workspace_id=$1 AND id=$2 AND status IN ('PROPOSED','PLANNED')`,
+      [task.workspaceId, task.missionId], client,
+    );
     await appendTaskEvent({
       workspaceId: task.workspaceId, taskId: task.id, eventType: 'CLAIMED', actorType: 'system', actorId: workerId,
       payload: { attemptCount: task.attemptCount, claimedBy: workerId },

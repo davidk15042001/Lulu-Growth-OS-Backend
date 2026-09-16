@@ -92,7 +92,7 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   });
   assert.equal(mission?.mission.id, replayedMission?.mission.id);
   assert.equal(mission?.task?.id, replayedMission?.task?.id);
-  assert.equal((await brain.listTasksForMission(workspaceId, mission!.mission.id)).length, 1);
+  assert.equal((await brain.listTasksForMission(workspaceId, mission!.mission.id)).length, 4);
 
   const child = await brain.createTask({
     workspaceId, missionId: mission!.mission.id, parentTaskId: mission!.task!.id,
@@ -126,17 +126,41 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   });
   assert.equal(learning?.id, replayLearning?.id);
   const graph = await brain.getTaskGraph(workspaceId, mission!.mission.id);
-  assert.equal(graph.tasks.length, 2);
-  assert.equal(graph.dependencies.length, 1);
-  assert.ok(graph.events.length >= 3);
+  assert.equal(graph.tasks.length, 5);
+  assert.equal(graph.dependencies.length, 4);
+  assert.ok(graph.events.length >= 8);
   assert.equal((await brain.listLearning(workspaceId, 10)).length, 1);
+  assert.equal(await brain.claimNextRunnableTask('blocked-mission-worker', 120), null);
 
   // The dispatcher must claim only dependency-ready work and keep the
   // canonical task linked to the agent run that it started. This protects the
   // idempotent Company Brain -> agent execution hand-off from regressions.
+  const dispatchObservation = await brain.upsertObservation({
+    workspaceId,
+    sourceType: 'user',
+    sourceKey: 'brain-dispatch-test-observation',
+    subjectType: 'company_brain_test',
+    summary: 'Dispatch test observation',
+    evidence: { test: true },
+  });
+  const dispatchSignal = await brain.upsertSignal({
+    workspaceId,
+    observationId: dispatchObservation.id,
+    signalType: 'provider_change',
+    severity: 2,
+    materiality: 0.6,
+    explanation: 'Dispatch test provider change',
+  });
+  const dispatchMission = await brain.createMissionFromSignal({
+    workspaceId,
+    signalId: dispatchSignal.id,
+    title: 'Dispatch test mission',
+    objective: 'Verify dispatcher behavior.',
+    priority: 70,
+  });
   const dispatchTask = await brain.createTask({
     workspaceId,
-    missionId: mission!.mission.id,
+    missionId: dispatchMission!.mission.id,
     taskType: 'provider-diagnosis',
     title: 'Dispatchable provider check',
     objective: 'Verify the current provider state once.',
@@ -150,6 +174,7 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   assert.equal(claimed?.id, dispatchTask!.task.id);
   assert.equal(claimed?.status, 'RUNNING');
   assert.equal(claimed?.attemptCount, 1);
+  assert.equal((await brain.listMissions(workspaceId, 20)).find((item) => item.id === dispatchMission!.mission.id)?.status, 'RUNNING');
 
   const runId = '00000000-0000-0000-0000-000000000303';
   await db.query(`INSERT INTO agent_runs(
@@ -157,7 +182,7 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   ) VALUES($1,$2,'Company Brain dispatch test','queued',$3::jsonb,NOW(),NOW())`, [
     runId,
     workspaceId,
-    JSON.stringify({ companyBrainTask: { taskId: dispatchTask!.task.id, missionId: mission!.mission.id } }),
+    JSON.stringify({ companyBrainTask: { taskId: dispatchTask!.task.id, missionId: dispatchMission!.mission.id } }),
   ]);
   const linked = await brain.attachAgentRun({
     workspaceId,
