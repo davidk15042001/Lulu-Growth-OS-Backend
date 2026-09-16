@@ -7,6 +7,18 @@ export type ProviderCapabilityStatus = 'AVAILABLE' | 'UNAVAILABLE' | 'AUTHORIZAT
 export type ProviderSyncStatus = 'IDLE' | 'RUNNING' | 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'PAUSED';
 export type ProviderImplementationStatus = 'IMPLEMENTED' | 'PARTIAL' | 'AUTHORIZATION_REQUIRED' | 'PROVIDER_REVIEW' | 'UNCONFIRMED' | 'NOT_IMPLEMENTED' | 'UNAVAILABLE';
 
+export type ProviderAdapterFeature = 'verification' | 'health' | 'capabilities' | 'discovery' | 'sync' | 'webhook';
+
+/** Runtime adapter support is intentionally separate from catalog status. A
+ * provider can have a persisted connection and a catalog entry while only a
+ * subset of its external operations is actually wired to a provider adapter.
+ * Exposing this distinction prevents agents and UI surfaces from treating a
+ * catalog row as proof that an operation is executable. */
+export type ProviderRuntimeReadiness = {
+  adapterRegistered: boolean;
+  supportedFeatures: ProviderAdapterFeature[];
+};
+
 export type ProviderVerificationResult = {
   verified: boolean;
   status: ProviderConnectionStatus;
@@ -48,6 +60,7 @@ export type ProviderAdapterContext = {
  * composed onto this base instead of one giant provider interface. */
 export interface ProviderBaseAdapter {
   readonly providerKey: string;
+  readonly runtimeFeatures?: readonly ProviderAdapterFeature[];
   verifyConnection(context: ProviderAdapterContext): Promise<ProviderVerificationResult>;
 }
 
@@ -90,6 +103,7 @@ export type ProviderCatalogEntry = {
   category: string;
   implementationStatus: ProviderImplementationStatus;
   defaultMode: ProviderMode;
+  runtime?: ProviderRuntimeReadiness;
   capabilities: Array<{
     capabilityKey: string;
     displayName: string;

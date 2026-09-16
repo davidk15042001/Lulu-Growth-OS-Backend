@@ -90,6 +90,15 @@ export type ProviderConnection = {
   }>;
 };
 
+export type ProviderCatalogRecord = {
+  providerKey: string;
+  displayName: string;
+  category: string;
+  implementationStatus: string;
+  defaultMode: string;
+  capabilities: Array<Record<string, unknown>>;
+};
+
 const connectionSelect = `
   c.id,
   c.scope_type AS "scopeType",
@@ -373,8 +382,8 @@ export async function getProviderConnectionInternal(connectionId: string, client
   return rows[0] ?? null;
 }
 
-export async function listProviderCatalog() {
-  const registry = (await query<Record<string, unknown>>(`SELECT provider_key AS "providerKey", display_name AS "displayName", category, implementation_status AS "implementationStatus", default_mode AS "defaultMode" FROM provider_registry ORDER BY category, display_name`)).rows;
+export async function listProviderCatalog(): Promise<ProviderCatalogRecord[]> {
+  const registry = (await query<Omit<ProviderCatalogRecord, 'capabilities'>>(`SELECT provider_key AS "providerKey", display_name AS "displayName", category, implementation_status AS "implementationStatus", default_mode AS "defaultMode" FROM provider_registry ORDER BY category, display_name`)).rows;
   const capabilities = (await query<Record<string, unknown>>(`SELECT provider_key AS "providerKey", capability_key AS "capabilityKey", display_name AS "displayName", required_scopes AS "requiredScopes", default_status AS "defaultStatus" FROM provider_capability_definitions ORDER BY provider_key, capability_key`)).rows;
   return registry.map((entry) => ({ ...entry, capabilities: capabilities.filter((capability) => capability.providerKey === entry.providerKey) }));
 }

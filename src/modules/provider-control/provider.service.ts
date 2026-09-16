@@ -4,12 +4,13 @@ import { assertWorkspaceCapability } from '../workspaces/workspace-authorization
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import * as repo from './provider.repo.js';
-import { PROVIDER_CATALOG, canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, isProviderRegistered, providerError } from './provider-registry.js';
+import { PROVIDER_CATALOG, canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, getProviderRuntimeReadiness, isProviderRegistered, providerError } from './provider-registry.js';
 import type { ProviderCapabilityStatus, ProviderConnectionStatus, ProviderHealthStatus, ProviderMode } from './provider.types.js';
 import { verifyWebhookSignature as verifyUnifyPortWebhookSignature } from './unifyport.client.js';
 
-export function listProviderCatalog() {
-  return repo.listProviderCatalog();
+export async function listProviderCatalog() {
+  const catalog = await repo.listProviderCatalog();
+  return catalog.map((entry) => ({ ...entry, runtime: getProviderRuntimeReadiness(String(entry.providerKey)) }));
 }
 
 const PROVIDER_ENTITLEMENTS: Record<string, string> = {
@@ -97,19 +98,35 @@ export async function verifyWorkspaceProvider(workspaceId: string, connectionId:
   const row = await repo.getProviderConnectionInternal(connectionId);
   if (!row || String(row.workspaceId) !== workspaceId) throw providerError('PROVIDER_CONNECTION_NOT_FOUND', 'Provider connection not found', undefined, 404);
   const adapter = getProviderAdapter(String(row.providerKey));
-  const result = await adapter.verifyConnection(connectionContext(row));
+  const context = connectionContext(row);
+  const result = await adapter.verifyConnection(context);
+  let adapterCapabilities: Array<{ capabilityKey: string; status: ProviderCapabilityStatus; reason?: string }> = [];
+  let capabilityProbeError: string | null = null;
+  if (result.verified && adapter.getCapabilities) {
+    try {
+      adapterCapabilities = await adapter.getCapabilities(context);
+    } catch (error) {
+      capabilityProbeError = error instanceof Error ? error.message.slice(0, 500) : 'Provider capability probe failed.';
+    }
+  }
+  const capabilityByKey = new Map(adapterCapabilities.map((capability) => [capability.capabilityKey, capability]));
   const health = result.healthStatus;
   const status = result.status as ProviderConnectionStatus;
   await repo.updateConnectionVerification({ workspaceId, connectionId, status, authorizationState: result.authorizationState, healthStatus: health, healthReason: result.reason, lastVerifiedAt: new Date(), lastSuccessAt: result.lastSuccessAt ? new Date(result.lastSuccessAt) : null, lastError: result.verified ? null : result.reason });
   const definitions = await repo.listCapabilityDefinitions(String(row.providerKey));
   for (const definition of definitions) {
     const defaultStatus = String(definition.defaultStatus) as ProviderCapabilityStatus;
+    const capability = capabilityByKey.get(String(definition.capabilityKey));
     const capabilityStatus: ProviderCapabilityStatus = status !== 'CONNECTED'
       ? (status === 'AUTHORIZATION_REQUIRED' || status === 'EXPIRED' ? 'AUTHORIZATION_REQUIRED' : status === 'ERROR' ? 'ERROR' : status === 'PROVIDER_REVIEW' ? 'PROVIDER_REVIEW' : 'UNAVAILABLE')
+      : capabilityProbeError
+        ? 'UNCONFIRMED'
+        : capability
+          ? capability.status
       : result.verified
         ? defaultStatus
         : (defaultStatus === 'AVAILABLE' ? 'UNCONFIRMED' : defaultStatus);
-    await repo.upsertCapabilityState({ connectionId, subjectType: 'CONNECTION', subjectId: connectionId, capabilityKey: String(definition.capabilityKey), status: capabilityStatus, source: result.verified ? 'PROVIDER_API' : 'ADAPTER', grantedScopes: connectionContext(row).grantedScopes, reason: result.verified ? null : result.reason });
+    await repo.upsertCapabilityState({ connectionId, subjectType: 'CONNECTION', subjectId: connectionId, capabilityKey: String(definition.capabilityKey), status: capabilityStatus, source: result.verified ? (capability ? 'PROVIDER_API' : 'ADAPTER') : 'ADAPTER', grantedScopes: context.grantedScopes, reason: capabilityProbeError ?? (capability?.reason ?? (result.verified ? null : result.reason)) });
   }
   await recordSecurityEvent({ eventType: 'PROVIDER_ACTION', workspaceId, userId: actorId, metadata: { action: 'connection_verified', targetId: connectionId, provider: String(row.providerKey), reason: result.reason } });
   const updated = await repo.getProviderConnection(workspaceId, connectionId);

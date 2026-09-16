@@ -6,7 +6,9 @@ import type {
   ProviderCatalogEntry,
   ProviderDiscoveredAccount,
   ProviderDiscoveredAsset,
+  ProviderAdapterFeature,
   ProviderHealthStatus,
+  ProviderRuntimeReadiness,
   ProviderVerificationResult,
 } from './provider.types.js';
 import { UnifyPortAdapter } from './unifyport.adapter.js';
@@ -89,6 +91,8 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
 class ConservativeLegacyAdapter implements ProviderAdapter {
   constructor(public readonly providerKey: string) {}
 
+  readonly runtimeFeatures: ProviderAdapterFeature[] = ['verification'];
+
   async verifyConnection(context: ProviderAdapterContext): Promise<ProviderVerificationResult> {
     if (!context.externalAccountId) return { verified: false, status: 'AUTHORIZATION_REQUIRED', authorizationState: 'NOT_AUTHORIZED', healthStatus: 'AUTHORIZATION_REQUIRED', reason: 'No external provider account has been discovered.' };
     if (context.grantedScopes.length === 0) return { verified: false, status: 'AUTHORIZATION_REQUIRED', authorizationState: 'UNKNOWN', healthStatus: 'UNKNOWN', reason: 'The connection has no recorded provider scopes.' };
@@ -115,6 +119,23 @@ export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));
   if (!adapter) throw providerError('PROVIDER_NOT_REGISTERED', 'This provider is not registered in the Provider Control Plane', { provider: providerKey }, 404);
   return adapter;
+}
+
+/** Describe the operations that are really wired to the adapter at runtime.
+ * The catalog is deliberately broader than the adapter registry because it
+ * also documents planned/legacy providers. Callers must use this projection
+ * before scheduling work or presenting a provider as executable. */
+export function getProviderRuntimeReadiness(providerKey: string): ProviderRuntimeReadiness {
+  const adapter = adapters.get(canonicalProviderKey(providerKey));
+  if (!adapter) return { adapterRegistered: false, supportedFeatures: [] };
+  if (adapter.runtimeFeatures) return { adapterRegistered: true, supportedFeatures: [...adapter.runtimeFeatures] };
+  const supportedFeatures: ProviderAdapterFeature[] = ['verification'];
+  if (typeof adapter.getHealth === 'function') supportedFeatures.push('health');
+  if (typeof adapter.getCapabilities === 'function') supportedFeatures.push('capabilities');
+  if (typeof adapter.discoverAccounts === 'function' || typeof adapter.discoverAssets === 'function') supportedFeatures.push('discovery');
+  if (typeof adapter.sync === 'function') supportedFeatures.push('sync');
+  if (typeof adapter.handleWebhook === 'function') supportedFeatures.push('webhook');
+  return { adapterRegistered: true, supportedFeatures };
 }
 
 export function getProviderCatalogEntry(providerKey: string) {

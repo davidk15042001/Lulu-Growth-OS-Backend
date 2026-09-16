@@ -11,6 +11,7 @@ process.env.PROVIDER_WEBHOOK_SECRETS = JSON.stringify({ google_business: 'provid
 
 const { pool } = await import('../src/db/pool.js');
 const providerService = await import('../src/modules/provider-control/provider.service.js');
+const providerRegistry = await import('../src/modules/provider-control/provider-registry.js');
 const db = new PGlite();
 
 before(async () => {
@@ -40,6 +41,17 @@ async function fixture() {
 }
 
 describe('Provider Control Plane', () => {
+  it('exposes runtime adapter readiness separately from the broad provider catalog', async () => {
+    const catalog = await providerService.listProviderCatalog();
+    const googleBusiness = catalog.find((entry) => entry.providerKey === 'google_business');
+    const unifyPort = catalog.find((entry) => entry.providerKey === 'unifyport');
+    assert.deepEqual(googleBusiness?.runtime, { adapterRegistered: true, supportedFeatures: ['verification'] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('does-not-exist'), { adapterRegistered: false, supportedFeatures: [] });
+    assert.equal(unifyPort?.runtime?.adapterRegistered, true);
+    assert.ok(unifyPort?.runtime?.supportedFeatures.includes('sync'));
+    assert.ok(unifyPort?.runtime?.supportedFeatures.includes('webhook'));
+  });
+
   it('keeps provider connections and assets workspace-scoped', async () => {
     const f = await fixture();
     const visible = await providerService.listWorkspaceProviders(f.a);
