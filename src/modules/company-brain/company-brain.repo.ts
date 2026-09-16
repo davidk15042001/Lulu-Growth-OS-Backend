@@ -74,29 +74,33 @@ export async function upsertSignal(input: SignalInput, client?: PoolClient) {
 export async function createMissionFromSignal(input: {
   workspaceId: string; signalId: string; title: string; objective: string; priority: number; createdBy?: string | null;
 }) {
-  return withTransaction(async (client) => {
-    const missionResult = await query<BrainMission>(
-      `INSERT INTO company_brain_missions(workspace_id,signal_id,title,objective,priority,created_by)
-       SELECT $1,id,$3,$4,$5,$6 FROM company_brain_signals WHERE workspace_id=$1 AND id=$2
-       ON CONFLICT(workspace_id,signal_id) DO UPDATE SET title=EXCLUDED.title,objective=EXCLUDED.objective,priority=EXCLUDED.priority
-       RETURNING ${missionSelect}`,
-      [input.workspaceId,input.signalId,input.title,input.objective,input.priority,input.createdBy ?? null], client,
-    );
-    const mission = missionResult.rows[0];
-    if (!mission) return null;
-    const taskResult = await query<BrainTask>(
-      `INSERT INTO company_brain_tasks(workspace_id,mission_id,task_type,title,objective,priority)
-       VALUES($1,$2,'investigate',$3,$4,$5)
-       ON CONFLICT DO NOTHING
-       RETURNING ${taskSelect}`,
-      [input.workspaceId,mission.id,input.title,input.objective,input.priority], client,
-    );
-    const task = taskResult.rows[0] ?? (await query<BrainTask>(
-      `SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND mission_id=$2 ORDER BY created_at ASC LIMIT 1`,
-      [input.workspaceId,mission.id], client,
-    )).rows[0];
-    return { mission, task: task ?? null };
-  });
+  return withTransaction((client) => createMissionFromSignalWithClient(input, client));
+}
+
+async function createMissionFromSignalWithClient(input: {
+  workspaceId: string; signalId: string; title: string; objective: string; priority: number; createdBy?: string | null;
+}, client: PoolClient) {
+  const missionResult = await query<BrainMission>(
+    `INSERT INTO company_brain_missions(workspace_id,signal_id,title,objective,priority,created_by)
+     SELECT $1,id,$3,$4,$5,$6 FROM company_brain_signals WHERE workspace_id=$1 AND id=$2
+     ON CONFLICT(workspace_id,signal_id) DO UPDATE SET title=EXCLUDED.title,objective=EXCLUDED.objective,priority=EXCLUDED.priority
+     RETURNING ${missionSelect}`,
+    [input.workspaceId,input.signalId,input.title,input.objective,input.priority,input.createdBy ?? null], client,
+  );
+  const mission = missionResult.rows[0];
+  if (!mission) return null;
+  const taskResult = await query<BrainTask>(
+    `INSERT INTO company_brain_tasks(workspace_id,mission_id,task_type,title,objective,priority)
+     VALUES($1,$2,'investigate',$3,$4,$5)
+     ON CONFLICT DO NOTHING
+     RETURNING ${taskSelect}`,
+    [input.workspaceId,mission.id,input.title,input.objective,input.priority], client,
+  );
+  const task = taskResult.rows[0] ?? (await query<BrainTask>(
+    `SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND mission_id=$2 ORDER BY created_at ASC LIMIT 1`,
+    [input.workspaceId,mission.id], client,
+  )).rows[0];
+  return { mission, task: task ?? null };
 }
 
 export async function listSignals(workspaceId: string, limit: number, status?: string) {
@@ -178,7 +182,14 @@ export async function observeDomainEvent(event: DomainEvent) {
       trustScore: 1, observedAt: new Date(event.occurredAt),
     }, client);
     const persistedSignal = await upsertSignal({ ...signal, workspaceId: event.workspaceId!, observationId: observation.id }, client);
-    return { observation, signal: persistedSignal };
+    const mission = signal.routeToMission
+      ? await createMissionFromSignalWithClient({
+        workspaceId: event.workspaceId!, signalId: persistedSignal.id,
+        title: `Investigate ${persistedSignal.signalType.replaceAll('_', ' ')}`,
+        objective: persistedSignal.explanation, priority: Math.min(100, persistedSignal.severity * 20),
+      }, client)
+      : null;
+    return { observation, signal: persistedSignal, mission };
   });
 }
 
@@ -187,12 +198,14 @@ function classifyEvent(event: DomainEvent) {
   const failed = type.includes('failed') || type.includes('error') || type.includes('dead_letter');
   const financial = type.includes('payment') || type.includes('invoice') || type.includes('billing') || type.includes('ad_budget');
   const provider = type.includes('provider') || type.includes('integration');
+  const routeToMission = failed || provider || type.includes('overdue') || type.includes('approval_required') || type.includes('authorization_required') || type.includes('blocked');
   const severity = failed ? 4 : financial ? 3 : provider ? 2 : 1;
   const materiality = failed ? 0.9 : financial ? 0.75 : provider ? 0.55 : 0.25;
   return {
     signalType: failed ? 'execution_failure' : financial ? 'financial_change' : provider ? 'provider_change' : 'business_activity',
     severity, materiality,
     explanation: failed ? 'A persisted failure or error requires review before new side effects.' : financial ? 'A financial state change was observed and should remain auditable.' : provider ? 'A provider or integration state changed.' : 'A verified business event was observed.',
-    evidence: { eventType: event.type, materialityReason: failed ? 'failure' : financial ? 'financial' : provider ? 'provider' : 'activity' },
+    routeToMission,
+    evidence: { eventType: event.type, materialityReason: failed ? 'failure' : financial ? 'financial' : provider ? 'provider' : 'activity', routeToMission },
   };
 }
