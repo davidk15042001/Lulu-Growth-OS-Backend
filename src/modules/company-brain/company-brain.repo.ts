@@ -167,7 +167,7 @@ export async function claimNextRunnableTask(workerId: string, leaseSeconds = 120
   return withTransaction(async (client) => {
     const { rows } = await query<BrainTask>(
       `WITH candidate AS (
-         SELECT t.id
+         SELECT t.id AS candidate_id
          FROM company_brain_tasks t
          WHERE (
            t.status IN ('PROPOSED','READY')
@@ -193,7 +193,7 @@ export async function claimNextRunnableTask(workerId: string, leaseSeconds = 120
            claimed_by=$2, claimed_at=NOW(), dispatched_at=NOW(),
            dispatch_key=COALESCE(t.dispatch_key, 'brain-task:' || t.id::text), updated_at=NOW()
        FROM candidate
-       WHERE t.id=candidate.id
+       WHERE t.id=candidate.candidate_id
        RETURNING ${taskSelect}`,
       [leaseSeconds, workerId], client,
     );
