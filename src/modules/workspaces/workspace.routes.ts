@@ -35,6 +35,7 @@ import financeRoutes from '../finance/finance.routes.js';
 import commerceRoutes from '../commerce/commerce.routes.js';
 import socialPublishingRoutes from '../social-publishing/social-publishing.routes.js';
 import qualityRoutes from '../quality/quality.routes.js';
+import companyBrainRoutes from '../company-brain/company-brain.routes.js';
 import multer from 'multer';
 
 const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
@@ -80,6 +81,7 @@ router.use('/:workspaceId/adspend', adSpendRoutes);
 router.use('/:workspaceId/api-wallet', apiWalletRoutes);
 router.use('/:workspaceId/office', officeRoutes);
 router.use('/:workspaceId/quality', qualityRoutes);
+router.use('/:workspaceId/brain', companyBrainRoutes);
 router.use('/:workspaceId/finance', financeRoutes);
 router.use('/:workspaceId/commerce', commerceRoutes);
 router.use('/:workspaceId/social-publishing', socialPublishingRoutes);

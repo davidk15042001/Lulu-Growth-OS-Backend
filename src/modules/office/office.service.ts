@@ -1,6 +1,7 @@
 import * as repo from './office.repo.js';
 import type { OfficeControlAction, OfficeEmployeeRow, OfficeWorkItemStatus } from './office.types.js';
 import { notFoundError } from '../../utils/app-error.js';
+import * as companyBrain from '../company-brain/company-brain.service.js';
 import {
   canSeeEmployee,
   canSeeTimelineItem,
@@ -50,9 +51,10 @@ export async function getOverview(workspaceId: string, timelineLimit: number, ac
   const allRows = await repo.listOfficeEmployees(workspaceId);
   const rows = allRows.filter((row) => canSeeEmployee(row, access));
   const visibleEmployeeIds = rows.map((row) => row.employeeId);
-  const [workSummary, rawTimeline] = await Promise.all([
+  const [workSummary, rawTimeline, brain] = await Promise.all([
     repo.getOfficeSummary(workspaceId, visibleEmployeeIds),
     repo.listOfficeTimeline({ workspaceId, employeeIds: visibleEmployeeIds, limit: timelineLimit * 4 }),
+    companyBrain.overview(workspaceId, Math.min(12, Math.max(5, timelineLimit))),
   ]);
   const timeline = rawTimeline
     .filter((item) => canSeeTimelineItem(item, access))
@@ -95,6 +97,7 @@ export async function getOverview(workspaceId: string, timelineLimit: number, ac
     },
     departments: [...departments.values()].sort((left, right) => left.sortOrder - right.sortOrder),
     timeline,
+    companyBrain: brain,
   };
 }
 

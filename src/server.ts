@@ -27,6 +27,7 @@ import { startWorkerSupervisorHeartbeat, stopWorkerSupervisorHeartbeat } from '.
 import { startSocialPublishingWorker, stopSocialPublishingWorker } from './modules/social-publishing/social-publishing.worker.js';
 import { startGoogleAdsSpendReconciliationWorker, stopGoogleAdsSpendReconciliationWorker } from './modules/adspend/google-ads-spend.worker.js';
 import { startQualityIntelligenceWorker, stopQualityIntelligenceWorker } from './modules/quality/quality.worker.js';
+import { registerCompanyBrainEventHandler } from './modules/company-brain/company-brain.event-handler.js';
 import { autonomousWorkerManifest } from './operations/autonomous-worker-manifest.js';
 import {
   createIdempotentShutdown,
@@ -71,6 +72,7 @@ async function stopBackgroundWorkers() {
 }
 
 async function bootstrap() {
+  registerCompanyBrainEventHandler();
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
     await ensureMigrations();
   }
