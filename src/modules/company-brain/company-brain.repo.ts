@@ -1,7 +1,8 @@
 import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import type { DomainEvent } from '../../events/domain-event.types.js';
-import type { BrainDecision, BrainMission, BrainObservation, BrainSignal, BrainTask } from './company-brain.types.js';
+import type { BrainDecision, BrainLearningRecord, BrainMission, BrainObservation, BrainSignal, BrainTask, BrainTaskDependency, BrainTaskEvent } from './company-brain.types.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
 
 const observationSelect = `id,workspace_id AS "workspaceId",source_type AS "sourceType",source_key AS "sourceKey",
   source_event_id AS "sourceEventId",subject_type AS "subjectType",subject_id AS "subjectId",event_type AS "eventType",
@@ -13,7 +14,15 @@ const missionSelect = `id,workspace_id AS "workspaceId",signal_id AS "signalId",
   completed_at AS "completedAt",created_at AS "createdAt",updated_at AS "updatedAt"`;
 const taskSelect = `id,workspace_id AS "workspaceId",mission_id AS "missionId",parent_task_id AS "parentTaskId",
   assigned_employee_id AS "assignedEmployeeId",task_type AS "taskType",title,objective,status,priority,dependency_count AS "dependencyCount",
+  idempotency_key AS "idempotencyKey",due_at AS "dueAt",attempt_count AS "attemptCount",max_attempts AS "maxAttempts",
+  confidence::float AS confidence,blocked_reason AS "blockedReason",last_error AS "lastError",
   context,result,error_code AS "errorCode",error_message AS "errorMessage",created_at AS "createdAt",updated_at AS "updatedAt"`;
+const taskDependencySelect = `d.task_id AS "taskId",d.depends_on_task_id AS "dependsOnTaskId",d.dependency_type AS "dependencyType",
+  t.title,t.status`;
+const taskEventSelect = `id,workspace_id AS "workspaceId",task_id AS "taskId",event_type AS "eventType",actor_type AS "actorType",
+  actor_id AS "actorId",payload,created_at AS "createdAt"`;
+const learningSelect = `id,workspace_id AS "workspaceId",task_id AS "taskId",signal_id AS "signalId",source_event_id AS "sourceEventId",
+  outcome_type AS "outcomeType",outcome,evidence,confidence::float AS confidence,verified,actor_type AS "actorType",actor_id AS "actorId",created_at AS "createdAt"`;
 const decisionSelect = `id,workspace_id AS "workspaceId",signal_id AS "signalId",mission_id AS "missionId",decision_type AS "decisionType",
   decision,confidence::float AS confidence,rationale,evidence,actor_type AS "actorType",actor_id AS "actorId",created_at AS "createdAt"`;
 
@@ -131,6 +140,167 @@ export async function listDecisions(workspaceId: string, limit: number) {
 
 export async function listTasksForMission(workspaceId: string, missionId: string) {
   const { rows } = await query<BrainTask>(`SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND mission_id=$2 ORDER BY priority DESC, created_at ASC`, [workspaceId,missionId]);
+  return rows;
+}
+
+async function appendTaskEvent(input: {
+  workspaceId: string; taskId: string; eventType: string; actorType?: 'system' | 'agent' | 'human' | undefined; actorId?: string | null | undefined; payload?: Record<string, unknown>;
+}, client: PoolClient) {
+  const { rows } = await query<BrainTaskEvent>(
+    `INSERT INTO company_brain_task_events(workspace_id,task_id,event_type,actor_type,actor_id,payload)
+     VALUES($1,$2,$3,$4,$5,$6::jsonb) RETURNING ${taskEventSelect}`,
+    [input.workspaceId,input.taskId,input.eventType,input.actorType ?? 'system',input.actorId ?? null,input.payload ?? {}], client,
+  );
+  return rows[0];
+}
+
+export async function getTask(workspaceId: string, taskId: string, client?: PoolClient) {
+  const { rows } = await query<BrainTask>(`SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND id=$2`, [workspaceId, taskId], client);
+  return rows[0] ?? null;
+}
+
+export async function createTask(input: {
+  workspaceId: string; missionId: string; parentTaskId?: string | null | undefined; assignedEmployeeId?: string | null | undefined;
+  taskType: string; title: string; objective?: string; priority: number; context?: Record<string, unknown>;
+  dueAt?: string | null | undefined; maxAttempts?: number; idempotencyKey?: string | null | undefined; actorType?: 'system' | 'agent' | 'human' | undefined; actorId?: string | null | undefined;
+}) {
+  return withTransaction(async (client) => {
+    if (input.idempotencyKey) {
+      const existing = await query<BrainTask>(`SELECT ${taskSelect} FROM company_brain_tasks WHERE workspace_id=$1 AND idempotency_key=$2`, [input.workspaceId, input.idempotencyKey], client);
+      if (existing.rows[0]) return { task: existing.rows[0], created: false as const };
+    }
+    const mission = (await query<{ id: string }>(`SELECT id FROM company_brain_missions WHERE workspace_id=$1 AND id=$2`, [input.workspaceId,input.missionId], client)).rows[0];
+    if (!mission) return null;
+    if (input.parentTaskId) {
+      const parent = (await query<{ id: string }>(`SELECT id FROM company_brain_tasks WHERE workspace_id=$1 AND id=$2 AND mission_id=$3`, [input.workspaceId,input.parentTaskId,input.missionId], client)).rows[0];
+      if (!parent) return null;
+    }
+    if (input.assignedEmployeeId) {
+      const employee = (await query<{ id: string }>(`SELECT id FROM digital_employees WHERE workspace_id=$1 AND id=$2`, [input.workspaceId,input.assignedEmployeeId], client)).rows[0];
+      if (!employee) return null;
+    }
+    const result = await query<BrainTask>(
+      `INSERT INTO company_brain_tasks(
+        workspace_id,mission_id,parent_task_id,assigned_employee_id,task_type,title,objective,priority,context,due_at,max_attempts,idempotency_key
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,$12)
+      RETURNING ${taskSelect}`,
+      [input.workspaceId,input.missionId,input.parentTaskId ?? null,input.assignedEmployeeId ?? null,input.taskType,input.title,input.objective ?? '',input.priority,input.context ?? {},input.dueAt ?? null,input.maxAttempts ?? 3,input.idempotencyKey ?? null], client,
+    );
+    const task = result.rows[0];
+    if (!task) throw new Error('Company Brain task insert did not return a row');
+    await appendTaskEvent({ workspaceId: input.workspaceId, taskId: task.id, eventType: 'CREATED', actorType: input.actorType, actorId: input.actorId, payload: { missionId: input.missionId, parentTaskId: input.parentTaskId ?? null } }, client);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId, type: 'brain.task.created', aggregateType: 'company_brain_task', aggregateId: task.id,
+      payload: { missionId: input.missionId, taskType: input.taskType, parentTaskId: input.parentTaskId ?? null },
+      metadata: { actorId: input.actorId ?? null, actorType: input.actorType ?? 'system', source: 'company-brain' },
+      idempotencyKey: `brain-task:${task.id}:created:v1`,
+    }, client);
+    return { task, created: true as const };
+  });
+}
+
+export async function addTaskDependency(input: {
+  workspaceId: string; taskId: string; dependsOnTaskId: string; dependencyType: 'BLOCKS' | 'CONTEXT' | 'VERIFICATION'; actorId?: string | null;
+}) {
+  return withTransaction(async (client) => {
+    const tasks = (await query<{ id: string; missionId: string }>(
+      `SELECT id,mission_id AS "missionId" FROM company_brain_tasks WHERE workspace_id=$1 AND id=ANY($2::uuid[]) FOR UPDATE`,
+      [input.workspaceId, [input.taskId,input.dependsOnTaskId]], client,
+    )).rows;
+    const task = tasks.find((item) => item.id === input.taskId);
+    const dependency = tasks.find((item) => item.id === input.dependsOnTaskId);
+    if (!task || !dependency || task.missionId !== dependency.missionId || task.id === dependency.id) return null;
+    const cycle = (await query<{ exists: boolean }>(
+      `WITH RECURSIVE ancestors(id) AS (
+         SELECT $3::uuid
+         UNION
+         SELECT d.depends_on_task_id FROM company_brain_task_dependencies d
+         JOIN ancestors a ON a.id=d.task_id WHERE d.workspace_id=$1
+       ) SELECT EXISTS(SELECT 1 FROM ancestors WHERE id=$2) AS exists`,
+      [input.workspaceId,input.taskId,input.dependsOnTaskId], client,
+    )).rows[0]?.exists;
+    if (cycle) throw new Error('Company Brain task dependency would create a cycle');
+    const inserted = await query<{ taskId: string }>(`INSERT INTO company_brain_task_dependencies(workspace_id,task_id,depends_on_task_id,dependency_type)
+      VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING task_id AS "taskId"`, [input.workspaceId,input.taskId,input.dependsOnTaskId,input.dependencyType], client);
+    await query(`UPDATE company_brain_tasks SET dependency_count=(SELECT count(*) FROM company_brain_task_dependencies WHERE workspace_id=$1 AND task_id=$2),updated_at=NOW()
+      WHERE workspace_id=$1 AND id=$2`, [input.workspaceId,input.taskId], client);
+    if (inserted.rows[0]) {
+      await appendTaskEvent({ workspaceId: input.workspaceId, taskId: input.taskId, eventType: 'DEPENDENCY_ADDED', actorType: 'human', actorId: input.actorId, payload: { dependsOnTaskId: input.dependsOnTaskId, dependencyType: input.dependencyType } }, client);
+      await appendDomainEvent({
+        workspaceId: input.workspaceId, type: 'brain.task.dependency_added', aggregateType: 'company_brain_task', aggregateId: input.taskId,
+        payload: { dependsOnTaskId: input.dependsOnTaskId, dependencyType: input.dependencyType }, metadata: { actorId: input.actorId ?? null, source: 'company-brain' },
+        idempotencyKey: `brain-task:${input.taskId}:dependency:${input.dependsOnTaskId}:${input.dependencyType}`,
+      }, client);
+    }
+    const result = await query<BrainTaskDependency>(`SELECT ${taskDependencySelect} FROM company_brain_task_dependencies d
+      JOIN company_brain_tasks t ON t.workspace_id=d.workspace_id AND t.id=d.depends_on_task_id
+      WHERE d.workspace_id=$1 AND d.task_id=$2 AND d.depends_on_task_id=$3`, [input.workspaceId,input.taskId,input.dependsOnTaskId], client);
+    return result.rows[0] ?? null;
+  });
+}
+
+export async function updateTask(input: {
+  workspaceId: string; taskId: string; status?: string | undefined; result?: Record<string, unknown> | null | undefined; errorCode?: string | null | undefined;
+  errorMessage?: string | null | undefined; blockedReason?: string | null | undefined; confidence?: number | null | undefined; actorType?: 'system' | 'agent' | 'human' | undefined; actorId?: string | null | undefined;
+}) {
+  return withTransaction(async (client) => {
+    const current = await getTask(input.workspaceId, input.taskId, client);
+    if (!current) return null;
+    const nextStatus = input.status ?? current.status;
+    if (['COMPLETED','CANCELLED'].includes(current.status) && !['READY','RUNNING'].includes(nextStatus)) return current;
+    const nextAttemptCount = nextStatus === 'RUNNING' && current.status !== 'RUNNING' ? current.attemptCount + 1 : current.attemptCount;
+    if (nextAttemptCount > current.maxAttempts) throw new Error('Company Brain task retry limit reached');
+    const { rows } = await query<BrainTask>(
+      `UPDATE company_brain_tasks SET status=$3,result=COALESCE($4::jsonb,result),error_code=$5,error_message=$6,
+         blocked_reason=$7,confidence=COALESCE($8,confidence),attempt_count=$9,
+         last_error=CASE WHEN $3='FAILED' THEN COALESCE($6,last_error) ELSE NULL END,updated_at=NOW()
+       WHERE workspace_id=$1 AND id=$2 RETURNING ${taskSelect}`,
+      [input.workspaceId,input.taskId,nextStatus,input.result === undefined ? null : input.result,input.errorCode ?? null,input.errorMessage ?? null,input.blockedReason ?? null,input.confidence ?? null,nextAttemptCount], client,
+    );
+    const task = rows[0];
+    if (!task) return null;
+    await appendTaskEvent({ workspaceId: input.workspaceId, taskId: task.id, eventType: `STATUS_${nextStatus}`, actorType: input.actorType, actorId: input.actorId, payload: { result: input.result ?? null, errorCode: input.errorCode ?? null, confidence: input.confidence ?? null } }, client);
+    await appendDomainEvent({
+      workspaceId: input.workspaceId, type: 'brain.task.updated', aggregateType: 'company_brain_task', aggregateId: task.id,
+      payload: { status: task.status, attemptCount: task.attemptCount }, metadata: { actorId: input.actorId ?? null, actorType: input.actorType ?? 'system', source: 'company-brain' },
+      idempotencyKey: `brain-task:${task.id}:status:${task.updatedAt}`,
+    }, client);
+    return task;
+  });
+}
+
+export async function getTaskGraph(workspaceId: string, missionId: string) {
+  const [tasks, dependencies, events] = await Promise.all([
+    listTasksForMission(workspaceId, missionId),
+    query<BrainTaskDependency>(`SELECT ${taskDependencySelect} FROM company_brain_task_dependencies d
+      JOIN company_brain_tasks t ON t.workspace_id=d.workspace_id AND t.id=d.depends_on_task_id
+      WHERE d.workspace_id=$1 AND t.mission_id=$2 ORDER BY d.created_at ASC`, [workspaceId,missionId]),
+    query<BrainTaskEvent>(`SELECT e.id,e.workspace_id AS "workspaceId",e.task_id AS "taskId",e.event_type AS "eventType",e.actor_type AS "actorType",
+      e.actor_id AS "actorId",e.payload,e.created_at AS "createdAt" FROM company_brain_task_events e
+      JOIN company_brain_tasks t ON t.workspace_id=e.workspace_id AND t.id=e.task_id
+      WHERE e.workspace_id=$1 AND t.mission_id=$2 ORDER BY e.created_at ASC`, [workspaceId,missionId]),
+  ]);
+  return { tasks, dependencies: dependencies.rows, events: events.rows };
+}
+
+export async function recordLearning(input: {
+  workspaceId: string; taskId?: string | null | undefined; signalId?: string | null | undefined; sourceEventId?: string | null | undefined;
+  outcomeType: string; outcome: string; evidence?: Record<string, unknown>; confidence: number; verified: boolean;
+  actorType?: 'system' | 'agent' | 'human' | undefined; actorId?: string | null | undefined;
+}) {
+  const { rows } = await query<BrainLearningRecord>(
+    `INSERT INTO company_brain_learning_records(workspace_id,task_id,signal_id,source_event_id,outcome_type,outcome,evidence,confidence,verified,actor_type,actor_id)
+     VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11)
+     ON CONFLICT(workspace_id,source_event_id,outcome_type) WHERE source_event_id IS NOT NULL DO UPDATE SET
+       outcome=EXCLUDED.outcome,evidence=EXCLUDED.evidence,confidence=EXCLUDED.confidence,verified=EXCLUDED.verified
+     RETURNING ${learningSelect}`,
+    [input.workspaceId,input.taskId ?? null,input.signalId ?? null,input.sourceEventId ?? null,input.outcomeType,input.outcome,input.evidence ?? {},input.confidence,input.verified,input.actorType ?? 'system',input.actorId ?? null],
+  );
+  return rows[0];
+}
+
+export async function listLearning(workspaceId: string, limit: number) {
+  const { rows } = await query<BrainLearningRecord>(`SELECT ${learningSelect} FROM company_brain_learning_records WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT $2`, [workspaceId,limit]);
   return rows;
 }
 

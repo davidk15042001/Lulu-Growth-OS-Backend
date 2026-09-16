@@ -93,4 +93,41 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   assert.equal(mission?.mission.id, replayedMission?.mission.id);
   assert.equal(mission?.task?.id, replayedMission?.task?.id);
   assert.equal((await brain.listTasksForMission(workspaceId, mission!.mission.id)).length, 1);
+
+  const child = await brain.createTask({
+    workspaceId, missionId: mission!.mission.id, parentTaskId: mission!.task!.id,
+    taskType: 'provider-diagnosis', title: 'Verify provider state', objective: 'Read the provider evidence and classify recovery.',
+    priority: 80, idempotencyKey: 'brain-test-child-v1', actorType: 'human', actorId: 'test-user',
+  });
+  assert.ok(child?.created);
+  const dependency = await brain.addTaskDependency({
+    workspaceId, taskId: child!.task.id, dependsOnTaskId: mission!.task!.id, dependencyType: 'BLOCKS', actorId: 'test-user',
+  });
+  assert.equal(dependency?.dependsOnTaskId, mission!.task!.id);
+  const replayedDependency = await brain.addTaskDependency({
+    workspaceId, taskId: child!.task.id, dependsOnTaskId: mission!.task!.id, dependencyType: 'BLOCKS', actorId: 'test-user',
+  });
+  assert.equal(replayedDependency?.taskId, dependency?.taskId);
+  await assert.rejects(
+    () => brain.addTaskDependency({ workspaceId, taskId: mission!.task!.id, dependsOnTaskId: child!.task.id, dependencyType: 'BLOCKS' }),
+    /cycle/i,
+  );
+  const running = await brain.updateTask({ workspaceId, taskId: child!.task.id, status: 'RUNNING', actorType: 'system' });
+  assert.equal(running?.attemptCount, 1);
+  const failed = await brain.updateTask({ workspaceId, taskId: child!.task.id, status: 'FAILED', errorCode: 'PROVIDER_UNAVAILABLE', errorMessage: 'provider offline', confidence: 0.9 });
+  assert.equal(failed?.lastError, 'provider offline');
+  const learning = await brain.recordLearning({
+    workspaceId, taskId: child!.task.id, sourceEventId: event.id, outcomeType: 'provider_diagnosis',
+    outcome: 'Provider unavailable; task held for a later recovery cycle.', evidence: { code: 'PROVIDER_UNAVAILABLE' }, confidence: 0.9, verified: false,
+  });
+  const replayLearning = await brain.recordLearning({
+    workspaceId, taskId: child!.task.id, sourceEventId: event.id, outcomeType: 'provider_diagnosis',
+    outcome: 'Provider unavailable; task held for a later recovery cycle.', evidence: { code: 'PROVIDER_UNAVAILABLE' }, confidence: 0.9, verified: false,
+  });
+  assert.equal(learning?.id, replayLearning?.id);
+  const graph = await brain.getTaskGraph(workspaceId, mission!.mission.id);
+  assert.equal(graph.tasks.length, 2);
+  assert.equal(graph.dependencies.length, 1);
+  assert.ok(graph.events.length >= 3);
+  assert.equal((await brain.listLearning(workspaceId, 10)).length, 1);
 });

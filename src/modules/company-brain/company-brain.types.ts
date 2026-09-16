@@ -68,12 +68,54 @@ export type BrainTask = {
   status: BrainTaskStatus;
   priority: number;
   dependencyCount: number;
+  idempotencyKey: string | null;
+  dueAt: string | null;
+  attemptCount: number;
+  maxAttempts: number;
+  confidence: number | null;
+  blockedReason: string | null;
+  lastError: string | null;
   context: Record<string, unknown>;
   result: Record<string, unknown> | null;
   errorCode: string | null;
   errorMessage: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type BrainTaskDependency = {
+  taskId: string;
+  dependsOnTaskId: string;
+  dependencyType: 'BLOCKS' | 'CONTEXT' | 'VERIFICATION';
+  title: string;
+  status: BrainTaskStatus;
+};
+
+export type BrainTaskEvent = {
+  id: string;
+  workspaceId: string;
+  taskId: string;
+  eventType: string;
+  actorType: 'system' | 'agent' | 'human';
+  actorId: string | null;
+  payload: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type BrainLearningRecord = {
+  id: string;
+  workspaceId: string;
+  taskId: string | null;
+  signalId: string | null;
+  sourceEventId: string | null;
+  outcomeType: string;
+  outcome: string;
+  evidence: Record<string, unknown>;
+  confidence: number;
+  verified: boolean;
+  actorType: 'system' | 'agent' | 'human';
+  actorId: string | null;
+  createdAt: string;
 };
 
 export type BrainDecision = {

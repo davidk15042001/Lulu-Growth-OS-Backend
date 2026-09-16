@@ -116,6 +116,12 @@ export const RESOURCE_CATALOG = [
   { key: 'intelligence_signals', domain: 'intelligence', label: 'Intelligence Signals', description: 'Business intelligence observations.' },
   { key: 'kpis', domain: 'intelligence', label: 'KPIs', description: 'Key performance indicator definitions.' },
   { key: 'growth_opportunities', domain: 'intelligence', label: 'Growth Opportunities', description: 'Intelligence-driven growth opportunities.' },
+  { key: 'brain_observations', domain: 'intelligence', label: 'Company Brain Observations', description: 'Persisted observations captured from real company events.' },
+  { key: 'brain_signals', domain: 'intelligence', label: 'Company Brain Signals', description: 'Material signals classified by the Company Brain.' },
+  { key: 'brain_missions', domain: 'intelligence', label: 'Company Brain Missions', description: 'Durable missions created to resolve material business signals.' },
+  { key: 'brain_tasks', domain: 'intelligence', label: 'Company Brain Tasks', description: 'Executable task-graph work items owned by digital employees.' },
+  { key: 'brain_decisions', domain: 'intelligence', label: 'Company Brain Decisions', description: 'Evidence-backed decisions and policy outcomes.' },
+  { key: 'brain_learning', domain: 'intelligence', label: 'Company Brain Learning', description: 'Verified outcomes recorded for future decisions and quality improvement.' },
 
   { key: 'ai_actions', domain: 'ai', label: 'AI Actions', description: 'AI-proposed and executed actions.' },
   { key: 'ai_activity', domain: 'ai', label: 'AI Activity', description: 'AI activity log entries.' },
