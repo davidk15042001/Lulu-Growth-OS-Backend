@@ -9,6 +9,7 @@ function failure(error: unknown): { status: ProviderHealthStatus; connection: Pr
 
 export class TwilioAdapter implements ProviderAdapter {
   readonly providerKey = 'twilio';
+  readonly runtimeFeatures = ['verification', 'health', 'capabilities'] as const;
 
   async verifyConnection(_context: ProviderAdapterContext): Promise<ProviderVerificationResult> {
     if (!isTwilioConfigured()) return { verified: false, status: 'AUTHORIZATION_REQUIRED', authorizationState: 'NOT_AUTHORIZED', healthStatus: 'AUTHORIZATION_REQUIRED', reason: 'Twilio credentials are not configured.' };

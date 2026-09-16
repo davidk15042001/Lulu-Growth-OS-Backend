@@ -76,6 +76,7 @@ function lifecycleStatus(eventType:string) {
 
 export class UnifyPortAdapter implements ProviderAdapter {
   readonly providerKey = 'unifyport';
+  readonly runtimeFeatures = ['verification', 'health', 'capabilities', 'discovery', 'sync', 'webhook'] as const;
 
   async verifyConnection(_context: ProviderAdapterContext): Promise<ProviderVerificationResult> {
     if (!isUnifyPortConfigured()) return { verified: false, status: 'AUTHORIZATION_REQUIRED', authorizationState: 'NOT_AUTHORIZED', healthStatus: 'AUTHORIZATION_REQUIRED', reason: 'UNIFYPORT_API_KEY is not configured.' };
