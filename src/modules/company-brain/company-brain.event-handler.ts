@@ -46,6 +46,25 @@ export function registerCompanyBrainEventHandler() {
           actorType: 'system',
           actorId: 'company-brain.observer',
         });
+        const decisionText = event.type === DOMAIN_EVENT_TYPES.AGENT_RUN_COMPLETED
+          ? 'The agent execution completed and the canonical Company Brain task was marked completed.'
+          : event.type === DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED
+            ? 'The agent execution was cancelled and the canonical Company Brain task remains cancelled.'
+            : blocked
+              ? 'The agent execution was blocked by a missing prerequisite; the task remains paused and will not be retried automatically.'
+              : 'The agent execution failed; the canonical Company Brain task remains paused so no duplicate side effect is replayed.';
+        await repo.recordEventDecision({
+          workspaceId: event.workspaceId,
+          signalId: result.signal.id,
+          missionId: task.missionId,
+          sourceEventId: event.id,
+          decisionType: `agent_run.${event.type}`,
+          decision: decisionText,
+          confidence: event.type === DOMAIN_EVENT_TYPES.AGENT_RUN_COMPLETED ? 0.9 : blocked ? 0.85 : event.type === DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED ? 0.8 : 0.5,
+          rationale: 'Decision derived from the persisted terminal event and canonical task state; it does not claim an external side effect beyond the recorded result.',
+          evidence: { taskId: task.id, runId: event.aggregateId, eventType: event.type, code, message, taskStatus: event.type === DOMAIN_EVENT_TYPES.AGENT_RUN_COMPLETED ? 'COMPLETED' : blocked ? 'BLOCKED' : event.type === DOMAIN_EVENT_TYPES.AGENT_RUN_CANCELLED ? 'CANCELLED' : 'FAILED' },
+          actorId: 'company-brain.observer',
+        });
       }
       const learning = event.workspaceId && learningEventTypes.has(event.type)
         ? await service.recordLearning({

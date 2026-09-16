@@ -216,4 +216,21 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   assert.equal(blockedSpecialist?.status, 'BLOCKED');
   assert.equal(blockedSpecialist?.blockedReason, 'DIGITAL_EMPLOYEE_NOT_CONFIGURED');
   assert.equal((await brain.listMissions(workspaceId, 20)).find((item) => item.id === missingMission!.mission.id)?.status, 'BLOCKED');
+
+  const decision = await brain.recordEventDecision({
+    workspaceId, missionId: mission!.mission.id, signalId: first!.signal.id,
+    sourceEventId: event.id, decisionType: 'agent_run.run.failed',
+    decision: 'The persisted execution failed and remains paused.', confidence: 0.5,
+    rationale: 'Decision is derived from the terminal event.', evidence: { taskId: child!.task.id },
+    actorId: 'company-brain.test',
+  });
+  const replayedDecision = await brain.recordEventDecision({
+    workspaceId, missionId: mission!.mission.id, signalId: first!.signal.id,
+    sourceEventId: event.id, decisionType: 'agent_run.run.failed',
+    decision: 'The persisted execution failed and remains paused.', confidence: 0.5,
+    rationale: 'Decision is derived from the terminal event.', evidence: { taskId: child!.task.id },
+    actorId: 'company-brain.test',
+  });
+  assert.equal(decision?.id, replayedDecision?.id);
+  assert.equal(decision?.evidence.sourceEventId, event.id);
 });

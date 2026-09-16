@@ -673,6 +673,44 @@ export async function createDecision(input: {
   return rows[0];
 }
 
+/**
+ * Records one decision for a persisted domain event. Agent-run callbacks can
+ * be redelivered, so the event id is stored in evidence and protected by a
+ * database-level unique index rather than relying on process memory.
+ */
+export async function recordEventDecision(input: {
+  workspaceId: string;
+  signalId?: string | null;
+  missionId?: string | null;
+  sourceEventId: string;
+  decisionType: string;
+  decision: string;
+  confidence: number;
+  rationale: string;
+  evidence?: Record<string, unknown>;
+  actorId?: string | null;
+}) {
+  const evidence = { ...(input.evidence ?? {}), sourceEventId: input.sourceEventId };
+  const { rows } = await query<BrainDecision>(
+    `INSERT INTO company_brain_decisions(workspace_id,signal_id,mission_id,decision_type,decision,confidence,rationale,evidence,actor_type,actor_id)
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'system',$9)
+     ON CONFLICT DO NOTHING
+     RETURNING ${decisionSelect}`,
+    [input.workspaceId, input.signalId ?? null, input.missionId ?? null, input.decisionType, input.decision,
+      input.confidence, input.rationale, evidence, input.actorId ?? null],
+  );
+  if (rows[0]) return rows[0];
+  const existing = await query<BrainDecision>(
+    `SELECT ${decisionSelect}
+       FROM company_brain_decisions
+      WHERE workspace_id=$1 AND decision_type=$2 AND evidence->>'sourceEventId'=$3
+      ORDER BY created_at DESC
+      LIMIT 1`,
+    [input.workspaceId, input.decisionType, input.sourceEventId],
+  );
+  return existing.rows[0] ?? null;
+}
+
 export async function observeDomainEvent(event: DomainEvent) {
   if (!event.workspaceId) return null;
   return withTransaction(async (client) => {
