@@ -22,6 +22,7 @@ import { GoogleAnalyticsAdapter } from './google-analytics.adapter.js';
 import { MetaSocialAdapter } from './meta-social.adapter.js';
 import { ShopifyAdapter } from './shopify.adapter.js';
 import { CrmProviderAdapter } from './crm-provider.adapter.js';
+import { FacebookMessengerAdapter } from './facebook-messenger.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -63,7 +64,11 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'google_calendar', displayName: 'Google Calendar', category: 'CALENDAR', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'calendar.read', displayName: 'Read calendar', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'calendar.write', displayName: 'Write calendar', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'meta', displayName: 'Meta', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'meta.ads.manage', displayName: 'Manage Meta ads', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }, { capabilityKey: 'meta.ads.read_spend', displayName: 'Read Meta spend', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'facebook', displayName: 'Facebook', category: 'SOCIAL', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'facebook.pages.publish', displayName: 'Publish Facebook Page posts', requiredScopes: ['pages_manage_posts','pages_read_engagement'], defaultStatus: 'AUTHORIZATION_REQUIRED' }] },
-  { providerKey: 'facebook_messenger', displayName: 'Facebook Messenger', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [] },
+  { providerKey: 'facebook_messenger', displayName: 'Facebook Messenger', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [
+    { capabilityKey: 'facebook_messenger.messages.send', displayName: 'Send Facebook Messenger messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
+    { capabilityKey: 'facebook_messenger.messages.receive', displayName: 'Receive Facebook Messenger messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
+    { capabilityKey: 'facebook_messenger.messages.status', displayName: 'Receive Messenger delivery status', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
+  ] },
   { providerKey: 'instagram', displayName: 'Instagram', category: 'SOCIAL', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'instagram.content.publish', displayName: 'Publish Instagram content', requiredScopes: ['instagram_basic','instagram_content_publish','pages_show_list','pages_read_engagement'], defaultStatus: 'AUTHORIZATION_REQUIRED' }] },
   { providerKey: 'whatsapp', displayName: 'WhatsApp', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'whatsapp.messages.send', displayName: 'Send WhatsApp messages', requiredScopes: [], defaultStatus: 'AVAILABLE' as ProviderCapabilityStatus }] },
   { providerKey: 'twilio', displayName: 'Twilio', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [
@@ -141,6 +146,7 @@ adapters.set('shopify', new ShopifyAdapter());
 adapters.set('salesforce', new CrmProviderAdapter('salesforce'));
 adapters.set('hubspot', new CrmProviderAdapter('hubspot'));
 adapters.set('pipedrive', new CrmProviderAdapter('pipedrive'));
+adapters.set('facebook_messenger', new FacebookMessengerAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));
