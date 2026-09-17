@@ -19,6 +19,7 @@ import { AirwallexAdapter } from './airwallex.adapter.js';
 import { GoogleAdsAdapter } from './google-ads.adapter.js';
 import { WebsiteProviderAdapter } from './website-provider.adapter.js';
 import { GoogleAnalyticsAdapter } from './google-analytics.adapter.js';
+import { MetaSocialAdapter } from './meta-social.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -132,6 +133,8 @@ adapters.set('google_ads', new GoogleAdsAdapter());
 adapters.set('wordpress', new WebsiteProviderAdapter('wordpress'));
 adapters.set('webflow', new WebsiteProviderAdapter('webflow'));
 adapters.set('google_analytics', new GoogleAnalyticsAdapter());
+adapters.set('facebook', new MetaSocialAdapter('facebook'));
+adapters.set('instagram', new MetaSocialAdapter('instagram'));
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));
