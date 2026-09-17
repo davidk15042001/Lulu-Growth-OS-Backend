@@ -39,6 +39,11 @@ type AgentSnapshotInput = {
   approvedAt?: unknown;
   commands?: unknown;
   accountId?: unknown;
+  conversationId?: unknown;
+  messageText?: unknown;
+  messageType?: unknown;
+  recipientId?: unknown;
+  recipientType?: unknown;
   threadId?: unknown;
   tone?: unknown;
   language?: unknown;
@@ -128,7 +133,7 @@ function resolveTargetSystem(module: string, resourceType: ResourceType) {
   if (module === 'marketing' || resourceType.startsWith('marketing_')) return 'marketing';
   if (module === 'commerce' || resourceType.startsWith('ecommerce_')) return 'ecommerce';
   if (module === 'website' || module === 'seo' || module === 'geo' || module === 'aeo') return 'website';
-  if (module === 'email' || module === 'calendar') return 'communication';
+  if (module === 'email' || module === 'calendar' || module === 'omnichannel' || module === 'communication') return 'communication';
   if (module === 'reputation') return 'reputation';
   return 'ai';
 }
@@ -674,6 +679,11 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     policyDecision: policyDecision === 'allow' ? 'allow' : 'require_budget',
     executionMode: executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
     accountId: compactText(input.accountId, 120) || null,
+    conversationId: compactText(input.conversationId, 120) || null,
+    messageText: compactText(input.messageText, 10_000) || null,
+    messageType: compactText(input.messageType, 20) || null,
+    recipientId: compactText(input.recipientId, 200) || null,
+    recipientType: input.recipientType === 'group' || input.recipientType === 'channel' ? input.recipientType : null,
     threadId: compactText(input.threadId, 120) || null,
     tone: compactText(input.tone, 40) || null,
     language: compactText(input.language, 16) || null,

@@ -79,6 +79,11 @@ type InferCommandContext = {
   policyDecision: 'allow' | 'require_budget';
   executionMode: 'analysis_only' | 'autonomous';
   accountId?: string | null;
+  conversationId?: string | null;
+  messageText?: string | null;
+  messageType?: string | null;
+  recipientId?: string | null;
+  recipientType?: 'group' | 'channel' | null;
   threadId?: string | null;
   tone?: string | null;
   language?: string | null;
@@ -403,6 +408,32 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         context.eventTitle,
         context.startAt,
         context.endAt,
+      ]),
+    };
+  }
+
+  if (context.targetSystem === 'communication' && context.conversationId && context.messageText) {
+    return {
+      type: 'omnichannel.send_message',
+      summary,
+      targetSystem: 'communication',
+      provider: textValue(context.provider, 80) || null,
+      riskLevel: 'high',
+      approvalPolicy: 'allow',
+      targetEntityType: 'omni_conversations',
+      targetEntityId: context.conversationId,
+      payload: {
+        conversationId: context.conversationId,
+        text: textValue(context.messageText, 10_000),
+        messageType: textValue(context.messageType, 20) || 'TEXT',
+        ...(context.accountId ? { accountId: context.accountId } : {}),
+        ...(context.recipientId ? { recipientId: context.recipientId } : {}),
+        ...(context.recipientType ? { recipientType: context.recipientType } : {}),
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'omnichannel.send_message',
+        context.conversationId,
+        textValue(context.messageText, 400),
       ]),
     };
   }

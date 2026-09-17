@@ -383,6 +383,39 @@ describe('agent execution commands', () => {
     assert.equal(command.approvalPolicy, 'allow');
   });
 
+  it('infers an autonomous Omnichannel send from a real conversation context', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'omnichannel',
+      targetSystem: 'communication',
+      actionResourceType: 'ai_tasks',
+      pageId: 'omnichannel-page',
+      pageLabel: 'Omnichannel',
+      goal: 'Reply to the customer in the connected channel',
+      jobs: ['Reply to the customer'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      conversationId: 'conversation-123',
+      messageText: 'Thanks for reaching out. We will send the details shortly.',
+      messageType: 'TEXT',
+      accountId: 'channel-account-123',
+      recipientId: 'customer-456',
+      recipientType: 'group',
+      provider: 'unifyport',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'omnichannel.send_message');
+    assert.equal(command.targetSystem, 'communication');
+    assert.equal(command.provider, 'unifyport');
+    assert.equal(command.targetEntityType, 'omni_conversations');
+    assert.equal(command.targetEntityId, 'conversation-123');
+    assert.equal(command.payload.conversationId, 'conversation-123');
+    assert.equal(command.payload.text, 'Thanks for reaching out. We will send the details shortly.');
+    assert.equal(command.payload.recipientType, 'group');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('infers website domain verification from a site and domain context', () => {
     const [command] = normalizeAgentExecutionCommands([], {
       module: 'website',
