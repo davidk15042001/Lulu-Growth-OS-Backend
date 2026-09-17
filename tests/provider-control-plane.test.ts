@@ -73,6 +73,23 @@ describe('Provider Control Plane', () => {
     assert.equal(pending.ready, false);
   });
 
+  it('redacts credential-shaped sync errors from readiness evidence', () => {
+    const connection = {
+      id: crypto.randomUUID(), scopeType: 'WORKSPACE', providerKey: 'google_business', displayName: 'Google Business',
+      status: 'CONNECTED', authorizationState: 'AUTHORIZED', healthStatus: 'HEALTHY', healthReason: null,
+      capabilities: [{ status: 'AVAILABLE', capabilityKey: 'google_business.locations.read' }],
+      syncStates: [{ syncType: 'reviews', status: 'FAILED', lastSuccessAt: null, lastAttemptAt: new Date().toISOString(), lastError: 'provider token=super-secret-value' }],
+    } as unknown as Parameters<typeof providerService.evaluateProviderLaunchReadiness>[0];
+    const check = {
+      id: crypto.randomUUID(), workspaceId: crypto.randomUUID(), providerConnectionId: connection.id, providerKey: connection.providerKey,
+      status: 'PASSED', phaseResults: {}, capabilities: [{ capabilityKey: 'google_business.locations.read', status: 'AVAILABLE' }],
+      errorCode: null, errorMessage: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), createdBy: null, createdAt: new Date().toISOString(),
+    } as Parameters<typeof providerService.evaluateProviderLaunchReadiness>[1];
+    const readiness = providerService.evaluateProviderLaunchReadiness(connection, check);
+    assert.equal(readiness.evidence.sync[0]?.lastError, 'provider token: [redacted]');
+    assert.equal(readiness.evidence.sync[0]?.lastError?.includes('super-secret-value'), false);
+  });
+
   it('exposes runtime adapter readiness separately from the broad provider catalog', async () => {
     const catalog = await providerService.listProviderCatalog();
     const googleBusiness = catalog.find((entry) => entry.providerKey === 'google_business');

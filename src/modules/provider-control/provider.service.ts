@@ -156,7 +156,11 @@ export function classifyProviderContract(phases: Record<string, ProviderContract
 }
 
 function contractErrorMessage(error: unknown) {
-  const message = error instanceof Error ? error.message : 'Provider contract phase failed.';
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string' && error.trim().length > 0
+      ? error
+      : 'Provider contract phase failed.';
   return message.replaceAll(/(authorization|token|api[-_ ]?key|secret)\s*[:=]\s*[^\s,;]+/gi, '$1: [redacted]').slice(0, 500);
 }
 
@@ -303,7 +307,11 @@ export function evaluateProviderLaunchReadiness(
     if (capability.status !== 'AVAILABLE') blockers.push({ code: `CAPABILITY_${capability.status}`, message: `${capability.capabilityKey} is ${capability.status.toLowerCase().replaceAll('_', ' ')}.` });
   }
 
-  const sync = connection.syncStates.map((state) => ({ syncType: state.syncType, status: state.status, lastSuccessAt: state.lastSuccessAt, lastAttemptAt: state.lastAttemptAt, lastError: state.lastError }));
+  // Sync errors originate in external adapters and can contain accidental
+  // credential-shaped material (for example a provider URL with a query
+  // token).  Readiness is a public workspace diagnostic, so expose only the
+  // same redacted form used for health and contract failures.
+  const sync = connection.syncStates.map((state) => ({ syncType: state.syncType, status: state.status, lastSuccessAt: state.lastSuccessAt, lastAttemptAt: state.lastAttemptAt, lastError: state.lastError ? contractErrorMessage(state.lastError) : null }));
   const pendingSync = connection.syncStates.some((state) => state.status === 'RUNNING');
   const failedSync = connection.syncStates.filter((state) => ['FAILED', 'PAUSED', 'PARTIAL'].includes(state.status));
   if (pendingSync) blockers.push({ code: 'SYNC_RUNNING', message: 'A provider synchronization is still running.' });
