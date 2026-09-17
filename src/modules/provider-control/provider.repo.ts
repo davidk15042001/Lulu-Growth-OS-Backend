@@ -778,6 +778,89 @@ export async function createObjectMapping(input: { workspaceId: string; provider
   }
 }
 
+/**
+ * Idempotently persists the link between a canonical Lulu object and its
+ * provider counterpart.  External writes may be retried after a network
+ * timeout, so a successful provider object must update the existing mapping
+ * instead of creating a second row.
+ */
+export async function upsertObjectMapping(input: {
+  workspaceId: string;
+  providerConnectionId: string;
+  providerAccountId: string;
+  providerAssetId?: string | null;
+  luluObjectType: string;
+  luluObjectId: string;
+  externalObjectType: string;
+  externalObjectId: string;
+  sourceOfTruth: string;
+  metadata?: Record<string, unknown>;
+  syncStatus?: 'IDLE' | 'RUNNING' | 'SUCCESS' | 'PARTIAL' | 'FAILED' | 'PAUSED';
+}) {
+  const owner = await query<{ workspaceId: string; connectionId: string; accountId: string; assetId: string | null }>(
+    `SELECT c.workspace_id AS "workspaceId", c.id AS "connectionId", a.id AS "accountId",
+            pa.id AS "assetId"
+       FROM provider_accounts a
+       JOIN provider_connections c ON c.id=a.provider_connection_id
+       LEFT JOIN provider_assets pa ON pa.id=$4 AND pa.provider_account_id=a.id
+      WHERE c.id=$2 AND a.id=$3
+        AND (c.workspace_id=$1 OR EXISTS (
+          SELECT 1 FROM provider_connection_workspace_access access
+           WHERE access.provider_connection_id=c.id
+             AND access.workspace_id=$1
+             AND access.access_status='ACTIVE'
+        ))`,
+    [input.workspaceId, input.providerConnectionId, input.providerAccountId, input.providerAssetId ?? null],
+  );
+  if (!owner.rows[0] || (input.providerAssetId && !owner.rows[0].assetId)) {
+    throw providerError('PROVIDER_TENANT_SCOPE_MISMATCH', 'The provider account or asset does not belong to this workspace connection', undefined, 403);
+  }
+  try {
+    const { rows } = await query<Record<string, unknown>>(
+      `INSERT INTO provider_object_mappings(
+         workspace_id,provider_connection_id,provider_account_id,provider_asset_id,
+         lulu_object_type,lulu_object_id,external_object_type,external_object_id,
+         source_of_truth,sync_status,last_synced_at,metadata
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),$11::jsonb)
+       ON CONFLICT(provider_account_id,lulu_object_type,lulu_object_id) DO UPDATE SET
+         provider_connection_id=EXCLUDED.provider_connection_id,
+         provider_asset_id=EXCLUDED.provider_asset_id,
+         external_object_type=EXCLUDED.external_object_type,
+         external_object_id=EXCLUDED.external_object_id,
+         source_of_truth=EXCLUDED.source_of_truth,
+         sync_status=EXCLUDED.sync_status,
+         last_synced_at=EXCLUDED.last_synced_at,
+         metadata=EXCLUDED.metadata,
+         updated_at=NOW()
+       RETURNING id, workspace_id AS "workspaceId", provider_connection_id AS "providerConnectionId",
+                 provider_account_id AS "providerAccountId", provider_asset_id AS "providerAssetId",
+                 lulu_object_type AS "luluObjectType", lulu_object_id AS "luluObjectId",
+                 external_object_type AS "externalObjectType", external_object_id AS "externalObjectId",
+                 source_of_truth AS "sourceOfTruth", sync_status AS "syncStatus",
+                 last_synced_at AS "lastSyncedAt", metadata`,
+      [
+        input.workspaceId,
+        input.providerConnectionId,
+        input.providerAccountId,
+        input.providerAssetId ?? null,
+        input.luluObjectType,
+        input.luluObjectId,
+        input.externalObjectType,
+        input.externalObjectId,
+        input.sourceOfTruth,
+        input.syncStatus ?? 'SUCCESS',
+        JSON.stringify(input.metadata ?? {}),
+      ],
+    );
+    return rows[0] ?? null;
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && (error as { code?: string }).code === '23505') {
+      throw providerError('PROVIDER_MAPPING_CONFLICT', 'This external CRM object is already mapped to another Lulu record', undefined, 409);
+    }
+    throw error;
+  }
+}
+
 export async function listObjectMappings(workspaceId: string, luluObjectType?: string, luluObjectId?: string) {
   const { rows } = await query<Record<string, unknown>>(`SELECT m.id, m.workspace_id AS "workspaceId", m.provider_connection_id AS "providerConnectionId", m.provider_account_id AS "providerAccountId", m.provider_asset_id AS "providerAssetId", m.lulu_object_type AS "luluObjectType", m.lulu_object_id AS "luluObjectId", m.external_object_type AS "externalObjectType", m.external_object_id AS "externalObjectId", m.source_of_truth AS "sourceOfTruth", m.sync_status AS "syncStatus", m.last_synced_at AS "lastSyncedAt", c.provider_key AS "providerKey" FROM provider_object_mappings m JOIN provider_connections c ON c.id=m.provider_connection_id WHERE m.workspace_id=$1 AND ($2::text IS NULL OR m.lulu_object_type=$2) AND ($3::uuid IS NULL OR m.lulu_object_id=$3) ORDER BY m.updated_at DESC`, [workspaceId, luluObjectType ?? null, luluObjectId ?? null]);
   return rows;

@@ -42,6 +42,7 @@ export function providerRequirementForAgentCommand(command: Pick<AgentExecutionC
   }
   const providerBackedCommands = new Set<AgentExecutionCommandType>([
     'crm.company.enrich',
+    'crm.company.sync',
     'sales.quote.send',
     'finance.invoice.send',
     'calendar.event.create',

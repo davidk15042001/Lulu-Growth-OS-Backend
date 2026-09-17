@@ -66,6 +66,7 @@ type AgentSnapshotInput = {
   location?: unknown;
   customerId?: unknown;
   companyId?: unknown;
+  providerConnectionId?: unknown;
   domainId?: unknown;
   socialAccountId?: unknown;
   contentType?: unknown;
@@ -714,6 +715,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     location: compactText(input.location, 500) || null,
     customerId: compactText(input.customerId, 120) || null,
     companyId: compactText(input.companyId, 120) || null,
+    providerConnectionId: compactText(input.providerConnectionId, 120) || null,
     domainId: compactText(input.domainId, 120) || null,
     socialAccountId: compactText(input.socialAccountId, 120) || null,
     contentType: input.contentType === 'TEXT' || input.contentType === 'LINK' || input.contentType === 'IMAGE' ? input.contentType : null,

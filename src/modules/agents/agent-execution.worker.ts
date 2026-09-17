@@ -41,6 +41,7 @@ import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js'
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
 import { requestCompanyIntelligence } from '../crm-company/company-intelligence.service.js';
+import { syncCrmCompany, type CrmCompanySyncProvider } from '../provider-control/crm-company-sync.service.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
@@ -251,6 +252,29 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       provider: command.provider,
       resultRecordId: stored.id,
       result: { status: 'queued', companyId, company: queued },
+    };
+  }
+
+  if (command.type === 'crm.company.sync') {
+    const companyId = textValue(payload.companyId || payload.recordId || command.targetEntityId);
+    const provider = textValue(payload.provider || command.provider).toLowerCase();
+    const providerConnectionId = textValue(payload.providerConnectionId);
+    if (!companyId || !['salesforce', 'hubspot', 'pipedrive'].includes(provider)) {
+      throw new Error('crm.company.sync requires companyId and a supported CRM provider');
+    }
+    const synced = await syncCrmCompany({
+      workspaceId: record.workspaceId,
+      companyId,
+      provider: provider as CrmCompanySyncProvider,
+      providerConnectionId: providerConnectionId || null,
+    });
+    const stored = await persistCommandExecutionResult(record, command, synced);
+    return {
+      type: command.type,
+      targetEntityId: companyId,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: synced,
     };
   }
 

@@ -24,6 +24,13 @@ function stringValue(value: unknown) {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function crmWriteScopeAvailable(provider: CrmProvider, grantedScopes: string[]) {
+  const scopes = new Set(grantedScopes.map((scope) => scope.trim().toLowerCase()));
+  if (provider === 'salesforce') return scopes.has('api') || scopes.has('full');
+  if (provider === 'pipedrive') return scopes.has('base');
+  return scopes.has('crm.objects.companies.write');
+}
+
 function safeHttpsOrigin(value: unknown, expectedHost: RegExp) {
   const raw = stringValue(value).replace(/\/$/, '');
   if (!raw) return null;
@@ -115,7 +122,18 @@ export class CrmProviderAdapter implements ProviderAdapter {
   async getCapabilities(context: ProviderAdapterContext) {
     const result = await this.verifyConnection(context);
     const read: ProviderCapabilityStatus = result.status === 'CONNECTED' ? 'AVAILABLE' : result.status === 'AUTHORIZATION_REQUIRED' ? 'AUTHORIZATION_REQUIRED' : result.status === 'PROVIDER_REVIEW' ? 'PROVIDER_REVIEW' : 'ERROR';
-    return [{ capabilityKey: `${this.providerKey}.companies.read`, status: read, reason: result.reason }, { capabilityKey: `${this.providerKey}.companies.write`, status: read === 'AVAILABLE' ? 'PROVIDER_REVIEW' : read, reason: 'CRM mutations require a separate provider-scope and domain-service verification.' }];
+    const writeAvailable = read === 'AVAILABLE' && crmWriteScopeAvailable(this.providerKey, context.grantedScopes);
+    const writeStatus: ProviderCapabilityStatus = read !== 'AVAILABLE' ? read : writeAvailable ? 'AVAILABLE' : 'PROVIDER_REVIEW';
+    return [
+      { capabilityKey: `${this.providerKey}.companies.read`, status: read, reason: result.reason },
+      {
+        capabilityKey: `${this.providerKey}.companies.write`,
+        status: writeStatus,
+        reason: writeAvailable
+          ? 'The provider connection is verified and includes the required company-write scope.'
+          : `The provider connection is verified, but the required ${this.providerKey} company-write scope is missing. Reconnect the CRM with write access enabled.`,
+      },
+    ];
   }
 
   async discoverAccounts(context: ProviderAdapterContext): Promise<ProviderDiscoveredAccount[]> {
@@ -129,7 +147,7 @@ export class CrmProviderAdapter implements ProviderAdapter {
   async discoverAssets(context: ProviderAdapterContext, account: ProviderDiscoveredAccount): Promise<ProviderDiscoveredAsset[]> {
     const accounts = await this.discoverAccounts(context);
     if (!accounts.some((candidate) => candidate.externalAccountId === account.externalAccountId)) return [];
-    return [{ externalAssetId: `${account.externalAccountId}:companies`, assetType: 'crm_companies', displayName: `${this.providerKey} companies`, status: 'CONNECTED', capabilities: { read: true, mutate: false }, metadata: { provider: this.providerKey } }];
+    return [{ externalAssetId: `${account.externalAccountId}:companies`, assetType: 'crm_companies', displayName: `${this.providerKey} companies`, status: 'CONNECTED', capabilities: { read: true, mutate: crmWriteScopeAvailable(this.providerKey, context.grantedScopes) }, metadata: { provider: this.providerKey } }];
   }
 
   async sync(context: ProviderAdapterContext, syncType: string) {

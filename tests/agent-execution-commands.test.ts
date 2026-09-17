@@ -8,6 +8,24 @@ import { normalizedCommandsForRecord } from '../src/modules/agents/agent-executi
 import { providerRequirementForAgentCommand } from '../src/modules/agents/agent.provider-requirements.js';
 
 describe('agent execution commands', () => {
+  it('registers CRM company synchronization as a provider-gated autonomous command', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'crm', targetSystem: 'crm', actionResourceType: 'crm_companies',
+      pageId: 'company-1', pageLabel: 'Company', goal: 'Keep the CRM company record synchronized',
+      jobs: ['sync company'], policyDecision: 'allow', executionMode: 'autonomous',
+      companyId: 'company-1', provider: 'hubspot', providerConnectionId: 'connection-1',
+    });
+    assert.ok(command);
+    assert.equal(command.type, 'crm.company.sync');
+    assert.equal(command.provider, 'hubspot');
+    assert.deepEqual(command.payload, { companyId: 'company-1', provider: 'hubspot', providerConnectionId: 'connection-1' });
+    assert.deepEqual(providerRequirementForAgentCommand(command), {
+      required: true,
+      providerKey: 'hubspot',
+      reason: 'The command explicitly targets an external provider.',
+    });
+  });
+
   it('requires a verified provider for external side effects but not canonical internal writes', () => {
     assert.deepEqual(providerRequirementForAgentCommand({ type: 'crm.create_followup_task', provider: null, payload: {} }), {
       required: false,

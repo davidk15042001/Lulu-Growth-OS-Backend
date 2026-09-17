@@ -71,7 +71,7 @@ function oauthError(provider: OAuthProvider, code: string, message: string, deta
 const providerScopes: Record<OAuthProvider, string[]> = {
   salesforce: ['api', 'refresh_token', 'offline_access'],
   pipedrive: ['base'],
-  hubspot: ['oauth', 'crm.objects.contacts.read'],
+  hubspot: ['oauth', 'crm.objects.contacts.read', 'crm.objects.companies.read', 'crm.objects.companies.write'],
   'google-ads': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/adwords'],
   'google-analytics': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/analytics.readonly'],
   'google-business': ['openid', 'email', 'profile', 'https://www.googleapis.com/auth/business.manage'],
