@@ -34,10 +34,26 @@ export function providerRequirementForAgentCommand(command: Pick<AgentExecutionC
   if (command.type === 'website.publish_job' || command.type === 'website.domain.verify') {
     return { required: true, providerKey: explicit ?? 'lulu_managed_website', reason: 'Managed website operations require a verified Lulu website provider.' };
   }
+  if (command.type === 'advertising.create_optimization') {
+    return { required: true, providerKey: explicit ?? 'google_ads', reason: 'Advertising actions require a verified advertising provider.' };
+  }
   if (externalWithoutOptionalProvider.has(command.type)) {
     return { required: true, providerKey: explicit, reason: 'This external action requires a connected provider selected for the target.' };
   }
-  if (explicit) return { required: true, providerKey: explicit, reason: 'The command explicitly targets an external provider.' };
+  const providerBackedCommands = new Set<AgentExecutionCommandType>([
+    'crm.company.enrich',
+    'sales.quote.send',
+    'finance.invoice.send',
+    'calendar.event.create',
+    'commerce.order.create',
+    'commerce.order.update',
+    'commerce.order.transition',
+    'commerce.product.create',
+    'commerce.product.update',
+    'commerce.inventory.adjust',
+    'commerce.fulfillment.create',
+    'commerce.fulfillment.transition',
+  ]);
+  if (providerBackedCommands.has(command.type) && explicit) return { required: true, providerKey: explicit, reason: 'The command explicitly targets an external provider.' };
   return { required: false, providerKey: null, reason: 'This command operates on canonical Lulu data and has no external provider target.' };
 }
-
