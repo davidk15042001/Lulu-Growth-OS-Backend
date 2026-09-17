@@ -93,6 +93,14 @@ describe('prepaid API and transparent usage reporting', () => {
     assert.equal(net.netAmount, 1000);
   });
 
+  it('turns Airwallex transport failures into an explicit provider error', async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => { throw new Error('network unavailable'); });
+    await assert.rejects(
+      verifyAirwallexInvoiceWalletPayment({ invoiceId: 'inv_network_failure', expectedAmount: 1000 }),
+      (error: unknown) => Boolean(error && typeof error === 'object' && 'code' in error && (error as { code?: string }).code === 'AIRWALLEX_AUTHENTICATION_NETWORK_ERROR'),
+    );
+  });
+
   it('keeps paid invoice webhooks pending until cash proof exists', async (t) => {
     const user = (await db.query<{ id: string }>(
       `INSERT INTO users(email,password_hash) VALUES($1,'hash') RETURNING id`,

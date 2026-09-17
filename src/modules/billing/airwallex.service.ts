@@ -98,6 +98,19 @@ function airwallexTimeoutSignal() {
   return AbortSignal.timeout(Math.min(env.AI_REQUEST_TIMEOUT_MS, 60_000));
 }
 
+async function fetchAirwallex(url: string, init: RequestInit, operation: string) {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    throw providerError(
+      `AIRWALLEX_${operation}_NETWORK_ERROR`,
+      `Airwallex could not be reached for ${operation.toLowerCase().replaceAll('_', ' ')}.`,
+      { provider: 'airwallex', cause: error instanceof Error ? error.name : 'unknown_error' },
+      502,
+    );
+  }
+}
+
 async function login(): Promise<string> {
   requireAirwallex();
   const headers: Record<string, string> = {
@@ -106,11 +119,11 @@ async function login(): Promise<string> {
     'x-api-key': env.AIRWALLEX_API_KEY!,
     ...(env.AIRWALLEX_LOGIN_AS ? { 'x-login-as': env.AIRWALLEX_LOGIN_AS } : {}),
   };
-  const response = await fetch(`${env.AIRWALLEX_BASE_URL}/api/v1/authentication/login`, {
+  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}/api/v1/authentication/login`, {
     method: 'POST',
     headers,
     signal: airwallexTimeoutSignal(),
-  });
+  }, 'AUTHENTICATION');
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   const token = typeof data.token === 'string' ? data.token : typeof data.access_token === 'string' ? data.access_token : null;
   if (!response.ok || !token) {
@@ -121,7 +134,7 @@ async function login(): Promise<string> {
 
 async function airwallexRequest(path: string, body: AirwallexObject, requestId: string, operation = 'REQUEST') {
   const token = await login();
-  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -130,7 +143,7 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
     },
     body: JSON.stringify({ ...body, request_id: requestId }),
     signal: airwallexTimeoutSignal(),
-  });
+  }, operation);
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
     const providerCode = data.code ?? data.error_code ?? null;
@@ -143,7 +156,7 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
 
 async function airwallexPostWithoutBody(path: string, operation: string) {
   const token = await login();
-  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -151,7 +164,7 @@ async function airwallexPostWithoutBody(path: string, operation: string) {
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
     },
     signal: airwallexTimeoutSignal(),
-  });
+  }, operation);
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
     const providerCode = data.code ?? data.error_code ?? null;
@@ -164,7 +177,7 @@ async function airwallexPostWithoutBody(path: string, operation: string) {
 
 async function airwallexPostBody(path: string, body: AirwallexObject, operation: string) {
   const token = await login();
-  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}${path}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -173,7 +186,7 @@ async function airwallexPostBody(path: string, body: AirwallexObject, operation:
     },
     body: JSON.stringify(body),
     signal: airwallexTimeoutSignal(),
-  });
+  }, operation);
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
     const providerCode = data.code ?? data.error_code ?? null;
@@ -473,7 +486,7 @@ export async function syncPaygPaymentMethodSetup(input: { workspaceId: string; u
 
 export async function fetchAirwallexInvoice(invoiceId: string, requestId: string) {
   const token = await login();
-  const response = await fetch(`${env.AIRWALLEX_BASE_URL}/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}`, {
+  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -481,7 +494,7 @@ export async function fetchAirwallexInvoice(invoiceId: string, requestId: string
       Accept: 'application/json',
     },
     signal: airwallexTimeoutSignal(),
-  });
+  }, 'INVOICE_LOOKUP');
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
     logger.warn({ code: 'AIRWALLEX_INVOICE_LOOKUP_FAILED', requestId, invoiceId, providerHttpStatus: response.status, providerCode: data.code ?? data.error_code ?? null, providerMessage: data.message ?? data.error ?? null }, 'Airwallex invoice lookup rejected');
@@ -508,7 +521,7 @@ async function sendInvoiceEmailForWebhook(workspaceId: string, planKey: BillingP
     return;
   }
 
-  const pdfResponse = await fetch(pdfUrl, { signal: airwallexTimeoutSignal() });
+  const pdfResponse = await fetchAirwallex(pdfUrl, { signal: airwallexTimeoutSignal() }, 'INVOICE_PDF_DOWNLOAD');
   if (!pdfResponse.ok) {
     logger.warn({ code: 'AIRWALLEX_INVOICE_PDF_DOWNLOAD_FAILED', workspaceId, planKey, invoiceId, providerHttpStatus: pdfResponse.status }, 'Airwallex invoice PDF download failed');
     return;
@@ -1592,7 +1605,7 @@ export async function createCheckout(input: { workspaceId: string; planKey: Bill
 
 async function airwallexGet(path: string, operation = 'CHECKOUT_STATUS') {
   const token = await login();
-  const response = await fetch(`${env.AIRWALLEX_BASE_URL}${path}`, {
+  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}${path}`, {
     method: 'GET',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -1600,7 +1613,7 @@ async function airwallexGet(path: string, operation = 'CHECKOUT_STATUS') {
       Accept: 'application/json',
     },
     signal: airwallexTimeoutSignal(),
-  });
+  }, operation);
   const data = await response.json().catch(() => ({})) as AirwallexObject;
   if (!response.ok) {
     const providerCode = data.code ?? data.error_code ?? null;
