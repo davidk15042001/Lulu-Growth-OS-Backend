@@ -613,6 +613,11 @@ async function syncMissionStateWithClient(workspaceId: string, missionId: string
     `UPDATE company_brain_missions SET status=$3,
        started_at=CASE WHEN $3='RUNNING' THEN COALESCE(started_at,NOW()) ELSE started_at END,
        completed_at=CASE WHEN $3='COMPLETED' THEN COALESCE(completed_at,NOW()) ELSE NULL END,
+       outcome=CASE WHEN $3='COMPLETED' THEN COALESCE(
+         (SELECT result FROM company_brain_tasks
+            WHERE workspace_id=$1 AND mission_id=$2 AND parent_task_id IS NULL
+            ORDER BY created_at ASC LIMIT 1), outcome
+       ) ELSE outcome END,
        updated_at=NOW()
      WHERE workspace_id=$1 AND id=$2 RETURNING ${missionSelect}`,
     [workspaceId, missionId, nextStatus], client,
