@@ -11,6 +11,7 @@ import type { AgentExecutionCommandType } from './agent.execution-command.js';
  */
 const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCapability>> = Object.freeze({
   'record.create_artifact': 'workspace.write',
+  'crm.company.enrich': 'crm.manage',
   'crm.create_followup_task': 'crm.manage',
   'crm.transition_pipeline': 'crm.manage',
   'sales.create_followup_task': 'leads.manage',

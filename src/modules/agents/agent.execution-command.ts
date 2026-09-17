@@ -5,6 +5,7 @@ import type { ResourceType } from '../../domain/resource-catalog.js';
 
 export const agentExecutionCommandTypeSchema = z.enum([
   'record.create_artifact',
+  'crm.company.enrich',
   'crm.create_followup_task',
   'crm.transition_pipeline',
   'sales.create_followup_task',
@@ -98,6 +99,7 @@ type InferCommandContext = {
   timezone?: string | null;
   location?: string | null;
   customerId?: string | null;
+  companyId?: string | null;
   sourceText?: string | null;
 };
 
@@ -167,6 +169,7 @@ function serverCommandPolicy(command: AgentExecutionCommand, context: InferComma
   };
   const defaults: Record<AgentExecutionCommandType, ServerPolicy> = {
     'record.create_artifact': { targetSystem: context.targetSystem, riskLevel: 'medium', budgetAuthority: 'none' },
+    'crm.company.enrich': { targetSystem: 'crm', riskLevel: 'medium', budgetAuthority: 'none' },
     'crm.create_followup_task': { targetSystem: 'crm', riskLevel: 'low', budgetAuthority: 'none' },
     'crm.transition_pipeline': { targetSystem: 'crm', riskLevel: 'low', budgetAuthority: 'none' },
     'sales.create_followup_task': { targetSystem: 'sales', riskLevel: 'low', budgetAuthority: 'none' },
@@ -251,6 +254,20 @@ function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCom
 
 function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   const summary = defaultSummary(context);
+  if (context.targetSystem === 'crm' && context.actionResourceType === 'crm_companies' && context.companyId) {
+    return {
+      type: 'crm.company.enrich',
+      summary,
+      targetSystem: 'crm',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'crm_companies',
+      targetEntityId: context.companyId,
+      payload: { companyId: context.companyId },
+      idempotencyKey: buildIdempotencyKey(['crm.company.enrich', context.companyId]),
+    };
+  }
   if (context.targetSystem === 'crm') {
     return {
       type: 'crm.create_followup_task',

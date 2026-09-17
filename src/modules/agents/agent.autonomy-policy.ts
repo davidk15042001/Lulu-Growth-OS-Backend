@@ -8,7 +8,7 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'tool:email_operations_snapshot':'AUTONOMOUS', 'tool:calendar_operations_snapshot':'AUTONOMOUS',
   'tool:website_operations_snapshot':'AUTONOMOUS', 'tool:ai_workspace_snapshot':'AUTONOMOUS',
   'tool:reputation_snapshot':'AUTONOMOUS', 'tool:page_action_writeback':'AUTONOMOUS',
-  'record.create_artifact':'AUTONOMOUS', 'crm.create_followup_task':'AUTONOMOUS', 'crm.transition_pipeline':'AUTONOMOUS',
+  'record.create_artifact':'AUTONOMOUS', 'crm.company.enrich':'AUTONOMOUS', 'crm.create_followup_task':'AUTONOMOUS', 'crm.transition_pipeline':'AUTONOMOUS',
   'sales.create_followup_task':'AUTONOMOUS', 'sales.transition_pipeline':'AUTONOMOUS', 'sales.quote.create':'AUTONOMOUS', 'sales.quote.send':'AUTONOMOUS', 'email.create_draft':'AUTONOMOUS',
   'email.create_ai_draft':'AUTONOMOUS', 'ecommerce.generate_product_images':'AUTONOMOUS',
   'email.send_draft':'AUTONOMOUS',

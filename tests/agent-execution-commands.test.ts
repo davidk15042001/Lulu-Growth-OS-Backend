@@ -6,6 +6,59 @@ import {
 } from '../src/modules/agents/agent.execution-command.js';
 
 describe('agent execution commands', () => {
+  it('registers company intelligence enrichment as an autonomous CRM command', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'crm.company.enrich',
+      summary: 'Enrich the verified company profile',
+      targetSystem: 'unknown',
+      provider: null,
+      riskLevel: 'high',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'crm_companies',
+      targetEntityId: 'company-123',
+      payload: { companyId: 'company-123' },
+      idempotencyKey: 'model-company-enrich',
+    }], {
+      module: 'crm',
+      targetSystem: 'crm',
+      actionResourceType: 'crm_companies',
+      pageId: 'companies-page',
+      pageLabel: 'Companies',
+      goal: 'Enrich the verified company profile',
+      jobs: ['enrich company information'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'crm.company.enrich');
+    assert.equal(command.targetSystem, 'crm');
+    assert.equal(command.riskLevel, 'medium');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(command.budgetAuthority, 'none');
+  });
+
+  it('infers company intelligence enrichment when a company action has a canonical record id', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'crm',
+      targetSystem: 'crm',
+      actionResourceType: 'crm_companies',
+      pageId: 'companies-page',
+      pageLabel: 'Companies',
+      goal: 'Keep the company profile complete',
+      jobs: ['enrich company information'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      companyId: 'company-123',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'crm.company.enrich');
+    assert.equal(command.targetEntityType, 'crm_companies');
+    assert.equal(command.targetEntityId, 'company-123');
+    assert.equal(command.payload.companyId, 'company-123');
+  });
+
   it('infers a CRM follow-up task when no explicit CRM command exists', () => {
     const [command] = normalizeAgentExecutionCommands(undefined, {
       module: 'crm',

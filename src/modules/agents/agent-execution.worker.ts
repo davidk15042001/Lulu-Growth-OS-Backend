@@ -39,6 +39,7 @@ import { createProductSchema, updateProductSchema } from '../products/product.va
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
+import { requestCompanyIntelligence } from '../crm-company/company-intelligence.service.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
@@ -232,6 +233,25 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
   }
   const payload = objectValue(command.payload);
   const actorUserId = record.createdBy ?? 'system';
+
+  if (command.type === 'crm.company.enrich') {
+    const companyId = textValue(payload.companyId || payload.recordId || command.targetEntityId);
+    if (!companyId) throw new Error('crm.company.enrich requires companyId or recordId');
+    if (!record.createdBy) throw new Error('crm.company.enrich requires an originating workspace user');
+    const queued = await requestCompanyIntelligence(record.workspaceId, companyId, record.createdBy);
+    const stored = await persistCommandExecutionResult(record, command, {
+      status: 'queued',
+      companyId,
+      enrichmentStatus: (queued.data?.enrichment as Record<string, unknown> | undefined)?.status ?? 'queued',
+    });
+    return {
+      type: command.type,
+      targetEntityId: companyId,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: { status: 'queued', companyId, company: queued },
+    };
+  }
 
   if (command.type === 'google_reviews.reply') {
     const reviewId = textValue(payload.reviewId || command.targetEntityId);
@@ -897,6 +917,7 @@ function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
     timezone: textValue(data.timezone, 100) || null,
     location: textValue(data.location, 500) || null,
     customerId: textValue(data.customerId) || null,
+    companyId: textValue(data.companyId) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
   });
 }
