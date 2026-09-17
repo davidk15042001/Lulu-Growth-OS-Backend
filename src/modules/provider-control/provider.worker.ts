@@ -55,9 +55,18 @@ async function processSyncJob(job: repo.ProviderSyncJob) {
       metadata: ((connection.metadataRaw ?? {}) as Record<string, unknown>),
     };
     const result = await adapter.sync(context, job.syncType);
+    let discovery: { accountCount: number; assetCount: number } | null = null;
+    if (result.status === 'SUCCESS' && adapter.discoverAccounts) {
+      const discoveredAccounts = await adapter.discoverAccounts(context);
+      const graph: Array<{ account: import('./provider.types.js').ProviderDiscoveredAccount; assets: import('./provider.types.js').ProviderDiscoveredAsset[] }> = [];
+      for (const account of discoveredAccounts) {
+        graph.push({ account, assets: adapter.discoverAssets ? await adapter.discoverAssets(context, account) : [] });
+      }
+      discovery = await repo.persistDiscoveredProviderGraph({ connectionId: job.providerConnectionId, providerKey: String(connection.providerKey), accounts: graph });
+    }
     await repo.finishProviderSyncState({ connectionId: job.providerConnectionId, syncType: job.syncType, status: result.status, ...(result.cursor === undefined ? {} : { cursor: result.cursor }), ...(result.status === 'FAILED' ? { error: 'Provider adapter reported a failed synchronization.' } : {}) });
     await repo.finishProviderSyncJob({ job, workerId: syncWorkerId, status: result.status === 'FAILED' ? 'failed' : 'succeeded', ...(result.status === 'FAILED' ? { errorMessage: 'Provider adapter reported a failed synchronization.' } : {}) });
-    await appendDomainEvent({ workspaceId: job.workspaceId, type: result.status === 'FAILED' ? 'provider.sync.failed' : 'provider.sync.completed', aggregateType: 'provider_connection', aggregateId: job.providerConnectionId, payload: { providerKey: String(connection.providerKey), syncType: job.syncType, status: result.status, details: result.details ?? {} }, metadata: { source: 'provider.sync.worker', jobId: job.id } });
+    await appendDomainEvent({ workspaceId: job.workspaceId, type: result.status === 'FAILED' ? 'provider.sync.failed' : 'provider.sync.completed', aggregateType: 'provider_connection', aggregateId: job.providerConnectionId, payload: { providerKey: String(connection.providerKey), syncType: job.syncType, status: result.status, details: { ...(result.details ?? {}), ...(discovery ? { discoveredAccounts: discovery.accountCount, discoveredAssets: discovery.assetCount } : {}) } }, metadata: { source: 'provider.sync.worker', jobId: job.id } });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Provider synchronization failed';
     await repo.finishProviderSyncState({ connectionId: job.providerConnectionId, syncType: job.syncType, status: 'FAILED', error: message }).catch(() => undefined);

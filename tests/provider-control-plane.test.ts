@@ -121,6 +121,17 @@ describe('Provider Control Plane', () => {
     );
   });
 
+  it('persists a provider-owned discovery snapshot idempotently', async () => {
+    const f = await fixture();
+    const repo = await import('../src/modules/provider-control/provider.repo.js');
+    const account = { externalAccountId: 'gbp-1', name: 'Business A', accountType: 'LOCATION_GROUP', status: 'CONNECTED' as const, metadata: { locationCount: 1 } };
+    const asset = { externalAssetId: 'loc-1', assetType: 'location', displayName: 'Location A', status: 'CONNECTED' as const, capabilities: { websiteUrl: 'https://example.test' }, metadata: { accountId: 'gbp-1' } };
+    await repo.persistDiscoveredProviderGraph({ connectionId: f.connection, providerKey: 'google_business', accounts: [{ account, assets: [asset] }] });
+    await repo.persistDiscoveredProviderGraph({ connectionId: f.connection, providerKey: 'google_business', accounts: [{ account, assets: [asset] }] });
+    const counts = await db.query<{ accounts: string; assets: string }>(`SELECT (SELECT count(*)::text FROM provider_accounts WHERE provider_connection_id=$1) AS accounts, (SELECT count(*)::text FROM provider_assets WHERE provider_key='google_business' AND provider_account_id IN (SELECT id FROM provider_accounts WHERE provider_connection_id=$1)) AS assets`, [f.connection]);
+    assert.deepEqual(counts.rows[0], { accounts: '1', assets: '1' });
+  });
+
   it('allows a shared connection to create an explicitly routed operation and mapping', async () => {
     const f = await fixture();
     const shared = (await db.query<{ id: string }>(`INSERT INTO provider_connections(scope_type,provider_key,mode,status,authorization_state,external_account_id,granted_scopes,metadata) VALUES('LULU_PLATFORM','google_business','LULU_MANAGED','CONNECTED','AUTHORIZED','gbp-shared-2',ARRAY['business.manage'],'{}'::jsonb) RETURNING id`)).rows[0]!.id;

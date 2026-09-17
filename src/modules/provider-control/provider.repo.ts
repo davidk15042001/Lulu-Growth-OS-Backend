@@ -5,6 +5,8 @@ import { canonicalProviderKey, isProviderRegistered, providerError } from './pro
 import type {
   ProviderCapabilityStatus,
   ProviderConnectionStatus,
+  ProviderDiscoveredAccount,
+  ProviderDiscoveredAsset,
   ProviderHealthStatus,
   ProviderMode,
   ProviderScopeType,
@@ -547,6 +549,53 @@ export async function finishProviderSyncState(input: { connectionId: string; syn
       WHERE provider_connection_id=$1 AND subject_type='CONNECTION' AND subject_id=$1 AND sync_type=$2`,
     [input.connectionId, input.syncType, input.status, input.cursor ?? null, input.error ? input.error.slice(0, 1_000) : null],
   );
+}
+
+/** Persist the provider-owned account/location graph discovered by a real
+ * adapter. The operation is an idempotent snapshot: rows returned by the
+ * provider are upserted and rows that disappeared from a successful snapshot
+ * are marked unavailable instead of being deleted, preserving mappings and
+ * audit history. */
+export async function persistDiscoveredProviderGraph(input: {
+  connectionId: string;
+  providerKey: string;
+  accounts: Array<{ account: ProviderDiscoveredAccount; assets: ProviderDiscoveredAsset[] }>;
+  syncedAt?: Date;
+}) {
+  const syncedAt = input.syncedAt ?? new Date();
+  return withTransaction(async (client) => {
+    await query(`UPDATE provider_accounts SET status='UNAVAILABLE', last_synced_at=$2, updated_at=NOW() WHERE provider_connection_id=$1`, [input.connectionId, syncedAt], client);
+    await query(`UPDATE provider_assets SET status='UNAVAILABLE', last_synced_at=$2, updated_at=NOW() WHERE provider_key=$3 AND provider_account_id IN (SELECT id FROM provider_accounts WHERE provider_connection_id=$1)`, [input.connectionId, syncedAt, input.providerKey], client);
+    let accountCount = 0;
+    let assetCount = 0;
+    for (const entry of input.accounts) {
+      const account = entry.account;
+      if (!account.externalAccountId) continue;
+      const accountResult = await query<{ id: string }>(
+        `INSERT INTO provider_accounts(provider_connection_id,provider_key,external_account_id,name,account_type,status,currency,timezone,country,metadata,last_synced_at)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
+         ON CONFLICT(provider_connection_id,external_account_id) DO UPDATE SET provider_key=EXCLUDED.provider_key,name=EXCLUDED.name,account_type=EXCLUDED.account_type,status=EXCLUDED.status,currency=EXCLUDED.currency,timezone=EXCLUDED.timezone,country=EXCLUDED.country,metadata=EXCLUDED.metadata,last_synced_at=EXCLUDED.last_synced_at,updated_at=NOW()
+         RETURNING id`,
+        [input.connectionId, input.providerKey, account.externalAccountId, account.name ?? null, account.accountType ?? null, account.status ?? 'UNKNOWN', account.currency ?? null, account.timezone ?? null, account.country ?? null, JSON.stringify(account.metadata ?? {}), syncedAt],
+        client,
+      );
+      const accountId = accountResult.rows[0]?.id;
+      if (!accountId) continue;
+      accountCount += 1;
+      for (const asset of entry.assets) {
+        if (!asset.externalAssetId) continue;
+        await query(
+          `INSERT INTO provider_assets(provider_account_id,provider_key,asset_type,external_asset_id,display_name,status,capabilities,metadata,last_synced_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9)
+           ON CONFLICT(provider_account_id,asset_type,external_asset_id) DO UPDATE SET provider_key=EXCLUDED.provider_key,display_name=EXCLUDED.display_name,status=EXCLUDED.status,capabilities=EXCLUDED.capabilities,metadata=EXCLUDED.metadata,last_synced_at=EXCLUDED.last_synced_at,updated_at=NOW()`,
+          [accountId, input.providerKey, asset.assetType, asset.externalAssetId, asset.displayName ?? null, asset.status ?? 'UNKNOWN', JSON.stringify(asset.capabilities ?? {}), JSON.stringify(asset.metadata ?? {}), syncedAt],
+          client,
+        );
+        assetCount += 1;
+      }
+    }
+    return { accountCount, assetCount };
+  });
 }
 
 /** Claims a provider mutation idempotently. Retries reuse the same operation
