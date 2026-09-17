@@ -33,6 +33,8 @@ import { requestSocialPublishingWorkerRun } from '../social-publishing/social-pu
 import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
 import { createInvoiceSchema } from '../commercial-documents/commercial-documents.validator.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
+import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
+import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
 
 const intervalMs = 30 * 1000;
 const batchSize = 20;
@@ -260,6 +262,40 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       provider: command.provider,
       resultRecordId: item.id,
       result: { status: 'created', resourceType },
+    };
+  }
+
+  if (command.type === 'crm.transition_pipeline' || command.type === 'sales.transition_pipeline') {
+    const resourceType = textValue(payload.resourceType || command.targetEntityType, 80) as SalesPipelineResourceType;
+    const recordId = textValue(payload.recordId || command.targetEntityId, 80);
+    const targetState = textValue(payload.targetState || payload.stage || payload.status, 80);
+    const expectedVersion = typeof payload.expectedVersion === 'number' && Number.isInteger(payload.expectedVersion)
+      ? payload.expectedVersion
+      : typeof payload.expectedVersion === 'string' && /^\d+$/.test(payload.expectedVersion.trim())
+        ? Number.parseInt(payload.expectedVersion, 10)
+        : undefined;
+    if (!recordId || !targetState || !SALES_PIPELINE_RESOURCE_TYPES.includes(resourceType)) {
+      throw new Error(`${command.type} requires recordId, resourceType, and targetState`);
+    }
+    const transitioned = await salesPipelineService.transitionRecord(record.workspaceId, resourceType, recordId, actorUserId, {
+      targetState,
+      expectedVersion,
+      reason: textValue(payload.reason || command.summary, 2_000) || null,
+    });
+    const stored = await persistCommandExecutionResult(record, command, {
+      status: 'transitioned',
+      resourceType,
+      recordId,
+      state: transitioned.pipeline.state,
+      stateVersion: transitioned.pipeline.stateVersion,
+      recordVersion: transitioned.version,
+    });
+    return {
+      type: command.type,
+      targetEntityId: recordId,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: { status: 'transitioned', resourceType, record: transitioned },
     };
   }
 

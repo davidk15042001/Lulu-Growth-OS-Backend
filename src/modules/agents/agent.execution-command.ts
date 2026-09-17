@@ -6,7 +6,9 @@ import type { ResourceType } from '../../domain/resource-catalog.js';
 export const agentExecutionCommandTypeSchema = z.enum([
   'record.create_artifact',
   'crm.create_followup_task',
+  'crm.transition_pipeline',
   'sales.create_followup_task',
+  'sales.transition_pipeline',
   'advertising.create_optimization',
   'finance.create_automation',
   'finance.invoice.create_from_order',
@@ -153,7 +155,9 @@ function serverCommandPolicy(command: AgentExecutionCommand, context: InferComma
   const defaults: Record<AgentExecutionCommandType, ServerPolicy> = {
     'record.create_artifact': { targetSystem: context.targetSystem, riskLevel: 'medium', budgetAuthority: 'none' },
     'crm.create_followup_task': { targetSystem: 'crm', riskLevel: 'low', budgetAuthority: 'none' },
+    'crm.transition_pipeline': { targetSystem: 'crm', riskLevel: 'low', budgetAuthority: 'none' },
     'sales.create_followup_task': { targetSystem: 'sales', riskLevel: 'low', budgetAuthority: 'none' },
+    'sales.transition_pipeline': { targetSystem: 'sales', riskLevel: 'low', budgetAuthority: 'none' },
     'advertising.create_optimization': { targetSystem: 'advertising', riskLevel: 'medium', budgetAuthority: 'customer_authorization_required' },
     'finance.create_automation': { targetSystem: 'finance', riskLevel: 'medium', budgetAuthority: 'none' },
     'finance.invoice.create_from_order': { targetSystem: 'finance', riskLevel: 'medium', budgetAuthority: 'none' },

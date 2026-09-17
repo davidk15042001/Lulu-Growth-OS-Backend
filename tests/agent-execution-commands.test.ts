@@ -191,6 +191,45 @@ describe('agent execution commands', () => {
     assert.equal(decision.overallDecision, 'allow');
   });
 
+  it('keeps CRM pipeline transitions autonomous while the server owns the target and version', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'crm.transition_pipeline',
+      summary: 'Qualify the verified lead',
+      targetSystem: 'unknown',
+      provider: null,
+      riskLevel: 'high',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'crm_leads',
+      targetEntityId: '00000000-0000-4000-8000-000000000321',
+      payload: {
+        resourceType: 'crm_leads',
+        recordId: '00000000-0000-4000-8000-000000000321',
+        targetState: 'qualified',
+        expectedVersion: 4,
+      },
+      idempotencyKey: 'model-pipeline-transition',
+    }], {
+      module: 'crm',
+      targetSystem: 'crm',
+      actionResourceType: 'crm_leads',
+      pageId: 'crm-page',
+      pageLabel: 'CRM Leads',
+      goal: 'Qualify the verified lead',
+      jobs: ['Qualify lead'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'crm.transition_pipeline');
+    assert.equal(command.targetSystem, 'crm');
+    assert.equal(command.riskLevel, 'low');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(command.budgetAuthority, 'none');
+    assert.match(command.idempotencyKey, /^[a-f0-9]{40}$/);
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps canonical commerce and social commands autonomous but server-owned', () => {
     const commands = normalizeAgentExecutionCommands([
       {
