@@ -64,6 +64,7 @@ describe('Provider Control Plane', () => {
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('google_analytics'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('facebook'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('instagram'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('shopify'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
   });
 
   it('does not treat an active but not-yet-running UnifyPort account as connected', async () => {
