@@ -238,7 +238,7 @@ describe('agent execution commands', () => {
       provider: null,
       riskLevel: 'high',
       approvalPolicy: 'require_approval',
-      targetEntityType: 'sales_quotes',
+      targetEntityType: 'finance_quotes',
       targetEntityId: null,
       payload: {
         customerRecordId: '00000000-0000-4000-8000-000000000111',
@@ -249,7 +249,7 @@ describe('agent execution commands', () => {
     }], {
       module: 'sales',
       targetSystem: 'sales',
-      actionResourceType: 'sales_quotes',
+      actionResourceType: 'finance_quotes',
       pageId: 'quotes-page',
       pageLabel: 'Quotes',
       goal: 'Prepare the verified customer offer',
