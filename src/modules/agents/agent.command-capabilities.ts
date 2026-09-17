@@ -20,6 +20,8 @@ const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCa
   'advertising.create_optimization': 'advertising.manage',
   'finance.create_automation': 'finance.manage',
   'finance.invoice.create_from_order': 'invoices.create',
+  'finance.invoice.issue': 'invoices.issue',
+  'finance.invoice.send': 'invoices.send',
   'google_reviews.reply': 'omnichannel.reply',
   'email.create_draft': 'omnichannel.reply',
   'email.create_ai_draft': 'omnichannel.reply',

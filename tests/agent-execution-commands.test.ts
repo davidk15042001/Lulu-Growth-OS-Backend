@@ -304,6 +304,34 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('keeps invoice issue and delivery commands on finance capabilities', () => {
+    const commands = normalizeAgentExecutionCommands([
+      {
+        type: 'finance.invoice.issue',
+        summary: 'Issue the verified invoice',
+        targetSystem: 'unknown', provider: null, riskLevel: 'low', approvalPolicy: 'require_approval',
+        targetEntityType: 'finance_invoices', targetEntityId: '00000000-0000-4000-8000-000000000113',
+        payload: { invoiceId: '00000000-0000-4000-8000-000000000113' }, idempotencyKey: 'model-invoice-issue',
+      },
+      {
+        type: 'finance.invoice.send',
+        summary: 'Send the verified invoice',
+        targetSystem: 'unknown', provider: null, riskLevel: 'low', approvalPolicy: 'require_approval',
+        targetEntityType: 'finance_invoices', targetEntityId: '00000000-0000-4000-8000-000000000114',
+        payload: { invoiceId: '00000000-0000-4000-8000-000000000114', channel: 'secure_link' }, idempotencyKey: 'model-invoice-send',
+      },
+    ], {
+      module: 'finance', targetSystem: 'finance', actionResourceType: 'finance_invoices', pageId: 'finance-page',
+      pageLabel: 'Finance', goal: 'Complete verified billing', jobs: ['Issue invoice', 'Send invoice'],
+      policyDecision: 'allow', executionMode: 'autonomous',
+    });
+
+    assert.deepEqual(commands.map((command) => command.type), ['finance.invoice.issue', 'finance.invoice.send']);
+    assert.deepEqual(commands.map((command) => command.riskLevel), ['medium', 'high']);
+    assert.deepEqual(commands.map((command) => command.approvalPolicy), ['allow', 'allow']);
+    assert.equal(applyExecutionCommandPolicies(commands, 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps canonical commerce and social commands autonomous but server-owned', () => {
     const commands = normalizeAgentExecutionCommands([
       {

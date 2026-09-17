@@ -60,6 +60,15 @@ export async function createInvoice(
 }
 export async function issueInvoice(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.issue');return repo.issueInvoice(workspaceId,id,userId);}
 export async function sendInvoice(workspaceId:string,userId:string,id:string,input:SendDocumentInput){await authorize(workspaceId,userId,'invoices.send');const result=await repo.sendInvoice(workspaceId,id,userId,input);if(!('documentPath' in result))return result;return {...result,documentPath:result.documentPath.replace('/api/v1/public/commercial-documents/','/documents/commercial/')};}
+export async function sendInvoiceAutonomously(workspaceId:string,userId:string,id:string,input:SendDocumentInput){
+  await authorize(workspaceId,userId,'invoices.send');
+  const policy = await repo.getPolicy(workspaceId);
+  if (!policy) throw new AppError(409, 'COMMERCIAL_POLICY_MISSING', 'A commercial policy must be configured before automatic invoices can be sent');
+  if (!policy.invoiceAutoSendEnabled) throw new AppError(403, 'AUTOMATIC_INVOICE_SEND_DISABLED', 'Automatic invoice delivery is disabled for this workspace');
+  const result = await repo.sendInvoice(workspaceId,id,userId,input);
+  if (!('documentPath' in result)) return result;
+  return {...result,documentPath:result.documentPath.replace('/api/v1/public/commercial-documents/','/documents/commercial/')};
+}
 export async function listInvoicePayments(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.read');const invoice=await repo.getInvoice(workspaceId,id);if(!invoice)throw notFoundError('Invoice not found');return repo.listInvoicePayments(workspaceId,id);}
 export async function recordInvoicePayment(workspaceId:string,userId:string,id:string,input:RecordInvoicePaymentInput){await authorize(workspaceId,userId,'finance.manage');return repo.recordInvoicePayment(workspaceId,id,userId,input);}
 export async function getPolicy(workspaceId:string,userId:string){await authorize(workspaceId,userId,'commercial_policy.read');return repo.getPolicy(workspaceId);}

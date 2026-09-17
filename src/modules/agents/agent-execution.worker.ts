@@ -115,6 +115,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   if (command.type === 'sales.quote.create') return 'finance_quotes';
   if (command.type === 'sales.quote.send') return 'finance_quotes';
   if (command.type === 'finance.invoice.create_from_order') return 'finance_invoices';
+  if (command.type === 'finance.invoice.issue' || command.type === 'finance.invoice.send') return 'finance_invoices';
   if (command.type === 'finance.create_automation') return 'finance_automations';
   return 'activities';
 }
@@ -424,6 +425,37 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       status: invoice.invoice.status,
     });
     return { type: command.type, targetEntityId: invoice.invoice.id, provider: command.provider, resultRecordId: stored.id, result: invoice };
+  }
+
+  if (command.type === 'finance.invoice.issue') {
+    const invoiceId = textValue(payload.invoiceId || command.targetEntityId);
+    if (!invoiceId) throw new Error('finance.invoice.issue requires invoiceId');
+    const issued = await commercialDocumentService.issueInvoice(record.workspaceId, actorUserId, invoiceId);
+    const stored = await persistCommandExecutionResult(record, command, {
+      invoiceId,
+      status: objectValue(issued).status ?? 'issued',
+    });
+    return { type: command.type, targetEntityId: invoiceId, provider: command.provider, resultRecordId: stored.id, result: issued };
+  }
+
+  if (command.type === 'finance.invoice.send') {
+    const invoiceId = textValue(payload.invoiceId || command.targetEntityId);
+    if (!invoiceId) throw new Error('finance.invoice.send requires invoiceId');
+    const sendInput = sendDocumentSchema.parse({
+      conversationId: textValue(payload.conversationId) || null,
+      channel: textValue(payload.channel, 32) || 'secure_link',
+      recipient: textValue(payload.recipient, 320) || null,
+      operationKey: textValue(payload.operationKey, 200) || `agent:${command.idempotencyKey}:invoice-send`,
+    });
+    const sent = await commercialDocumentService.sendInvoiceAutonomously(record.workspaceId, actorUserId, invoiceId, sendInput);
+    const sentResult = objectValue(sent);
+    const stored = await persistCommandExecutionResult(record, command, {
+      invoiceId,
+      status: 'sent',
+      deliveryId: sentResult.deliveryId ?? null,
+      documentPath: sentResult.documentPath ?? null,
+    });
+    return { type: command.type, targetEntityId: invoiceId, provider: command.provider, resultRecordId: stored.id, result: sent };
   }
 
   if (command.type === 'finance.create_automation') {

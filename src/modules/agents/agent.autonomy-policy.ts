@@ -13,7 +13,7 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'email.create_ai_draft':'AUTONOMOUS', 'ecommerce.generate_product_images':'AUTONOMOUS',
   'email.send_draft':'AUTONOMOUS',
   'finance.create_automation':'AUTONOMOUS', 'advertising.create_optimization':'AUTONOMOUS',
-  'finance.invoice.create_from_order':'AUTONOMOUS',
+  'finance.invoice.create_from_order':'AUTONOMOUS', 'finance.invoice.issue':'AUTONOMOUS', 'finance.invoice.send':'AUTONOMOUS',
   'google_reviews.reply':'AUTONOMOUS', 'website.publish_job':'AUTONOMOUS',
   'omnichannel.send_message':'AUTONOMOUS', 'workspace.refresh':'AUTONOMOUS',
   'commerce.order.create':'AUTONOMOUS', 'commerce.order.update':'AUTONOMOUS',
