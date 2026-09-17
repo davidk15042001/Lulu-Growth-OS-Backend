@@ -4,6 +4,8 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AWS_USAGE_CUSTOMER_MULTIPLIER, getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import { getPaygDirectPaymentMethods } from '../billing/payg-payment-methods.js';
 import { CUSTOMER_API_RATE } from '../usage/usage.service.js';
@@ -763,14 +765,41 @@ export async function updateWorkspaceSettings(
 
 export async function queueIntegrationSync(workspaceId: string, platformId: string) {
   return withTransaction(async (client) => {
-    const platform = await query<{ id: string }>(
-      `SELECT id FROM workspace_platforms
+    const platform = await query<{ id: string; integrationKey: string | null }>(
+      `SELECT id, integration_key AS "integrationKey" FROM workspace_platforms
        WHERE id = $1 AND workspace_id = $2 AND deleted_at IS NULL
        FOR UPDATE`,
       [platformId, workspaceId],
       client
     );
     if (!platform.rows[0]) return undefined;
+    await query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`integration.sync:${platformId}`], client);
+    const existing = await query<{ id: string; status: string }>(
+      `SELECT id, status
+         FROM background_jobs
+        WHERE workspace_id=$1
+          AND job_type='integration.sync'
+          AND status IN ('queued','running')
+          AND payload->>'platformId'=$2
+        ORDER BY created_at ASC
+        LIMIT 1
+        FOR UPDATE`,
+      [workspaceId, platformId],
+      client,
+    );
+    if (existing.rows[0]) {
+      const currentRun = await query(
+        `SELECT id, platform_id AS "platformId", job_id AS "jobId", status,
+                created_at AS "createdAt"
+           FROM integration_sync_runs
+          WHERE job_id=$1
+          ORDER BY created_at DESC
+          LIMIT 1`,
+        [existing.rows[0].id],
+        client,
+      );
+      if (currentRun.rows[0]) return { ...currentRun.rows[0], deduplicated: true };
+    }
     const job = await query<{ id: string }>(
       `INSERT INTO background_jobs (workspace_id, job_type, payload)
        VALUES ($1, 'integration.sync', jsonb_build_object('platformId', $2::text))
@@ -792,6 +821,15 @@ export async function queueIntegrationSync(workspaceId: string, platformId: stri
       [platformId],
       client
     );
+    await appendDomainEvent({
+      workspaceId,
+      type: DOMAIN_EVENT_TYPES.INTEGRATION_SYNC_REQUESTED,
+      aggregateType: 'workspace_platform',
+      aggregateId: platformId,
+      payload: { jobId, platformId, integrationKey: platform.rows[0].integrationKey },
+      metadata: { source: 'workspace_app.integration_sync' },
+      idempotencyKey: `integration-sync:${jobId}:requested:v1`,
+    }, client);
     return run.rows[0];
   });
 }

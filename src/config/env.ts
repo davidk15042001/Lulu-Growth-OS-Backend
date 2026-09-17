@@ -273,6 +273,8 @@ const EnvSchema = z
     PROVIDER_WEBHOOK_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
     PROVIDER_WEBHOOK_LEASE_SECONDS: z.coerce.number().int().min(15).max(900).default(60),
     PROVIDER_WEBHOOK_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
+    INTEGRATION_SYNC_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(5_000),
+    INTEGRATION_SYNC_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(120),
   })
   .superRefine((data, ctx) => {
     if (Boolean(data.TWILIO_API_KEY_SID) !== Boolean(data.TWILIO_API_KEY_SECRET)) {
