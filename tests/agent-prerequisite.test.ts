@@ -25,5 +25,13 @@ describe('agent prerequisite blocking', () => {
     assert.equal(result.blocked, true);
     assert.equal(result.code, 'AGENT_PREREQUISITE_REQUIRED');
   });
+
+  it('pauses provider delivery failures that require a corrected channel context', () => {
+    for (const code of ['OMNICHANNEL_PROVIDER_UNSUPPORTED', 'UNIFYPORT_RECIPIENT_INVALID', 'TWILIO_WORKSPACE_TEMPLATE_REQUIRED']) {
+      const result = classifyAgentFailure(new AppError(409, code, 'The connected channel cannot deliver this message yet.'));
+      assert.equal(result.blocked, true, code);
+      assert.equal(result.code, 'AGENT_PREREQUISITE_REQUIRED', code);
+    }
+  });
 });
 
