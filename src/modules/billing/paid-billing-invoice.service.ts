@@ -1,5 +1,7 @@
 import { logger } from '../../config/logger.js';
 import { query } from '../../db/pool.js';
+import { appendDomainEvent } from '../../events/domain-event.repo.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import * as commercialDocumentsRepo from '../commercial-documents/commercial-documents.repo.js';
 
 type PaidLine = {
@@ -242,6 +244,23 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
     return current;
   } catch (error) {
     logger.error({ error, workspaceId: input.workspaceId, kind: input.kind, referenceId: input.referenceId }, 'Automatic paid billing invoice creation failed; reconciliation will retry it');
+    // Do not rely only on the periodic billing sweep. A provider webhook may
+    // be marked handled even when invoice persistence is temporarily blocked
+    // by a transient database/provider dependency. Enqueue a durable billing
+    // cycle request so the same idempotent reconciliation path retries soon.
+    try {
+      const retryBucket = Math.floor(Date.now() / 60_000);
+      await appendDomainEvent({
+        type: DOMAIN_EVENT_TYPES.BILLING_CYCLE_REQUESTED,
+        aggregateType: 'billing_reconciliation',
+        aggregateId: input.referenceId,
+        payload: { workspaceId: input.workspaceId, kind: input.kind, referenceId: input.referenceId },
+        metadata: { source: 'paid-billing-invoice.service', reason: 'invoice_persistence_failed' },
+        idempotencyKey: `billing-reconcile:${input.kind.toLowerCase()}:${input.referenceId}:${retryBucket}`,
+      });
+    } catch (retryError) {
+      logger.warn({ retryError, workspaceId: input.workspaceId, kind: input.kind, referenceId: input.referenceId }, 'Paid billing invoice retry event could not be queued');
+    }
     return null;
   }
 }
