@@ -13,6 +13,7 @@ import type {
 } from './provider.types.js';
 
 type GoogleIdentity = { sub: string | null; email: string | null; name: string | null };
+type GoogleProperty = { name: string; displayName: string | null; propertyType: string | null; parent: string | null };
 
 async function accessToken(workspaceId: string) {
   const credential = await getPlatformOAuthCredential(workspaceId, 'google-analytics');
@@ -35,6 +36,57 @@ async function readIdentity(workspaceId: string): Promise<GoogleIdentity> {
   const body = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) throw new AppError(response.status === 401 ? 401 : 502, response.status === 401 ? 'GOOGLE_ANALYTICS_REAUTH_REQUIRED' : 'GOOGLE_ANALYTICS_ACCOUNT_READ_FAILED', 'Google Analytics rejected the current OAuth access token.', { providerHttpStatus: response.status });
   return { sub: typeof body.sub === 'string' ? body.sub : null, email: typeof body.email === 'string' ? body.email : null, name: typeof body.name === 'string' ? body.name : null };
+}
+
+async function googleJson(workspaceId: string, url: string, init?: RequestInit) {
+  const token = await accessToken(workspaceId);
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
+      signal: AbortSignal.timeout(20_000),
+    });
+  } catch (error) {
+    throw new AppError(502, 'GOOGLE_ANALYTICS_NETWORK_ERROR', 'Google Analytics did not return a definitive response.', { cause: error instanceof Error ? error.message : String(error) });
+  }
+  const body = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (!response.ok) {
+    throw new AppError(response.status === 401 ? 401 : response.status === 403 ? 403 : 502, response.status === 401 ? 'GOOGLE_ANALYTICS_REAUTH_REQUIRED' : response.status === 403 ? 'GOOGLE_ANALYTICS_PERMISSION_DENIED' : 'GOOGLE_ANALYTICS_API_FAILED', 'Google Analytics rejected the current API request.', { providerHttpStatus: response.status, body });
+  }
+  return body;
+}
+
+async function listProperties(workspaceId: string): Promise<GoogleProperty[]> {
+  const properties: GoogleProperty[] = [];
+  let pageToken: string | undefined;
+  do {
+    const url = new URL('https://analyticsadmin.googleapis.com/v1beta/properties');
+    url.searchParams.set('pageSize', '100');
+    if (pageToken) url.searchParams.set('pageToken', pageToken);
+    const body = await googleJson(workspaceId, url.toString());
+    const rows = Array.isArray(body.properties) ? body.properties : [];
+    for (const row of rows) {
+      if (!row || typeof row !== 'object' || typeof (row as { name?: unknown }).name !== 'string') continue;
+      const property = row as { name: string; displayName?: unknown; propertyType?: unknown; parent?: unknown };
+      properties.push({ name: property.name, displayName: typeof property.displayName === 'string' ? property.displayName : null, propertyType: typeof property.propertyType === 'string' ? property.propertyType : null, parent: typeof property.parent === 'string' ? property.parent : null });
+    }
+    pageToken = typeof body.nextPageToken === 'string' && body.nextPageToken.length > 0 ? body.nextPageToken : undefined;
+  } while (pageToken && properties.length < 500);
+  return properties;
+}
+
+async function readPropertyReport(workspaceId: string, propertyName: string) {
+  const propertyId = propertyName.startsWith('properties/') ? propertyName : `properties/${propertyName}`;
+  return googleJson(workspaceId, `https://analyticsdata.googleapis.com/v1beta/${propertyId}:runReport`, {
+    method: 'POST',
+    body: JSON.stringify({
+      dateRanges: [{ startDate: '28daysAgo', endDate: 'today' }],
+      dimensions: [{ name: 'date' }],
+      metrics: [{ name: 'activeUsers' }, { name: 'sessions' }, { name: 'conversions' }],
+      limit: '1000',
+    }),
+  });
 }
 
 function errorState(error: unknown) {
@@ -65,8 +117,18 @@ export class GoogleAnalyticsAdapter implements ProviderAdapter {
 
   async getCapabilities(context: ProviderAdapterContext) {
     const result = await this.verifyConnection(context);
-    const status: ProviderCapabilityStatus = result.status === 'CONNECTED' ? 'AVAILABLE' : result.status === 'AUTHORIZATION_REQUIRED' ? 'AUTHORIZATION_REQUIRED' : 'ERROR';
-    return [{ capabilityKey: 'google_analytics.reporting.read', status, reason: result.reason }];
+    if (result.status !== 'CONNECTED') {
+      const status: ProviderCapabilityStatus = result.status === 'AUTHORIZATION_REQUIRED' ? 'AUTHORIZATION_REQUIRED' : 'ERROR';
+      return [{ capabilityKey: 'google_analytics.reporting.read', status, reason: result.reason }];
+    }
+    try {
+      const properties = await listProperties(context.workspaceId!);
+      const status: ProviderCapabilityStatus = properties.length > 0 ? 'AVAILABLE' : 'PROVIDER_REVIEW';
+      return [{ capabilityKey: 'google_analytics.reporting.read', status, reason: properties.length > 0 ? `Google Analytics Data API is reachable with ${properties.length} accessible GA4 propert${properties.length === 1 ? 'y' : 'ies'}.` : 'OAuth is valid, but no accessible GA4 property was discovered.' }];
+    } catch (error) {
+      const state = errorState(error);
+      return [{ capabilityKey: 'google_analytics.reporting.read', status: state.status, reason: error instanceof Error ? error.message : 'Google Analytics property discovery failed.' }];
+    }
   }
 
   async discoverAccounts(context: ProviderAdapterContext): Promise<ProviderDiscoveredAccount[]> {
@@ -80,11 +142,23 @@ export class GoogleAnalyticsAdapter implements ProviderAdapter {
   async discoverAssets(context: ProviderAdapterContext, account: ProviderDiscoveredAccount): Promise<ProviderDiscoveredAsset[]> {
     const accounts = await this.discoverAccounts(context);
     if (!accounts.some((candidate) => candidate.externalAccountId === account.externalAccountId)) return [];
-    return [{ externalAssetId: `${account.externalAccountId}:reporting`, assetType: 'analytics_reporting', displayName: 'Google Analytics reporting access', status: 'CONNECTED', capabilities: { read: true }, metadata: { accountId: account.externalAccountId } }];
+    try {
+      const properties = await listProperties(context.workspaceId!);
+      return properties.map((property) => ({ externalAssetId: property.name, assetType: 'ga4_property', displayName: property.displayName ?? property.name, status: 'CONNECTED' as const, capabilities: { read: true, reporting: true }, metadata: { accountId: account.externalAccountId, propertyType: property.propertyType, parent: property.parent } }));
+    } catch { return []; }
   }
 
   async sync(context: ProviderAdapterContext, syncType: string) {
-    const result = await this.verifyConnection(context);
-    return result.verified ? { status: 'SUCCESS' as const, details: { syncType, provider: this.providerKey } } : { status: 'FAILED' as const, details: { syncType, provider: this.providerKey, reason: result.reason } };
+    if (!context.workspaceId) return { status: 'FAILED' as const, details: { syncType, provider: this.providerKey, reason: 'A workspace context is required for Google Analytics reporting.' } };
+    try {
+      const properties = await listProperties(context.workspaceId);
+      const propertyName = context.externalAccountId?.startsWith('properties/') ? context.externalAccountId : properties[0]?.name;
+      if (!propertyName) return { status: 'FAILED' as const, details: { syncType, provider: this.providerKey, reason: 'No accessible GA4 property was discovered.' } };
+      const report = await readPropertyReport(context.workspaceId, propertyName);
+      const rows = Array.isArray(report.rows) ? report.rows : [];
+      return { status: 'SUCCESS' as const, details: { syncType, provider: this.providerKey, property: propertyName, rowCount: rows.length, metricHeaders: report.metricHeaders ?? [], sampled: false } };
+    } catch (error) {
+      return { status: 'FAILED' as const, details: { syncType, provider: this.providerKey, reason: error instanceof Error ? error.message : 'Google Analytics report failed.' } };
+    }
   }
 }
