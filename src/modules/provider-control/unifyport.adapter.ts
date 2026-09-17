@@ -28,6 +28,19 @@ function firstText(...values: unknown[]) {
   return null;
 }
 
+/**
+ * An account is only connected when UnifyPort reports both an active account
+ * and a running device/runtime. The provider can keep an account record in
+ * `active` state while authentication or the WhatsApp runtime is still
+ * pending; treating that record as connected would make the UI and agent
+ * scheduler advertise a send capability that cannot succeed.
+ */
+export function isUnifyPortAccountRuntimeReady(account: { status?: unknown; runtime_status?: unknown }) {
+  const accountStatus = text(account.status)?.toLowerCase();
+  const runtimeStatus = text(account.runtime_status)?.toLowerCase();
+  return accountStatus === 'active' && Boolean(runtimeStatus && ['running', 'ready', 'connected'].includes(runtimeStatus));
+}
+
 function omniMessageType(value: unknown) {
   const type=(text(value)??'text').toLowerCase();
   if(type.includes('image'))return 'IMAGE';
@@ -120,14 +133,14 @@ export class UnifyPortAdapter implements ProviderAdapter {
     return accounts.flatMap((account) => {
       const externalAccountId = accountId(account.id);
       if (!externalAccountId) return [];
-      return [{ externalAccountId, name: accountId(account.name), accountType: accountId(account.provider), status: account.status === 'active' ? 'CONNECTED' : 'UNKNOWN', country: null, currency: null, timezone: null, metadata: { provider: account.provider ?? null, region: account.region ?? null, runtimeStatus: account.runtime_status ?? null } }];
+      return [{ externalAccountId, name: accountId(account.name), accountType: accountId(account.provider), status: isUnifyPortAccountRuntimeReady(account) ? 'CONNECTED' : 'UNKNOWN', country: null, currency: null, timezone: null, metadata: { provider: account.provider ?? null, region: account.region ?? null, accountStatus: account.status ?? null, runtimeStatus: account.runtime_status ?? null } }];
     });
   }
 
   async discoverAssets(_context: ProviderAdapterContext, account: ProviderDiscoveredAccount): Promise<ProviderDiscoveredAsset[]> {
     const externalAccountId = account.externalAccountId;
     const remote = await getAccount(externalAccountId);
-    return [{ externalAssetId: externalAccountId, assetType: 'unifyport_account', displayName: account.name ?? remote.name ?? externalAccountId, status: remote.status === 'active' ? 'CONNECTED' : 'UNKNOWN', capabilities: { runtimeStatus: remote.runtime_status ?? null }, metadata: { provider: remote.provider ?? null, region: remote.region ?? null } }];
+    return [{ externalAssetId: externalAccountId, assetType: 'unifyport_account', displayName: account.name ?? remote.name ?? externalAccountId, status: isUnifyPortAccountRuntimeReady(remote) ? 'CONNECTED' : 'UNKNOWN', capabilities: { accountStatus: remote.status ?? null, runtimeStatus: remote.runtime_status ?? null }, metadata: { provider: remote.provider ?? null, region: remote.region ?? null } }];
   }
 
   async sync(_context: ProviderAdapterContext, _syncType: string): Promise<{ status: ProviderSyncStatus; details?: Record<string, unknown> }> {

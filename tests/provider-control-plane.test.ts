@@ -59,6 +59,14 @@ describe('Provider Control Plane', () => {
     assert.ok(unifyPort?.runtime?.supportedFeatures.includes('webhook'));
   });
 
+  it('does not treat an active but not-yet-running UnifyPort account as connected', async () => {
+    assert.equal(providerRegistry.getProviderAdapter('unifyport').providerKey, 'unifyport');
+    const { isUnifyPortAccountRuntimeReady } = await import('../src/modules/provider-control/unifyport.adapter.js');
+    assert.equal(isUnifyPortAccountRuntimeReady({ status: 'active', runtime_status: 'pending' }), false);
+    assert.equal(isUnifyPortAccountRuntimeReady({ status: 'active', runtime_status: 'running' }), true);
+    assert.equal(isUnifyPortAccountRuntimeReady({ status: 'disabled', runtime_status: 'running' }), false);
+  });
+
   it('verifies the Lulu-managed website from the canonical site and domain projection', async () => {
     const f = await fixture();
     const site = (await db.query<{ id: string }>(
