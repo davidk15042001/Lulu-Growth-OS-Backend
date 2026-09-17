@@ -33,6 +33,8 @@ const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCa
   'commerce.order.create': 'orders.manage',
   'commerce.order.update': 'orders.manage',
   'commerce.order.transition': 'orders.manage',
+  'commerce.product.create': 'products.create',
+  'commerce.product.update': 'products.update',
   'commerce.inventory.adjust': 'orders.manage',
   'commerce.fulfillment.create': 'orders.manage',
   'commerce.fulfillment.transition': 'orders.manage',

@@ -25,6 +25,7 @@ import {
 } from '../commerce/commerce.validator.js';
 import * as socialPublishingService from '../social-publishing/social-publishing.service.js';
 import * as calendarService from '../calendar/calendar.service.js';
+import * as productService from '../products/product.service.js';
 import {
   createSocialContentSchema,
   createSocialPublicationSchema,
@@ -34,6 +35,7 @@ import { requestSocialPublishingWorkerRun } from '../social-publishing/social-pu
 import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
 import { createInvoiceSchema, createQuoteSchema, sendDocumentSchema } from '../commercial-documents/commercial-documents.validator.js';
 import { createNativeEventSchema } from '../calendar/calendar.validator.js';
+import { createProductSchema, updateProductSchema } from '../products/product.validator.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
@@ -653,6 +655,38 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       version: order.order.version,
     });
     return { type: command.type, targetEntityId: order.order.id, provider: command.provider, resultRecordId: stored.id, result: order };
+  }
+
+  if (command.type === 'commerce.product.create') {
+    const product = await productService.createProduct(
+      record.workspaceId,
+      record.createdBy ?? null,
+      createProductSchema.parse(payload),
+    );
+    const stored = await persistCommandExecutionResult(record, command, {
+      productId: product.id,
+      name: product.name,
+      status: product.status,
+    });
+    return { type: command.type, targetEntityId: product.id, provider: command.provider, resultRecordId: stored.id, result: product };
+  }
+
+  if (command.type === 'commerce.product.update') {
+    const productId = textValue(payload.productId || command.targetEntityId);
+    if (!productId) throw new Error('commerce.product.update requires productId');
+    const product = await productService.updateProduct(
+      record.workspaceId,
+      productId,
+      record.createdBy ?? null,
+      updateProductSchema.parse(payload),
+    );
+    const stored = await persistCommandExecutionResult(record, command, {
+      productId: product.id,
+      name: product.name,
+      status: product.status,
+      version: product.version,
+    });
+    return { type: command.type, targetEntityId: product.id, provider: command.provider, resultRecordId: stored.id, result: product };
   }
 
   if (command.type === 'commerce.order.update') {

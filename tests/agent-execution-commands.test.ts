@@ -305,6 +305,38 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('registers canonical product create and update commands with product capabilities', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'commerce.product.create',
+      summary: 'Create the verified product',
+      targetSystem: 'unknown',
+      provider: null,
+      riskLevel: 'high',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'product',
+      targetEntityId: null,
+      payload: { name: 'Verified product', productType: 'PHYSICAL_PRODUCT' },
+      idempotencyKey: 'model-product-create',
+    }], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ai_actions',
+      pageId: 'products-page',
+      pageLabel: 'Products',
+      goal: 'Create the verified product',
+      jobs: ['Create product'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'commerce.product.create');
+    assert.equal(command.targetSystem, 'ecommerce');
+    assert.equal(command.riskLevel, 'medium');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps autonomous quote delivery server-owned and scoped to quote sending', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'sales.quote.send',

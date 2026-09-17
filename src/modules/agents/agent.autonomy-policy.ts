@@ -18,6 +18,7 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'omnichannel.send_message':'AUTONOMOUS', 'calendar.event.create':'AUTONOMOUS', 'workspace.refresh':'AUTONOMOUS',
   'commerce.order.create':'AUTONOMOUS', 'commerce.order.update':'AUTONOMOUS',
   'commerce.order.transition':'AUTONOMOUS', 'commerce.inventory.adjust':'AUTONOMOUS',
+  'commerce.product.create':'AUTONOMOUS', 'commerce.product.update':'AUTONOMOUS',
   'commerce.fulfillment.create':'AUTONOMOUS', 'commerce.fulfillment.transition':'AUTONOMOUS',
   'social.content.publish':'AUTONOMOUS', 'social.publication.retry':'AUTONOMOUS',
   'social.publication.cancel':'AUTONOMOUS',
