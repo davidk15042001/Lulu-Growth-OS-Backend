@@ -14,6 +14,7 @@ import { assertWorkspaceCapability } from '../workspaces/workspace-authorization
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { executeAdvertisingProviderOperation } from '../adspend/advertising.provider.service.js';
 import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
+import { assertWorkspaceProviderLaunchReady } from '../provider-control/provider.service.js';
 import {
   assistantActionInputSchema,
   type AssistantActionInput,
@@ -95,6 +96,27 @@ function emailAddresses(value: unknown) {
     const name = textValue(next.name) || null;
     return [{ address, ...(name ? { name } : {}) }];
   });
+}
+
+async function assertAssistantProviderReadiness(workspaceId: string, action: AssistantPendingAction) {
+  const payload = objectValue(action.payload);
+  let provider: string | null = null;
+  let reason = 'This assistant action requires a verified provider connection.';
+  if (action.type === 'google_reviews.reply') {
+    provider = 'google_business';
+    reason = 'Google review replies require a verified Google Business provider.';
+  } else if (action.type === 'omnichannel.send_message') {
+    provider = textValue(payload.provider, 80) || null;
+    reason = 'Omnichannel messages require the connected provider selected for the conversation.';
+  } else if (action.type === 'advertising.create_optimization') {
+    provider = textValue(payload.provider, 80) || 'google-ads';
+    reason = 'Advertising actions require a verified advertising provider.';
+  } else if (action.type === 'website.publish_job') {
+    provider = textValue(payload.provider, 80) || 'lulu_managed_website';
+    reason = 'Managed website publishing requires a verified Lulu website provider.';
+  }
+  if (provider) await assertWorkspaceProviderLaunchReady(workspaceId, provider, reason);
+  else if (action.type === 'omnichannel.send_message') await assertWorkspaceProviderLaunchReady(workspaceId, null, reason);
 }
 
 function resultResourceType(type: string): ResourceType | null {
@@ -277,6 +299,7 @@ async function executeStoredAction(row: AssistantActionRow) {
   )).rows[0];
   if (!claimed) return publicAction((await loadAction(current.workspaceId, current.id))!);
   try {
+    await assertAssistantProviderReadiness(claimed.workspaceId, publicAction(claimed));
     const result = await executeAssistantActionImplementation(claimed.workspaceId, claimed.requestedBy, publicAction(claimed));
     const completed = (await query<AssistantActionRow>(
       `UPDATE assistant_action_requests SET status='succeeded',result=$2::jsonb,completed_at=NOW() WHERE id=$1 AND status='executing' RETURNING ${actionSelect}`,
@@ -286,12 +309,14 @@ async function executeStoredAction(row: AssistantActionRow) {
     return publicAction(completed);
   } catch (error) {
     logger.error({ error, workspaceId: claimed.workspaceId, actionId: claimed.id, actionType: claimed.type }, 'Assistant action execution failed');
-    const message = 'The assistant action could not be completed.';
+    const appError = error instanceof AppError ? error : null;
+    const code = appError?.code ?? 'ASSISTANT_ACTION_EXECUTION_FAILED';
+    const message = appError?.message?.slice(0, 2000) || 'The assistant action could not be completed.';
     const failed = (await query<AssistantActionRow>(
-      `UPDATE assistant_action_requests SET status='failed',error_code='ASSISTANT_ACTION_EXECUTION_FAILED',error_message=$2,completed_at=NOW() WHERE id=$1 RETURNING ${actionSelect}`,
-      [claimed.id, message.slice(0, 2000)],
+      `UPDATE assistant_action_requests SET status='failed',error_code=$2,error_message=$3,completed_at=NOW() WHERE id=$1 RETURNING ${actionSelect}`,
+      [claimed.id, code, message],
     )).rows[0]!;
-    throw Object.assign(new AppError(502, 'ASSISTANT_ACTION_EXECUTION_FAILED', message), { action: publicAction(failed) });
+    throw Object.assign(new AppError(appError?.status ?? 502, code, message), { action: publicAction(failed) });
   }
 }
 

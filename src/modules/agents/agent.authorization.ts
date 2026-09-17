@@ -13,6 +13,8 @@ import type { AgentExecutionCommand } from './agent.execution-command.js';
 import type { WorkspaceRecord } from '../records/record.repo.js';
 import { assertAdBudgetAuthorization } from '../adspend/adspend.repo.js';
 import { requiredCapabilitiesForAgentCommands } from './agent.command-capabilities.js';
+import { providerRequirementForAgentCommand } from './agent.provider-requirements.js';
+import { assertWorkspaceProviderLaunchReady } from '../provider-control/provider.service.js';
 
 export type AgentExecutionIdentity = {workspaceId:string;userId:string;runId:string;stepId:string};
 type AgentIdentityState = {
@@ -186,6 +188,14 @@ async function assertCommandCapabilities(
   return required;
 }
 
+async function assertCommandProviderReadiness(workspaceId: string, commands: readonly AgentExecutionCommand[]) {
+  for (const command of commands) {
+    const requirement = providerRequirementForAgentCommand(command);
+    if (!requirement.required) continue;
+    await assertWorkspaceProviderLaunchReady(workspaceId, requirement.providerKey, requirement.reason);
+  }
+}
+
 export async function registerAgentActionPacket(context:AgentExecutionIdentity,record:WorkspaceRecord,commands:AgentExecutionCommand[]) {
   const state=await authorizeAgentIdentity(context,true);
   if(state.tool_name!=='page_action_writeback' || record.workspaceId!==context.workspaceId || record.createdBy!==context.userId) return deny(context,'packet_identity_mismatch');
@@ -193,6 +203,7 @@ export async function registerAgentActionPacket(context:AgentExecutionIdentity,r
   const policies=commands.map((command,index)=>packetPolicy(command,state,verifiedBudgets[index]??false));
   if(!commands.length || policies.some(policy=>policy.decision==='forbidden')) return deny(context,'prohibited_command');
   const requiredCapabilities = await assertCommandCapabilities(context, state, commands);
+  await assertCommandProviderReadiness(context.workspaceId, commands);
   const digest=packetDigest(record);
   if(policies.some(policy=>policy.decision==='require_budget')) return deny(context,'customer_budget_must_be_funded');
   await withTransaction(async client=>{
@@ -234,6 +245,7 @@ export async function executeAuthorizedAgentPacket<T>(record:WorkspaceRecord,com
   if(!commands.length) return deny(context,'prohibited_command');
   await assertCommandCapabilities(context, state, commands);
   const verifiedBudgets=await Promise.all(commands.map(command=>verifyCommandBudget(record.workspaceId,command)));
+  await assertCommandProviderReadiness(record.workspaceId, commands);
   const policies=commands.map((command,index)=>packetPolicy(command,state,verifiedBudgets[index]??false));
   if(policies.some(policy=>policy.decision==='forbidden')) return deny(context,'prohibited_command');
   if(policies.some(policy=>policy.decision==='require_budget')) {

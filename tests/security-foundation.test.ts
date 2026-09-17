@@ -425,6 +425,13 @@ describe('deterministic agent execution authorization',()=>{
   });
   it('executes external packets without approval when the stored run mode is autonomous',async()=>{
     const f=await agentFixture('google_reviews.reply');
+    const connection=(await db.query<{id:string}>(`INSERT INTO provider_connections(
+      scope_type,workspace_id,provider_key,mode,status,authorization_state,external_account_id,
+      granted_scopes,health_status,health_reason,last_verified_at,last_success_at
+    ) VALUES('WORKSPACE',$1,'google_business','CUSTOMER_OWNED','CONNECTED','AUTHORIZED','test-gbp',ARRAY['business.manage'],'HEALTHY','test',NOW(),NOW()) RETURNING id`,[f.context.workspaceId])).rows[0]!;
+    await db.query(`INSERT INTO provider_contract_checks(
+      workspace_id,provider_connection_id,provider_key,status,phase_results,capabilities,finished_at,created_by
+    ) VALUES($1,$2,'google_business','PASSED','{}'::jsonb,'[{"capabilityKey":"google_business.reviews.reply","status":"AVAILABLE"}]'::jsonb,NOW(),$3)`,[f.context.workspaceId,connection.id,f.user.id]);
     f.record.data={...f.record.data,executionMode:'autonomous'};
     const packet=await agentAuth.registerAgentActionPacket(f.context,f.record,[f.command]);
     assert.equal(packet.approvalId,null);

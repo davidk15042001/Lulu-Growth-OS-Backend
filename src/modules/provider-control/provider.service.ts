@@ -348,6 +348,35 @@ export async function getWorkspaceProviderLaunchReadiness(workspaceId: string) {
   };
 }
 
+const PROVIDER_REQUIREMENT_ALIASES: Record<string, string[]> = {
+  email: ['gmail', 'microsoft_email', 'imap_smtp'],
+  website: ['lulu_managed_website'],
+  whatsapp: ['whatsapp', 'unifyport'],
+};
+
+/**
+ * Fail-closed gate used immediately before an autonomous external side
+ * effect. A configured connection is not enough: it must have current
+ * authorization, healthy state, passing contract evidence, available
+ * capabilities, and no failed synchronization.
+ */
+export async function assertWorkspaceProviderLaunchReady(workspaceId: string, requestedProviderKey: string | null, reason = 'This action requires a verified provider connection.') {
+  const requested = requestedProviderKey?.trim().toLowerCase() ?? '';
+  if (!requested) throw providerError('PROVIDER_REQUIRED_FOR_AUTONOMOUS_ACTION', reason, undefined, 409);
+  const candidates = PROVIDER_REQUIREMENT_ALIASES[requested] ?? [canonicalProviderKey(requested)];
+  const readiness = await getWorkspaceProviderLaunchReadiness(workspaceId);
+  const matching = readiness.connections.filter((connection) => candidates.includes(canonicalProviderKey(connection.providerKey)));
+  const ready = matching.find((connection) => connection.ready);
+  if (ready) return ready;
+  if (!matching.length) {
+    throw providerError('PROVIDER_CONNECTION_REQUIRED', `${reason} No ${requested} connection is configured for this workspace.`, { providerKey: requested, candidates }, 409);
+  }
+  throw providerError('PROVIDER_NOT_READY_FOR_AUTONOMOUS_EXECUTION', `${reason} The ${requested} connection is not ready for autonomous execution.`, {
+    providerKey: requested,
+    blockers: matching.flatMap((connection) => connection.blockers.slice(0, 8).map((blocker) => ({ providerKey: connection.providerKey, ...blocker }))).slice(0, 16),
+  }, 409);
+}
+
 export async function changeWorkspaceProviderMode(workspaceId: string, connectionId: string, actorId: string, mode: ProviderMode) {
   await assertWorkspaceCapability({ workspaceId, userId: actorId, capability: 'providers.manage' });
   const connection = await repo.getProviderConnection(workspaceId, connectionId);

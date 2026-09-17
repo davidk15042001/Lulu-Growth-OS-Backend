@@ -5,8 +5,26 @@ import {
   normalizeAgentExecutionCommands,
 } from '../src/modules/agents/agent.execution-command.js';
 import { normalizedCommandsForRecord } from '../src/modules/agents/agent-execution.worker.js';
+import { providerRequirementForAgentCommand } from '../src/modules/agents/agent.provider-requirements.js';
 
 describe('agent execution commands', () => {
+  it('requires a verified provider for external side effects but not canonical internal writes', () => {
+    assert.deepEqual(providerRequirementForAgentCommand({ type: 'crm.create_followup_task', provider: null, payload: {} }), {
+      required: false,
+      providerKey: null,
+      reason: 'This command operates on canonical Lulu data and has no external provider target.',
+    });
+    assert.deepEqual(providerRequirementForAgentCommand({ type: 'omnichannel.send_message', provider: null, payload: {} }), {
+      required: true,
+      providerKey: null,
+      reason: 'This external action requires a connected provider selected for the target.',
+    });
+    assert.deepEqual(providerRequirementForAgentCommand({ type: 'google_reviews.reply', provider: null, payload: {} }), {
+      required: true,
+      providerKey: 'google_business',
+      reason: 'Google review replies require a verified Google Business provider.',
+    });
+  });
   it('registers company intelligence enrichment as an autonomous CRM command', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'crm.company.enrich',
