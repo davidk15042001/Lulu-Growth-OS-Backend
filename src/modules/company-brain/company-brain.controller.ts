@@ -8,6 +8,10 @@ export async function overview(req: WorkspaceRequest, res: Response, next: NextF
   try { const { workspaceId } = brainWorkspaceParamsSchema.parse(req.params); const { limit } = brainListQuerySchema.parse(req.query); return successResponse(res, 'Company Brain overview loaded', await service.overview(workspaceId, limit)); } catch (error) { next(error); }
 }
 
+export async function scorecard(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { const { workspaceId } = brainWorkspaceParamsSchema.parse(req.params); return successResponse(res, 'Market leadership scorecard loaded', await service.scorecard(workspaceId)); } catch (error) { next(error); }
+}
+
 export async function signals(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try { const { workspaceId } = brainWorkspaceParamsSchema.parse(req.params); const input = brainListQuerySchema.parse(req.query); return successResponse(res, 'Company Brain signals loaded', { items: await service.listSignals(workspaceId, input.limit, input.status) }); } catch (error) { next(error); }
 }

@@ -8,6 +8,7 @@ const read = requireWorkspaceCapability('agents.read', { enforceWriteEntitlement
 const manage = requireWorkspaceCapability('agents.manage');
 
 router.route('/overview').get(read, controller.overview).all(methodNotAllowed);
+router.route('/scorecard').get(read, controller.scorecard).all(methodNotAllowed);
 router.route('/signals').get(read, controller.signals).all(methodNotAllowed);
 router.route('/missions').get(read, controller.missions).post(manage, controller.createMission).all(methodNotAllowed);
 router.route('/missions/:missionId').patch(manage, controller.updateMission).all(methodNotAllowed);

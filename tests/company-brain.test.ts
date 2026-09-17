@@ -9,6 +9,7 @@ process.env.JWT_SECRET = 'company-brain-tests-secret-0123456789';
 
 const { pool } = await import('../src/db/pool.js');
 const brain = await import('../src/modules/company-brain/company-brain.repo.js');
+const brainService = await import('../src/modules/company-brain/company-brain.service.js');
 const brainWorker = await import('../src/modules/company-brain/company-brain.worker.js');
 const db = new PGlite();
 let workspaceId: string;
@@ -279,4 +280,25 @@ test('wakes the task dispatcher when a predecessor changes state', () => {
     'brain.task.updated',
     'brain.mission.updated',
   ]);
+});
+
+test('builds a market leadership scorecard from verified workspace metrics without inventing scores', async () => {
+  const metricId = (await db.query<{ id: string }>(`INSERT INTO metric_definitions
+    (workspace_id,key,name,domain,unit,source)
+    VALUES($1,'customer_retention','Customer retention','customer','percent','test') RETURNING id`, [workspaceId])).rows[0]!.id;
+  await db.query(`INSERT INTO metric_points(metric_id,recorded_at,value,dimensions)
+    VALUES($1,NOW(),72.5,'{}'::jsonb)`, [metricId]);
+  await db.query(`INSERT INTO metric_definitions
+    (workspace_id,key,name,domain,unit,source)
+    VALUES($1,'gross_margin','Gross margin','economics','percent','test')`, [workspaceId]);
+
+  const scorecard = await brainService.scorecard(workspaceId);
+  assert.equal(scorecard.northStar, 'Become the number-one autonomous business operating system in the market.');
+  assert.equal(scorecard.totals.metricCount, 2);
+  assert.equal(scorecard.totals.measuredCount, 1);
+  assert.equal(scorecard.totals.unavailableCount, 1);
+  assert.equal(scorecard.categories.find((category) => category.key === 'customer')?.status, 'measured');
+  assert.equal(scorecard.categories.find((category) => category.key === 'economics')?.status, 'defined');
+  assert.equal(scorecard.categories.find((category) => category.key === 'customer')?.metrics[0]?.value, '72.50000000');
+  assert.equal(scorecard.categories.find((category) => category.key === 'economics')?.metrics[0]?.evidenceStatus, 'unavailable');
 });
