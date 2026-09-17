@@ -430,6 +430,11 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         ...(context.recipientId ? { recipientId: context.recipientId } : {}),
         ...(context.recipientType ? { recipientType: context.recipientType } : {}),
       },
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`conversation:${context.conversationId}`, 'message_text'],
+        limitations: [],
+      },
       idempotencyKey: buildIdempotencyKey([
         'omnichannel.send_message',
         context.conversationId,
