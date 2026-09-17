@@ -28,6 +28,11 @@ export async function list(req: WorkspaceRequest, res: Response, next: NextFunct
   catch (error) { next(error); }
 }
 
+export async function launchReadiness(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try { return successResponse(res, 'Provider production readiness loaded', await service.getWorkspaceProviderLaunchReadiness(workspaceId(req))); }
+  catch (error) { next(error); }
+}
+
 export async function detail(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { connectionId } = connectionParamsSchema.parse(req.params);

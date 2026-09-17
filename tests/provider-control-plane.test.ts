@@ -48,6 +48,31 @@ describe('Provider Control Plane', () => {
     assert.equal(providerService.classifyProviderContract({ verification: { status: 'PASSED' } }, [{ status: 'UNCONFIRMED' }]), 'PARTIAL');
   });
 
+  it('exposes a truthful production gate instead of treating connection state as readiness', () => {
+    const connection = {
+      id: crypto.randomUUID(), scopeType: 'WORKSPACE', providerKey: 'google_business', displayName: 'Google Business',
+      status: 'CONNECTED', authorizationState: 'AUTHORIZED', healthStatus: 'HEALTHY', healthReason: null,
+      capabilities: [{ status: 'AVAILABLE', capabilityKey: 'google_business.locations.read' }], syncStates: [],
+    } as unknown as Parameters<typeof providerService.evaluateProviderLaunchReadiness>[0];
+    const unverified = providerService.evaluateProviderLaunchReadiness(connection);
+    assert.equal(unverified.status, 'UNVERIFIED');
+    assert.equal(unverified.ready, false);
+    assert.ok(unverified.blockers.some((blocker) => blocker.code === 'CONTRACT_CHECK_NOT_RUN'));
+
+    const check = {
+      id: crypto.randomUUID(), workspaceId: crypto.randomUUID(), providerConnectionId: connection.id, providerKey: connection.providerKey,
+      status: 'PASSED', phaseResults: {}, capabilities: [{ capabilityKey: 'google_business.locations.read', status: 'AVAILABLE' }],
+      errorCode: null, errorMessage: null, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), createdBy: null, createdAt: new Date().toISOString(),
+    } as Parameters<typeof providerService.evaluateProviderLaunchReadiness>[1];
+    const ready = providerService.evaluateProviderLaunchReadiness(connection, check);
+    assert.equal(ready.status, 'READY');
+    assert.equal(ready.ready, true);
+
+    const pending = providerService.evaluateProviderLaunchReadiness(connection, { ...check, finishedAt: null } as unknown as Parameters<typeof providerService.evaluateProviderLaunchReadiness>[1]);
+    assert.equal(pending.status, 'PENDING');
+    assert.equal(pending.ready, false);
+  });
+
   it('exposes runtime adapter readiness separately from the broad provider catalog', async () => {
     const catalog = await providerService.listProviderCatalog();
     const googleBusiness = catalog.find((entry) => entry.providerKey === 'google_business');
@@ -122,6 +147,10 @@ describe('Provider Control Plane', () => {
     const visible = await providerService.listWorkspaceProviders(f.a);
     assert.equal(visible.length, 1);
     assert.deepEqual(visible[0]?.accounts[0]?.metadata, { accessToken: '[REDACTED]', nested: { refreshToken: '[REDACTED]' } });
+    const readiness = await providerService.getWorkspaceProviderLaunchReadiness(f.a);
+    assert.equal(readiness.totalConnections, 1);
+    assert.equal(readiness.connections[0]?.status, 'UNVERIFIED');
+    assert.equal((await providerService.getWorkspaceProviderLaunchReadiness(f.b)).totalConnections, 0);
     await assert.rejects(providerService.getWorkspaceProvider(f.b, f.connection), { code: 'PROVIDER_CONNECTION_NOT_FOUND' });
     await assert.rejects(providerService.createWorkspaceProviderMapping({ workspaceId: f.b, actorId: f.outsider, providerConnectionId: f.connection, providerAccountId: f.account, providerAssetId: f.asset, luluObjectType: 'product', luluObjectId: crypto.randomUUID(), externalObjectType: 'location', externalObjectId: 'loc-2', sourceOfTruth: 'LULU_MASTER' }), { code: 'PROVIDER_TENANT_SCOPE_MISMATCH' });
   });

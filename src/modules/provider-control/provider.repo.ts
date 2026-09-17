@@ -638,6 +638,28 @@ export async function listProviderContractChecks(workspaceId: string, connection
   return rows.map(mapProviderContractCheck);
 }
 
+/** Returns the most recent persisted contract evidence for every connection
+ * visible to a workspace.  The query is intentionally scoped by workspace so
+ * a shared/platform connection can never leak another tenant's check history.
+ */
+export async function listLatestProviderContractChecks(workspaceId: string, connectionIds: string[]) {
+  if (connectionIds.length === 0) return new Map<string, ProviderContractCheck>();
+  const { rows } = await query<Record<string, unknown>>(
+    `SELECT DISTINCT ON (provider_connection_id)
+       id, workspace_id AS "workspaceId", provider_connection_id AS "providerConnectionId", provider_key AS "providerKey",
+       status, phase_results AS "phaseResults", capabilities, error_code AS "errorCode", error_message AS "errorMessage",
+       started_at AS "startedAt", finished_at AS "finishedAt", created_by AS "createdBy", created_at AS "createdAt"
+      FROM provider_contract_checks
+     WHERE workspace_id=$1 AND provider_connection_id = ANY($2::uuid[])
+     ORDER BY provider_connection_id, created_at DESC`,
+    [workspaceId, connectionIds],
+  );
+  return new Map(rows.map((row) => {
+    const check = mapProviderContractCheck(row);
+    return [check.providerConnectionId, check] as const;
+  }));
+}
+
 /** Persist the provider-owned account/location graph discovered by a real
  * adapter. The operation is an idempotent snapshot: rows returned by the
  * provider are upserted and rows that disappeared from a successful snapshot

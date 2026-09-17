@@ -18,6 +18,10 @@ workspaceProviderRoutes.route('/mappings')
   .post(requireWorkspaceAdmin, controller.createMapping)
   .all(methodNotAllowed);
 
+workspaceProviderRoutes.route('/launch-readiness')
+  .get(requireWorkspaceMember, controller.launchReadiness)
+  .all(methodNotAllowed);
+
 workspaceProviderRoutes.route('/:connectionId')
   .get(requireWorkspaceMember, controller.detail)
   .delete(requireWorkspaceAdmin, controller.disconnect)

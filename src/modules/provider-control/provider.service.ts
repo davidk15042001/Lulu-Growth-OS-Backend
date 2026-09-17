@@ -241,6 +241,113 @@ export async function listWorkspaceProviderContractChecks(workspaceId: string, c
   return repo.listProviderContractChecks(workspaceId, connectionId, limit);
 }
 
+export type ProviderLaunchReadinessBlocker = {
+  code: string;
+  message: string;
+};
+
+export type ProviderLaunchReadinessConnection = {
+  connectionId: string;
+  providerKey: string;
+  displayName: string;
+  scopeType: repo.ProviderConnection['scopeType'];
+  status: 'READY' | 'PENDING' | 'BLOCKED' | 'UNVERIFIED';
+  ready: boolean;
+  blockers: ProviderLaunchReadinessBlocker[];
+  evidence: {
+    connectionStatus: string;
+    authorizationState: string;
+    healthStatus: string;
+    latestContractCheck: 'PASSED' | 'PARTIAL' | 'FAILED' | 'RUNNING' | 'NOT_RUN';
+    contractCheckedAt: string | null;
+    sync: Array<{
+      syncType: string;
+      status: string;
+      lastSuccessAt: string | null;
+      lastAttemptAt: string | null;
+      lastError: string | null;
+    }>;
+  };
+};
+
+/**
+ * Converts persisted provider state into an explicit production gate.  This
+ * is intentionally pure so the same rules can be tested without a database
+ * and so the UI can never mistake a merely configured connection for one that
+ * is safe for autonomous execution.
+ */
+export function evaluateProviderLaunchReadiness(
+  connection: repo.ProviderConnection,
+  latestContractCheck?: repo.ProviderContractCheck,
+): ProviderLaunchReadinessConnection {
+  const blockers: ProviderLaunchReadinessBlocker[] = [];
+  const runtime = getProviderRuntimeReadiness(connection.providerKey);
+  if (!runtime.adapterRegistered) blockers.push({ code: 'ADAPTER_NOT_REGISTERED', message: 'No executable provider adapter is registered for this connection.' });
+  if (connection.status !== 'CONNECTED') blockers.push({ code: 'CONNECTION_NOT_CONNECTED', message: `Connection status is ${connection.status.toLowerCase().replaceAll('_', ' ')}.` });
+  if (connection.authorizationState !== 'AUTHORIZED') blockers.push({ code: 'AUTHORIZATION_REQUIRED', message: 'Provider authorization is not confirmed.' });
+  if (connection.healthStatus !== 'HEALTHY') blockers.push({ code: 'HEALTH_NOT_CONFIRMED', message: connection.healthReason ?? `Provider health is ${connection.healthStatus.toLowerCase().replaceAll('_', ' ')}.` });
+  let contractEvidence: ProviderLaunchReadinessConnection['evidence']['latestContractCheck'] = 'NOT_RUN';
+  if (!latestContractCheck) {
+    blockers.push({ code: 'CONTRACT_CHECK_NOT_RUN', message: 'Run a provider readiness check before enabling autonomous work.' });
+  } else if (!latestContractCheck.finishedAt) {
+    contractEvidence = 'RUNNING';
+    blockers.push({ code: 'CONTRACT_CHECK_RUNNING', message: 'The provider readiness check is still running.' });
+  } else if (latestContractCheck.status !== 'PASSED') {
+    contractEvidence = latestContractCheck.status;
+    blockers.push({ code: 'CONTRACT_CHECK_FAILED', message: latestContractCheck.errorMessage ?? `The readiness check finished with status ${latestContractCheck.status.toLowerCase()}.` });
+  } else {
+    contractEvidence = 'PASSED';
+  }
+
+  for (const capability of connection.capabilities) {
+    if (capability.status !== 'AVAILABLE') blockers.push({ code: `CAPABILITY_${capability.status}`, message: `${capability.capabilityKey} is ${capability.status.toLowerCase().replaceAll('_', ' ')}.` });
+  }
+
+  const sync = connection.syncStates.map((state) => ({ syncType: state.syncType, status: state.status, lastSuccessAt: state.lastSuccessAt, lastAttemptAt: state.lastAttemptAt, lastError: state.lastError }));
+  const pendingSync = connection.syncStates.some((state) => state.status === 'RUNNING');
+  const failedSync = connection.syncStates.filter((state) => ['FAILED', 'PAUSED', 'PARTIAL'].includes(state.status));
+  if (pendingSync) blockers.push({ code: 'SYNC_RUNNING', message: 'A provider synchronization is still running.' });
+  for (const state of failedSync) blockers.push({ code: 'SYNC_NOT_HEALTHY', message: `${state.syncType} synchronization is ${state.status.toLowerCase()}.${state.lastError ? ` ${state.lastError}` : ''}` });
+
+  const ready = blockers.length === 0;
+  const status: ProviderLaunchReadinessConnection['status'] = ready
+    ? 'READY'
+    : blockers.some((blocker) => ['CONTRACT_CHECK_RUNNING', 'SYNC_RUNNING'].includes(blocker.code)) && !blockers.some((blocker) => blocker.code !== 'CONTRACT_CHECK_RUNNING' && blocker.code !== 'SYNC_RUNNING')
+      ? 'PENDING'
+      : latestContractCheck ? 'BLOCKED' : 'UNVERIFIED';
+  return {
+    connectionId: connection.id,
+    providerKey: connection.providerKey,
+    displayName: connection.displayName,
+    scopeType: connection.scopeType,
+    status,
+    ready,
+    blockers,
+    evidence: {
+      connectionStatus: connection.status,
+      authorizationState: connection.authorizationState,
+      healthStatus: connection.healthStatus,
+      latestContractCheck: contractEvidence,
+      contractCheckedAt: latestContractCheck?.finishedAt ?? null,
+      sync,
+    },
+  };
+}
+
+export async function getWorkspaceProviderLaunchReadiness(workspaceId: string) {
+  const connections = await listWorkspaceProviders(workspaceId);
+  const checks = await repo.listLatestProviderContractChecks(workspaceId, connections.map((connection) => connection.id));
+  const evaluated = connections.map((connection) => evaluateProviderLaunchReadiness(connection, checks.get(connection.id)));
+  const readyCount = evaluated.filter((connection) => connection.ready).length;
+  return {
+    checkedAt: new Date().toISOString(),
+    overallReady: evaluated.length > 0 && readyCount === evaluated.length,
+    readyCount,
+    totalConnections: evaluated.length,
+    connections: evaluated,
+  };
+}
+
 export async function changeWorkspaceProviderMode(workspaceId: string, connectionId: string, actorId: string, mode: ProviderMode) {
   await assertWorkspaceCapability({ workspaceId, userId: actorId, capability: 'providers.manage' });
   const connection = await repo.getProviderConnection(workspaceId, connectionId);
