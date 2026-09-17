@@ -40,7 +40,7 @@ export class FacebookMessengerAdapter implements ProviderAdapter {
           AND ch.provider='twilio'
           AND ch.status='ACTIVE'
           AND ci.status='ACTIVE'
-          AND ($1::uuid IS NULL OR ci.workspace_id=$1::uuid OR ci.workspace_id IS NULL)
+          AND (($1::uuid IS NULL AND ci.workspace_id IS NULL) OR ci.workspace_id=$1::uuid)
           AND ($2::text IS NULL OR lower(ci.external_identity_id)=lower($2))
         ORDER BY CASE WHEN ci.workspace_id=$1::uuid THEN 0 ELSE 1 END, ci.updated_at DESC
         LIMIT 1`,
