@@ -114,6 +114,11 @@ const agentSettingsSchema = z.object({
   cadenceMinutes: z.number().int().min(15).max(1440).optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, 'At least one agent setting must be provided');
 
+// Dedicated schema for the member-facing execution switch. Keeping this
+// separate from the broader settings payload prevents a UI toggle from ever
+// being interpreted as a request to mutate sales or billing configuration.
+export const updateAgentSettingsSchema = agentSettingsSchema;
+
 export const updateWorkspaceSettingsSchema = z.object({
   sales: salesSettingsSchema.optional(),
   agents: agentSettingsSchema.optional(),

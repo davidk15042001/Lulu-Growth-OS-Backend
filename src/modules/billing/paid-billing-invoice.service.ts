@@ -370,7 +370,14 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
     `SELECT 'AI_CREDITS'::text AS kind, t.id::text AS "referenceId", t.workspace_id AS "workspaceId",
             COALESCE(t.paid_at,t.credited_at,t.created_at) AS "occurredAt"
        FROM workspace_api_topups t
-      WHERE t.status='SUCCEEDED' AND t.credited_at IS NOT NULL
+      -- Older Airwallex webhook/import paths used PAID, COMPLETED or
+      -- CONFIRMED in one of the status columns. A credited wallet is the
+      -- non-negotiable proof that the customer balance was actually funded;
+      -- accept all provider-success aliases so historical paid top-ups are
+      -- not stranded without a Lulu invoice.
+      WHERE t.credited_at IS NOT NULL
+        AND (UPPER(COALESCE(t.status,'')) IN ('SUCCEEDED','PAID','COMPLETED','CONFIRMED')
+          OR UPPER(COALESCE(t.payment_status,'')) IN ('SUCCEEDED','PAID','COMPLETED','CONFIRMED'))
         AND NOT EXISTS (
           SELECT 1
             FROM commercial_document_operations o
@@ -385,7 +392,9 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
      SELECT 'AD_SPEND'::text, t.id::text, t.workspace_id,
             COALESCE(t.paid_at,t.credited_at,t.created_at)
        FROM workspace_ad_spend_topups t
-      WHERE t.status='SUCCEEDED' AND t.credited_at IS NOT NULL
+      WHERE t.credited_at IS NOT NULL
+        AND (UPPER(COALESCE(t.status,'')) IN ('SUCCEEDED','PAID','COMPLETED','CONFIRMED')
+          OR UPPER(COALESCE(t.payment_status,'')) IN ('SUCCEEDED','PAID','COMPLETED','CONFIRMED'))
         AND NOT EXISTS (
           SELECT 1
             FROM commercial_document_operations o
@@ -400,7 +409,8 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
      SELECT 'STORAGE'::text, p.id::text, p.workspace_id,
             COALESCE(p.paid_at,p.finalized_at,p.created_at)
        FROM workspace_payg_periods p
-      WHERE p.status='paid' AND p.server_cost_usd > 0
+      WHERE UPPER(COALESCE(p.status,'')) IN ('PAID','SUCCEEDED','COMPLETED','CONFIRMED')
+        AND p.server_cost_usd > 0
         AND NOT EXISTS (
           SELECT 1
             FROM commercial_document_operations o

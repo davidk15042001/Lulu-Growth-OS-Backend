@@ -21,6 +21,7 @@ import {
   listUsageQuerySchema,
   paygQrPaymentParamsSchema,
   updateGoogleReviewReplySchema,
+  updateAgentSettingsSchema,
   updateMemberSchema,
   updateSavedViewSchema,
   updateWorkspaceSettingsSchema,
@@ -290,6 +291,22 @@ export async function settings(req: WorkspaceRequest, res: Response, next: NextF
       return successResponse(res, 'Workspace settings loaded', await service.getWorkspaceSettings(workspaceId));
     }
     return successResponse(res, 'Workspace settings updated', await service.updateWorkspaceSettings(workspaceId, req.user!.id, updateWorkspaceSettingsSchema.parse(req.body)));
+  } catch (error) { next(error); }
+}
+
+/**
+ * Member-safe execution controls. This endpoint intentionally accepts only
+ * the `agents` group so every workspace member can pause/resume autonomous
+ * work without gaining access to unrelated workspace settings.
+ */
+export async function agentSettings(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = params(req);
+    return successResponse(res, 'Agent settings updated', await service.updateWorkspaceSettings(
+      workspaceId,
+      req.user!.id,
+      { agents: updateAgentSettingsSchema.parse(req.body) },
+    ));
   } catch (error) { next(error); }
 }
 

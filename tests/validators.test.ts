@@ -11,6 +11,7 @@ import {
   createSavedViewSchema,
   inviteMemberSchema,
   updateSavedViewSchema,
+  updateAgentSettingsSchema,
   updateWorkspaceSettingsSchema,
 } from '../src/modules/workspace-app/workspace-app.validator.js';
 
@@ -96,5 +97,7 @@ describe('request validators', () => {
     assert.equal(updateWorkspaceSettingsSchema.parse({ agents: { paused: true } }).agents?.paused, true);
     assert.equal(updateWorkspaceSettingsSchema.safeParse({ agents: { cadenceMinutes: 10 } }).success, false);
     assert.equal(updateWorkspaceSettingsSchema.safeParse({ agents: {} }).success, false);
+    assert.deepEqual(updateAgentSettingsSchema.parse({ paused: true }), { paused: true });
+    assert.equal(updateAgentSettingsSchema.safeParse({ sales: { moduleName: 'not-allowed' } }).success, false);
   });
 });

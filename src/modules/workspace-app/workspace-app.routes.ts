@@ -93,6 +93,10 @@ router.route('/settings')
   .patch(requireWorkspaceSettingsMutation, controller.settings)
   .all(methodNotAllowed);
 
+router.route('/settings/agents')
+  .patch(requireWorkspaceMember, controller.agentSettings)
+  .all(methodNotAllowed);
+
 router.route('/billing')
   .get(requireWorkspaceMember, controller.billing)
   .post(requireWorkspaceAdmin, controller.createBillingCheckout)
