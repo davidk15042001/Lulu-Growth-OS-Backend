@@ -78,6 +78,10 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   assert.equal(first?.signal.signalType, 'execution_failure');
   assert.equal(first?.signal.status, 'OPEN');
   assert.equal(first?.mission?.mission.signalId, first?.signal.id);
+  assert.equal(
+    first?.mission?.mission.northStar,
+    'Continuously build a trusted global brand at maximum sustainable speed and make the company the number-one choice in its category worldwide.',
+  );
 
   const mission = await brain.createMissionFromSignal({
     workspaceId,
