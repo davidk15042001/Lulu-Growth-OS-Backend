@@ -67,6 +67,14 @@ type AgentSnapshotInput = {
   customerId?: unknown;
   companyId?: unknown;
   domainId?: unknown;
+  socialAccountId?: unknown;
+  contentType?: unknown;
+  contentMessage?: unknown;
+  contentLinkUrl?: unknown;
+  contentMediaUrl?: unknown;
+  contentAltText?: unknown;
+  scheduledAt?: unknown;
+  maxAttempts?: unknown;
   delegatedContext?: unknown;
   noActionReason?: unknown;
 };
@@ -707,6 +715,14 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     customerId: compactText(input.customerId, 120) || null,
     companyId: compactText(input.companyId, 120) || null,
     domainId: compactText(input.domainId, 120) || null,
+    socialAccountId: compactText(input.socialAccountId, 120) || null,
+    contentType: input.contentType === 'TEXT' || input.contentType === 'LINK' || input.contentType === 'IMAGE' ? input.contentType : null,
+    contentMessage: compactText(input.contentMessage, 63_206) || null,
+    contentLinkUrl: compactText(input.contentLinkUrl, 2_048) || null,
+    contentMediaUrl: compactText(input.contentMediaUrl, 2_048) || null,
+    contentAltText: compactText(input.contentAltText, 1_000) || null,
+    scheduledAt: compactText(input.scheduledAt, 80) || null,
+    maxAttempts: typeof input.maxAttempts === 'number' && Number.isInteger(input.maxAttempts) ? input.maxAttempts : null,
   });
   const customerBudgetCommands = normalizedCommands.filter(
     (command) => command.budgetAuthority === 'customer_authorization_required',

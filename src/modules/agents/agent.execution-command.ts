@@ -108,6 +108,14 @@ type InferCommandContext = {
   companyId?: string | null;
   domainId?: string | null;
   sourceText?: string | null;
+  socialAccountId?: string | null;
+  contentType?: 'TEXT' | 'LINK' | 'IMAGE' | null;
+  contentMessage?: string | null;
+  contentLinkUrl?: string | null;
+  contentMediaUrl?: string | null;
+  contentAltText?: string | null;
+  scheduledAt?: string | null;
+  maxAttempts?: number | null;
 };
 
 const agentExecutionCommandSchema = z.object({
@@ -558,6 +566,41 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         'ecommerce.generate_product_images',
         context.pageId,
         context.sourceText.slice(0, 400),
+      ]),
+    };
+  }
+
+  if (context.targetSystem === 'marketing' && context.socialAccountId && context.contentType && context.contentMessage) {
+    return {
+      type: 'social.content.publish',
+      summary,
+      targetSystem: 'marketing',
+      provider: textValue(context.provider, 80) || null,
+      riskLevel: 'high',
+      approvalPolicy: 'allow',
+      targetEntityType: 'social_publication',
+      targetEntityId: context.socialAccountId,
+      payload: {
+        socialAccountId: context.socialAccountId,
+        contentType: context.contentType,
+        message: textValue(context.contentMessage, 63_206),
+        ...(context.contentLinkUrl ? { linkUrl: textValue(context.contentLinkUrl, 2_048) } : {}),
+        ...(context.contentMediaUrl ? { mediaUrl: textValue(context.contentMediaUrl, 2_048) } : {}),
+        ...(context.contentAltText ? { altText: textValue(context.contentAltText, 1_000) } : {}),
+        ...(context.scheduledAt ? { scheduledAt: context.scheduledAt } : {}),
+        ...(context.maxAttempts ? { maxAttempts: context.maxAttempts } : {}),
+      },
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`social_account:${context.socialAccountId}`, ...(context.pageId ? [`page:${context.pageId}`] : [])],
+        limitations: [],
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'social.content.publish',
+        context.socialAccountId,
+        context.contentType,
+        textValue(context.contentMessage, 400),
+        context.scheduledAt,
       ]),
     };
   }

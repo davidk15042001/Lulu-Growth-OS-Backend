@@ -416,6 +416,38 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('infers a grounded social publication from a real account and content brief', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'marketing',
+      targetSystem: 'marketing',
+      actionResourceType: 'marketing_publications',
+      pageId: 'marketing-page',
+      pageLabel: 'Marketing',
+      goal: 'Publish the verified campaign announcement',
+      jobs: ['Publish campaign announcement'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      socialAccountId: 'social-account-123',
+      contentType: 'TEXT',
+      contentMessage: 'Our verified launch announcement is now live.',
+      provider: 'facebook',
+      maxAttempts: 3,
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'social.content.publish');
+    assert.equal(command.targetSystem, 'marketing');
+    assert.equal(command.provider, 'facebook');
+    assert.equal(command.targetEntityId, 'social-account-123');
+    assert.equal(command.payload.socialAccountId, 'social-account-123');
+    assert.equal(command.payload.contentType, 'TEXT');
+    assert.equal(command.payload.message, 'Our verified launch announcement is now live.');
+    assert.equal(command.payload.maxAttempts, 3);
+    assert.equal(command.quality?.confidence, 'high');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('infers website domain verification from a site and domain context', () => {
     const [command] = normalizeAgentExecutionCommands([], {
       module: 'website',
