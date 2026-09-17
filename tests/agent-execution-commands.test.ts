@@ -21,7 +21,7 @@ describe('agent execution commands', () => {
     }], {
       module: 'crm',
       targetSystem: 'crm',
-      actionResourceType: 'crm_companies',
+      actionResourceType: 'crm_tasks',
       pageId: 'companies-page',
       pageLabel: 'Companies',
       goal: 'Enrich the verified company profile',

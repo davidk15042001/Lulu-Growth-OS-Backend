@@ -254,7 +254,7 @@ function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCom
 
 function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   const summary = defaultSummary(context);
-  if (context.targetSystem === 'crm' && context.actionResourceType === 'crm_companies' && context.companyId) {
+  if (context.targetSystem === 'crm' && context.companyId) {
     return {
       type: 'crm.company.enrich',
       summary,
