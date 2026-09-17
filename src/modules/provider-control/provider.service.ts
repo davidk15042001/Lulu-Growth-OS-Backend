@@ -285,7 +285,7 @@ export function evaluateProviderLaunchReadiness(
   if (!runtime.adapterRegistered) blockers.push({ code: 'ADAPTER_NOT_REGISTERED', message: 'No executable provider adapter is registered for this connection.' });
   if (connection.status !== 'CONNECTED') blockers.push({ code: 'CONNECTION_NOT_CONNECTED', message: `Connection status is ${connection.status.toLowerCase().replaceAll('_', ' ')}.` });
   if (connection.authorizationState !== 'AUTHORIZED') blockers.push({ code: 'AUTHORIZATION_REQUIRED', message: 'Provider authorization is not confirmed.' });
-  if (connection.healthStatus !== 'HEALTHY') blockers.push({ code: 'HEALTH_NOT_CONFIRMED', message: connection.healthReason ?? `Provider health is ${connection.healthStatus.toLowerCase().replaceAll('_', ' ')}.` });
+  if (connection.healthStatus !== 'HEALTHY') blockers.push({ code: 'HEALTH_NOT_CONFIRMED', message: contractErrorMessage(connection.healthReason ?? `Provider health is ${connection.healthStatus.toLowerCase().replaceAll('_', ' ')}.`) });
   let contractEvidence: ProviderLaunchReadinessConnection['evidence']['latestContractCheck'] = 'NOT_RUN';
   if (!latestContractCheck) {
     blockers.push({ code: 'CONTRACT_CHECK_NOT_RUN', message: 'Run a provider readiness check before enabling autonomous work.' });
@@ -294,7 +294,7 @@ export function evaluateProviderLaunchReadiness(
     blockers.push({ code: 'CONTRACT_CHECK_RUNNING', message: 'The provider readiness check is still running.' });
   } else if (latestContractCheck.status !== 'PASSED') {
     contractEvidence = latestContractCheck.status;
-    blockers.push({ code: 'CONTRACT_CHECK_FAILED', message: latestContractCheck.errorMessage ?? `The readiness check finished with status ${latestContractCheck.status.toLowerCase()}.` });
+    blockers.push({ code: 'CONTRACT_CHECK_FAILED', message: contractErrorMessage(latestContractCheck.errorMessage ?? `The readiness check finished with status ${latestContractCheck.status.toLowerCase()}.`) });
   } else {
     contractEvidence = 'PASSED';
   }
@@ -307,7 +307,7 @@ export function evaluateProviderLaunchReadiness(
   const pendingSync = connection.syncStates.some((state) => state.status === 'RUNNING');
   const failedSync = connection.syncStates.filter((state) => ['FAILED', 'PAUSED', 'PARTIAL'].includes(state.status));
   if (pendingSync) blockers.push({ code: 'SYNC_RUNNING', message: 'A provider synchronization is still running.' });
-  for (const state of failedSync) blockers.push({ code: 'SYNC_NOT_HEALTHY', message: `${state.syncType} synchronization is ${state.status.toLowerCase()}.${state.lastError ? ` ${state.lastError}` : ''}` });
+  for (const state of failedSync) blockers.push({ code: 'SYNC_NOT_HEALTHY', message: `${state.syncType} synchronization is ${state.status.toLowerCase()}.${state.lastError ? ` ${contractErrorMessage(state.lastError)}` : ''}` });
 
   const ready = blockers.length === 0;
   const status: ProviderLaunchReadinessConnection['status'] = ready
