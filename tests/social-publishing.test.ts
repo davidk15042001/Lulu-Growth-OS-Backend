@@ -137,6 +137,12 @@ function fakeMetaClient(provider: 'FACEBOOK' | 'INSTAGRAM', publish?: () => Prom
     async verifyPage() {
       return { pageId: '12345', pageName: 'Verified Page', pageAccessToken: 'page-token', instagramBusinessAccountId: provider === 'INSTAGRAM' ? '98765' : null, instagramUsername: provider === 'INSTAGRAM' ? 'verified_shop' : null, providerRequestId: 'verify-trace' };
     },
+    async verifyAdAccount() {
+      return { adAccountId: 'act_12345', name: 'Test ad account', accountStatus: 1, currency: 'CNY', providerRequestId: 'ads-verify-trace' };
+    },
+    async listAdCampaigns() {
+      return { campaigns: [], providerRequestId: 'ads-list-trace' };
+    },
     async publishFacebook() {
       if (publish) return publish();
       return { providerPublicationId: '12345_555', providerRequestId: 'publish-trace' };
@@ -155,6 +161,8 @@ describe('Meta Graph publishing client', () => {
       const url = request instanceof URL ? request : new URL(String(request));
       calls.push({ url, method: String(init?.method ?? 'GET'), authorization: new Headers(init?.headers).get('authorization') ?? '', body: init?.body ? String(init.body) : '' });
       if (url.pathname.endsWith('/12345')) return Response.json({ id: '12345', name: 'Page', access_token: 'page-access', instagram_business_account: { id: '98765', username: 'shop' } }, { headers: { 'x-fb-trace-id': 'trace-verify' } });
+      if (url.pathname.endsWith('/act_12345')) return Response.json({ id: 'act_12345', name: 'Ads', account_status: 1, currency: 'CNY' }, { headers: { 'x-fb-trace-id': 'trace-ads' } });
+      if (url.pathname.endsWith('/act_12345/campaigns')) return Response.json({ data: [{ id: 'cmp-1', name: 'Launch', status: 'PAUSED', objective: 'OUTCOME_SALES' }] }, { headers: { 'x-fb-trace-id': 'trace-campaigns' } });
       if (url.pathname.endsWith('/12345/feed')) return Response.json({ id: '12345_444' }, { headers: { 'x-fb-trace-id': 'trace-feed' } });
       if (url.pathname.endsWith('/98765/media')) return Response.json({ id: 'container-1' });
       if (url.pathname.endsWith('/container-1')) return Response.json({ status_code: 'FINISHED' });
@@ -163,14 +171,18 @@ describe('Meta Graph publishing client', () => {
     }) as typeof fetch;
     const client = createMetaGraphClient({ fetchImpl, graphVersion: 'v23.0', sleepImpl: async () => undefined });
     const verified = await client.verifyPage({ accessToken: 'user-secret', facebookPageId: '12345', expectedInstagramBusinessAccountId: '98765' });
+    const adAccount = await client.verifyAdAccount({ accessToken: 'user-secret', adAccountId: 'act_12345' });
+    const campaigns = await client.listAdCampaigns({ accessToken: 'user-secret', adAccountId: adAccount.adAccountId });
     const facebook = await client.publishFacebook({ pageAccessToken: verified.pageAccessToken, facebookPageId: '12345', contentType: 'LINK', message: 'Launch', linkUrl: 'https://example.com/product' });
     const instagram = await client.publishInstagramImage({ pageAccessToken: verified.pageAccessToken, instagramBusinessAccountId: '98765', message: 'Premium', mediaUrl: 'https://cdn.example.com/image.jpg' });
     assert.equal(facebook.providerPublicationId, '12345_444');
     assert.equal(instagram.providerPublicationId, 'ig-media-1');
-    assert.deepEqual(calls.map((call) => call.url.pathname), ['/v23.0/12345','/v23.0/12345/feed','/v23.0/98765/media','/v23.0/container-1','/v23.0/98765/media_publish']);
+    assert.equal(adAccount.currency, 'CNY');
+    assert.equal(campaigns.campaigns[0]?.id, 'cmp-1');
+    assert.deepEqual(calls.map((call) => call.url.pathname), ['/v23.0/12345','/v23.0/act_12345','/v23.0/act_12345/campaigns','/v23.0/12345/feed','/v23.0/98765/media','/v23.0/container-1','/v23.0/98765/media_publish']);
     assert.ok(calls.every((call) => !call.url.toString().includes('user-secret') && !call.url.toString().includes('page-access')));
     assert.equal(calls[0]?.authorization, 'Bearer user-secret');
-    assert.match(calls[1]?.body ?? '', /link=https%3A%2F%2Fexample.com%2Fproduct/);
+    assert.match(calls[3]?.body ?? '', /link=https%3A%2F%2Fexample.com%2Fproduct/);
   });
 
   it('treats an interrupted provider write as ambiguous instead of retrying into a duplicate post', async () => {

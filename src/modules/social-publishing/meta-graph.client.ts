@@ -165,6 +165,53 @@ export function createMetaGraphClient(options: {
     };
   }
 
+  async function verifyAdAccount(input: { accessToken: string; adAccountId: string }) {
+    const requested = input.adAccountId.replace(/^act_/i, '');
+    if (!/^\d+$/.test(requested)) {
+      throw new MetaGraphError('META_AD_ACCOUNT_ID_INVALID', 'Meta ad account IDs must contain digits and may optionally start with act_.', 'BLOCKED');
+    }
+    const { payload, requestId } = await request({
+      path: `act_${requested}`,
+      accessToken: input.accessToken,
+      query: { fields: 'id,name,account_status,currency' },
+    });
+    const id = typeof payload.id === 'string' ? payload.id : '';
+    const normalized = id.replace(/^act_/i, '');
+    if (!id || normalized !== requested) {
+      throw new MetaGraphError('META_AD_ACCOUNT_ID_MISMATCH', 'Meta returned a different ad account than requested.', 'BLOCKED', null, null, requestId);
+    }
+    const accountStatus = Number(payload.account_status);
+    return {
+      adAccountId: id,
+      name: typeof payload.name === 'string' ? payload.name : null,
+      accountStatus: Number.isFinite(accountStatus) ? accountStatus : null,
+      currency: typeof payload.currency === 'string' ? payload.currency : null,
+      providerRequestId: requestId,
+    };
+  }
+
+  async function listAdCampaigns(input: { accessToken: string; adAccountId: string }) {
+    const requested = input.adAccountId.replace(/^act_/i, '');
+    if (!/^\d+$/.test(requested)) {
+      throw new MetaGraphError('META_AD_ACCOUNT_ID_INVALID', 'Meta ad account IDs must contain digits and may optionally start with act_.', 'BLOCKED');
+    }
+    const { payload, requestId } = await request({
+      path: `act_${requested}/campaigns`,
+      accessToken: input.accessToken,
+      query: { fields: 'id,name,status,objective', limit: '25' },
+    });
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    return {
+      campaigns: data.filter((item): item is JsonObject => Boolean(item && typeof item === 'object' && !Array.isArray(item))).map((item) => ({
+        id: typeof item.id === 'string' ? item.id : null,
+        name: typeof item.name === 'string' ? item.name : null,
+        status: typeof item.status === 'string' ? item.status : null,
+        objective: typeof item.objective === 'string' ? item.objective : null,
+      })).filter((item) => item.id),
+      providerRequestId: requestId,
+    };
+  }
+
   async function publishFacebook(input: {
     pageAccessToken: string;
     facebookPageId: string;
@@ -226,7 +273,7 @@ export function createMetaGraphClient(options: {
     return { providerPublicationId: id, providerRequestId: published.requestId, containerId };
   }
 
-  return { verifyPage, publishFacebook, publishInstagramImage };
+  return { verifyPage, verifyAdAccount, listAdCampaigns, publishFacebook, publishInstagramImage };
 }
 
 export type MetaGraphClient = ReturnType<typeof createMetaGraphClient>;

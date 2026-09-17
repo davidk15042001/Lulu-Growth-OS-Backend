@@ -23,6 +23,7 @@ import { MetaSocialAdapter } from './meta-social.adapter.js';
 import { ShopifyAdapter } from './shopify.adapter.js';
 import { CrmProviderAdapter } from './crm-provider.adapter.js';
 import { FacebookMessengerAdapter } from './facebook-messenger.adapter.js';
+import { MetaAdsAdapter } from './meta-ads.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -62,7 +63,7 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'google_analytics', displayName: 'Google Analytics', category: 'ANALYTICS', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'google_analytics.reporting.read', displayName: 'Read analytics reporting', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'google_business', displayName: 'Google Business Profile', category: 'LOCAL', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'google_business.locations.read', displayName: 'Read Business Profile locations', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'google_business.reviews.read', displayName: 'Read Business Profile reviews', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'google_business.reviews.reply', displayName: 'Reply to reviews', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
   { providerKey: 'google_calendar', displayName: 'Google Calendar', category: 'CALENDAR', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'calendar.read', displayName: 'Read calendar', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'calendar.write', displayName: 'Write calendar', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
-  { providerKey: 'meta', displayName: 'Meta', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'meta.ads.manage', displayName: 'Manage Meta ads', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }, { capabilityKey: 'meta.ads.read_spend', displayName: 'Read Meta spend', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
+  { providerKey: 'meta', displayName: 'Meta', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'meta.ads.manage', displayName: 'Manage Meta ads', requiredScopes: ['ads_management','business_management'], defaultStatus: 'PROVIDER_REVIEW' }, { capabilityKey: 'meta.ads.read_spend', displayName: 'Read Meta spend', requiredScopes: ['ads_read'], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'facebook', displayName: 'Facebook', category: 'SOCIAL', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'facebook.pages.publish', displayName: 'Publish Facebook Page posts', requiredScopes: ['pages_manage_posts','pages_read_engagement'], defaultStatus: 'AUTHORIZATION_REQUIRED' }] },
   { providerKey: 'facebook_messenger', displayName: 'Facebook Messenger', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [
     { capabilityKey: 'facebook_messenger.messages.send', displayName: 'Send Facebook Messenger messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
@@ -147,6 +148,7 @@ adapters.set('salesforce', new CrmProviderAdapter('salesforce'));
 adapters.set('hubspot', new CrmProviderAdapter('hubspot'));
 adapters.set('pipedrive', new CrmProviderAdapter('pipedrive'));
 adapters.set('facebook_messenger', new FacebookMessengerAdapter());
+adapters.set('meta', new MetaAdsAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));

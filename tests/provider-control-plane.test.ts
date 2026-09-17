@@ -69,6 +69,7 @@ describe('Provider Control Plane', () => {
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('hubspot'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('pipedrive'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('facebook_messenger'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('meta'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
   });
 
   it('does not treat an active but not-yet-running UnifyPort account as connected', async () => {
