@@ -83,16 +83,48 @@ async function createRun(workspaceId: string, owner: string, module = 'sales', s
 }
 
 describe('Digital Company Office foundation', () => {
-  it('materializes only real supported employee roles and keeps an empty office idle', async () => {
+  it('materializes the complete role-level organization and keeps an empty office idle', async () => {
     const f = await fixture();
     const overview = await officeService.getOverview(f.workspaceId, 24, { capabilities: ROLE_CAPABILITIES.owner });
     assert.equal(overview.timelineScope,'recent');
     assert.equal(overview.summary.departmentCount, 9);
-    assert.equal(overview.summary.employeeCount, 29);
+    assert.equal(overview.summary.employeeCount, 45);
     assert.equal(overview.summary.activeEmployees, 0);
     assert.ok(overview.departments.every((department) => department.employees.length > 0));
     assert.ok(overview.departments.flatMap((department) => department.employees)
       .every((employee) => employee.status === 'IDLE' && employee.availability !== 'UNAVAILABLE'));
+  });
+
+  it('persists specialist employees with canonical workspace capabilities', async () => {
+    const f = await fixture();
+    const rows = await db.query<{ employeeKey: string; capabilityKey: string }>(`
+      SELECT e.employee_key AS "employeeKey", c.capability_key AS "capabilityKey"
+      FROM digital_employees e
+      JOIN digital_employee_capabilities c
+        ON c.workspace_id=e.workspace_id AND c.employee_id=e.id
+      WHERE e.workspace_id=$1
+        AND e.employee_key = ANY($2::text[])
+      ORDER BY e.employee_key,c.capability_key`, [f.workspaceId, [
+      'customer-manager','lead-generation-specialist','opportunity-manager',
+      'customer-support-specialist','media-assets-manager','domain-manager',
+      'order-manager','inventory-manager','fulfillment-manager','bookkeeping-manager',
+      'automation-manager','analytics-manager',
+    ]]);
+    const found = new Set(rows.rows.map((row) => `${row.employeeKey}:${row.capabilityKey}`));
+    for (const expected of [
+      'customer-manager:crm.manage',
+      'lead-generation-specialist:leads.manage',
+      'opportunity-manager:opportunities.manage',
+      'customer-support-specialist:omnichannel.reply',
+      'media-assets-manager:website.manage',
+      'domain-manager:website.publish',
+      'order-manager:orders.manage',
+      'inventory-manager:orders.manage',
+      'fulfillment-manager:orders.manage',
+      'bookkeeping-manager:finance.manage',
+      'automation-manager:agents.manage',
+      'analytics-manager:workspace.read',
+    ]) assert.ok(found.has(expected), `missing ${expected}`);
   });
 
   it('materializes complete execution capabilities for each canonical employee role', async () => {
@@ -601,7 +633,7 @@ describe('Digital Company Office foundation', () => {
       .set('Authorization', `Bearer ${f.token}`);
     assert.equal(overview.status, 200);
     assert.equal(overview.body.success, true);
-    assert.equal(overview.body.data.summary.employeeCount, 29);
+    assert.equal(overview.body.data.summary.employeeCount, 45);
     const employeeId = overview.body.data.departments[0].employees[0].id;
     const detail = await request(createApp())
       .get(`/api/v1/workspaces/${f.workspaceId}/office/employees/${employeeId}`)

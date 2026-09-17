@@ -96,27 +96,46 @@ Office and Workspace are views over the same services and records. Digital Emplo
 | Executive | Outcome & Quality Auditor | Verify evidence and outcomes without inventing success | Reviewer steps, provider result state, retries/dead letters |
 | CRM & Sales | Company Intelligence Specialist | Research and enrich company accounts | CRM records, search intelligence, customer questions |
 | CRM & Sales | CRM Manager | Maintain the canonical customer/company context | CRM records, activities, related objects |
+| CRM & Sales | Customer Manager | Maintain complete customer and company context | CRM records, enrichment, related objects |
+| CRM & Sales | Lead Generation Specialist | Find qualified opportunities from verified signals | Leads, company intelligence, event signals |
+| CRM & Sales | Lead Qualification Specialist | Qualify leads using persisted evidence | Leads, CRM context, policy-bound transitions |
+| CRM & Sales | Opportunity Manager | Maintain opportunity stages and next actions | Opportunities, follow-ups, quotes |
+| CRM & Sales | Sales Representative | Coordinate evidence-backed sales handoffs | Leads, opportunities, quotes, communication |
 | CRM & Sales | Follow-up Specialist | Create and complete next actions | CRM/sales tasks, calendar, OmniChannel/email |
 | CRM & Sales | Quote Specialist | Build, version, send and track quotes | Commercial documents and delivery |
 | Communications | OmniChannel Manager | Route and manage conversations across enabled identities | Conversation/message service, channel adapters, SSE |
 | Communications | Customer Communication Specialist | Understand intent and compose/send policy-compliant responses | Knowledge, CRM context, message commands |
+| Communications | Customer Support Specialist | Handle persisted support conversations | OmniChannel, knowledge, customer context |
 | Communications | Email Specialist | Synchronize threads and manage drafts/messages | Email providers and sync events |
 | Operations | Calendar Coordinator | Schedule and synchronize follow-ups | Calendar providers and events |
 | Marketing | Brand & Content Strategist | Plan evidence-based content aligned to the permanent brand mission | Knowledge, content jobs, website/social destinations |
+| Marketing | Marketing Manager | Coordinate brand, content, distribution, and measured growth | Website, social, advertising, analytics |
+| Marketing | Content Specialist | Create and distribute evidence-backed content | Content jobs, website, social destinations |
 | Marketing | Paid Acquisition Specialist | Analyze and optimize authorized campaigns | Advertising evidence, campaign authorization, provider adapter |
 | Online Presence | Website Manager | Generate, maintain and publish sites | Website jobs, WordPress/Webflow adapters |
 | Online Presence | Pages & CMS Manager | Manage pages, posts, CMS collections and assets | Reused Workspace website components |
+| Online Presence | Media & Assets Manager | Maintain the canonical media library | Website media, product media, storage |
+| Online Presence | Domain Manager | Verify domains and coordinate safe publication | Website domains, DNS ownership proof |
 | Online Presence | Reviews & Reputation Manager | Monitor and answer verified reviews | Google Business and review records |
 | Online Presence | Search Visibility Manager | Coordinate SEO/GEO/AEO work | Search intelligence, content/publications |
 | Commerce | Product Manager | Own canonical products and variants | Product master and provider mappings |
 | Commerce | Premium Media Producer | Produce and quality-check product images/video | Kie media jobs and product media |
 | Commerce | Category Manager | Organize catalog taxonomy | Commerce category records |
+| Commerce | Store Manager | Coordinate managed storefront operations | Products, orders, inventory, website |
+| Commerce | Order Manager | Process canonical orders | Orders, order lines, lifecycle events |
+| Commerce | Inventory Manager | Maintain stock and reservations | Inventory levels, movements, reservations |
+| Commerce | Fulfillment Manager | Coordinate verified fulfillment handoffs | Fulfillments, orders, provider evidence |
 | Commerce | Order & Fulfillment Manager | Process orders, inventory and fulfillment | Canonical commerce service, inventory reservations, lifecycle events and provider sync |
 | Finance | Invoice Manager | Create, issue, deliver and track invoices | Commercial documents |
 | Finance | Bookkeeping Specialist | Post balanced operational journals and reconcile payments | Immutable ledger and finance engine |
+| Finance | Finance Operations Manager | Coordinate billing, usage, receivables, and finance controls | Billing, usage ledgers, invoices, journals |
 | Finance | Billing & Usage Manager | Manage subscription, AI, storage and advertising funding | Billing, wallets and usage ledgers |
 | Operations | Integration Manager | Connect, verify, monitor and recover providers | Provider control plane |
+| Operations | Automation Manager | Monitor schedules, event delivery, and safe recovery | Agent runtime, provider sync, readiness |
+| Operations | Operations Manager | Coordinate cross-system operational reliability | Providers, workspace operations, audits |
 | Analytics | Business Intelligence Analyst | Explain real KPIs, anomalies and funnel impact | Metrics, domain events, reports |
+| Analytics | Analytics Manager | Coordinate verified metrics and reporting | Metrics, provider reports, quality evidence |
+| Analytics | Commerce Analytics Manager | Measure catalog, order, inventory, and fulfillment performance | Commerce records, metrics, event history |
 
 ## Decisions and known boundaries
 
