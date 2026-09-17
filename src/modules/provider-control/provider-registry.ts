@@ -25,6 +25,7 @@ import { CrmProviderAdapter } from './crm-provider.adapter.js';
 import { FacebookMessengerAdapter } from './facebook-messenger.adapter.js';
 import { MetaAdsAdapter } from './meta-ads.adapter.js';
 import { LinkedInAdsAdapter } from './linkedin-ads.adapter.js';
+import { TikTokAdsAdapter } from './tiktok-ads.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -105,7 +106,7 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'hubspot', displayName: 'HubSpot', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'hubspot.companies.read', displayName: 'Read HubSpot companies', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'hubspot.companies.write', displayName: 'Write HubSpot companies', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }] },
   { providerKey: 'pipedrive', displayName: 'Pipedrive', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'pipedrive.companies.read', displayName: 'Read Pipedrive organizations', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'pipedrive.companies.write', displayName: 'Write Pipedrive organizations', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }] },
   { providerKey: 'linkedin', displayName: 'LinkedIn Ads', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'linkedin.ads.accounts.read', displayName: 'Read LinkedIn ad accounts', requiredScopes: ['r_ads_reporting'], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'linkedin.ads.spend.read', displayName: 'Read LinkedIn ad spend', requiredScopes: ['r_ads_reporting'], defaultStatus: 'UNCONFIRMED' }] },
-  { providerKey: 'tiktok_ads', displayName: 'TikTok Ads', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [] },
+  { providerKey: 'tiktok_ads', displayName: 'TikTok Ads', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'tiktok_ads.accounts.read', displayName: 'Read TikTok advertiser accounts', requiredScopes: ['advertiser.read'], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'tiktok_ads.spend.read', displayName: 'Read TikTok ad spend', requiredScopes: ['ad.read'], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'custom', displayName: 'Custom Provider', category: 'OTHER', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
 ];
 
@@ -151,6 +152,7 @@ adapters.set('pipedrive', new CrmProviderAdapter('pipedrive'));
 adapters.set('facebook_messenger', new FacebookMessengerAdapter());
 adapters.set('meta', new MetaAdsAdapter());
 adapters.set('linkedin', new LinkedInAdsAdapter());
+adapters.set('tiktok_ads', new TikTokAdsAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));
