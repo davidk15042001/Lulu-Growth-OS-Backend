@@ -905,7 +905,7 @@ type CommandExecutionResult = {
   executionState?: 'completed' | 'waiting_for_provider' | 'provider_failed';
 };
 
-function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
+export function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
   const data = record.data ?? {};
   return normalizeAgentExecutionCommands(data.commands, {
     module: textValue(data.targetModule) || textValue(data.module) || 'general',
@@ -947,6 +947,14 @@ function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
     companyId: textValue(data.companyId) || null,
     domainId: textValue(data.domainId) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
+    socialAccountId: textValue(data.socialAccountId) || null,
+    contentType: data.contentType === 'TEXT' || data.contentType === 'LINK' || data.contentType === 'IMAGE' ? data.contentType : null,
+    contentMessage: textValue(data.contentMessage, 63_206) || null,
+    contentLinkUrl: textValue(data.contentLinkUrl, 2_048) || null,
+    contentMediaUrl: textValue(data.contentMediaUrl, 2_048) || null,
+    contentAltText: textValue(data.contentAltText, 1_000) || null,
+    scheduledAt: textValue(data.scheduledAt, 80) || null,
+    maxAttempts: typeof data.maxAttempts === 'number' && Number.isInteger(data.maxAttempts) ? data.maxAttempts : null,
   });
 }
 

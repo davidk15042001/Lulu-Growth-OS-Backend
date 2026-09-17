@@ -4,6 +4,7 @@ import {
   applyExecutionCommandPolicies,
   normalizeAgentExecutionCommands,
 } from '../src/modules/agents/agent.execution-command.js';
+import { normalizedCommandsForRecord } from '../src/modules/agents/agent-execution.worker.js';
 
 describe('agent execution commands', () => {
   it('registers company intelligence enrichment as an autonomous CRM command', () => {
@@ -446,6 +447,35 @@ describe('agent execution commands', () => {
     assert.equal(command.quality?.confidence, 'high');
     assert.equal(command.approvalPolicy, 'allow');
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
+  it('preserves persisted social publication fields for the real worker normalizer', () => {
+    const [command] = normalizedCommandsForRecord({
+      id: '00000000-0000-0000-0000-000000000456',
+      workspaceId: '00000000-0000-0000-0000-000000000457',
+      resourceType: 'marketing_publications',
+      name: 'Social publication',
+      data: {
+        targetModule: 'marketing',
+        targetSystem: 'marketing',
+        pageId: 'marketing-page',
+        pageLabel: 'Marketing',
+        goal: 'Publish the approved campaign brief',
+        jobs: ['Publish campaign announcement'],
+        executionMode: 'autonomous',
+        socialAccountId: 'social-account-456',
+        contentType: 'IMAGE',
+        contentMessage: 'A grounded image announcement.',
+        contentMediaUrl: 'https://cdn.example.test/launch.png',
+        contentAltText: 'Launch image',
+        maxAttempts: 5,
+      },
+    } as never);
+    assert.equal(command?.type, 'social.content.publish');
+    assert.equal(command?.payload.socialAccountId, 'social-account-456');
+    assert.equal(command?.payload.contentType, 'IMAGE');
+    assert.equal(command?.payload.mediaUrl, 'https://cdn.example.test/launch.png');
+    assert.equal(command?.payload.maxAttempts, 5);
   });
 
   it('infers website domain verification from a site and domain context', () => {
