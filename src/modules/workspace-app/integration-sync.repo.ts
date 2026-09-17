@@ -61,7 +61,8 @@ async function terminalizeExhaustedJobs(client: PoolClient, leaseSeconds: number
             updated_at=NOW()
        FROM exhausted
       WHERE job.id=exhausted.id
-      RETURNING exhausted.id, exhausted."workspaceId", exhausted."platformId", exhausted.attempts`,
+      RETURNING job.id, job.workspace_id AS "workspaceId",
+                job.payload->>'platformId' AS "platformId", job.attempts`,
     [leaseSeconds],
     client,
   );
