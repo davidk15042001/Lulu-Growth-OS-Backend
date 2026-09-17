@@ -31,7 +31,7 @@ import {
 } from '../social-publishing/social-publishing.validator.js';
 import { requestSocialPublishingWorkerRun } from '../social-publishing/social-publishing.worker.js';
 import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
-import { createInvoiceSchema } from '../commercial-documents/commercial-documents.validator.js';
+import { createInvoiceSchema, createQuoteSchema } from '../commercial-documents/commercial-documents.validator.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
@@ -112,6 +112,8 @@ function resolveDomainArtifactType(targetSystem: string): ResourceType | null {
 function resolveCommandResultResourceType(command: AgentExecutionCommand): ResourceType {
   if (command.type === 'crm.create_followup_task') return 'crm_tasks';
   if (command.type === 'sales.create_followup_task') return 'sales_tasks';
+  if (command.type === 'sales.quote.create') return 'finance_quotes';
+  if (command.type === 'finance.invoice.create_from_order') return 'finance_invoices';
   if (command.type === 'finance.create_automation') return 'finance_automations';
   return 'activities';
 }
@@ -297,6 +299,42 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       resultRecordId: stored.id,
       result: { status: 'transitioned', resourceType, record: transitioned },
     };
+  }
+
+  if (command.type === 'sales.quote.create') {
+    const customerRecordId = textValue(payload.customerRecordId);
+    const currency = textValue(payload.currency, 3).toUpperCase();
+    const lines = Array.isArray(payload.lines) ? payload.lines : [];
+    if (!customerRecordId || !currency || lines.length === 0) {
+      throw new Error('sales.quote.create requires customerRecordId, currency, and at least one line');
+    }
+    const quoteInput = createQuoteSchema.parse({
+      customerRecordId,
+      companyRecordId: textValue(payload.companyRecordId) || null,
+      leadRecordId: textValue(payload.leadRecordId) || null,
+      opportunityRecordId: textValue(payload.opportunityRecordId) || null,
+      factoryId: textValue(payload.factoryId) || null,
+      language: textValue(payload.language, 12) || 'en',
+      marketCode: textValue(payload.marketCode, 20) || null,
+      currency,
+      validUntil: textValue(payload.validUntil, 10) || null,
+      shippingTotal: payload.shippingTotal ?? 0,
+      terms: objectValue(payload.terms),
+      source: 'api',
+      creationMode: 'AUTOMATIC',
+      handlingMode: 'AUTONOMOUS',
+      conversationId: textValue(payload.conversationId) || null,
+      lines,
+    });
+    const quote = await commercialDocumentService.createQuote(record.workspaceId, actorUserId, quoteInput);
+    const quoteId = quote?.quote?.id;
+    if (!quoteId) throw new Error('Canonical quote creation did not return a quote');
+    const stored = await persistCommandExecutionResult(record, command, {
+      quoteId,
+      quoteNumber: quote.quote.quoteNumber,
+      status: quote.quote.status,
+    });
+    return { type: command.type, targetEntityId: quoteId, provider: command.provider, resultRecordId: stored.id, result: quote };
   }
 
   if (command.type === 'advertising.create_optimization') {
@@ -878,6 +916,7 @@ function commandResultFromReceipt(
     result.publicationId
       ?? result.orderId
       ?? result.invoiceId
+      ?? result.quoteId
       ?? result.fulfillmentId
       ?? result.inventoryLevelId,
   ) || null;

@@ -230,6 +230,44 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('keeps autonomous quote creation server-owned and policy-bound', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'sales.quote.create',
+      summary: 'Prepare the verified customer offer',
+      targetSystem: 'unknown',
+      provider: null,
+      riskLevel: 'high',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'sales_quotes',
+      targetEntityId: null,
+      payload: {
+        customerRecordId: '00000000-0000-4000-8000-000000000111',
+        currency: 'cny',
+        lines: [{ productName: 'Verified service', quantity: 1, unitPrice: 100 }],
+      },
+      idempotencyKey: 'model-quote-create',
+    }], {
+      module: 'sales',
+      targetSystem: 'sales',
+      actionResourceType: 'sales_quotes',
+      pageId: 'quotes-page',
+      pageLabel: 'Quotes',
+      goal: 'Prepare the verified customer offer',
+      jobs: ['Create offer'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'sales.quote.create');
+    assert.equal(command.targetSystem, 'sales');
+    assert.equal(command.riskLevel, 'medium');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(command.budgetAuthority, 'none');
+    assert.match(command.idempotencyKey, /^[a-f0-9]{40}$/);
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps canonical commerce and social commands autonomous but server-owned', () => {
     const commands = normalizeAgentExecutionCommands([
       {
