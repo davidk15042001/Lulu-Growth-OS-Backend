@@ -172,44 +172,39 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
       LIMIT 1`,
     [input.workspaceId, key],
   );
-  if (prior.rows[0]) {
-    // Reconciliation also repairs invoices created by older releases, where
-    // the customer workspace was incorrectly captured as the seller.
-    await commercialDocumentsRepo.setInvoiceSellerProfile(input.workspaceId, prior.rows[0].documentId, platformSellerProfile);
-    return commercialDocumentsRepo.getInvoice(input.workspaceId, prior.rows[0].documentId);
-  }
-
   try {
     const customer = await ensureBillingCustomer(input.workspaceId);
-    const invoice = await commercialDocumentsRepo.createInvoice(
-      input.workspaceId,
-      customer.actorId,
-      {
-        customerRecordId: customer.id,
-        currency: input.currency.toUpperCase(),
-        language: 'en',
-        invoiceType: 'STANDARD',
-        issueDate: dateOnly(input.paidAt),
-        dueDate: dateOnly(input.paidAt),
-        source: 'api',
-        creationMode: 'AUTOMATIC',
-        operationKey: key,
-        lines: input.lines.map((line) => ({
-          productName: line.productName,
-          description: line.description ?? null,
-          quantity: line.quantity ?? 1,
-          quantityUnit: line.quantityUnit ?? 'item',
-          unitPrice: normalizeAmount(line.unitPrice),
-          discount: 0,
-          tax: 0,
-        })),
-        shippingTotal: 0,
-      },
-      {
-        actorType: 'SYSTEM',
-        actorRef: input.providerInvoiceId ?? input.providerPaymentIntentId ?? input.referenceId,
-      },
-    );
+    let invoice = prior.rows[0]
+      ? await commercialDocumentsRepo.setInvoiceSellerProfile(input.workspaceId, prior.rows[0].documentId, platformSellerProfile)
+      : await commercialDocumentsRepo.createInvoice(
+          input.workspaceId,
+          customer.actorId,
+          {
+            customerRecordId: customer.id,
+            currency: input.currency.toUpperCase(),
+            language: 'en',
+            invoiceType: 'STANDARD',
+            issueDate: dateOnly(input.paidAt),
+            dueDate: dateOnly(input.paidAt),
+            source: 'api',
+            creationMode: 'AUTOMATIC',
+            operationKey: key,
+            lines: input.lines.map((line) => ({
+              productName: line.productName,
+              description: line.description ?? null,
+              quantity: line.quantity ?? 1,
+              quantityUnit: line.quantityUnit ?? 'item',
+              unitPrice: normalizeAmount(line.unitPrice),
+              discount: 0,
+              tax: 0,
+            })),
+            shippingTotal: 0,
+          },
+          {
+            actorType: 'SYSTEM',
+            actorRef: input.providerInvoiceId ?? input.providerPaymentIntentId ?? input.referenceId,
+          },
+        );
     if (!invoice) throw new Error('Automatic billing invoice creation returned no invoice.');
 
     let current = invoice;
@@ -220,7 +215,7 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
           logger.warn({ workspaceId: input.workspaceId, invoiceId: current.invoice.id, referenceId: input.referenceId }, 'Automatic billing invoice could not be loaded after issuing');
           return current;
         }
-        current = { ...issued, idempotent: false };
+        current = issued;
       } catch (error) {
         logger.warn({ error, workspaceId: input.workspaceId, invoiceId: current.invoice.id, referenceId: input.referenceId }, 'Automatic billing invoice was saved but could not be issued yet');
         return current;
