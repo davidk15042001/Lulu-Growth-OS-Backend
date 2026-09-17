@@ -121,6 +121,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   if (command.type === 'finance.invoice.create_from_order') return 'finance_invoices';
   if (command.type === 'finance.invoice.issue' || command.type === 'finance.invoice.send') return 'finance_invoices';
   if (command.type === 'finance.create_automation') return 'finance_automations';
+  if (command.type === 'commerce.product.create' || command.type === 'commerce.product.update') return 'ecommerce_products';
   return 'activities';
 }
 
