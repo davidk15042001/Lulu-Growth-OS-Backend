@@ -670,6 +670,68 @@ export async function recordLearning(input: {
   return rows[0];
 }
 
+const qualityCalibrationDelta: Record<string, number> = {
+  accepted_without_edit: 4,
+  accepted_with_edit: 1,
+  overridden: -4,
+  rejected: -8,
+  complaint: -12,
+  problem_reported: -12,
+};
+
+/**
+ * Feed a durable quality signal back into the producing digital employee.
+ * The adjustment is keyed by the source event, so domain-event redelivery can
+ * never spend the same learning signal twice.
+ */
+export async function applyQualityFeedbackLearning(input: {
+  workspaceId: string;
+  sourceEventId: string;
+  artifactVersionId: string;
+  outcome: string;
+  evidence?: Record<string, unknown>;
+}) {
+  const delta = qualityCalibrationDelta[input.outcome] ?? 0;
+  if (!delta) return null;
+  const producer = await query<{ agentId: string }>(
+    `SELECT producer_agent_id AS "agentId"
+       FROM quality_artifact_versions
+      WHERE workspace_id=$1 AND id=$2`,
+    [input.workspaceId, input.artifactVersionId],
+  );
+  const agentId = producer.rows[0]?.agentId;
+  if (!agentId) return null;
+  const adjustment = await query<{ id: string }>(
+    `INSERT INTO company_brain_learning_adjustments
+       (workspace_id,agent_id,source_event_id,outcome_type,delta,evidence)
+     VALUES($1,$2,$3,$4,$5,$6::jsonb)
+     ON CONFLICT (workspace_id,agent_id,source_event_id,outcome_type) DO NOTHING
+     RETURNING id`,
+    [input.workspaceId, agentId, input.sourceEventId, input.outcome, delta, input.evidence ?? {}],
+  );
+  if (!adjustment.rows[0]) return { agentId, delta, applied: false };
+
+  const updated = await query<{ agentId: string; performanceScore: number }>(
+    `UPDATE workspace_agent_performance
+        SET performance_score=LEAST(100, GREATEST(0, performance_score + $3)),
+            metadata=metadata || jsonb_build_object(
+              'lastQualityCalibration', jsonb_build_object(
+                'outcome', $4::text, 'delta', $3::numeric, 'sourceEventId', $5::text
+              )
+            ),
+            updated_at=NOW()
+      WHERE workspace_id=$1 AND agent_id=$2
+      RETURNING agent_id AS "agentId", performance_score AS "performanceScore"`,
+    [input.workspaceId, agentId, delta, input.outcome, input.sourceEventId],
+  );
+  return {
+    agentId,
+    delta,
+    applied: true,
+    performanceScore: updated.rows[0] ? Number(updated.rows[0].performanceScore) : null,
+  };
+}
+
 export async function listLearning(workspaceId: string, limit: number) {
   const { rows } = await query<BrainLearningRecord>(`SELECT ${learningSelect} FROM company_brain_learning_records WHERE workspace_id=$1 ORDER BY created_at DESC LIMIT $2`, [workspaceId,limit]);
   return rows;

@@ -81,6 +81,20 @@ export function registerCompanyBrainEventHandler() {
           actorType: 'system',
         })
         : null;
+      if (event.workspaceId && event.type === DOMAIN_EVENT_TYPES.QUALITY_FEEDBACK_RECORDED) {
+        const payload = event.payload ?? {};
+        const artifactVersionId = typeof payload.artifactVersionId === 'string' ? payload.artifactVersionId : null;
+        const outcome = typeof payload.outcome === 'string' ? payload.outcome : null;
+        if (artifactVersionId && outcome) {
+          await repo.applyQualityFeedbackLearning({
+            workspaceId: event.workspaceId,
+            sourceEventId: event.id,
+            artifactVersionId,
+            outcome,
+            evidence: { eventType: event.type, artifactId: event.aggregateId, feedbackId: payload.feedbackId ?? null },
+          });
+        }
+      }
       return { observationId: result.observation.id, signalId: result.signal.id, missionId: result.mission?.mission.id ?? null, learningId: learning?.id ?? null };
     },
   });

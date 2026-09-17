@@ -12,6 +12,7 @@ const brain = await import('../src/modules/company-brain/company-brain.repo.js')
 const brainWorker = await import('../src/modules/company-brain/company-brain.worker.js');
 const db = new PGlite();
 let workspaceId: string;
+let ownerId: string;
 
 before(async () => {
   for (const file of (await readdir('src/database/migrations')).filter((name) => name.endsWith('.sql')).sort()) {
@@ -22,6 +23,7 @@ before(async () => {
     return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
   };
   const { rows } = await db.query<{ id: string }>(`INSERT INTO users(email,password_hash) VALUES('brain@test.local','hash') RETURNING id`);
+  ownerId = rows[0]!.id;
   workspaceId = (await db.query<{ id: string }>(`INSERT INTO workspaces(name,created_by) VALUES('Brain',$1) RETURNING id`, [rows[0]!.id])).rows[0]!.id;
   await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`, [workspaceId, rows[0]!.id]);
   // The repository accepts the same pool abstraction as the rest of the backend;
@@ -129,6 +131,34 @@ test('persists an event-backed signal and creates one idempotent root task', asy
     outcome: 'Provider unavailable; task held for a later recovery cycle.', evidence: { code: 'PROVIDER_UNAVAILABLE' }, confidence: 0.9, verified: false,
   });
   assert.equal(learning?.id, replayLearning?.id);
+
+  // A real quality signal must calibrate the producing digital employee once,
+  // even when the source event is delivered more than once.
+  const producerAgentId = 'page:website-editor';
+  await db.query(`INSERT INTO workspace_agent_performance
+    (workspace_id,agent_id,agent_name,module,tier,performance_score)
+    VALUES($1,$2,'Website Editor','website','specialist',50)`, [workspaceId, producerAgentId]);
+  const artifact = (await db.query<{ id: string }>(`INSERT INTO quality_artifacts
+    (workspace_id,artifact_type,canonical_entity_type,canonical_entity_id,created_by)
+    VALUES($1,'website_page','page','brain-test-page',$2) RETURNING id`, [workspaceId, ownerId])).rows[0]!.id;
+  const artifactVersion = (await db.query<{ id: string }>(`INSERT INTO quality_artifact_versions
+    (workspace_id,artifact_id,version,producer_agent_id)
+    VALUES($1,$2,1,$3) RETURNING id`, [workspaceId, artifact, producerAgentId])).rows[0]!.id;
+  const calibration = await brain.applyQualityFeedbackLearning({
+    workspaceId, sourceEventId: event.id, artifactVersionId: artifactVersion,
+    outcome: 'accepted_without_edit', evidence: { artifactId: artifact },
+  });
+  const calibrationReplay = await brain.applyQualityFeedbackLearning({
+    workspaceId, sourceEventId: event.id, artifactVersionId: artifactVersion,
+    outcome: 'accepted_without_edit', evidence: { artifactId: artifact },
+  });
+  assert.equal(calibration?.applied, true);
+  assert.equal(calibration?.performanceScore, 54);
+  assert.equal(calibrationReplay?.applied, false);
+  assert.equal(Number((await db.query<{ performanceScore: number }>(
+    `SELECT performance_score AS "performanceScore" FROM workspace_agent_performance WHERE workspace_id=$1 AND agent_id=$2`,
+    [workspaceId, producerAgentId],
+  )).rows[0]?.performanceScore), 54);
   const graph = await brain.getTaskGraph(workspaceId, mission!.mission.id);
   assert.equal(graph.tasks.length, 5);
   assert.equal(graph.dependencies.length, 4);
