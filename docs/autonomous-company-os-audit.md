@@ -1,6 +1,6 @@
 # Lulu Autonomous Company OS — architecture and capability audit
 
-Status date: 2026-09-13
+Status date: 2026-09-17
 
 This document is the source-driven baseline for Lulu's Office and Workspace architecture. It distinguishes persisted, executable capability from UI representation. A label, page, agent definition, or provider catalog entry is not treated as proof that an external side effect works.
 
@@ -33,6 +33,7 @@ Office and Workspace are views over the same services and records. Digital Emplo
 ## Repository inventory
 
 - Backend: Express/TypeScript, PostgreSQL migrations, workspace-scoped services, durable domain-event runtime, workers, REST APIs, SSE, provider control plane, 145 registered specialist definitions, and canonical modules for several core domains.
+- Google Business now runs through a real Provider Control Plane adapter: verification, health, capability probes, account/location discovery, and durable discovery snapshots all reuse the canonical OAuth/API service and are tenant-scoped.
 - Frontend: React/TypeScript, a large generated Workspace page catalog, canonical replacement pages for critical domains, shared API clients, route contracts, authenticated navigation, and the new Office view.
 - Persisted events support idempotency keys, attempts, delayed retry, locking, dead-letter state, causation/correlation metadata, and workspace scoping.
 - Authorization is capability based. Workspace membership remains the tenant boundary; the database does not currently use PostgreSQL row-level security.

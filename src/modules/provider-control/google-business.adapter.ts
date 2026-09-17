@@ -1,4 +1,4 @@
-import { providerError } from './provider-registry.js';
+import { AppError } from '../../utils/app-error.js';
 import type {
   ProviderAdapter,
   ProviderAdapterContext,
@@ -32,7 +32,7 @@ export class GoogleBusinessAdapter implements ProviderAdapter {
 
   private async overview(context: ProviderAdapterContext): Promise<GoogleBusinessOverview> {
     if (!context.workspaceId) {
-      throw providerError('PROVIDER_WORKSPACE_CONTEXT_MISSING', 'Google Business requires a workspace context for OAuth and API access.', undefined, 409);
+      throw new AppError(409, 'PROVIDER_WORKSPACE_CONTEXT_MISSING', 'Google Business requires a workspace context for OAuth and API access.');
     }
     const { getGoogleBusinessOverview } = await import('../workspace-app/google-business.service.js');
     return getGoogleBusinessOverview(context.workspaceId) as Promise<GoogleBusinessOverview>;
