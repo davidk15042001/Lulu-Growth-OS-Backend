@@ -31,7 +31,7 @@ import {
 } from '../social-publishing/social-publishing.validator.js';
 import { requestSocialPublishingWorkerRun } from '../social-publishing/social-publishing.worker.js';
 import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
-import { createInvoiceSchema, createQuoteSchema } from '../commercial-documents/commercial-documents.validator.js';
+import { createInvoiceSchema, createQuoteSchema, sendDocumentSchema } from '../commercial-documents/commercial-documents.validator.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
@@ -113,6 +113,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   if (command.type === 'crm.create_followup_task') return 'crm_tasks';
   if (command.type === 'sales.create_followup_task') return 'sales_tasks';
   if (command.type === 'sales.quote.create') return 'finance_quotes';
+  if (command.type === 'sales.quote.send') return 'finance_quotes';
   if (command.type === 'finance.invoice.create_from_order') return 'finance_invoices';
   if (command.type === 'finance.create_automation') return 'finance_automations';
   return 'activities';
@@ -335,6 +336,26 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       status: quote.quote.status,
     });
     return { type: command.type, targetEntityId: quoteId, provider: command.provider, resultRecordId: stored.id, result: quote };
+  }
+
+  if (command.type === 'sales.quote.send') {
+    const quoteId = textValue(payload.quoteId || command.targetEntityId);
+    if (!quoteId) throw new Error('sales.quote.send requires quoteId');
+    const sendInput = sendDocumentSchema.parse({
+      conversationId: textValue(payload.conversationId) || null,
+      channel: textValue(payload.channel, 32) || 'secure_link',
+      recipient: textValue(payload.recipient, 320) || null,
+      operationKey: textValue(payload.operationKey, 200) || `agent:${command.idempotencyKey}:quote-send`,
+    });
+    const sent = await commercialDocumentService.sendQuote(record.workspaceId, actorUserId, quoteId, sendInput);
+    const sentResult = objectValue(sent);
+    const stored = await persistCommandExecutionResult(record, command, {
+      quoteId,
+      status: 'sent',
+      deliveryId: sentResult.deliveryId ?? null,
+      documentPath: sentResult.documentPath ?? null,
+    });
+    return { type: command.type, targetEntityId: quoteId, provider: command.provider, resultRecordId: stored.id, result: sent };
   }
 
   if (command.type === 'advertising.create_optimization') {

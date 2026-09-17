@@ -268,6 +268,42 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('keeps autonomous quote delivery server-owned and scoped to quote sending', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'sales.quote.send',
+      summary: 'Send the verified customer offer',
+      targetSystem: 'unknown',
+      provider: null,
+      riskLevel: 'low',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'finance_quotes',
+      targetEntityId: '00000000-0000-4000-8000-000000000112',
+      payload: {
+        quoteId: '00000000-0000-4000-8000-000000000112',
+        channel: 'secure_link',
+      },
+      idempotencyKey: 'model-quote-send',
+    }], {
+      module: 'sales',
+      targetSystem: 'sales',
+      actionResourceType: 'finance_quotes',
+      pageId: 'quotes-page',
+      pageLabel: 'Quotes',
+      goal: 'Send the verified customer offer',
+      jobs: ['Send offer'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'sales.quote.send');
+    assert.equal(command.targetSystem, 'sales');
+    assert.equal(command.riskLevel, 'high');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(command.budgetAuthority, 'none');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps canonical commerce and social commands autonomous but server-owned', () => {
     const commands = normalizeAgentExecutionCommands([
       {

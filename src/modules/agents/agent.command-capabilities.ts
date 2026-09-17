@@ -16,6 +16,7 @@ const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCa
   'sales.create_followup_task': 'leads.manage',
   'sales.transition_pipeline': 'leads.manage',
   'sales.quote.create': 'quotes.create',
+  'sales.quote.send': 'quotes.send',
   'advertising.create_optimization': 'advertising.manage',
   'finance.create_automation': 'finance.manage',
   'finance.invoice.create_from_order': 'invoices.create',
