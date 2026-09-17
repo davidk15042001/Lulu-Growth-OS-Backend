@@ -45,7 +45,7 @@ describe('Provider Control Plane', () => {
     const catalog = await providerService.listProviderCatalog();
     const googleBusiness = catalog.find((entry) => entry.providerKey === 'google_business');
     const unifyPort = catalog.find((entry) => entry.providerKey === 'unifyport');
-    assert.deepEqual(googleBusiness?.runtime, { adapterRegistered: true, supportedFeatures: ['verification'] });
+    assert.deepEqual(googleBusiness?.runtime, { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('does-not-exist'), { adapterRegistered: false, supportedFeatures: [] });
     assert.equal(unifyPort?.runtime?.adapterRegistered, true);
     assert.ok(unifyPort?.runtime?.supportedFeatures.includes('sync'));
@@ -61,12 +61,12 @@ describe('Provider Control Plane', () => {
     await assert.rejects(providerService.createWorkspaceProviderMapping({ workspaceId: f.b, actorId: f.outsider, providerConnectionId: f.connection, providerAccountId: f.account, providerAssetId: f.asset, luluObjectType: 'product', luluObjectId: crypto.randomUUID(), externalObjectType: 'location', externalObjectId: 'loc-2', sourceOfTruth: 'LULU_MASTER' }), { code: 'PROVIDER_TENANT_SCOPE_MISMATCH' });
   });
 
-  it('resolves capability state conservatively and supports explicit modes', async () => {
+  it('resolves Google Business capability state from the real OAuth/API path and supports explicit modes', async () => {
     const f = await fixture();
     const verified = await providerService.verifyWorkspaceProvider(f.a, f.connection, f.owner);
-    assert.equal(verified?.status, 'PROVIDER_REVIEW');
-    assert.equal(verified?.healthStatus, 'PROVIDER_REVIEW');
-    assert.ok(verified?.capabilities.every((capability) => capability.status === 'UNAVAILABLE' || capability.status === 'PROVIDER_REVIEW'));
+    assert.equal(verified?.status, 'AUTHORIZATION_REQUIRED');
+    assert.equal(verified?.healthStatus, 'AUTHORIZATION_REQUIRED');
+    assert.ok(verified?.capabilities.every((capability) => capability.status === 'AUTHORIZATION_REQUIRED'));
     const changed = await providerService.changeWorkspaceProviderMode(f.a, f.connection, f.owner, 'HYBRID');
     assert.equal(changed.mode, 'HYBRID');
     const disconnected = await providerService.disconnectWorkspaceProvider(f.a, f.connection, f.owner);

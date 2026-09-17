@@ -13,6 +13,7 @@ import type {
 } from './provider.types.js';
 import { UnifyPortAdapter } from './unifyport.adapter.js';
 import { TwilioAdapter } from './twilio.adapter.js';
+import { GoogleBusinessAdapter } from './google-business.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -114,6 +115,7 @@ class ConservativeLegacyAdapter implements ProviderAdapter {
 const adapters = new Map<string, ProviderAdapter>(PROVIDER_CATALOG.map((entry) => [entry.providerKey, new ConservativeLegacyAdapter(entry.providerKey)]));
 adapters.set('unifyport', new UnifyPortAdapter());
 adapters.set('twilio', new TwilioAdapter());
+adapters.set('google_business', new GoogleBusinessAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));

@@ -51,6 +51,10 @@ export type ProviderDiscoveredAsset = {
 export type ProviderAdapterContext = {
   connectionId: string;
   providerKey: string;
+  /** Workspace context is required by adapters that bridge legacy workspace
+   * services (for example Google Business OAuth) into the canonical provider
+   * control plane. It remains optional for platform-scoped adapters. */
+  workspaceId?: string | null;
   externalAccountId?: string | null;
   grantedScopes: string[];
   metadata: Record<string, unknown>;

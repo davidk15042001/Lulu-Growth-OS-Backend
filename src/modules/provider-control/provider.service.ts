@@ -70,6 +70,7 @@ function connectionContext(row: Record<string, unknown>) {
   return {
     connectionId: String(row.id),
     providerKey: String(row.providerKey),
+    workspaceId: row.workspaceId == null ? null : String(row.workspaceId),
     externalAccountId: row.externalAccountId == null ? null : String(row.externalAccountId),
     grantedScopes: Array.isArray(row.grantedScopesRaw ?? row.grantedScopes) ? ((row.grantedScopesRaw ?? row.grantedScopes) as unknown[]).map(String) : [],
     metadata: ((row.metadataRaw ?? {}) as Record<string, unknown>),

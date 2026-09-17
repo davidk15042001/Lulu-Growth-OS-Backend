@@ -49,6 +49,7 @@ async function processSyncJob(job: repo.ProviderSyncJob) {
     const context: ProviderAdapterContext = {
       connectionId: String(connection.id),
       providerKey: String(connection.providerKey),
+      workspaceId: job.workspaceId,
       externalAccountId: connection.externalAccountId == null ? null : String(connection.externalAccountId),
       grantedScopes: Array.isArray(connection.grantedScopesRaw ?? connection.grantedScopes) ? ((connection.grantedScopesRaw ?? connection.grantedScopes) as unknown[]).map(String) : [],
       metadata: ((connection.metadataRaw ?? {}) as Record<string, unknown>),
