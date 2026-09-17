@@ -107,8 +107,12 @@ const salesSettingsSchema = z.object({
 }).strict();
 
 const agentSettingsSchema = z.object({
-  paused: z.boolean(),
-}).strict();
+  paused: z.boolean().optional(),
+  // Each tenant can choose how often its scheduled autonomous team may run.
+  // The runtime still polls frequently for liveness, but this policy is
+  // durable and prevents unnecessary paid cycles for a workspace.
+  cadenceMinutes: z.number().int().min(15).max(1440).optional(),
+}).strict().refine((value) => Object.keys(value).length > 0, 'At least one agent setting must be provided');
 
 export const updateWorkspaceSettingsSchema = z.object({
   sales: salesSettingsSchema.optional(),

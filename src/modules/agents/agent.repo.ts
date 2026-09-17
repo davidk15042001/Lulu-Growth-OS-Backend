@@ -75,11 +75,20 @@ export async function listAutomatedTargets() {
     plan_key: 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
     status: string;
     ad_spend_funded: boolean;
+    cadence_minutes: number;
+    last_scheduled_at: string | null;
       }>(`SELECT w.id AS workspace_id, w.created_by AS actor_user_id,
              CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'ai' ELSE COALESCE(ws.plan_key,'starter') END AS plan_key,
              CASE WHEN w.billing_skipped_at IS NOT NULL THEN 'billing_skipped' ELSE COALESCE(ws.status,'inactive') END AS status,
-             (COALESCE(ad.available_amount,0)>0 AND COALESCE(ad.reversal_debt_amount,0)=0) AS ad_spend_funded
+             (COALESCE(ad.available_amount,0)>0 AND COALESCE(ad.reversal_debt_amount,0)=0) AS ad_spend_funded,
+             CASE
+               WHEN COALESCE(s.settings->'agents'->>'cadenceMinutes', '') ~ '^[0-9]+$'
+                 THEN GREATEST(15, LEAST(1440, (s.settings->'agents'->>'cadenceMinutes')::integer))
+               ELSE 360
+             END AS cadence_minutes,
+             latest_cycle.created_at AS last_scheduled_at
       FROM workspaces w
+      LEFT JOIN workspace_settings s ON s.workspace_id=w.id
       LEFT JOIN LATERAL (
         SELECT s.plan_key,s.status,s.provider
         FROM workspace_subscriptions s
@@ -89,6 +98,13 @@ export async function listAutomatedTargets() {
       ) ws ON TRUE
       LEFT JOIN workspace_ad_spend_wallets ad ON ad.workspace_id=w.id
       LEFT JOIN workspace_api_wallets api ON api.workspace_id=w.id
+      LEFT JOIN LATERAL (
+        SELECT created_at
+        FROM workspace_agent_team_cycles
+        WHERE workspace_id=w.id AND trigger_type='scheduled'
+        ORDER BY created_at DESC
+        LIMIT 1
+      ) latest_cycle ON TRUE
       WHERE w.deleted_at IS NULL
         AND (
           (ws.status IN ('active','trialing') AND ws.plan_key IN ('starter','ai','test'))

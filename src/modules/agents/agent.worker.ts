@@ -8,7 +8,7 @@ import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 
 const intervalMs = 15 * 60 * 1000;
-const dedupeMinutes = 6 * 60;
+const defaultCadenceMinutes = 6 * 60;
 const runtimeMonitor = createRuntimeWorkerMonitor('automatic-analysis', { staleAfterMs: intervalMs + 60_000 });
 let timer: NodeJS.Timeout | undefined;
 let activeCycle: Promise<void> | null = null;
@@ -38,6 +38,13 @@ export function runAutomaticAnalysisCycle(): Promise<void> {
     let processed = 0;
     for (const target of targets) {
       if (stopping) break;
+      const cadenceMinutes = Number.isFinite(Number(target.cadence_minutes))
+        ? Math.max(15, Math.min(1440, Number(target.cadence_minutes)))
+        : defaultCadenceMinutes;
+      if (target.last_scheduled_at) {
+        const elapsedMinutes = (Date.now() - Date.parse(target.last_scheduled_at)) / 60_000;
+        if (Number.isFinite(elapsedMinutes) && elapsedMinutes < cadenceMinutes) continue;
+      }
       const prepared = await prepareAutomaticAgentTeam(target.workspace_id, 'scheduled');
       const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
       for (const selected of prepared.selection.specialists) {
@@ -46,7 +53,7 @@ export function runAutomaticAnalysisCycle(): Promise<void> {
         const page = automaticPageProfiles.find((profile) => profile.pageId === selected.definition.pageId);
         if (!page) continue;
         const goal = buildPageAgentGoal(page);
-        const pageDedupeMinutes = selected.reasons.includes('recovery required') ? 15 : dedupeMinutes;
+        const pageDedupeMinutes = selected.reasons.includes('recovery required') ? 15 : cadenceMinutes;
         if (await repo.getRecentPageRun(target.workspace_id, page.pageId, pageDedupeMinutes)) continue;
         await startAutomaticRun(
           target.workspace_id,

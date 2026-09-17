@@ -11,6 +11,7 @@ import {
   createSavedViewSchema,
   inviteMemberSchema,
   updateSavedViewSchema,
+  updateWorkspaceSettingsSchema,
 } from '../src/modules/workspace-app/workspace-app.validator.js';
 
 describe('request validators', () => {
@@ -87,5 +88,13 @@ describe('request validators', () => {
     assert.equal(view.isDefault, false);
     assert.equal(createSavedViewSchema.safeParse({ resourceType: 'not_real', name: 'Invalid' }).success, false);
     assert.equal(updateSavedViewSchema.safeParse({}).success, false);
+  });
+
+  it('bounds tenant autonomous scheduling and allows partial agent updates', () => {
+    const cadence = updateWorkspaceSettingsSchema.parse({ agents: { cadenceMinutes: 60 } });
+    assert.equal(cadence.agents?.cadenceMinutes, 60);
+    assert.equal(updateWorkspaceSettingsSchema.parse({ agents: { paused: true } }).agents?.paused, true);
+    assert.equal(updateWorkspaceSettingsSchema.safeParse({ agents: { cadenceMinutes: 10 } }).success, false);
+    assert.equal(updateWorkspaceSettingsSchema.safeParse({ agents: {} }).success, false);
   });
 });

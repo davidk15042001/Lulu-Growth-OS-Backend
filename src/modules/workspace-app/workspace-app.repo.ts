@@ -738,7 +738,14 @@ export async function updateWorkspaceSettings(
       `INSERT INTO workspace_settings (workspace_id, settings)
        VALUES ($1, $2::jsonb)
        ON CONFLICT (workspace_id) DO UPDATE
-         SET settings = COALESCE(workspace_settings.settings, '{}'::jsonb) || EXCLUDED.settings,
+         SET settings =
+             (COALESCE(workspace_settings.settings, '{}'::jsonb) - 'agents')
+             || (EXCLUDED.settings - 'agents')
+             || jsonb_build_object(
+               'agents',
+               COALESCE(workspace_settings.settings->'agents', '{}'::jsonb)
+               || COALESCE(EXCLUDED.settings->'agents', '{}'::jsonb)
+             ),
              updated_at = NOW()
        RETURNING workspace_id AS "workspaceId", settings,
                  created_at AS "createdAt", updated_at AS "updatedAt"`,
