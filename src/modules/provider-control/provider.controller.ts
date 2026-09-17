@@ -4,7 +4,7 @@ import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import { AppError } from '../../utils/app-error.js';
 import * as service from './provider.service.js';
-import { connectionParamsSchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioAdminWhatsAppSenderSchema, twilioIdentitySchema, twilioWorkspaceContentTemplateSchema, twilioWorkspaceParamsSchema, unifyPortAccountSchema, unifyPortIdentitySchema } from './provider.validator.js';
+import { connectionParamsSchema, providerContractCheckQuerySchema, providerMappingQuerySchema, providerMappingSchema, providerModeSchema, providerParamsSchema, providerSyncSchema, twilioAdminWhatsAppSenderSchema, twilioIdentitySchema, twilioWorkspaceContentTemplateSchema, twilioWorkspaceParamsSchema, unifyPortAccountSchema, unifyPortIdentitySchema } from './provider.validator.js';
 import * as unifyPort from './unifyport.client.js';
 import * as twilio from './twilio.client.js';
 import { ingestTwilioWebhook } from './twilio.webhook.service.js';
@@ -39,6 +39,21 @@ export async function verify(req: WorkspaceRequest, res: Response, next: NextFun
   try {
     const { connectionId } = connectionParamsSchema.parse(req.params);
     return successResponse(res, 'Provider connection verification completed', await service.verifyWorkspaceProvider(workspaceId(req), connectionId, req.user!.id));
+  } catch (error) { next(error); }
+}
+
+export async function contractCheck(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { connectionId } = connectionParamsSchema.parse(req.params);
+    return successResponse(res, 'Provider contract check completed', await service.runWorkspaceProviderContractCheck(workspaceId(req), connectionId, req.user!.id));
+  } catch (error) { next(error); }
+}
+
+export async function contractChecks(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { connectionId } = connectionParamsSchema.parse(req.params);
+    const { limit } = providerContractCheckQuerySchema.parse(req.query);
+    return successResponse(res, 'Provider contract checks loaded', { checks: await service.listWorkspaceProviderContractChecks(workspaceId(req), connectionId, limit) });
   } catch (error) { next(error); }
 }
 

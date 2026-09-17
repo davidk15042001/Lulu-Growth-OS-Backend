@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 export const connectionParamsSchema = z.object({ connectionId: z.string().uuid() });
+export const providerContractCheckQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(50).default(10) }).strict();
 export const providerParamsSchema = z.object({ provider: z.string().trim().min(1).max(80) });
 export const providerSyncSchema = z.object({ syncType: z.string().trim().min(1).max(100).default('full') }).strict();
 export const providerModeSchema = z.object({ mode: z.enum(['LULU_MANAGED', 'CUSTOMER_OWNED', 'PARTNER_MANAGED', 'HYBRID']) }).strict();

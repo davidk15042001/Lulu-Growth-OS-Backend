@@ -41,6 +41,13 @@ async function fixture() {
 }
 
 describe('Provider Control Plane', () => {
+  it('classifies provider contract evidence conservatively', () => {
+    assert.equal(providerService.classifyProviderContract({ verification: { status: 'PASSED' }, capabilities: { status: 'PASSED' }, health: { status: 'PASSED' } }, [{ status: 'AVAILABLE' }]), 'PASSED');
+    assert.equal(providerService.classifyProviderContract({ verification: { status: 'PASSED' }, capabilities: { status: 'PASSED' }, health: { status: 'FAILED', reason: 'timeout' } }, [{ status: 'AVAILABLE' }]), 'PARTIAL');
+    assert.equal(providerService.classifyProviderContract({ verification: { status: 'FAILED', reason: 'reauth' }, capabilities: { status: 'SKIPPED' } }, []), 'FAILED');
+    assert.equal(providerService.classifyProviderContract({ verification: { status: 'PASSED' } }, [{ status: 'UNCONFIRMED' }]), 'PARTIAL');
+  });
+
   it('exposes runtime adapter readiness separately from the broad provider catalog', async () => {
     const catalog = await providerService.listProviderCatalog();
     const googleBusiness = catalog.find((entry) => entry.providerKey === 'google_business');

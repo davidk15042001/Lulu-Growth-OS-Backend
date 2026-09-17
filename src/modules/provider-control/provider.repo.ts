@@ -92,6 +92,22 @@ export type ProviderConnection = {
   }>;
 };
 
+export type ProviderContractCheck = {
+  id: string;
+  workspaceId: string;
+  providerConnectionId: string;
+  providerKey: string;
+  status: 'PASSED' | 'PARTIAL' | 'FAILED';
+  phaseResults: Record<string, unknown>;
+  capabilities: Array<Record<string, unknown>>;
+  errorCode: string | null;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdBy: string | null;
+  createdAt: string;
+};
+
 export type ProviderCatalogRecord = {
   providerKey: string;
   displayName: string;
@@ -549,6 +565,77 @@ export async function finishProviderSyncState(input: { connectionId: string; syn
       WHERE provider_connection_id=$1 AND subject_type='CONNECTION' AND subject_id=$1 AND sync_type=$2`,
     [input.connectionId, input.syncType, input.status, input.cursor ?? null, input.error ? input.error.slice(0, 1_000) : null],
   );
+}
+
+function mapProviderContractCheck(row: Record<string, unknown>): ProviderContractCheck {
+  const phaseResults = row.phaseResults && typeof row.phaseResults === 'object' && !Array.isArray(row.phaseResults)
+    ? row.phaseResults as Record<string, unknown> : {};
+  const capabilities = Array.isArray(row.capabilities) ? row.capabilities as Array<Record<string, unknown>> : [];
+  return {
+    id: String(row.id),
+    workspaceId: String(row.workspaceId),
+    providerConnectionId: String(row.providerConnectionId),
+    providerKey: String(row.providerKey),
+    status: String(row.status) as ProviderContractCheck['status'],
+    phaseResults,
+    capabilities,
+    errorCode: row.errorCode == null ? null : String(row.errorCode),
+    errorMessage: row.errorMessage == null ? null : String(row.errorMessage),
+    startedAt: String(row.startedAt),
+    finishedAt: row.finishedAt == null ? null : String(row.finishedAt),
+    createdBy: row.createdBy == null ? null : String(row.createdBy),
+    createdAt: String(row.createdAt),
+  };
+}
+
+export async function createProviderContractCheck(input: { workspaceId: string; providerConnectionId: string; providerKey: string; createdBy: string }) {
+  const { rows } = await query<Record<string, unknown>>(
+    `INSERT INTO provider_contract_checks(workspace_id,provider_connection_id,provider_key,status,phase_results,capabilities,created_by)
+     SELECT $1,$2,$3,'PARTIAL','{}'::jsonb,'[]'::jsonb,$4
+      WHERE EXISTS (SELECT 1 FROM provider_connections WHERE id=$2 AND workspace_id=$1)
+     RETURNING id, workspace_id AS "workspaceId", provider_connection_id AS "providerConnectionId", provider_key AS "providerKey",
+       status, phase_results AS "phaseResults", capabilities, error_code AS "errorCode", error_message AS "errorMessage",
+       started_at AS "startedAt", finished_at AS "finishedAt", created_by AS "createdBy", created_at AS "createdAt"`,
+    [input.workspaceId, input.providerConnectionId, input.providerKey, input.createdBy],
+  );
+  return rows[0] ? mapProviderContractCheck(rows[0]) : null;
+}
+
+export async function finishProviderContractCheck(input: {
+  workspaceId: string;
+  checkId: string;
+  status: ProviderContractCheck['status'];
+  phaseResults: Record<string, unknown>;
+  capabilities: Array<Record<string, unknown>>;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+}) {
+  const { rows } = await query<Record<string, unknown>>(
+    `UPDATE provider_contract_checks
+        SET status=$3, phase_results=$4::jsonb, capabilities=$5::jsonb,
+            error_code=$6, error_message=$7, finished_at=NOW()
+      WHERE workspace_id=$1 AND id=$2
+      RETURNING id, workspace_id AS "workspaceId", provider_connection_id AS "providerConnectionId", provider_key AS "providerKey",
+        status, phase_results AS "phaseResults", capabilities, error_code AS "errorCode", error_message AS "errorMessage",
+        started_at AS "startedAt", finished_at AS "finishedAt", created_by AS "createdBy", created_at AS "createdAt"`,
+    [input.workspaceId, input.checkId, input.status, JSON.stringify(input.phaseResults), JSON.stringify(input.capabilities), input.errorCode ?? null, input.errorMessage ?? null],
+  );
+  return rows[0] ? mapProviderContractCheck(rows[0]) : null;
+}
+
+export async function listProviderContractChecks(workspaceId: string, connectionId: string, limit = 10) {
+  const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+  const { rows } = await query<Record<string, unknown>>(
+    `SELECT id, workspace_id AS "workspaceId", provider_connection_id AS "providerConnectionId", provider_key AS "providerKey",
+       status, phase_results AS "phaseResults", capabilities, error_code AS "errorCode", error_message AS "errorMessage",
+       started_at AS "startedAt", finished_at AS "finishedAt", created_by AS "createdBy", created_at AS "createdAt"
+      FROM provider_contract_checks
+     WHERE workspace_id=$1 AND provider_connection_id=$2
+     ORDER BY created_at DESC
+     LIMIT $3`,
+    [workspaceId, connectionId, boundedLimit],
+  );
+  return rows.map(mapProviderContractCheck);
 }
 
 /** Persist the provider-owned account/location graph discovered by a real

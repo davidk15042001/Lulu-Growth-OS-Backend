@@ -27,6 +27,14 @@ workspaceProviderRoutes.route('/:connectionId/verify')
   .post(requireWorkspaceAdmin, controller.verify)
   .all(methodNotAllowed);
 
+workspaceProviderRoutes.route('/:connectionId/contract-check')
+  .post(requireWorkspaceAdmin, controller.contractCheck)
+  .all(methodNotAllowed);
+
+workspaceProviderRoutes.route('/:connectionId/contract-checks')
+  .get(requireWorkspaceMember, controller.contractChecks)
+  .all(methodNotAllowed);
+
 workspaceProviderRoutes.route('/:connectionId/mode')
   .patch(requireWorkspaceAdmin, controller.changeMode)
   .all(methodNotAllowed);
@@ -39,4 +47,3 @@ export const providerWebhookRoutes = Router();
 providerWebhookRoutes.route('/:provider')
   .post(controller.webhook)
   .all(methodNotAllowed);
-

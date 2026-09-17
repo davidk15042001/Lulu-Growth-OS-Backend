@@ -134,6 +134,113 @@ export async function verifyWorkspaceProvider(workspaceId: string, connectionId:
   return updated ? (await applyEffectiveCapabilityPolicy(workspaceId, [updated]))[0] : null;
 }
 
+export type ProviderContractPhase = {
+  status: 'PASSED' | 'FAILED' | 'SKIPPED';
+  reason?: string;
+  details?: Record<string, unknown>;
+};
+
+/**
+ * Contract checks are deliberately conservative. A provider is only marked
+ * PASSED when the real adapter can verify the connection and every optional
+ * probe that the adapter advertises succeeds. No external resource is
+ * created, changed, published, or deleted by this operation.
+ */
+export function classifyProviderContract(phases: Record<string, ProviderContractPhase>, capabilities: Array<{ status?: unknown }>): repo.ProviderContractCheck['status'] {
+  const verification = phases.verification;
+  if (!verification || verification.status !== 'PASSED') return 'FAILED';
+  const failedOptionalPhase = Object.entries(phases).some(([key, phase]) => key !== 'verification' && phase.status === 'FAILED');
+  if (failedOptionalPhase) return 'PARTIAL';
+  if (capabilities.some((capability) => capability.status !== undefined && capability.status !== 'AVAILABLE')) return 'PARTIAL';
+  return 'PASSED';
+}
+
+function contractErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message : 'Provider contract phase failed.';
+  return message.replaceAll(/(authorization|token|api[-_ ]?key|secret)\s*[:=]\s*[^\s,;]+/gi, '$1: [redacted]').slice(0, 500);
+}
+
+export async function runWorkspaceProviderContractCheck(workspaceId: string, connectionId: string, actorId: string) {
+  await assertWorkspaceCapability({ workspaceId, userId: actorId, capability: 'providers.manage' });
+  const row = await repo.getProviderConnectionInternal(connectionId);
+  if (!row || String(row.workspaceId) !== workspaceId) throw providerError('PROVIDER_CONNECTION_NOT_FOUND', 'Provider connection not found', undefined, 404);
+  const providerKey = String(row.providerKey);
+  const check = await repo.createProviderContractCheck({ workspaceId, providerConnectionId: connectionId, providerKey, createdBy: actorId });
+  if (!check) throw providerError('PROVIDER_CONTRACT_CHECK_CREATE_FAILED', 'The provider contract check could not be created', undefined, 500);
+  const adapter = getProviderAdapter(providerKey);
+  const context = connectionContext(row);
+  const phases: Record<string, ProviderContractPhase> = {};
+  let capabilities: Array<Record<string, unknown>> = [];
+  let terminalErrorCode: string | null = null;
+  let terminalErrorMessage: string | null = null;
+
+  try {
+    const result = await adapter.verifyConnection(context);
+    phases.verification = {
+      status: result.verified ? 'PASSED' : 'FAILED',
+      reason: result.reason,
+      details: { connectionStatus: result.status, authorizationState: result.authorizationState, healthStatus: result.healthStatus },
+    };
+    if (!result.verified) {
+      terminalErrorCode = result.status === 'AUTHORIZATION_REQUIRED' || result.status === 'EXPIRED' ? 'PROVIDER_AUTHORIZATION_REQUIRED' : 'PROVIDER_VERIFICATION_FAILED';
+      terminalErrorMessage = result.reason;
+    }
+  } catch (error) {
+    phases.verification = { status: 'FAILED', reason: contractErrorMessage(error) };
+    terminalErrorCode = 'PROVIDER_VERIFICATION_ERROR';
+    terminalErrorMessage = contractErrorMessage(error);
+  }
+
+  if (phases.verification.status === 'PASSED') {
+    if (typeof adapter.getCapabilities === 'function') {
+      try {
+        const result = await adapter.getCapabilities(context);
+        capabilities = result.map((item) => ({ capabilityKey: item.capabilityKey, status: item.status, ...(item.reason ? { reason: item.reason } : {}) }));
+        phases.capabilities = { status: 'PASSED', details: { count: capabilities.length } };
+      } catch (error) {
+        phases.capabilities = { status: 'FAILED', reason: contractErrorMessage(error) };
+      }
+    } else phases.capabilities = { status: 'SKIPPED', reason: 'This adapter does not expose a capability probe.' };
+
+    if (typeof adapter.getHealth === 'function') {
+      try {
+        const result = await adapter.getHealth(context);
+        phases.health = { status: result.status === 'HEALTHY' ? 'PASSED' : 'FAILED', reason: result.reason, details: { healthStatus: result.status } };
+      } catch (error) {
+        phases.health = { status: 'FAILED', reason: contractErrorMessage(error) };
+      }
+    } else phases.health = { status: 'SKIPPED', reason: 'This adapter does not expose a health probe.' };
+
+    if (typeof adapter.discoverAccounts === 'function') {
+      try {
+        const accounts = await adapter.discoverAccounts(context);
+        let assets = 0;
+        if (typeof adapter.discoverAssets === 'function') {
+          for (const account of accounts.slice(0, 20)) assets += (await adapter.discoverAssets(context, account)).length;
+        }
+        phases.discovery = { status: 'PASSED', details: { accounts: accounts.length, assets } };
+      } catch (error) {
+        phases.discovery = { status: 'FAILED', reason: contractErrorMessage(error) };
+      }
+    } else phases.discovery = { status: 'SKIPPED', reason: 'This adapter does not expose account discovery.' };
+  } else {
+    phases.capabilities = { status: 'SKIPPED', reason: 'Skipped because connection verification failed.' };
+    phases.health = { status: 'SKIPPED', reason: 'Skipped because connection verification failed.' };
+    phases.discovery = { status: 'SKIPPED', reason: 'Skipped because connection verification failed.' };
+  }
+
+  const status = classifyProviderContract(phases, capabilities);
+  const completed = await repo.finishProviderContractCheck({ workspaceId, checkId: check.id, status, phaseResults: phases, capabilities, errorCode: terminalErrorCode, errorMessage: terminalErrorMessage });
+  await recordSecurityEvent({ eventType: 'PROVIDER_ACTION', workspaceId, userId: actorId, metadata: { action: 'contract_check_completed', targetId: connectionId, provider: providerKey, checkId: check.id, status } });
+  return completed ?? { ...check, status, phaseResults: phases, capabilities, errorCode: terminalErrorCode, errorMessage: terminalErrorMessage, finishedAt: new Date().toISOString() };
+}
+
+export async function listWorkspaceProviderContractChecks(workspaceId: string, connectionId: string, limit = 10) {
+  const connection = await repo.getProviderConnection(workspaceId, connectionId);
+  if (!connection) throw providerError('PROVIDER_CONNECTION_NOT_FOUND', 'Provider connection not found', undefined, 404);
+  return repo.listProviderContractChecks(workspaceId, connectionId, limit);
+}
+
 export async function changeWorkspaceProviderMode(workspaceId: string, connectionId: string, actorId: string, mode: ProviderMode) {
   await assertWorkspaceCapability({ workspaceId, userId: actorId, capability: 'providers.manage' });
   const connection = await repo.getProviderConnection(workspaceId, connectionId);
