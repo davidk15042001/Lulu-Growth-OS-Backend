@@ -30,6 +30,7 @@ const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCa
   'omnichannel.send_message': 'omnichannel.reply',
   'calendar.event.create': 'workspace.write',
   'website.publish_job': 'website.publish',
+  'website.domain.verify': 'website.manage',
   'ecommerce.generate_product_images': 'products.update',
   'commerce.order.create': 'orders.manage',
   'commerce.order.update': 'orders.manage',

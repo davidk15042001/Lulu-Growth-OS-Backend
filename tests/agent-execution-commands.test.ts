@@ -383,6 +383,29 @@ describe('agent execution commands', () => {
     assert.equal(command.approvalPolicy, 'allow');
   });
 
+  it('infers website domain verification from a site and domain context', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'website',
+      targetSystem: 'website',
+      actionResourceType: 'marketing_publications',
+      pageId: 'website-page',
+      pageLabel: 'Domains',
+      goal: 'Verify the customer domain before publishing',
+      jobs: ['verify DNS ownership'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      siteId: 'site-123',
+      domainId: 'domain-123',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'website.domain.verify');
+    assert.equal(command.targetSystem, 'website');
+    assert.equal(command.targetEntityId, 'domain-123');
+    assert.equal(command.payload.siteId, 'site-123');
+    assert.equal(command.approvalPolicy, 'allow');
+  });
+
   it('registers canonical product create and update commands with product capabilities', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'commerce.product.create',

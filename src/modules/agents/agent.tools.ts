@@ -61,6 +61,7 @@ type AgentSnapshotInput = {
   location?: unknown;
   customerId?: unknown;
   companyId?: unknown;
+  domainId?: unknown;
   delegatedContext?: unknown;
   noActionReason?: unknown;
 };
@@ -695,6 +696,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     location: compactText(input.location, 500) || null,
     customerId: compactText(input.customerId, 120) || null,
     companyId: compactText(input.companyId, 120) || null,
+    domainId: compactText(input.domainId, 120) || null,
   });
   const customerBudgetCommands = normalizedCommands.filter(
     (command) => command.budgetAuthority === 'customer_authorization_required',
@@ -763,6 +765,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       location: input.location ?? null,
       customerId: input.customerId ?? null,
       companyId: input.companyId ?? null,
+      domainId: input.domainId ?? null,
       commands,
       delegatedContext,
       commandTypes,

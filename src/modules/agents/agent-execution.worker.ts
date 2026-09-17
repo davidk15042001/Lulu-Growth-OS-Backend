@@ -5,6 +5,7 @@ import * as recordRepo from '../records/record.repo.js';
 import { createAiDraft, createDraft, sendAutonomousDraft } from '../email/email.service.js';
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
+import { verifyDomainOwnership } from '../websites/domain-verification.service.js';
 import { generateProductImagesFromText } from '../product-images/product-image.service.js';
 import {
   normalizeAgentExecutionCommands,
@@ -622,6 +623,27 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     };
   }
 
+  if (command.type === 'website.domain.verify') {
+    const siteId = textValue(payload.siteId);
+    const domainId = textValue(payload.domainId || command.targetEntityId);
+    if (!siteId || !domainId) throw new Error('website.domain.verify requires siteId and domainId');
+    if (!record.createdBy) throw new Error('website.domain.verify requires an originating workspace user');
+    const result = await verifyDomainOwnership({ workspaceId: record.workspaceId, siteId, domainId, userId: record.createdBy });
+    const stored = await persistCommandExecutionResult(record, command, {
+      status: 'verified',
+      siteId,
+      domainId,
+      domainStatus: result?.domains.find((domain) => domain.id === domainId)?.status ?? null,
+    });
+    return {
+      type: command.type,
+      targetEntityId: domainId,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result,
+    };
+  }
+
   if (command.type === 'website.publish_job') {
     const siteId = textValue(payload.siteId);
     const jobId = textValue(payload.jobId || command.targetEntityId);
@@ -918,6 +940,7 @@ function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
     location: textValue(data.location, 500) || null,
     customerId: textValue(data.customerId) || null,
     companyId: textValue(data.companyId) || null,
+    domainId: textValue(data.domainId) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
   });
 }

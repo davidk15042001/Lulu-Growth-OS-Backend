@@ -24,6 +24,7 @@ export const agentExecutionCommandTypeSchema = z.enum([
   'omnichannel.send_message',
   'calendar.event.create',
   'website.publish_job',
+  'website.domain.verify',
   'ecommerce.generate_product_images',
   'commerce.order.create',
   'commerce.order.update',
@@ -100,6 +101,7 @@ type InferCommandContext = {
   location?: string | null;
   customerId?: string | null;
   companyId?: string | null;
+  domainId?: string | null;
   sourceText?: string | null;
 };
 
@@ -188,6 +190,7 @@ function serverCommandPolicy(command: AgentExecutionCommand, context: InferComma
     'omnichannel.send_message': { targetSystem: 'communication', riskLevel: 'high', budgetAuthority: 'none' },
     'calendar.event.create': { targetSystem: 'communication', riskLevel: 'medium', budgetAuthority: 'none' },
     'website.publish_job': { targetSystem: 'website', riskLevel: 'high', budgetAuthority: 'none' },
+    'website.domain.verify': { targetSystem: 'website', riskLevel: 'medium', budgetAuthority: 'none' },
     'ecommerce.generate_product_images': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
     'commerce.order.create': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
     'commerce.order.update': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
@@ -458,6 +461,24 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         textValue(context.tone, 40),
         textValue(context.language, 16),
       ]),
+    };
+  }
+
+  if (context.targetSystem === 'website' && context.siteId && context.domainId) {
+    return {
+      type: 'website.domain.verify',
+      summary,
+      targetSystem: 'website',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'website_domain',
+      targetEntityId: context.domainId,
+      payload: {
+        siteId: context.siteId,
+        domainId: context.domainId,
+      },
+      idempotencyKey: buildIdempotencyKey(['website.domain.verify', context.siteId, context.domainId]),
     };
   }
 
