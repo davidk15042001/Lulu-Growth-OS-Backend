@@ -59,10 +59,23 @@ export class MetaAdsAdapter implements ProviderAdapter {
 
   async getCapabilities(context: ProviderAdapterContext) {
     const verification = await this.verifyConnection(context);
-    const readStatus: ProviderCapabilityStatus = verification.status === 'CONNECTED' ? 'AVAILABLE' : verification.status === 'AUTHORIZATION_REQUIRED' ? 'AUTHORIZATION_REQUIRED' : verification.status === 'PROVIDER_REVIEW' ? 'PROVIDER_REVIEW' : 'ERROR';
+    let readStatus: ProviderCapabilityStatus = verification.status === 'AUTHORIZATION_REQUIRED' ? 'AUTHORIZATION_REQUIRED' : verification.status === 'PROVIDER_REVIEW' ? 'PROVIDER_REVIEW' : verification.status === 'CONNECTED' ? 'UNCONFIRMED' : 'ERROR';
+    let readReason = verification.reason;
+    if (verification.verified) {
+      try {
+        const { token, graph, account } = await this.probe(context);
+        await graph.readAdSpend({ accessToken: token, adAccountId: account });
+        readStatus = 'AVAILABLE';
+        readReason = 'Meta returned a real spend insights response for this ad account.';
+      } catch (error) {
+        const state = stateFor(error);
+        readStatus = state.status === 'AUTHORIZATION_REQUIRED' ? 'AUTHORIZATION_REQUIRED' : state.status === 'PROVIDER_REVIEW' ? 'PROVIDER_REVIEW' : 'ERROR';
+        readReason = error instanceof Error ? error.message : 'Meta spend insights could not be read.';
+      }
+    }
     return [
-      { capabilityKey: 'meta.ads.read_spend', status: readStatus, reason: verification.reason },
-      { capabilityKey: 'meta.ads.manage', status: readStatus === 'AVAILABLE' ? 'PROVIDER_REVIEW' as const : readStatus, reason: readStatus === 'AVAILABLE' ? 'Meta campaign mutations remain disabled until a prepaid payer contract and observed-cost settlement pass verification.' : verification.reason },
+      { capabilityKey: 'meta.ads.read_spend', status: readStatus, reason: readReason },
+      { capabilityKey: 'meta.ads.manage', status: readStatus === 'AVAILABLE' ? 'PROVIDER_REVIEW' as const : readStatus, reason: readStatus === 'AVAILABLE' ? 'Meta campaign mutations remain disabled until a prepaid payer contract and observed-cost settlement pass verification.' : readReason },
     ];
   }
 

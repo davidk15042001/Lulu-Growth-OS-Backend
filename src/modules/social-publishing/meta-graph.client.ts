@@ -212,6 +212,28 @@ export function createMetaGraphClient(options: {
     };
   }
 
+  async function readAdSpend(input: { accessToken: string; adAccountId: string }) {
+    const requested = input.adAccountId.replace(/^act_/i, '');
+    if (!/^\d+$/.test(requested)) {
+      throw new MetaGraphError('META_AD_ACCOUNT_ID_INVALID', 'Meta ad account IDs must contain digits and may optionally start with act_.', 'BLOCKED');
+    }
+    const { payload, requestId } = await request({
+      path: `act_${requested}/insights`,
+      accessToken: input.accessToken,
+      query: { fields: 'spend,impressions,clicks,date_start,date_stop', date_preset: 'maximum', limit: '1' },
+    });
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    const first = data[0] && typeof data[0] === 'object' && !Array.isArray(data[0]) ? data[0] as JsonObject : {};
+    return {
+      spend: typeof first.spend === 'string' ? first.spend : null,
+      impressions: typeof first.impressions === 'string' ? first.impressions : null,
+      clicks: typeof first.clicks === 'string' ? first.clicks : null,
+      dateStart: typeof first.date_start === 'string' ? first.date_start : null,
+      dateStop: typeof first.date_stop === 'string' ? first.date_stop : null,
+      providerRequestId: requestId,
+    };
+  }
+
   async function publishFacebook(input: {
     pageAccessToken: string;
     facebookPageId: string;
@@ -273,7 +295,7 @@ export function createMetaGraphClient(options: {
     return { providerPublicationId: id, providerRequestId: published.requestId, containerId };
   }
 
-  return { verifyPage, verifyAdAccount, listAdCampaigns, publishFacebook, publishInstagramImage };
+  return { verifyPage, verifyAdAccount, listAdCampaigns, readAdSpend, publishFacebook, publishInstagramImage };
 }
 
 export type MetaGraphClient = ReturnType<typeof createMetaGraphClient>;
