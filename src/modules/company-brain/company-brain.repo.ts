@@ -326,6 +326,39 @@ export async function getTask(workspaceId: string, taskId: string, client?: Pool
   return rows[0] ?? null;
 }
 
+/**
+ * Return the durable outputs of the tasks that block this task.  This is the
+ * explicit agent-to-agent hand-off boundary: a downstream employee receives
+ * only persisted predecessor evidence, never process-local state or an
+ * unverified in-memory message.
+ */
+export async function listTaskDependencyContext(workspaceId: string, taskId: string, limit = 12) {
+  const safeLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+  const { rows } = await query<{
+    taskId: string;
+    taskType: string;
+    title: string;
+    objective: string;
+    status: BrainTask['status'];
+    confidence: number | null;
+    result: Record<string, unknown> | null;
+    errorCode: string | null;
+    errorMessage: string | null;
+  }>(
+    `SELECT dependency.id AS "taskId",dependency.task_type AS "taskType",dependency.title,
+       dependency.objective,dependency.status,dependency.confidence::float AS confidence,
+       dependency.result,dependency.error_code AS "errorCode",dependency.error_message AS "errorMessage"
+     FROM company_brain_task_dependencies edge
+     JOIN company_brain_tasks dependency
+       ON dependency.workspace_id=edge.workspace_id AND dependency.id=edge.depends_on_task_id
+     WHERE edge.workspace_id=$1 AND edge.task_id=$2
+     ORDER BY edge.created_at ASC
+     LIMIT $3`,
+    [workspaceId, taskId, safeLimit],
+  );
+  return rows;
+}
+
 /** Claim one dependency-ready task without ever replaying a task that already
  * has a canonical agent run. A claim is a durable state transition and is
  * therefore observable through both the task timeline and domain events. */

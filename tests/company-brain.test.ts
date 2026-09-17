@@ -132,6 +132,9 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   assert.equal(graph.tasks.length, 5);
   assert.equal(graph.dependencies.length, 4);
   assert.ok(graph.events.length >= 8);
+  const dependencyContext = await brain.listTaskDependencyContext(workspaceId, mission!.task!.id);
+  assert.equal(dependencyContext.length, 3);
+  assert.ok(dependencyContext.every((item) => item.taskId !== mission!.task!.id));
   assert.equal((await brain.listLearning(workspaceId, 10)).length, 1);
   assert.equal(await brain.claimNextRunnableTask('blocked-mission-worker', 120), null);
 

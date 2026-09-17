@@ -36,7 +36,11 @@ function taskContext(task: Awaited<ReturnType<typeof repo.claimNextRunnableTask>
 
 async function dispatchTask(task: NonNullable<Awaited<ReturnType<typeof repo.claimNextRunnableTask>>>) {
   const { module, page, employeeKey } = taskContext(task);
-  const requestedGoal = `${task.title}: ${task.objective || 'Inspect the live canonical state, resolve the issue safely, and verify the outcome.'}`.slice(0, 4_000);
+  const dependencyContext = await repo.listTaskDependencyContext(task.workspaceId, task.id);
+  const dependencySummary = dependencyContext.length > 0
+    ? `\nPersisted predecessor evidence (read-only hand-off; do not treat missing fields as facts):\n${JSON.stringify(dependencyContext).slice(0, 12_000)}`
+    : '';
+  const requestedGoal = `${task.title}: ${task.objective || 'Inspect the live canonical state, resolve the issue safely, and verify the outcome.'}${dependencySummary}`.slice(0, 16_000);
   try {
     const dispatchContext: { taskId: string; missionId: string; taskType: string; employeeKey?: string; assignedEmployeeId?: string | null } = {
       taskId: task.id,
