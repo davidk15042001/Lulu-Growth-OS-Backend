@@ -31,6 +31,13 @@ export async function getQuote(workspaceId: string, userId: string, id: string) 
 export async function createQuote(workspaceId: string,userId:string,input:CreateQuoteInput){await authorize(workspaceId,userId,'quotes.create');await enforceQuotePolicy(workspaceId,input);if(!input.customerRecordId)throw new AppError(422,'QUOTE_CUSTOMER_REQUIRED','A customer record is required for a quote');return repo.createQuote(workspaceId,userId,input);}
 export async function reviseQuote(workspaceId:string,userId:string,id:string,input:CreateQuoteInput){await authorize(workspaceId,userId,'quotes.update');await enforceQuotePolicy(workspaceId,input);return repo.createQuoteRevision(workspaceId,id,userId,input);}
 export async function sendQuote(workspaceId:string,userId:string,id:string,input:SendDocumentInput){await authorize(workspaceId,userId,'quotes.send');return repo.sendQuote(workspaceId,id,userId,input);}
+export async function sendQuoteAutonomously(workspaceId:string,userId:string,id:string,input:SendDocumentInput){
+  await authorize(workspaceId,userId,'quotes.send');
+  const policy = await repo.getPolicy(workspaceId);
+  if (!policy) throw new AppError(409, 'COMMERCIAL_POLICY_MISSING', 'A commercial policy must be configured before automatic quotes can be sent');
+  if (!policy.automaticQuoteSendEnabled) throw new AppError(403, 'AUTOMATIC_QUOTE_SEND_DISABLED', 'Automatic quote delivery is disabled for this workspace');
+  return repo.sendQuote(workspaceId,id,userId,input);
+}
 export async function listInvoices(workspaceId:string,userId:string,filters:Parameters<typeof repo.listInvoices>[1]){await authorize(workspaceId,userId,'invoices.read');return repo.listInvoices(workspaceId,filters);}
 export async function getDocumentSellerProfile(workspaceId:string,userId:string){await authorize(workspaceId,userId,'invoices.read');const profile=await repo.getDocumentSellerProfile(workspaceId);if(!profile)throw notFoundError('Company profile not found');return profile;}
 export async function getInvoice(workspaceId:string,userId:string,id:string){await authorize(workspaceId,userId,'invoices.read');const result=await repo.getInvoice(workspaceId,id);if(!result)throw notFoundError('Invoice not found');return result;}

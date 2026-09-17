@@ -347,7 +347,7 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       recipient: textValue(payload.recipient, 320) || null,
       operationKey: textValue(payload.operationKey, 200) || `agent:${command.idempotencyKey}:quote-send`,
     });
-    const sent = await commercialDocumentService.sendQuote(record.workspaceId, actorUserId, quoteId, sendInput);
+    const sent = await commercialDocumentService.sendQuoteAutonomously(record.workspaceId, actorUserId, quoteId, sendInput);
     const sentResult = objectValue(sent);
     const stored = await persistCommandExecutionResult(record, command, {
       quoteId,
