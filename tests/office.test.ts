@@ -95,6 +95,30 @@ describe('Digital Company Office foundation', () => {
       .every((employee) => employee.status === 'IDLE' && employee.availability !== 'UNAVAILABLE'));
   });
 
+  it('materializes complete execution capabilities for each canonical employee role', async () => {
+    const f = await fixture();
+    const rows = await db.query<{ employeeKey: string; capabilityKey: string; accessMode: string }>(`
+      SELECT e.employee_key AS "employeeKey", c.capability_key AS "capabilityKey", c.access_mode AS "accessMode"
+      FROM digital_employee_capabilities c
+      JOIN digital_employees e ON e.workspace_id=c.workspace_id AND e.id=c.employee_id
+      WHERE c.workspace_id=$1
+        AND e.employee_key = ANY($2::text[])
+        AND c.capability_key = ANY($3::text[])
+      ORDER BY e.employee_key,c.capability_key`, [f.workspaceId,
+      ['quote-specialist','invoice-manager','website-manager','product-manager','integration-manager','outcome-quality-auditor'],
+      ['quotes.send','invoices.issue','invoices.send','website.publish','products.create','providers.connect','quality.review']]);
+    const capabilities = new Set(rows.rows.map((row) => `${row.employeeKey}:${row.capabilityKey}:${row.accessMode}`));
+    for (const expected of [
+      'quote-specialist:quotes.send:EXECUTE',
+      'invoice-manager:invoices.issue:EXECUTE',
+      'invoice-manager:invoices.send:EXECUTE',
+      'website-manager:website.publish:EXECUTE',
+      'product-manager:products.create:EXECUTE',
+      'integration-manager:providers.connect:EXECUTE',
+      'outcome-quality-auditor:quality.review:EXECUTE',
+    ]) assert.ok(capabilities.has(expected), `missing ${expected}`);
+  });
+
   it('derives employee state from a real persisted agent run', async () => {
     const f = await fixture();
     const runId = await createRun(f.workspaceId, f.owner);
