@@ -15,6 +15,7 @@ import { UnifyPortAdapter } from './unifyport.adapter.js';
 import { TwilioAdapter } from './twilio.adapter.js';
 import { GoogleBusinessAdapter } from './google-business.adapter.js';
 import { ManagedWebsiteAdapter } from './managed-website.adapter.js';
+import { AirwallexAdapter } from './airwallex.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -123,6 +124,7 @@ adapters.set('unifyport', new UnifyPortAdapter());
 adapters.set('twilio', new TwilioAdapter());
 adapters.set('google_business', new GoogleBusinessAdapter());
 adapters.set('lulu_managed_website', new ManagedWebsiteAdapter());
+adapters.set('airwallex', new AirwallexAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));

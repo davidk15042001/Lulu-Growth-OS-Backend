@@ -75,6 +75,25 @@ function requireAirwallex() {
   }
 }
 
+/** Read-only configuration probe used by the Provider Control Plane. It must
+ * never create an invoice, payment intent, checkout, or wallet mutation. */
+export function isAirwallexConfigured() {
+  return Boolean(env.AIRWALLEX_CLIENT_ID && env.AIRWALLEX_API_KEY);
+}
+
+export function isAirwallexWebhookConfigured() {
+  return Boolean(env.AIRWALLEX_WEBHOOK_SECRET);
+}
+
+export async function verifyAirwallexConnection() {
+  const token = await login();
+  return {
+    authenticated: Boolean(token),
+    accountId: env.AIRWALLEX_LOGIN_AS ?? null,
+    baseUrl: env.AIRWALLEX_BASE_URL,
+  } as const;
+}
+
 function airwallexTimeoutSignal() {
   return AbortSignal.timeout(Math.min(env.AI_REQUEST_TIMEOUT_MS, 60_000));
 }
