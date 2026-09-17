@@ -64,6 +64,12 @@ type GoogleCampaignSnapshot = {
   billingRequestId: string | null;
 };
 
+export type GoogleAdsAccountProbe = {
+  customerId: string;
+  currency: string | null;
+  requestId: string | null;
+};
+
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -126,6 +132,34 @@ async function googleHeaders(workspaceId: string, payer: GoogleAdsPayer) {
     'developer-token': env.GOOGLE_ADS_DEVELOPER_TOKEN,
     ...(payer.loginCustomerId ? { 'login-customer-id': payer.loginCustomerId } : {}),
   };
+}
+
+/** Configuration state used by the Provider Control Plane. */
+export function isGoogleAdsPrepaidConfigured() {
+  return Boolean(
+    env.GOOGLE_ADS_PREPAID_BILLING_ENABLED
+    && env.GOOGLE_ADS_PREPAID_PAYING_MANAGER_CUSTOMER_ID
+    && env.GOOGLE_ADS_PREPAID_PAYMENTS_ACCOUNT_ID
+    && env.GOOGLE_ADS_PREPAID_PAYMENTS_PROFILE_ID,
+  );
+}
+
+/**
+ * Read-only Google Ads account probe. It only reads the customer resource and
+ * never creates, updates, pauses, launches, or reserves a campaign budget.
+ */
+export async function verifyGoogleAdsAccount(workspaceId: string, customerIdInput: string): Promise<GoogleAdsAccountProbe> {
+  if (!env.GOOGLE_ADS_DEVELOPER_TOKEN) throw new AppError(503, 'GOOGLE_ADS_CONFIGURATION_MISSING', 'GOOGLE_ADS_DEVELOPER_TOKEN is not configured.');
+  const customerId = digits(customerIdInput, 'Google Ads customer ID');
+  const loginCustomerId = env.GOOGLE_ADS_PREPAID_PAYING_MANAGER_CUSTOMER_ID
+    ? digits(env.GOOGLE_ADS_PREPAID_PAYING_MANAGER_CUSTOMER_ID, 'Google Ads login customer ID')
+    : customerId;
+  const headers = await googleHeaders(workspaceId, { loginCustomerId, paymentsAccountId: '0', paymentsProfileId: '0' });
+  const result = await googleSearch(customerId, headers, 'SELECT customer.id, customer.currency_code FROM customer LIMIT 1', 'GOOGLE_ADS_ACCOUNT_READ_FAILED');
+  const row = objectValue(arrayValue(result.body.results)[0]);
+  const customer = objectValue(row.customer);
+  const returnedId = digits(stringValue(customer.id) || customerId, 'Google Ads customer ID');
+  return { customerId: returnedId, currency: stringValue(customer.currencyCode).toUpperCase() || null, requestId: result.requestId };
 }
 
 async function googleRequest(url: string, init: RequestInit, code: string, message: string): Promise<ProviderReply> {

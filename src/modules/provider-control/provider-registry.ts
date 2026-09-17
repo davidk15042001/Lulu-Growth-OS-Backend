@@ -16,6 +16,7 @@ import { TwilioAdapter } from './twilio.adapter.js';
 import { GoogleBusinessAdapter } from './google-business.adapter.js';
 import { ManagedWebsiteAdapter } from './managed-website.adapter.js';
 import { AirwallexAdapter } from './airwallex.adapter.js';
+import { GoogleAdsAdapter } from './google-ads.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -125,6 +126,7 @@ adapters.set('twilio', new TwilioAdapter());
 adapters.set('google_business', new GoogleBusinessAdapter());
 adapters.set('lulu_managed_website', new ManagedWebsiteAdapter());
 adapters.set('airwallex', new AirwallexAdapter());
+adapters.set('google_ads', new GoogleAdsAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));

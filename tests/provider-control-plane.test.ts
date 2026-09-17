@@ -58,6 +58,7 @@ describe('Provider Control Plane', () => {
     assert.ok(unifyPort?.runtime?.supportedFeatures.includes('sync'));
     assert.ok(unifyPort?.runtime?.supportedFeatures.includes('webhook'));
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('airwallex'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('google_ads'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
   });
 
   it('does not treat an active but not-yet-running UnifyPort account as connected', async () => {
