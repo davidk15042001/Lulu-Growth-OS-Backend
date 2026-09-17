@@ -30,6 +30,15 @@ function sitesFrom(value: unknown): Record<string, unknown>[] {
   return arrayValue(sites).map(objectValue).filter((site) => Object.keys(site).length > 0);
 }
 
+function recordsFrom(value: unknown, keys: string[]): Record<string, unknown>[] {
+  if (Array.isArray(value)) return value.map(objectValue).filter((record) => Object.keys(record).length > 0);
+  const root = objectValue(value);
+  for (const key of keys) {
+    if (Array.isArray(root[key])) return (root[key] as unknown[]).map(objectValue).filter((record) => Object.keys(record).length > 0);
+  }
+  return [];
+}
+
 function providerSiteId(provider: WebsiteProviderKey, site: Record<string, unknown>) {
   return provider === 'wordpress'
     ? stringValue(site.ID ?? site.id)
@@ -167,18 +176,18 @@ export class WebsiteProviderAdapter implements ProviderAdapter {
     }];
     if (this.providerKey === 'wordpress') {
       const [pages, media] = await Promise.all([
-        wordpressPages(context.workspaceId, siteId).catch(() => []),
-        wordpressMedia(context.workspaceId, siteId).catch(() => []),
+        wordpressPages(context.workspaceId, siteId),
+        wordpressMedia(context.workspaceId, siteId),
       ]);
       assets.push({ externalAssetId: `${siteId}:pages`, assetType: 'website_pages', displayName: 'WordPress pages', status: 'CONNECTED', metadata: { count: pages.length } });
       assets.push({ externalAssetId: `${siteId}:media`, assetType: 'website_media', displayName: 'WordPress media', status: 'CONNECTED', metadata: { count: media.length } });
     } else {
       const [collections, domains] = await Promise.all([
-        webflowCollections(context.workspaceId, siteId).catch(() => []),
-        webflowCustomDomains(context.workspaceId, siteId).catch(() => []),
+        webflowCollections(context.workspaceId, siteId),
+        webflowCustomDomains(context.workspaceId, siteId),
       ]);
-      assets.push({ externalAssetId: `${siteId}:collections`, assetType: 'cms_collections', displayName: 'Webflow CMS collections', status: 'CONNECTED', metadata: { count: sitesFrom(collections).length } });
-      assets.push({ externalAssetId: `${siteId}:domains`, assetType: 'website_domains', displayName: 'Webflow custom domains', status: 'CONNECTED', metadata: { count: sitesFrom(domains).length } });
+      assets.push({ externalAssetId: `${siteId}:collections`, assetType: 'cms_collections', displayName: 'Webflow CMS collections', status: 'CONNECTED', metadata: { count: recordsFrom(collections, ['collections']).length } });
+      assets.push({ externalAssetId: `${siteId}:domains`, assetType: 'website_domains', displayName: 'Webflow custom domains', status: 'CONNECTED', metadata: { count: recordsFrom(domains, ['customDomains', 'domains']).length } });
     }
     return assets;
   }
