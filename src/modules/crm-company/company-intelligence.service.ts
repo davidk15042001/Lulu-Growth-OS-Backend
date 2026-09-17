@@ -380,6 +380,48 @@ async function saveCompany(record: NonNullable<CompanyRecord>, data: CompanyInte
   return updated.record;
 }
 
+type IntelligenceSnapshotInput = {
+  status: 'researching' | 'complete' | 'partial' | 'blocked_funds' | 'failed';
+  data: CompanyIntelligenceData;
+  completeness?: number | null;
+  confidence?: 'low' | 'medium' | 'high' | null;
+  missingFields?: string[];
+  sourceEvidence?: Array<{ url: string; title?: string; kind: 'official_website' | 'search_result' | 'customer' }>;
+  errorCode?: string | null;
+  errorMessage?: string | null;
+};
+
+async function persistIntelligenceSnapshot(record: NonNullable<CompanyRecord>, input: IntelligenceSnapshotInput) {
+  try {
+    const outputData = { ...input.data };
+    // Evidence text can contain customer PII and is intentionally not copied
+    // into the immutable snapshot. Source metadata is retained separately.
+    delete (outputData as Record<string, unknown>).customerProvidedEvidence;
+    await query(
+      `INSERT INTO crm_company_intelligence_snapshots(
+         workspace_id,company_record_id,input_fingerprint,status,completeness,confidence,
+         missing_fields,source_evidence,output_data,error_code,error_message
+       ) VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb,$9::jsonb,$10,$11)`,
+      [
+        record.workspaceId,
+        record.id,
+        input.data.enrichment?.inputFingerprint ?? null,
+        input.status,
+        input.completeness ?? input.data.enrichment?.completeness ?? null,
+        input.confidence ?? input.data.enrichment?.confidence ?? null,
+        JSON.stringify(input.missingFields ?? input.data.enrichment?.missingFields ?? []),
+        JSON.stringify(input.sourceEvidence ?? input.data.enrichment?.sources ?? []),
+        JSON.stringify(outputData),
+        input.errorCode ?? input.data.enrichment?.errorCode ?? null,
+        input.errorMessage ?? null,
+      ],
+    );
+  } catch (error) {
+    // Observability must never turn a successful enrichment into a failed one.
+    logger.warn({ error, workspaceId: record.workspaceId, companyRecordId: record.id }, 'Company intelligence snapshot could not be persisted');
+  }
+}
+
 export async function processCompanyIntelligence(workspaceId: string, recordId: string) {
   const record = await recordRepo.findRecord(workspaceId, 'crm_companies', recordId);
   if (!record) return { ignored: true, reason: 'record_missing' };
@@ -396,6 +438,7 @@ export async function processCompanyIntelligence(workspaceId: string, recordId: 
       ...data,
       enrichment: { ...data.enrichment, status: 'blocked_funds', nextAction: 'Add AI balance to continue automatically', errorCode: code },
     }, record.description);
+    await persistIntelligenceSnapshot(record, { status: 'blocked_funds', data: { ...data, enrichment: { ...data.enrichment, status: 'blocked_funds', errorCode: code } }, errorCode: code });
     return { blocked: true, reason: 'ai_funds' };
   }
 
@@ -403,6 +446,7 @@ export async function processCompanyIntelligence(workspaceId: string, recordId: 
     ...data,
     enrichment: { ...data.enrichment, status: 'researching', startedAt: new Date().toISOString(), nextAction: 'Researching public and customer-provided sources', errorCode: null },
   }, record.description);
+  await persistIntelligenceSnapshot(record, { status: 'researching', data: { ...data, enrichment: { ...data.enrichment, status: 'researching', errorCode: null } } });
 
   try {
     const evidence = await collectEvidence(record, data);
@@ -444,11 +488,19 @@ export async function processCompanyIntelligence(workspaceId: string, recordId: 
       },
     };
     await saveCompany(record, result, description);
+    await persistIntelligenceSnapshot(record, {
+      status: missingFields.length ? 'partial' : 'complete',
+      data: result,
+      completeness: completeness(missingFields),
+      confidence: overallConfidence(fieldConfidence),
+      missingFields,
+      ...(result.enrichment?.sources ? { sourceEvidence: result.enrichment.sources } : {}),
+    });
     return { enriched: true, completeness: completeness(missingFields), missingFields, outreach: outreach.status };
   } catch (error) {
     const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'COMPANY_INTELLIGENCE_FAILED';
     const blocked = ['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED', 'AI_REVERSAL_DEBT'].includes(code);
-    await saveCompany(record, {
+    const failedData = {
       ...data,
       enrichment: {
         ...data.enrichment,
@@ -456,10 +508,25 @@ export async function processCompanyIntelligence(workspaceId: string, recordId: 
         nextAction: blocked ? 'Add AI balance to continue automatically' : 'Lulu will retry after the company record changes',
         errorCode: code,
       },
-    }, record.description);
+    } satisfies CompanyIntelligenceData;
+    await saveCompany(record, failedData, record.description);
+    await persistIntelligenceSnapshot(record, { status: blocked ? 'blocked_funds' : 'failed', data: failedData, errorCode: code, errorMessage: error instanceof Error ? error.message.slice(0, 500) : 'Company intelligence failed' });
     logger.warn({ error, workspaceId, companyRecordId: record.id }, 'Company intelligence enrichment failed');
     return { enriched: false, status: blocked ? 'blocked_funds' : 'failed', code };
   }
+}
+
+export async function listCompanyIntelligenceSnapshots(workspaceId: string, recordId: string, limit = 50) {
+  const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+  return (await query(
+    `SELECT id,company_record_id AS "companyRecordId",input_fingerprint AS "inputFingerprint",status,
+            completeness,confidence,missing_fields AS "missingFields",source_evidence AS "sourceEvidence",
+            output_data AS "outputData",error_code AS "errorCode",error_message AS "errorMessage",created_at AS "createdAt"
+       FROM crm_company_intelligence_snapshots
+      WHERE workspace_id=$1 AND company_record_id=$2
+      ORDER BY created_at DESC LIMIT $3`,
+    [workspaceId, recordId, safeLimit],
+  )).rows;
 }
 
 export async function requestCompanyIntelligence(workspaceId: string, recordId: string, userId: string) {

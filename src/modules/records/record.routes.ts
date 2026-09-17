@@ -77,4 +77,8 @@ router.route('/:resourceType/:recordId/enrich')
   .post(requireRecordCapability('write'), controller.enrichCompany)
   .all(methodNotAllowed);
 
+router.route('/:resourceType/:recordId/intelligence-history')
+  .get(requireRecordCapability('read'), controller.companyIntelligenceHistory)
+  .all(methodNotAllowed);
+
 export default router;

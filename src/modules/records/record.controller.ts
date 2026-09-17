@@ -108,3 +108,15 @@ export async function enrichCompany(req: WorkspaceRequest, res: Response, next: 
     next(error);
   }
 }
+
+export async function companyIntelligenceHistory(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = recordParamsSchema.parse(req.params);
+    if (params.resourceType !== 'crm_companies') throw badRequest('Company intelligence history is available only for CRM companies');
+    const { listCompanyIntelligenceSnapshots } = await import('../crm-company/company-intelligence.service.js');
+    const limit = Number(req.query.limit ?? 50);
+    return successResponse(res, 'Company intelligence history loaded', await listCompanyIntelligenceSnapshots(params.workspaceId, params.recordId!, limit));
+  } catch (error) {
+    next(error);
+  }
+}
