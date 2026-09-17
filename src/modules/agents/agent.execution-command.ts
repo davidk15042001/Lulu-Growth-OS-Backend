@@ -548,7 +548,7 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
     };
   }
 
-  if (context.sourceText) {
+  if (context.targetSystem === 'ecommerce' && context.sourceText) {
     return {
       type: 'ecommerce.generate_product_images',
       summary,
