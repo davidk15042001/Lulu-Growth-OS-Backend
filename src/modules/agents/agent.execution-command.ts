@@ -92,6 +92,12 @@ type InferCommandContext = {
   siteId?: string | null;
   jobId?: string | null;
   provider?: string | null;
+  eventTitle?: string | null;
+  startAt?: string | null;
+  endAt?: string | null;
+  timezone?: string | null;
+  location?: string | null;
+  customerId?: string | null;
   sourceText?: string | null;
 };
 
@@ -348,6 +354,35 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         context.locationId,
         context.reviewId,
         context.comment,
+      ]),
+    };
+  }
+
+  if (context.module === 'calendar' && context.eventTitle && context.startAt && context.endAt) {
+    return {
+      type: 'calendar.event.create',
+      summary,
+      targetSystem: 'communication',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'calendar_native_event',
+      targetEntityId: context.pageId,
+      payload: {
+        title: context.eventTitle,
+        description: context.goal || null,
+        startAt: context.startAt,
+        endAt: context.endAt,
+        timezone: context.timezone || 'UTC',
+        location: context.location || null,
+        ...(context.customerId ? { customerId: context.customerId } : {}),
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'calendar.event.create',
+        context.pageId,
+        context.eventTitle,
+        context.startAt,
+        context.endAt,
       ]),
     };
   }

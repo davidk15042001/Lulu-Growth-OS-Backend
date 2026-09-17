@@ -54,6 +54,12 @@ type AgentSnapshotInput = {
   siteId?: unknown;
   jobId?: unknown;
   provider?: unknown;
+  eventTitle?: unknown;
+  startAt?: unknown;
+  endAt?: unknown;
+  timezone?: unknown;
+  location?: unknown;
+  customerId?: unknown;
   delegatedContext?: unknown;
   noActionReason?: unknown;
 };
@@ -681,6 +687,12 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     siteId: compactText(input.siteId, 120) || null,
     jobId: compactText(input.jobId, 120) || null,
     provider: compactText(input.provider, 80) || null,
+    eventTitle: compactText(input.eventTitle, 240) || null,
+    startAt: compactText(input.startAt, 80) || null,
+    endAt: compactText(input.endAt, 80) || null,
+    timezone: compactText(input.timezone, 100) || null,
+    location: compactText(input.location, 500) || null,
+    customerId: compactText(input.customerId, 120) || null,
   });
   const customerBudgetCommands = normalizedCommands.filter(
     (command) => command.budgetAuthority === 'customer_authorization_required',
@@ -742,6 +754,12 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       executionStatus: 'queued',
       targetSystem,
       targetModule: module,
+      eventTitle: input.eventTitle ?? null,
+      startAt: input.startAt ?? null,
+      endAt: input.endAt ?? null,
+      timezone: input.timezone ?? null,
+      location: input.location ?? null,
+      customerId: input.customerId ?? null,
       commands,
       delegatedContext,
       commandTypes,

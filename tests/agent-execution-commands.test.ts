@@ -305,6 +305,31 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('infers a calendar event command from a calendar page action', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'calendar',
+      targetSystem: 'communication',
+      actionResourceType: 'ai_tasks',
+      pageId: 'calendar-page',
+      pageLabel: 'Calendar',
+      goal: 'Schedule the verified customer follow-up',
+      jobs: ['Create calendar event'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      eventTitle: 'Customer follow-up',
+      startAt: '2026-09-20T10:00:00+00:00',
+      endAt: '2026-09-20T10:30:00+00:00',
+      timezone: 'UTC',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'calendar.event.create');
+    assert.equal(command.targetSystem, 'communication');
+    assert.equal(command.payload.title, 'Customer follow-up');
+    assert.equal(command.payload.startAt, '2026-09-20T10:00:00+00:00');
+    assert.equal(command.approvalPolicy, 'allow');
+  });
+
   it('registers canonical product create and update commands with product capabilities', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'commerce.product.create',

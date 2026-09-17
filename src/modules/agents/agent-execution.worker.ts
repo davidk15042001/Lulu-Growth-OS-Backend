@@ -891,6 +891,12 @@ function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) {
     siteId: textValue(data.siteId) || null,
     jobId: textValue(data.jobId) || null,
     provider: textValue(data.provider) || null,
+    eventTitle: textValue(data.eventTitle, 240) || null,
+    startAt: textValue(data.startAt, 80) || null,
+    endAt: textValue(data.endAt, 80) || null,
+    timezone: textValue(data.timezone, 100) || null,
+    location: textValue(data.location, 500) || null,
+    customerId: textValue(data.customerId) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
   });
 }
