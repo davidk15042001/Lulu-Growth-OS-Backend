@@ -455,7 +455,7 @@ export async function listNativeEvents(workspaceId: string, filters: ListNativeE
   return rows.map((event) => ({ ...event, customerName: event.customerId ? customerNames.get(event.customerId) ?? null : null, guestJoinPath: null }));
 }
 
-export async function createNativeEvent(workspaceId: string, userId: string, input: CreateNativeEventInput) {
+export async function createNativeEvent(workspaceId: string, userId: string | null, input: CreateNativeEventInput) {
   const channelName = `lulu-${crypto.randomUUID().replace(/-/g, '')}`;
   const guestToken = crypto.randomBytes(32).toString('base64url');
   const tokenHash = crypto.createHash('sha256').update(guestToken).digest('hex');

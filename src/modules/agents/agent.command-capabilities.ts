@@ -27,6 +27,7 @@ const COMMAND_CAPABILITY: Readonly<Record<AgentExecutionCommandType, WorkspaceCa
   'email.create_ai_draft': 'omnichannel.reply',
   'email.send_draft': 'omnichannel.reply',
   'omnichannel.send_message': 'omnichannel.reply',
+  'calendar.event.create': 'workspace.write',
   'website.publish_job': 'website.publish',
   'ecommerce.generate_product_images': 'products.update',
   'commerce.order.create': 'orders.manage',

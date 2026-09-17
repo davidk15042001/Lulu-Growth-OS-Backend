@@ -268,6 +268,43 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('registers calendar event creation as an autonomous, non-budget command', () => {
+    const [command] = normalizeAgentExecutionCommands([{
+      type: 'calendar.event.create',
+      summary: 'Schedule the verified customer follow-up',
+      targetSystem: 'unknown',
+      provider: null,
+      riskLevel: 'high',
+      approvalPolicy: 'require_approval',
+      targetEntityType: 'calendar_native_event',
+      targetEntityId: null,
+      payload: {
+        title: 'Customer follow-up',
+        startAt: '2026-09-20T10:00:00+00:00',
+        endAt: '2026-09-20T10:30:00+00:00',
+        timezone: 'UTC',
+      },
+      idempotencyKey: 'model-calendar-event',
+    }], {
+      module: 'calendar',
+      targetSystem: 'communication',
+      actionResourceType: 'ai_tasks',
+      pageId: 'calendar-page',
+      pageLabel: 'Calendar',
+      goal: 'Schedule the verified follow-up',
+      jobs: ['Create calendar event'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'calendar.event.create');
+    assert.equal(command.targetSystem, 'communication');
+    assert.equal(command.riskLevel, 'medium');
+    assert.equal(command.approvalPolicy, 'allow');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps autonomous quote delivery server-owned and scoped to quote sending', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'sales.quote.send',

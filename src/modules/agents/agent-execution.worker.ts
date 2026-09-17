@@ -24,6 +24,7 @@ import {
   updateOrderSchema,
 } from '../commerce/commerce.validator.js';
 import * as socialPublishingService from '../social-publishing/social-publishing.service.js';
+import * as calendarService from '../calendar/calendar.service.js';
 import {
   createSocialContentSchema,
   createSocialPublicationSchema,
@@ -32,6 +33,7 @@ import {
 import { requestSocialPublishingWorkerRun } from '../social-publishing/social-publishing.worker.js';
 import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
 import { createInvoiceSchema, createQuoteSchema, sendDocumentSchema } from '../commercial-documents/commercial-documents.validator.js';
+import { createNativeEventSchema } from '../calendar/calendar.validator.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
@@ -568,6 +570,33 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     });
     const stored = await persistCommandExecutionResult(record, command, { messageId: message.id, providerMessageId: message.providerMessageId, status: 'sent' });
     return { type: command.type, targetEntityId: message.id, provider: command.provider, resultRecordId: stored.id, result: { status: 'sent', messageId: message.id, providerMessageId: message.providerMessageId } };
+  }
+
+  if (command.type === 'calendar.event.create') {
+    const input = createNativeEventSchema.parse({
+      title: payload.title,
+      description: payload.description ?? null,
+      startAt: payload.startAt,
+      endAt: payload.endAt,
+      timezone: payload.timezone ?? 'UTC',
+      location: payload.location ?? null,
+      customerId: payload.customerId,
+    });
+    const event = await calendarService.createNativeEvent(record.workspaceId, record.createdBy ?? null, input);
+    const stored = await persistCommandExecutionResult(record, command, {
+      eventId: event.id,
+      status: event.status,
+      startAt: event.startAt,
+      endAt: event.endAt,
+      customerId: event.customerId,
+    });
+    return {
+      type: command.type,
+      targetEntityId: event.id,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: event,
+    };
   }
 
   if (command.type === 'website.publish_job') {

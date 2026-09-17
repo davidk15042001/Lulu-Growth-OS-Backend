@@ -17,7 +17,7 @@ export const listAccounts = repo.listAccounts;
 export const listEvents = repo.listEvents;
 export const listNativeEvents = repo.listNativeEvents;
 
-export async function createNativeEvent(workspaceId: string, userId: string, input: CreateNativeEventInput) {
+export async function createNativeEvent(workspaceId: string, userId: string | null, input: CreateNativeEventInput) {
   const customer = input.customerId ? await repo.findCustomerRecord(workspaceId, input.customerId) : null;
   if (input.customerId && !customer) throw notFoundError('Calendar customer not found');
   const event = await repo.createNativeEvent(workspaceId, userId, input);
