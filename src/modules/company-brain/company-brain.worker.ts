@@ -16,6 +16,11 @@ const runtimeMonitor = createRuntimeWorkerMonitor('company-brain-task-dispatch',
   required: true,
   staleAfterMs: intervalMs * 6,
 });
+export const COMPANY_BRAIN_TASK_DISPATCH_EVENT_TYPES = [
+  'brain.task.created',
+  'brain.task.updated',
+  'brain.mission.updated',
+] as const;
 let timer: NodeJS.Timeout | null = null;
 let activeCycle: Promise<void> | null = null;
 let stopping = false;
@@ -136,7 +141,12 @@ export function startCompanyBrainTaskWorker() {
   runtimeMonitor.start({ workerId });
   registerDomainEventHandler({
     name: 'company-brain-task-dispatcher.v1',
-    eventTypes: ['brain.task.created', 'brain.mission.updated'],
+    // A completed predecessor can make one or more dependent tasks runnable.
+    // Wake the dispatcher from the persisted task transition instead of
+    // waiting for the next polling interval. claimNextRunnableTask remains the
+    // idempotent dependency/lease boundary, so this event cannot duplicate a
+    // dispatch or bypass tenant isolation.
+    eventTypes: [...COMPANY_BRAIN_TASK_DISPATCH_EVENT_TYPES],
     handle() {
       requestCompanyBrainTaskWorkerRun();
       return { woken: true };

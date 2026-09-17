@@ -9,6 +9,7 @@ process.env.JWT_SECRET = 'company-brain-tests-secret-0123456789';
 
 const { pool } = await import('../src/db/pool.js');
 const brain = await import('../src/modules/company-brain/company-brain.repo.js');
+const brainWorker = await import('../src/modules/company-brain/company-brain.worker.js');
 const db = new PGlite();
 let workspaceId: string;
 
@@ -236,4 +237,12 @@ test('persists an event-backed signal and creates one idempotent root task', asy
   });
   assert.equal(decision?.id, replayedDecision?.id);
   assert.equal(decision?.evidence.sourceEventId, event.id);
+});
+
+test('wakes the task dispatcher when a predecessor changes state', () => {
+  assert.deepEqual([...brainWorker.COMPANY_BRAIN_TASK_DISPATCH_EVENT_TYPES], [
+    'brain.task.created',
+    'brain.task.updated',
+    'brain.mission.updated',
+  ]);
 });
