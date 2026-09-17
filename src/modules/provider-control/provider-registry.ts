@@ -21,6 +21,7 @@ import { WebsiteProviderAdapter } from './website-provider.adapter.js';
 import { GoogleAnalyticsAdapter } from './google-analytics.adapter.js';
 import { MetaSocialAdapter } from './meta-social.adapter.js';
 import { ShopifyAdapter } from './shopify.adapter.js';
+import { CrmProviderAdapter } from './crm-provider.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -93,9 +94,9 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'microsoft_calendar', displayName: 'Microsoft Calendar', category: 'CALENDAR', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'calendar.read', displayName: 'Read calendar', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
   { providerKey: 'calendly', displayName: 'Calendly', category: 'CALENDAR', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
   { providerKey: 'cal_com', displayName: 'Cal.com', category: 'CALENDAR', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
-  { providerKey: 'salesforce', displayName: 'Salesforce', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
-  { providerKey: 'hubspot', displayName: 'HubSpot', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
-  { providerKey: 'pipedrive', displayName: 'Pipedrive', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
+  { providerKey: 'salesforce', displayName: 'Salesforce', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'salesforce.companies.read', displayName: 'Read Salesforce companies', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'salesforce.companies.write', displayName: 'Write Salesforce companies', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }] },
+  { providerKey: 'hubspot', displayName: 'HubSpot', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'hubspot.companies.read', displayName: 'Read HubSpot companies', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'hubspot.companies.write', displayName: 'Write HubSpot companies', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }] },
+  { providerKey: 'pipedrive', displayName: 'Pipedrive', category: 'CRM', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'pipedrive.companies.read', displayName: 'Read Pipedrive organizations', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'pipedrive.companies.write', displayName: 'Write Pipedrive organizations', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }] },
   { providerKey: 'linkedin', displayName: 'LinkedIn', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [] },
   { providerKey: 'tiktok_ads', displayName: 'TikTok Ads', category: 'ADVERTISING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [] },
   { providerKey: 'custom', displayName: 'Custom Provider', category: 'OTHER', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [] },
@@ -137,6 +138,9 @@ adapters.set('google_analytics', new GoogleAnalyticsAdapter());
 adapters.set('facebook', new MetaSocialAdapter('facebook'));
 adapters.set('instagram', new MetaSocialAdapter('instagram'));
 adapters.set('shopify', new ShopifyAdapter());
+adapters.set('salesforce', new CrmProviderAdapter('salesforce'));
+adapters.set('hubspot', new CrmProviderAdapter('hubspot'));
+adapters.set('pipedrive', new CrmProviderAdapter('pipedrive'));
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));
