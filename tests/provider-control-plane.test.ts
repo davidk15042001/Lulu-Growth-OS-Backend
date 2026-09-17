@@ -59,6 +59,41 @@ describe('Provider Control Plane', () => {
     assert.ok(unifyPort?.runtime?.supportedFeatures.includes('webhook'));
   });
 
+  it('verifies the Lulu-managed website from the canonical site and domain projection', async () => {
+    const f = await fixture();
+    const site = (await db.query<{ id: string }>(
+      `INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name,external_site_id,status,settings)
+       VALUES($1,'managed','managed','Lulu site','workspace-site-managed-1','published','{"managedWebsite":{"publicSlug":"site-a"}}'::jsonb)
+       RETURNING id`,
+      [f.a],
+    )).rows[0]!.id;
+    await db.query(
+      `INSERT INTO workspace_site_domains(site_id,hostname,verification_token,status,verified_at)
+       VALUES($1,'example.test','lulu-site=test-token','verified',NOW())`,
+      [site],
+    );
+    const adapter = providerRegistry.getProviderAdapter('lulu_managed_website');
+    const context = {
+      connectionId: crypto.randomUUID(), providerKey: 'lulu_managed_website', workspaceId: f.a,
+      externalAccountId: 'workspace-site-managed-1', grantedScopes: [], metadata: { legacySiteId: site },
+    };
+    const verified = await adapter.verifyConnection(context);
+    assert.equal(verified.verified, true);
+    assert.equal(verified.status, 'CONNECTED');
+    assert.deepEqual((await adapter.getHealth!(context)).status, 'HEALTHY');
+    assert.ok((await adapter.getCapabilities!(context)).every((capability) => capability.status === 'AVAILABLE'));
+    const accounts = await adapter.discoverAccounts!(context);
+    assert.equal(accounts.length, 1);
+    const assets = await adapter.discoverAssets!(context, accounts[0]!);
+    assert.deepEqual(assets.map((asset) => asset.assetType), ['managed_website', 'website_domain']);
+    const sync = await adapter.sync!(context, 'full');
+    assert.equal(sync.status, 'SUCCESS');
+    await db.query(`UPDATE workspace_sites SET status='error' WHERE id=$1`, [site]);
+    const failed = await adapter.verifyConnection(context);
+    assert.equal(failed.verified, false);
+    assert.equal(failed.status, 'ERROR');
+  });
+
   it('keeps provider connections and assets workspace-scoped', async () => {
     const f = await fixture();
     const visible = await providerService.listWorkspaceProviders(f.a);

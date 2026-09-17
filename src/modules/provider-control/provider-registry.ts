@@ -14,6 +14,7 @@ import type {
 import { UnifyPortAdapter } from './unifyport.adapter.js';
 import { TwilioAdapter } from './twilio.adapter.js';
 import { GoogleBusinessAdapter } from './google-business.adapter.js';
+import { ManagedWebsiteAdapter } from './managed-website.adapter.js';
 
 const providerAliases: Record<string, string> = {
   'google-ads': 'google_ads',
@@ -70,7 +71,12 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     { capabilityKey: 'unifyport.messages.send', displayName: 'Send channel messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
     { capabilityKey: 'unifyport.messages.read', displayName: 'Receive channel messages', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
   ] },
-  { providerKey: 'lulu_managed_website', displayName: 'Lulu Managed Website', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'website.site.read', displayName: 'Read managed website', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
+  { providerKey: 'lulu_managed_website', displayName: 'Lulu Managed Website', category: 'WEBSITE', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [
+    { capabilityKey: 'website.site.read', displayName: 'Read managed website', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+    { capabilityKey: 'website.site.preview', displayName: 'Read managed website preview', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+    { capabilityKey: 'website.site.publish', displayName: 'Publish verified managed website plan', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+    { capabilityKey: 'website.domain.verify', displayName: 'Verify managed website domain ownership', requiredScopes: [], defaultStatus: 'AVAILABLE' },
+  ] },
   { providerKey: 'wordpress', displayName: 'WordPress', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'HYBRID', capabilities: [{ capabilityKey: 'wordpress.site.read', displayName: 'Read website', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'wordpress.site.publish', displayName: 'Publish website content', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'wordpress.media.upload', displayName: 'Upload media', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'webflow', displayName: 'Webflow', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'webflow.site.read', displayName: 'Read Webflow sites', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'webflow.cms.write', displayName: 'Write CMS content', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'shopify', displayName: 'Shopify', category: 'COMMERCE', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'shopify.products.read', displayName: 'Read products', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'shopify.products.write', displayName: 'Write products', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'shopify.orders.read', displayName: 'Read orders', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
@@ -116,6 +122,7 @@ const adapters = new Map<string, ProviderAdapter>(PROVIDER_CATALOG.map((entry) =
 adapters.set('unifyport', new UnifyPortAdapter());
 adapters.set('twilio', new TwilioAdapter());
 adapters.set('google_business', new GoogleBusinessAdapter());
+adapters.set('lulu_managed_website', new ManagedWebsiteAdapter());
 
 export function getProviderAdapter(providerKey: string) {
   const adapter = adapters.get(canonicalProviderKey(providerKey));
