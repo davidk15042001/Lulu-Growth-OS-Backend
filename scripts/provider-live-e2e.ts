@@ -99,8 +99,22 @@ async function waitForInboundReply(input: {
           WHERE provider_key='unifyport'
             AND event_type='message.received'
             AND received_at >= $1
-            AND normalized_metadata #>> '{eventPayload,account_id}' = $2
-            AND normalized_metadata #>> '{eventPayload,data,message,text}' = $3
+            AND COALESCE(
+              normalized_metadata #>> '{eventPayload,account_id}',
+              normalized_metadata #>> '{eventPayload,accountId}',
+              normalized_metadata #>> '{eventPayload,event,account_id}',
+              normalized_metadata #>> '{eventPayload,event,accountId}',
+              normalized_metadata #>> '{eventPayload,data,account_id}',
+              normalized_metadata #>> '{eventPayload,data,accountId}',
+              normalized_metadata #>> '{eventPayload,data,account,id}'
+            ) = $2
+            AND COALESCE(
+              normalized_metadata #>> '{eventPayload,data,message,text}',
+              normalized_metadata #>> '{eventPayload,event,data,message,text}',
+              normalized_metadata #>> '{eventPayload,message,text}',
+              normalized_metadata #>> '{eventPayload,data,text}',
+              normalized_metadata #>> '{eventPayload,event,data,text}'
+            ) = $3
           ORDER BY received_at DESC
           LIMIT 1
         `, [input.startedAt, input.externalAccountId, input.marker]);
