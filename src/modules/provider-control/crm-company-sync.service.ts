@@ -162,6 +162,14 @@ function errorMessage(error: unknown) {
   return (error instanceof Error ? error.message : String(error)).replaceAll(/(authorization|token|secret|api[-_ ]?key)\s*[:=]\s*[^\s,;]+/gi, '$1: [redacted]').slice(0, 500);
 }
 
+function isUncertainWrite(error: unknown) {
+  if (!(error instanceof AppError)) return true;
+  if (error.code === 'CRM_NETWORK_ERROR' || error.code === 'CRM_WRITE_RESPONSE_INVALID') return true;
+  if (error.code !== 'CRM_WRITE_FAILED') return false;
+  const providerHttpStatus = objectValue(error.details).providerHttpStatus;
+  return typeof providerHttpStatus !== 'number' || providerHttpStatus >= 500;
+}
+
 async function accessToken(workspaceId: string, provider: CrmCompanySyncProvider) {
   const credential = await onboardingRepo.getPlatformOAuthCredential(workspaceId, provider);
   if (!credential) throw new AppError(409, 'CRM_CONNECTION_REQUIRED', `Connect ${provider} before synchronizing company records.`);
@@ -250,6 +258,12 @@ export async function syncCrmCompany(input: {
   const operationKey = `crm-company-sync:${input.companyId}:${input.provider}:${company.version}`;
   const claim = await providerRepo.claimProviderOperation({ workspaceId: input.workspaceId, providerConnectionId: ready.connectionId, operationKey, operationType: 'crm.company.sync' });
   if (!claim.created && claim.operation.status === 'SUCCEEDED') return { status: 'reused' as const, provider: input.provider, companyId: input.companyId, externalObjectId: claim.operation.resultReference };
+  if (!claim.created && claim.operation.status === 'UNCERTAIN') {
+    throw new AppError(409, 'CRM_WRITE_OUTCOME_UNCERTAIN', 'The previous CRM company write has an uncertain provider outcome and will not be replayed automatically. Run discovery or reconcile it before retrying.', { operationKey });
+  }
+  if (!claim.created && claim.operation.status === 'PENDING') {
+    throw new AppError(409, 'CRM_WRITE_IN_PROGRESS', 'A CRM company write is already in progress for this company.', { operationKey });
+  }
 
   try {
     const token = await accessToken(input.workspaceId, input.provider);
@@ -271,7 +285,7 @@ export async function syncCrmCompany(input: {
     await providerRepo.completeProviderOperation({ workspaceId: input.workspaceId, providerConnectionId: ready.connectionId, operationKey, status: 'SUCCEEDED', resultReference: externalObjectId });
     return { status: mapping ? 'updated' as const : 'created' as const, provider: input.provider, companyId: input.companyId, externalObjectId, mappingId: storedMapping ? String(storedMapping.id) : null };
   } catch (error) {
-    await providerRepo.completeProviderOperation({ workspaceId: input.workspaceId, providerConnectionId: ready.connectionId, operationKey, status: 'FAILED', lastError: errorMessage(error) }).catch(() => undefined);
+    await providerRepo.completeProviderOperation({ workspaceId: input.workspaceId, providerConnectionId: ready.connectionId, operationKey, status: isUncertainWrite(error) ? 'UNCERTAIN' : 'FAILED', lastError: errorMessage(error) }).catch(() => undefined);
     throw error;
   }
 }

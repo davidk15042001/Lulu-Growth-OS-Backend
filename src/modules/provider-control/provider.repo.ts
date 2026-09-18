@@ -752,7 +752,7 @@ export async function completeProviderOperation(input: {
   workspaceId: string;
   providerConnectionId: string;
   operationKey: string;
-  status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
+  status: 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'UNCERTAIN';
   resultReference?: string | null;
   lastError?: string | null;
 }) {
