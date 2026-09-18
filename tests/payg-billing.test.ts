@@ -24,6 +24,7 @@ const { listKnowledgeProductsAwaitingImages } = await import('../src/modules/pre
 const { recordAirwallexWalletReversal } = await import('../src/modules/billing/airwallex-wallet-reversal.repo.js');
 const { handleWebhook, verifyAirwallexInvoiceWalletPayment } = await import('../src/modules/billing/airwallex.service.js');
 const { reconcilePaidBillingInvoices } = await import('../src/modules/billing/paid-billing-invoice.service.js');
+const commercialDocumentsRepo = await import('../src/modules/commercial-documents/commercial-documents.repo.js');
 const {
   applyAdSpendProviderStatus,
   assertAdSpendFunded,
@@ -84,6 +85,10 @@ describe('prepaid API and transparent usage reporting', () => {
     assert.equal(Number(invoice.amountDue), 0);
     assert.equal(invoice.documentStatus, 'READY');
     assert.match(String(invoice.documentStorageReference), /^\/documents\/commercial\//);
+
+    const invoiceDetail = await commercialDocumentsRepo.getInvoice(workspace.id, invoice.id);
+    assert.equal(invoiceDetail?.sellerProfile?.companyName, 'Lulu AI');
+    assert.equal(invoiceDetail?.buyerProfile?.companyName, 'Historical billing workspace');
 
     const second = await reconcilePaidBillingInvoices(50);
     assert.equal(second.created, 0);

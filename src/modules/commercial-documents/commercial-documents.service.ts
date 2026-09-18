@@ -75,11 +75,12 @@ export async function getPolicy(workspaceId:string,userId:string){await authoriz
 export async function updatePolicy(workspaceId:string,userId:string,input:PolicyInput){await authorize(workspaceId,userId,'commercial_policy.manage');return repo.updatePolicy(workspaceId,input,userId);}
 export async function publicDocument(token:string){return repo.getPublicDocument(token);}
 export async function downloadPublicInvoicePdf(token: string) {
-  const document = await repo.getPublicDocument(token) as { type?: string; number?: string; status?: string; currency?: string; language?: string; issueDate?: unknown; dueDate?: unknown; subtotal?: unknown; discountTotal?: unknown; shippingTotal?: unknown; taxTotal?: unknown; grandTotal?: unknown; amountPaid?: unknown; amountDue?: unknown; sellerProfile?: repo.DocumentSellerProfile | null; lines?: Array<Record<string, unknown>> } | null;
+  const document = await repo.getPublicDocument(token) as { type?: string; number?: string; status?: string; currency?: string; language?: string; issueDate?: unknown; dueDate?: unknown; subtotal?: unknown; discountTotal?: unknown; shippingTotal?: unknown; taxTotal?: unknown; grandTotal?: unknown; amountPaid?: unknown; amountDue?: unknown; sellerProfile?: repo.DocumentSellerProfile | null; buyerProfile?: repo.DocumentSellerProfile | null; lines?: Array<Record<string, unknown>> } | null;
   if (!document || document.type !== 'INVOICE') throw notFoundError('Invoice not found');
   const pdf = await renderInvoicePdf({
     invoice: document,
     sellerProfile: document.sellerProfile ?? null,
+    buyerProfile: document.buyerProfile ?? null,
     lines: (document.lines ?? []) as Array<Record<string, unknown>>,
   });
   return { filename: `${document.number || 'invoice'}.pdf`, pdf };

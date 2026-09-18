@@ -34,6 +34,7 @@ type PdfInvoice = {
 export type InvoicePdfDetail = {
   invoice: PdfInvoice;
   sellerProfile: DocumentSellerProfile | null;
+  buyerProfile?: DocumentSellerProfile | null;
   lines: PdfLine[];
 };
 
@@ -70,6 +71,7 @@ export function renderInvoicePdf(detail: InvoicePdfDetail): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const invoice = detail.invoice;
     const seller = detail.sellerProfile;
+    const buyer = detail.buyerProfile ?? null;
     const currency = text(invoice.currency, 'CNY');
     const document = new PDFDocument({ size: 'A4', margin: 48, info: {
       Title: `Invoice ${text(invoice.invoiceNumber)}`,
@@ -90,7 +92,14 @@ export function renderInvoicePdf(detail: InvoicePdfDetail): Promise<Buffer> {
     drawRule(document, 104);
 
     document.fillColor('#6b7280').fontSize(8).text('BILL TO', left, 125);
-    document.fillColor('#111827').font('Helvetica-Bold').fontSize(10).text(`Workspace ${text(invoice.customerRecordId)}`, left, 141, { width: 220 });
+    document.fillColor('#111827').font('Helvetica-Bold').fontSize(10).text(
+      text(buyer?.companyName, invoice.customerRecordId ? `Customer record ${text(invoice.customerRecordId)}` : 'Customer workspace'),
+      left,
+      141,
+      { width: 220 },
+    );
+    const buyerContact = [buyer?.address, buyer?.countryRegion, buyer?.phoneNumber].filter(Boolean).map(String).join(' · ');
+    if (buyerContact) document.fillColor('#5b6578').font('Helvetica').fontSize(8).text(buyerContact, left, 157, { width: 220 });
     document.fillColor('#6b7280').font('Helvetica').fontSize(9).text('Invoice details', 330, 125);
     document.fillColor('#111827').fontSize(9)
       .text(`Status: ${text(invoice.status)}`, 330, 141)
