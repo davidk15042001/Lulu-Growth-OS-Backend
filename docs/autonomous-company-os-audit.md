@@ -6,7 +6,7 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `703e77d6fb75eb126572a55e237f90a1955830a9`
+- Frontend commit: `adefeca75d4a100d0f213d532d8a371441d536eb`
 - Backend commit: `bea82660eafbb1dc91a33ff45b848a5705167edf`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
@@ -17,6 +17,7 @@ The following evidence was checked after the latest combined deployment:
 - A repeatable opt-in `provider:live-readiness` gate now performs the same read-only verification, health, capability, and account-discovery checks and exits non-zero on any unavailable result; the configured UnifyPort check returned `READY` with one discovered account.
 - The live-readiness gate now reports provider failures as structured, secret-safe `BLOCKED` results (including provider error codes) instead of leaking a diagnostic stack trace; the unreachable-provider path was verified locally.
 - UnifyPort readiness is tenant-scoped when a workspace connection supplies an external account: only that account can make messaging capabilities available, and missing, non-WhatsApp, or non-running accounts fail closed. The isolation behavior is covered by dedicated adapter tests.
+- The frontend now includes a repeatable, read-only production smoke gate covering the release manifest, public route shells, API health and API readiness. The post-deployment run against `https://lulu-ai.cn` passed all eight checks without authentication or external side effects.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
