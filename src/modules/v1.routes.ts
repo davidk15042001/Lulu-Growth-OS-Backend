@@ -6,6 +6,7 @@ import oauthRoutes from './onboarding/oauth.routes.js';
 import { RESOURCE_CATALOG, RESOURCE_DOMAINS } from '../domain/resource-catalog.js';
 import { env } from '../config/env.js';
 import { getRuntimeReadiness, toPublicRuntimeReadiness } from '../operations/runtime-readiness.js';
+import { getPublicDeploymentInfo } from '../operations/deployment-info.js';
 import billingRoutes from './billing/billing.routes.js';
 import adminRoutes from './admin/admin.routes.js';
 import emailOAuthRoutes from './email/email.oauth.routes.js';
@@ -29,6 +30,10 @@ router.get('/', (_req, res) => {
       domains: RESOURCE_DOMAINS,
     },
   });
+});
+
+router.get('/version', (_req, res) => {
+  res.json({ success: true, data: getPublicDeploymentInfo() });
 });
 
 router.get('/health', (_req, res) => {

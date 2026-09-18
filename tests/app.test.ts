@@ -14,6 +14,17 @@ describe('HTTP application', () => {
     assert.equal(response.body.data.status, 'ok');
   });
 
+  it('reports public backend deployment metadata without requiring a database', async () => {
+    const response = await request(createApp()).get('/api/v1/version');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.success, true);
+    assert.equal(response.body.data.service, 'backend');
+    assert.equal(response.body.data.commitSha, null);
+    assert.equal(response.body.data.pushedAt, null);
+    assert.equal(response.body.data.deployedAt, null);
+  });
+
   it('reports versioned process health without requiring a database', async () => {
     const response = await request(createApp()).get('/api/v1/health');
 
