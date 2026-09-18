@@ -58,3 +58,28 @@ The command prints only provider status, capability status, and the number of
 discovered accounts. It exits non-zero if verification, health, or any
 advertised capability is not ready. The opt-in flag is mandatory so ordinary
 development and CI test runs never call a live provider accidentally.
+
+## Live transport acceptance test
+
+`provider:live-readiness` is read-only. It verifies the configured workspace,
+selected tenant account, health, capabilities and account discovery without
+sending anything.
+
+The separate `provider:live-e2e` command sends exactly one real WhatsApp text
+message and is disabled unless all of these guards are supplied explicitly:
+
+```text
+PROVIDER_LIVE_E2E=1
+PROVIDER_LIVE_E2E_SIDE_EFFECTS=1
+PROVIDER_LIVE_E2E_CONFIRM=I_UNDERSTAND_THIS_SENDS_A_REAL_WHATSAPP_MESSAGE
+PROVIDER_LIVE_E2E_WORKSPACE_ID=<workspace UUID>
+PROVIDER_LIVE_E2E_EXTERNAL_ACCOUNT_ID=<running UnifyPort WhatsApp account>
+PROVIDER_LIVE_E2E_RECIPIENT=<dedicated E.164 test number>
+PROVIDER_LIVE_E2E_MESSAGE="[Lulu E2E] provider acceptance test"
+```
+
+Use only a dedicated test recipient. The command first verifies the selected
+tenant account is active and running, then sends one text and requires a
+provider message ID. It never retries an ambiguous send. Inbound webhook
+acceptance must still be verified separately with a provider-delivered test
+message and the signed webhook endpoint.
