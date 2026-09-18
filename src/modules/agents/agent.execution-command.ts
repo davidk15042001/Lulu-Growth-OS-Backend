@@ -25,6 +25,7 @@ export const agentExecutionCommandTypeSchema = z.enum([
   'omnichannel.send_message',
   'calendar.event.create',
   'website.publish_job',
+  'website.generate_content',
   'website.domain.verify',
   'ecommerce.generate_product_images',
   'commerce.order.create',
@@ -206,6 +207,7 @@ function serverCommandPolicy(command: AgentExecutionCommand, context: InferComma
     'omnichannel.send_message': { targetSystem: 'communication', riskLevel: 'high', budgetAuthority: 'none' },
     'calendar.event.create': { targetSystem: 'communication', riskLevel: 'medium', budgetAuthority: 'none' },
     'website.publish_job': { targetSystem: 'website', riskLevel: 'high', budgetAuthority: 'none' },
+    'website.generate_content': { targetSystem: 'website', riskLevel: 'medium', budgetAuthority: 'none' },
     'website.domain.verify': { targetSystem: 'website', riskLevel: 'medium', budgetAuthority: 'none' },
     'ecommerce.generate_product_images': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
     'commerce.order.create': { targetSystem: 'ecommerce', riskLevel: 'medium', budgetAuthority: 'none' },
@@ -550,6 +552,41 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         domainId: context.domainId,
       },
       idempotencyKey: buildIdempotencyKey(['website.domain.verify', context.siteId, context.domainId]),
+    };
+  }
+
+  // Website/CMS employees should create a real canonical generation job when
+  // they have a managed site but no existing job to publish. Falling back to
+  // a generic artifact here would make the Office look active without causing
+  // the website worker to do any work.
+  if (context.targetSystem === 'website' && context.siteId && !context.jobId) {
+    const prompt = textValue(context.instruction, 8_000) || context.goal || summary;
+    return {
+      type: 'website.generate_content',
+      summary,
+      targetSystem: 'website',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'website_generation_job',
+      targetEntityId: context.siteId,
+      payload: {
+        siteId: context.siteId,
+        prompt,
+        requestedLanguage: textValue(context.language, 16) || 'en',
+        autoPublish: false,
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'website.generate_content',
+        context.siteId,
+        prompt,
+        textValue(context.language, 16) || 'en',
+      ]),
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`website_site:${context.siteId}`, 'canonical_generation_worker'],
+        limitations: ['The generated site remains preview-only until a separate publish command is verified.'],
+      },
     };
   }
 

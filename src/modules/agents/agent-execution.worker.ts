@@ -6,6 +6,8 @@ import { createAiDraft, createDraft, sendAutonomousDraft } from '../email/email.
 import { updateGoogleReviewReply } from '../workspace-app/workspace-app.service.js';
 import { publishWebsiteJob } from '../websites/website.publish.service.js';
 import { verifyDomainOwnership } from '../websites/domain-verification.service.js';
+import * as websiteRepo from '../websites/website.repo.js';
+import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
 import { generateProductImagesFromText } from '../product-images/product-image.service.js';
 import {
   normalizeAgentExecutionCommands,
@@ -684,6 +686,42 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       provider: command.provider,
       resultRecordId: stored.id,
       result,
+    };
+  }
+
+  if (command.type === 'website.generate_content') {
+    const siteId = textValue(payload.siteId || command.targetEntityId);
+    const prompt = textValue(payload.prompt || command.summary, 8_000);
+    const requestedLanguage = textValue(payload.requestedLanguage, 16) || 'en';
+    if (!siteId || !prompt) throw new Error('website.generate_content requires siteId and prompt');
+    if (!record.createdBy) throw new Error('website.generate_content requires an originating workspace user');
+    const site = await websiteRepo.getSite(record.workspaceId, siteId);
+    if (!site) throw new Error('Website site was not found for website.generate_content');
+    const created = await websiteRepo.createJob({
+      siteId,
+      prompt,
+      createdBy: record.createdBy,
+      requestedLanguage,
+      // Generation and publication are separate canonical actions. Never let
+      // model-supplied payload data silently turn a content refresh into a
+      // publish operation.
+      autoPublish: false,
+    });
+    if (!created.job) throw new Error('Canonical website generation job could not be created');
+    requestWebsiteGenerationWorkerRun();
+    const stored = await persistCommandExecutionResult(record, command, {
+      siteId,
+      jobId: created.job.id,
+      status: created.job.status,
+      created: created.created,
+      autoPublish: created.job.autoPublish,
+    });
+    return {
+      type: command.type,
+      targetEntityId: created.job.id,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: { status: 'queued', siteId, job: created.job, created: created.created },
     };
   }
 

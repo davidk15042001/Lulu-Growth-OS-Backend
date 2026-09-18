@@ -537,6 +537,31 @@ describe('agent execution commands', () => {
     assert.equal(command.approvalPolicy, 'allow');
   });
 
+  it('creates a canonical website generation command for a managed site without a job', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'website',
+      targetSystem: 'website',
+      actionResourceType: 'marketing_publications',
+      pageId: 'website-pages-cms-9015',
+      pageLabel: 'Pages & CMS',
+      goal: 'Refresh the verified website content from the latest company knowledge',
+      jobs: ['generate website content'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      siteId: 'site-123',
+      language: 'de',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'website.generate_content');
+    assert.equal(command.targetSystem, 'website');
+    assert.equal(command.targetEntityType, 'website_generation_job');
+    assert.equal(command.targetEntityId, 'site-123');
+    assert.equal(command.payload.siteId, 'site-123');
+    assert.equal(command.payload.requestedLanguage, 'de');
+    assert.equal(command.approvalPolicy, 'allow');
+  });
+
   it('registers canonical product create and update commands with product capabilities', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'commerce.product.create',
