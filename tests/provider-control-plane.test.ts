@@ -116,6 +116,29 @@ describe('Provider Control Plane', () => {
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('tiktok_ads'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
   });
 
+  it('keeps every catalog provider aligned with the executable adapter contract', () => {
+    const methodByFeature: Record<string, string> = {
+      verification: 'verifyConnection',
+      health: 'getHealth',
+      capabilities: 'getCapabilities',
+      discovery: 'discoverAccounts',
+      sync: 'sync',
+      webhook: 'handleWebhook',
+    };
+
+    for (const entry of providerRegistry.PROVIDER_CATALOG) {
+      const adapter = providerRegistry.getProviderAdapter(entry.providerKey);
+      const runtime = providerRegistry.getProviderRuntimeReadiness(entry.providerKey);
+      assert.equal(runtime.adapterRegistered, true, `${entry.providerKey} must have a fail-closed adapter`);
+      assert.ok(runtime.supportedFeatures.includes('verification'), `${entry.providerKey} must expose verification`);
+      for (const feature of runtime.supportedFeatures) {
+        const method = methodByFeature[feature];
+        assert.ok(method, `${entry.providerKey} exposes an unknown runtime feature: ${feature}`);
+        assert.equal(typeof (adapter as unknown as Record<string, unknown>)[method], 'function', `${entry.providerKey} advertises ${feature} without ${method}()`);
+      }
+    }
+  });
+
   it('does not treat an active but not-yet-running UnifyPort account as connected', async () => {
     assert.equal(providerRegistry.getProviderAdapter('unifyport').providerKey, 'unifyport');
     const { isUnifyPortAccountRuntimeReady } = await import('../src/modules/provider-control/unifyport.adapter.js');
