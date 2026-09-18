@@ -113,6 +113,9 @@ type InferCommandContext = {
   customerId?: string | null;
   companyId?: string | null;
   orderId?: string | null;
+  orderAction?: 'transition' | null;
+  orderTargetStatus?: 'PLACED' | 'CONFIRMED' | 'PROCESSING' | 'CANCELLED' | null;
+  orderExpectedVersion?: number | null;
   invoiceId?: string | null;
   invoiceAction?: 'issue' | 'send' | null;
   providerConnectionId?: string | null;
@@ -130,6 +133,8 @@ type InferCommandContext = {
   terms?: unknown;
   quoteLines?: unknown[] | null;
   conversationIdForQuote?: string | null;
+  quoteId?: string | null;
+  quoteAction?: 'send' | null;
   socialAccountId?: string | null;
   contentType?: 'TEXT' | 'LINK' | 'IMAGE' | null;
   contentMessage?: string | null;
@@ -363,6 +368,30 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   }
 
   if (context.targetSystem === 'sales') {
+    if (context.quoteId && context.quoteAction === 'send') {
+      return {
+        type: 'sales.quote.send',
+        summary,
+        targetSystem: 'sales',
+        provider: null,
+        riskLevel: 'high',
+        approvalPolicy: 'allow',
+        targetEntityType: 'finance_quotes',
+        targetEntityId: context.quoteId,
+        payload: {
+          quoteId: context.quoteId,
+          channel: 'secure_link',
+          ...(context.conversationId ? { conversationId: context.conversationId } : {}),
+          ...(context.recipientId ? { recipient: context.recipientId } : {}),
+        },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`finance_quote:${context.quoteId}`],
+          limitations: ['The canonical quote delivery service validates the quote state and target conversation before sending.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['sales.quote.send', context.quoteId, context.conversationId, context.recipientId]),
+      };
+    }
     if (context.customerRecordId && context.currency && Array.isArray(context.quoteLines) && context.quoteLines.length > 0) {
       const quoteLines = context.quoteLines.slice(0, 500);
       const currency = textValue(context.currency, 3).toUpperCase();
@@ -788,6 +817,38 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         context.pageId,
         context.sourceText.slice(0, 400),
       ]),
+    };
+  }
+
+  if (
+    context.targetSystem === 'ecommerce'
+    && context.orderId
+    && context.orderAction === 'transition'
+    && context.orderTargetStatus
+    && context.orderExpectedVersion !== null
+    && context.orderExpectedVersion !== undefined
+  ) {
+    return {
+      type: 'commerce.order.transition',
+      summary,
+      targetSystem: 'ecommerce',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'commerce_orders',
+      targetEntityId: context.orderId,
+      payload: {
+        orderId: context.orderId,
+        targetStatus: context.orderTargetStatus,
+        expectedVersion: context.orderExpectedVersion,
+        reason: context.goal || summary,
+      },
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`commerce_order:${context.orderId}`, 'optimistic_version'],
+        limitations: ['The canonical commerce service validates the allowed state transition and current version before changing the order.'],
+      },
+      idempotencyKey: buildIdempotencyKey(['commerce.order.transition', context.orderId, context.orderTargetStatus, String(context.orderExpectedVersion)]),
     };
   }
 

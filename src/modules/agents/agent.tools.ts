@@ -68,6 +68,9 @@ type AgentSnapshotInput = {
   location?: unknown;
   customerId?: unknown;
   companyId?: unknown;
+  orderAction?: unknown;
+  orderTargetStatus?: unknown;
+  orderExpectedVersion?: unknown;
   invoiceId?: unknown;
   invoiceAction?: unknown;
   providerConnectionId?: unknown;
@@ -84,6 +87,8 @@ type AgentSnapshotInput = {
   terms?: unknown;
   quoteLines?: unknown;
   conversationIdForQuote?: unknown;
+  quoteId?: unknown;
+  quoteAction?: unknown;
   socialAccountId?: unknown;
   contentType?: unknown;
   contentMessage?: unknown;
@@ -733,6 +738,9 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     location: compactText(input.location, 500) || null,
     customerId: compactText(input.customerId, 120) || null,
     companyId: compactText(input.companyId, 120) || null,
+    orderAction: input.orderAction === 'transition' ? input.orderAction : null,
+    orderTargetStatus: input.orderTargetStatus === 'PLACED' || input.orderTargetStatus === 'CONFIRMED' || input.orderTargetStatus === 'PROCESSING' || input.orderTargetStatus === 'CANCELLED' ? input.orderTargetStatus : null,
+    orderExpectedVersion: typeof input.orderExpectedVersion === 'number' && Number.isInteger(input.orderExpectedVersion) ? input.orderExpectedVersion : null,
     invoiceId: compactText(input.invoiceId, 120) || null,
     invoiceAction: input.invoiceAction === 'issue' || input.invoiceAction === 'send' ? input.invoiceAction : null,
     providerConnectionId: compactText(input.providerConnectionId, 120) || null,
@@ -749,6 +757,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     terms: input.terms,
     quoteLines: Array.isArray(input.quoteLines) ? input.quoteLines.slice(0, 500) : null,
     conversationIdForQuote: compactText(input.conversationIdForQuote, 120) || null,
+    quoteId: compactText(input.quoteId, 120) || null,
+    quoteAction: input.quoteAction === 'send' ? input.quoteAction : null,
     socialAccountId: compactText(input.socialAccountId, 120) || null,
     contentType: input.contentType === 'TEXT' || input.contentType === 'LINK' || input.contentType === 'IMAGE' ? input.contentType : null,
     contentMessage: compactText(input.contentMessage, 63_206) || null,
@@ -825,6 +835,9 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       location: input.location ?? null,
       customerId: input.customerId ?? null,
       companyId: input.companyId ?? null,
+      orderAction: input.orderAction ?? null,
+      orderTargetStatus: input.orderTargetStatus ?? null,
+      orderExpectedVersion: input.orderExpectedVersion ?? null,
       invoiceId: input.invoiceId ?? null,
       invoiceAction: input.invoiceAction ?? null,
       draftId: input.draftId ?? null,
@@ -841,6 +854,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       terms: input.terms ?? null,
       quoteLines: Array.isArray(input.quoteLines) ? input.quoteLines.slice(0, 500) : null,
       conversationIdForQuote: input.conversationIdForQuote ?? null,
+      quoteId: input.quoteId ?? null,
+      quoteAction: input.quoteAction ?? null,
       providerConnectionId: input.providerConnectionId ?? null,
       domainId: input.domainId ?? null,
       commands,

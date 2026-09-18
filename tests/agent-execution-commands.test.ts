@@ -469,6 +469,53 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('infers grounded quote delivery and order transitions from explicit canonical context', () => {
+    const [quote] = normalizeAgentExecutionCommands([], {
+      module: 'sales',
+      targetSystem: 'sales',
+      actionResourceType: 'finance_quotes',
+      pageId: 'quotes-page',
+      pageLabel: 'Quote Specialist',
+      goal: 'Send the verified offer',
+      jobs: ['Send offer'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      quoteId: '00000000-0000-4000-8000-000000000501',
+      quoteAction: 'send',
+      recipientId: 'buyer@example.com',
+    });
+    assert.equal(quote?.type, 'sales.quote.send');
+    assert.deepEqual(quote?.payload, {
+      quoteId: '00000000-0000-4000-8000-000000000501',
+      channel: 'secure_link',
+      recipient: 'buyer@example.com',
+    });
+
+    const [order] = normalizeAgentExecutionCommands([], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'orders-page',
+      pageLabel: 'Orders',
+      goal: 'Confirm the verified order',
+      jobs: ['Confirm order'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      orderId: '00000000-0000-4000-8000-000000000502',
+      orderAction: 'transition',
+      orderTargetStatus: 'CONFIRMED',
+      orderExpectedVersion: 3,
+    });
+    assert.equal(order?.type, 'commerce.order.transition');
+    assert.deepEqual(order?.payload, {
+      orderId: '00000000-0000-4000-8000-000000000502',
+      targetStatus: 'CONFIRMED',
+      expectedVersion: 3,
+      reason: 'Confirm the verified order',
+    });
+    assert.equal(order?.approvalPolicy, 'allow');
+  });
+
   it('registers calendar event creation as an autonomous, non-budget command', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'calendar.event.create',
