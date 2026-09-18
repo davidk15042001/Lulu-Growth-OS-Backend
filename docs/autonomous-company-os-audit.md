@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `420bf37391bf9309301f982d6dd5c2f335a9bfab`
-- Backend commit: `f2cc4cda2a2a4a69e2eb849d4b6619ead0859ed0`
+- Frontend commit: `703e77d6fb75eb126572a55e237f90a1955830a9`
+- Backend commit: `bea82660eafbb1dc91a33ff45b848a5705167edf`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -16,6 +16,7 @@ The following evidence was checked after the latest combined deployment:
 - Read-only UnifyPort adapter check: the configured workspace and account endpoint returned `CONNECTED`/`HEALTHY`; workspace/account capabilities and WhatsApp send/receive capability were reported `AVAILABLE`. No message was sent by this check; outbound/inbound sender and webhook acceptance still require a dedicated provider E2E test.
 - A repeatable opt-in `provider:live-readiness` gate now performs the same read-only verification, health, capability, and account-discovery checks and exits non-zero on any unavailable result; the configured UnifyPort check returned `READY` with one discovered account.
 - The live-readiness gate now reports provider failures as structured, secret-safe `BLOCKED` results (including provider error codes) instead of leaking a diagnostic stack trace; the unreachable-provider path was verified locally.
+- UnifyPort readiness is tenant-scoped when a workspace connection supplies an external account: only that account can make messaging capabilities available, and missing, non-WhatsApp, or non-running accounts fail closed. The isolation behavior is covered by dedicated adapter tests.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
