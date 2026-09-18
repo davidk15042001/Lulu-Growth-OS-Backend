@@ -102,7 +102,8 @@ describe('prepaid API and transparent usage reporting', () => {
       [workspace.id, invoice.id],
     );
     const repaired = await reconcilePaidBillingInvoices(50);
-    assert.equal(repaired.created, 1);
+    assert.equal(repaired.created, 0);
+    assert.equal(repaired.repaired, 1);
     const repairedInvoice = (await db.query<{ documentStatus: string; documentStorageReference: string | null }>(
       `SELECT document_status AS "documentStatus",document_storage_reference AS "documentStorageReference"
          FROM invoices WHERE workspace_id=$1 AND id=$2`,

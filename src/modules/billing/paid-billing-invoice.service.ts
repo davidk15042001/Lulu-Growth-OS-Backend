@@ -456,9 +456,21 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
     [bounded],
   );
   let created = 0;
+  let repaired = 0;
   let failed = 0;
   for (const candidate of candidates.rows) {
     try {
+      const existing = await query<{ documentStatus: string; documentStorageReference: string | null }>(
+        `SELECT i.document_status AS "documentStatus",i.document_storage_reference AS "documentStorageReference"
+           FROM commercial_document_operations o
+           JOIN invoices i ON i.workspace_id=o.workspace_id AND i.id=o.document_id
+          WHERE o.workspace_id=$1 AND o.operation_key=$2 AND o.operation_type='invoice.create'
+            AND o.status='COMPLETED'
+          LIMIT 1`,
+        [candidate.workspaceId, operationKey({ kind: candidate.kind, referenceId: candidate.referenceId })],
+      );
+      const needsDocumentRepair = Boolean(existing.rows[0])
+        && (existing.rows[0]!.documentStatus !== 'READY' || !existing.rows[0]!.documentStorageReference);
       const result = candidate.kind === 'AI_CREDITS'
         ? await query<any>(`SELECT id::text AS id,workspace_id AS "workspaceId",amount::numeric AS amount,currency,payment_method AS "paymentMethod",paid_at AS "paidAt",provider_invoice_id AS "providerInvoiceId",provider_payment_intent_id AS "providerPaymentIntentId" FROM workspace_api_topups WHERE id=$1`, [candidate.referenceId])
         : candidate.kind === 'AD_SPEND'
@@ -471,11 +483,14 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
         : candidate.kind === 'AD_SPEND'
           ? await createPaidAdSpendInvoice({ ...row, topupId: row.id })
           : await createPaidStorageInvoice({ ...row, periodId: row.id });
-      if (invoice) created += 1;
+      if (invoice) {
+        if (needsDocumentRepair) repaired += 1;
+        else created += 1;
+      }
     } catch (error) {
       failed += 1;
       logger.warn({ error, kind: candidate.kind, referenceId: candidate.referenceId }, 'Paid billing invoice reconciliation candidate failed');
     }
   }
-  return { checked: candidates.rows.length, created, failed, sellerRepair };
+  return { checked: candidates.rows.length, created, repaired, failed, sellerRepair };
 }
