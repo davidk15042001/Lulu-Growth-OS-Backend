@@ -22,6 +22,8 @@ import {
   summarizeExecutionReviewReason,
   type AgentExecutionCommand,
 } from './agent.execution-command.js';
+import { evaluateGrowthGovernanceSet } from './growth-governance.js';
+import { createGrowthApproval } from './growth-approval.service.js';
 import { assessAgentReasoningQuality } from '../quality/agent-quality-gate.js';
 
 type AgentSnapshotInput = {
@@ -824,19 +826,25 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     ...command,
     approvalPolicy: commandDecision === 'allow' ? 'allow' : 'budget_required',
   }));
+  const governance = evaluateGrowthGovernanceSet(
+    workspaceId,
+    commands,
+    executionMode === 'autonomous' ? 'autonomous' : 'analysis_only',
+  );
   const hasForbiddenCommand = commandPolicy.commands.some((command) => command.policyDecision === 'forbidden');
   if(hasForbiddenCommand)throw new AppError(403,'AGENT_COMMAND_FORBIDDEN',commandPolicy.reasons.join(' ')||'The command is not registered for autonomous execution.');
   if(commandPolicy.overallDecision==='require_budget')throw new AppError(409,'CUSTOMER_BUDGET_REQUIRED','Customer campaign budget authorization is required before this action can run.');
   const effectivePolicyDecision = 'allow' as const;
-  const executionReady = true;
-  const approvalStatus = 'not_required';
+  const executionReady = !governance.requiresApproval;
+  const approvalStatus = governance.requiresApproval ? 'pending' : 'not_required';
+  const executionStage = governance.requiresApproval ? 'waiting_approval' : 'queued_for_execution';
   const commandTypes = listAgentExecutionCommandTypes(commands);
   const requiresHumanReviewReason = summarizeExecutionReviewReason(commands, effectivePolicyDecision, commandPolicy.reasons);
   const record = await recordRepo.createRecord(workspaceId, resourceType, userId, {
     name: `${pageLabel} autonomous action packet`,
     description: compactText(goal || `Backend action packet for ${pageLabel}.`, 500),
-    status: 'approved',
-    stage: 'queued_for_execution',
+    status: governance.requiresApproval ? 'pending' : 'approved',
+    stage: executionStage,
     source: 'page_agent',
     tags: [module, resourceType, ...(input.pageId ? [String(input.pageId)] : [])].slice(0, 12),
     data: {
@@ -850,8 +858,12 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       executionMode,
       policyDecision: effectivePolicyDecision,
       approvalStatus,
-      executionReady: true,
-      executionStatus: 'queued',
+      governanceDecision: governance.decision,
+      governanceRequiresHumanApproval: governance.requiresApproval,
+      governanceConflictKeys: governance.conflictKeys,
+      governanceReasons: governance.decisions.filter((entry) => entry.requiresHumanApproval).map((entry) => `${entry.commandType}: ${entry.reason}`),
+      executionReady,
+      executionStatus: governance.requiresApproval ? 'waiting_approval' : 'queued',
       targetSystem,
       targetModule: module,
       eventTitle: input.eventTitle ?? null,
@@ -907,9 +919,59 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       approvedAt,
       approvedAutomatically: executionReady,
       createdByAgent: true,
+      resourceType,
+      identity: {
+        workspaceId: identity.workspaceId,
+        userId: identity.userId,
+        runId: identity.runId,
+        stepId: identity.stepId,
+      },
       createdAt: new Date().toISOString(),
     },
   });
+  if (governance.requiresApproval) {
+    const approval = await createGrowthApproval({
+      workspaceId,
+      requestedBy: identity.userId,
+      title: `Approval required: ${commandTypes.join(', ')}`,
+      description: governance.decisions.filter((entry) => entry.requiresHumanApproval).map((entry) => `${entry.commandType}: ${entry.reason}`).join(' '),
+      entityType: resourceType,
+      entityId: record.id,
+      payload: {
+        recordId: record.id,
+        resourceType,
+        commands,
+        identity: {
+          workspaceId: identity.workspaceId,
+          userId: identity.userId,
+          runId: identity.runId,
+          stepId: identity.stepId,
+        },
+      },
+    });
+    const pendingRecord = await recordRepo.findRecord(workspaceId, resourceType, record.id);
+    return {
+      snapshotType: 'page_action_writeback',
+      module,
+      pageId: input.pageId ?? null,
+      pageLabel: input.pageLabel ?? null,
+      actionResourceType: resourceType,
+      actionRecord: compactRecord(pendingRecord ?? record),
+      jobs,
+      approvalGates,
+      executionMode,
+      policyDecision: effectivePolicyDecision,
+      approvalStatus: 'pending',
+      executionReady: false,
+      approvalId: approval.id,
+      targetSystem,
+      commandTypes,
+      requiresHumanReviewReason,
+      governanceDecision: governance.decision,
+      governanceRequiresHumanApproval: true,
+      governanceConflictKeys: governance.conflictKeys,
+    };
+  }
   const authorization = await registerAgentActionPacket(identity,record,commands);
   const resolvedPolicyDecision = authorization.executionReady ? 'allow' : effectivePolicyDecision;
   const authorizedRecord=await recordRepo.findRecord(workspaceId,resourceType,record.id);
@@ -930,6 +992,9 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     targetSystem,
     commandTypes,
     requiresHumanReviewReason,
+    governanceDecision: governance.decision,
+    governanceRequiresHumanApproval: governance.requiresApproval,
+    governanceConflictKeys: governance.conflictKeys,
   };
 }
 

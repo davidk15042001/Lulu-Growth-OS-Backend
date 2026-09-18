@@ -32,6 +32,7 @@ import {
   selectAgentTeam,
   type AgentDefinition,
 } from './agent.ecosystem.js';
+import { growthAgentContractSummary } from './growth-operating-model.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -890,6 +891,7 @@ export async function getAgentEcosystem(workspaceId: string) {
       candidatesConsidered: calculated.selection.candidateCount,
       connectedPlatformCount: calculated.connectedPlatforms.length,
       liveResourceTypeCount: calculated.resourceTypes.length,
+      growthOperatingModelAgents: growthAgentContractSummary(),
     },
     activeTeam,
     latestCycle,

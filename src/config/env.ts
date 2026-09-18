@@ -78,6 +78,15 @@ const EnvSchema = z
     GROQ_API_KEY: z.string().min(1).optional(),
     GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
     GROQ_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
+    // Optional research and creative providers. Registration does not imply
+    // runtime availability; adapters remain blocked until implemented and
+    // verified through the Provider Control Plane.
+    PERPLEXITY_API_KEY: optionalNonEmptyString,
+    PERPLEXITY_BASE_URL: z.string().url().default('https://api.perplexity.ai'),
+    FIRECRAWL_API_KEY: optionalNonEmptyString,
+    FIRECRAWL_BASE_URL: z.string().url().default('https://api.firecrawl.dev'),
+    HIGGSFIELD_API_KEY: optionalNonEmptyString,
+    HIGGSFIELD_BASE_URL: z.string().url().default('https://api.higgsfield.ai'),
     OPENAI_REASONING_EFFORT: z.enum(['minimal', 'low', 'medium', 'high']).default('low'),
     OPENAI_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).max(32_768).default(4_096),
     IMAGE_MODEL: z.string().min(1).default('gpt-image-1'),
