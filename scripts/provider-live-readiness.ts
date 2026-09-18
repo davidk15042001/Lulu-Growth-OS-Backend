@@ -12,6 +12,18 @@ import { getProviderAdapter, getProviderRuntimeReadiness } from '../src/modules/
  */
 
 type Capability = { capabilityKey?: string; status?: string };
+type ReadinessFailure = { code: string; message: string };
+
+function safeFailure(cause: unknown): ReadinessFailure {
+  if (cause && typeof cause === 'object') {
+    const candidate = cause as { code?: unknown; message?: unknown };
+    return {
+      code: typeof candidate.code === 'string' ? candidate.code : 'PROVIDER_LIVE_READINESS_FAILED',
+      message: typeof candidate.message === 'string' ? candidate.message : 'Provider readiness could not be verified.',
+    };
+  }
+  return { code: 'PROVIDER_LIVE_READINESS_FAILED', message: 'Provider readiness could not be verified.' };
+}
 
 function requestedProviders() {
   return (process.env.PROVIDER_LIVE_E2E_PROVIDERS ?? 'unifyport')
@@ -72,5 +84,21 @@ assertEnabled();
 const providers = requestedProviders();
 if (providers.length === 0) throw new Error('No providers requested. Set PROVIDER_LIVE_E2E_PROVIDERS.');
 
-for (const provider of providers) await check(provider);
-console.log(JSON.stringify({ status: 'READY', providers }));
+const results: Array<Record<string, unknown>> = [];
+for (const provider of providers) {
+  try {
+    results.push(await check(provider));
+  } catch (cause) {
+    const failure = safeFailure(cause);
+    const blocked = { provider, status: 'BLOCKED', error: failure };
+    results.push(blocked);
+    console.log(JSON.stringify(blocked));
+  }
+}
+
+if (results.some((result) => result.status === 'BLOCKED')) {
+  console.log(JSON.stringify({ status: 'BLOCKED', providers, results }));
+  process.exitCode = 1;
+} else {
+  console.log(JSON.stringify({ status: 'READY', providers, results }));
+}
