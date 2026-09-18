@@ -45,3 +45,16 @@ duplicate without creating a second conversation message.
 
 The readiness check is deliberately read-only. It never sends a WhatsApp
 message or changes a provider account.
+
+## Repeatable live read-only gate
+
+For a release check, run the opt-in provider probe from the backend repository:
+
+```bash
+PROVIDER_LIVE_E2E=1 PROVIDER_LIVE_E2E_PROVIDERS=unifyport npm run provider:live-readiness
+```
+
+The command prints only provider status, capability status, and the number of
+discovered accounts. It exits non-zero if verification, health, or any
+advertised capability is not ready. The opt-in flag is mandatory so ordinary
+development and CI test runs never call a live provider accidentally.
