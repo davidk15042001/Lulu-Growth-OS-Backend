@@ -223,6 +223,10 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
         return current;
       }
     }
+    // Automatic prepaid invoices must expose the same canonical PDF link as
+    // manually issued invoices.  This also repairs older invoices that were
+    // already paid before document-link generation was added.
+    await commercialDocumentsRepo.ensureInvoiceDocument(input.workspaceId, current.invoice.id, customer.actorId);
     const due = normalizeAmount(Number(current.invoice.amountDue ?? amount));
     if (due > 0 && !['PAID', 'PARTIALLY_PAID'].includes(current.invoice.status)) {
       const payment = await commercialDocumentsRepo.recordInvoicePayment(input.workspaceId, current.invoice.id, customer.actorId, {
@@ -239,9 +243,10 @@ export async function createPaidBillingInvoice(input: PaidBillingInvoiceInput) {
           providerPaymentIntentId: input.providerPaymentIntentId ?? null,
         },
       });
-      return payment.invoice;
+      await commercialDocumentsRepo.ensureInvoiceDocument(input.workspaceId, current.invoice.id, customer.actorId);
+      return (await commercialDocumentsRepo.getInvoice(input.workspaceId, current.invoice.id)) ?? payment.invoice;
     }
-    return current;
+    return (await commercialDocumentsRepo.getInvoice(input.workspaceId, current.invoice.id)) ?? current;
   } catch (error) {
     logger.error({ error, workspaceId: input.workspaceId, kind: input.kind, referenceId: input.referenceId }, 'Automatic paid billing invoice creation failed; reconciliation will retry it');
     // Do not rely only on the periodic billing sweep. A provider webhook may
@@ -406,6 +411,8 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
              AND o.operation_type='invoice.create'
              AND o.status='COMPLETED'
              AND i.status='PAID'
+             AND i.document_status='READY'
+             AND i.document_storage_reference IS NOT NULL
         )
      UNION ALL
      SELECT 'AD_SPEND'::text, t.id::text, t.workspace_id,
@@ -423,6 +430,8 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
              AND o.operation_type='invoice.create'
              AND o.status='COMPLETED'
              AND i.status='PAID'
+             AND i.document_status='READY'
+             AND i.document_storage_reference IS NOT NULL
         )
      UNION ALL
      SELECT 'STORAGE'::text, p.id::text, p.workspace_id,
@@ -439,6 +448,8 @@ export async function reconcilePaidBillingInvoices(limit = 50) {
              AND o.operation_type='invoice.create'
              AND o.status='COMPLETED'
              AND i.status='PAID'
+             AND i.document_status='READY'
+             AND i.document_storage_reference IS NOT NULL
         )
       ORDER BY "occurredAt" ASC NULLS LAST, "referenceId"
       LIMIT $1`,

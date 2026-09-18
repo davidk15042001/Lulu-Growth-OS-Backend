@@ -70,8 +70,9 @@ describe('prepaid API and transparent usage reporting', () => {
 
     const first = await reconcilePaidBillingInvoices(50);
     assert.ok(first.created >= 1);
-    const invoice = (await db.query<{ id: string; status: string; creationMode: string; amountPaid: string; amountDue: string }>(
-      `SELECT i.id,i.status,i.creation_mode AS "creationMode",i.amount_paid AS "amountPaid",i.amount_due AS "amountDue"
+    const invoice = (await db.query<{ id: string; status: string; creationMode: string; amountPaid: string; amountDue: string; documentStatus: string; documentStorageReference: string | null }>(
+      `SELECT i.id,i.status,i.creation_mode AS "creationMode",i.amount_paid AS "amountPaid",i.amount_due AS "amountDue",
+              i.document_status AS "documentStatus",i.document_storage_reference AS "documentStorageReference"
          FROM invoices i JOIN commercial_document_operations o ON o.document_id=i.id
         WHERE i.workspace_id=$1 AND o.operation_key=$2 AND o.operation_type='invoice.create'`,
       [workspace.id, `billing-invoice:ai_credits:${topup.id}`],
@@ -81,6 +82,8 @@ describe('prepaid API and transparent usage reporting', () => {
     assert.equal(invoice.creationMode, 'AUTOMATIC');
     assert.equal(Number(invoice.amountPaid), 1000);
     assert.equal(Number(invoice.amountDue), 0);
+    assert.equal(invoice.documentStatus, 'READY');
+    assert.match(String(invoice.documentStorageReference), /^\/documents\/commercial\//);
 
     const second = await reconcilePaidBillingInvoices(50);
     assert.equal(second.created, 0);
@@ -88,6 +91,28 @@ describe('prepaid API and transparent usage reporting', () => {
       `SELECT count(*)::int AS count FROM commercial_document_operations
         WHERE workspace_id=$1 AND operation_key=$2 AND operation_type='invoice.create' AND status='COMPLETED'`,
       [workspace.id, `billing-invoice:ai_credits:${topup.id}`],
+    )).rows[0]?.count, 1);
+
+    // A historical invoice may be paid but still carry the pre-link PENDING
+    // document state. Reconciliation must repair the PDF link without
+    // creating a second invoice.
+    await db.query(
+      `UPDATE invoices SET document_status='PENDING',document_storage_reference=NULL,document_hash=NULL
+        WHERE workspace_id=$1 AND id=$2`,
+      [workspace.id, invoice.id],
+    );
+    const repaired = await reconcilePaidBillingInvoices(50);
+    assert.equal(repaired.created, 1);
+    const repairedInvoice = (await db.query<{ documentStatus: string; documentStorageReference: string | null }>(
+      `SELECT document_status AS "documentStatus",document_storage_reference AS "documentStorageReference"
+         FROM invoices WHERE workspace_id=$1 AND id=$2`,
+      [workspace.id, invoice.id],
+    )).rows[0]!;
+    assert.equal(repairedInvoice.documentStatus, 'READY');
+    assert.match(String(repairedInvoice.documentStorageReference), /^\/documents\/commercial\//);
+    assert.equal((await db.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM invoices WHERE workspace_id=$1`,
+      [workspace.id],
     )).rows[0]?.count, 1);
   });
 
