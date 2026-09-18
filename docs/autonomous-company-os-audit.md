@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `0f1918964a0e2c45319e0b1702ed8d49d21d0c1f`
-- Backend commit: `189bd8a6feb1bae427240d0435bf8c34d82f73c2`
+- Frontend commit: `7091588db10bf65a2e6523b0e26a036da7e51a0b`
+- Backend commit: `77fe5f49caef1307690a7ae3cac606e9d5fd7a72`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -19,6 +19,7 @@ The following evidence was checked after the latest combined deployment:
 - UnifyPort readiness is tenant-scoped when a workspace connection supplies an external account: only that account can make messaging capabilities available, and missing, non-WhatsApp, or non-running accounts fail closed. The isolation behavior is covered by dedicated adapter tests.
 - The frontend now includes a repeatable, read-only production smoke gate covering the release manifest, public route shells, API health and API readiness. The post-deployment run against `https://lulu-ai.cn` passed all eight checks without authentication or external side effects.
 - A separate, three-guard `provider:live-e2e` command now exists for one explicitly labelled UnifyPort WhatsApp transport acceptance message. It is not part of normal deployment or readiness and refuses to run without a dedicated workspace, running account, test recipient, confirmation token and `[Lulu E2E]` message prefix.
+- Admin billing now exposes the same idempotent paid-billing reconciliation worker used by the PAYG cycle. An authorized administrator can review successful provider-confirmed top-ups, repair seller snapshots, and generate missing AI, advertising, or storage invoices without creating funds or duplicating an invoice operation.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
