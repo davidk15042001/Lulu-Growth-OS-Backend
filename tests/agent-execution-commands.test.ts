@@ -530,6 +530,7 @@ describe('agent execution commands', () => {
       fulfillmentExpectedOrderVersion: 4,
       fulfillmentCarrier: 'DHL',
       fulfillmentLines: [{ orderLineId: '00000000-0000-4000-8000-000000000503', quantity: 2 }],
+      sourceText: 'Shipment metadata from the order record',
     });
     assert.equal(fulfillmentCreate[0]?.type, 'commerce.fulfillment.create');
     assert.deepEqual(fulfillmentCreate[0]?.payload, {
