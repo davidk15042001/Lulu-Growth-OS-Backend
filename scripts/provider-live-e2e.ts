@@ -11,6 +11,7 @@ import crypto from 'node:crypto';
  */
 
 const CONFIRMATION = 'I_UNDERSTAND_THIS_SENDS_A_REAL_WHATSAPP_MESSAGE';
+const INBOUND_CONFIRMATION = 'I_UNDERSTAND_THIS_WAITS_FOR_A_REAL_INBOUND_REPLY';
 
 function required(name: string) {
   const value = process.env[name]?.trim();
@@ -37,6 +38,86 @@ function assertExplicitlyEnabled() {
   if (process.env.PROVIDER_LIVE_E2E_CONFIRM !== CONFIRMATION) {
     throw new Error(`Refusing provider side effects. Set PROVIDER_LIVE_E2E_CONFIRM=${CONFIRMATION}.`);
   }
+}
+
+function boundedSeconds(name: string, fallback: number, maximum: number) {
+  const value = Number(process.env[name] ?? fallback);
+  if (!Number.isFinite(value) || value < 1 || value > maximum) {
+    throw new Error(`${name} must be between 1 and ${maximum} seconds.`);
+  }
+  return Math.floor(value);
+}
+
+async function waitForInboundReply(input: {
+  workspaceId: string;
+  externalAccountId: string;
+  marker: string;
+  startedAt: Date;
+}) {
+  if (process.env.PROVIDER_LIVE_E2E_INBOUND_CONFIRM !== INBOUND_CONFIRMATION) {
+    throw new Error(`Refusing inbound wait. Set PROVIDER_LIVE_E2E_INBOUND_CONFIRM=${INBOUND_CONFIRMATION}.`);
+  }
+  const databaseUrl = required('DATABASE_URL');
+  const pollSeconds = boundedSeconds('PROVIDER_LIVE_E2E_INBOUND_POLL_SECONDS', 3, 60);
+  const timeoutSeconds = boundedSeconds('PROVIDER_LIVE_E2E_INBOUND_TIMEOUT_SECONDS', 300, 1_800);
+  const { default: pg } = await import('pg');
+  const client = new pg.Client({ connectionString: databaseUrl });
+  await client.connect();
+  const deadline = Date.now() + timeoutSeconds * 1_000;
+  console.log(JSON.stringify({
+    status: 'WAITING_FOR_INBOUND',
+    provider: 'unifyport',
+    marker: input.marker,
+    instructions: 'Send this exact marker from the dedicated WhatsApp test recipient. The signed webhook must reach Lulu.',
+    timeoutSeconds,
+  }, null, 2));
+  try {
+    while (Date.now() < deadline) {
+      const message = await client.query<{
+        id: string;
+        providerMessageId: string | null;
+        status: string;
+        receivedAt: string | null;
+      }>(`
+        SELECT id, provider_message_id AS "providerMessageId", status, received_at AS "receivedAt"
+        FROM omni_messages
+        WHERE workspace_id=$1
+          AND direction='INBOUND'
+          AND text_content=$2
+          AND created_at >= $3
+        ORDER BY created_at DESC
+        LIMIT 1
+      `, [input.workspaceId, input.marker, input.startedAt]);
+      if (message.rows[0]) {
+        const webhook = await client.query<{
+          status: string;
+          attempts: number;
+          externalEventId: string;
+        }>(`
+          SELECT status, attempts, external_event_id AS "externalEventId"
+          FROM provider_webhook_events
+          WHERE provider_key='unifyport'
+            AND event_type='message.received'
+            AND received_at >= $1
+            AND normalized_metadata #>> '{eventPayload,account_id}' = $2
+            AND normalized_metadata #>> '{eventPayload,data,message,text}' = $3
+          ORDER BY received_at DESC
+          LIMIT 1
+        `, [input.startedAt, input.externalAccountId, input.marker]);
+        if (webhook.rows[0]?.status === 'PROCESSED') {
+          return {
+            status: 'RECEIVE_VERIFIED',
+            message: message.rows[0],
+            webhook: webhook.rows[0],
+          };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollSeconds * 1_000));
+    }
+  } finally {
+    await client.end().catch(() => undefined);
+  }
+  throw new Error(`Inbound webhook acceptance timed out. Expected one message containing ${input.marker}.`);
 }
 
 async function main() {
@@ -71,6 +152,7 @@ async function main() {
   }
 
   const requestId = crypto.randomUUID();
+  const startedAt = new Date();
   const result = await sendMessage({
     account_id: externalAccountId,
     to: { id: recipient, type: 'user' },
@@ -90,6 +172,18 @@ async function main() {
     requestId,
     providerMessageId,
   }, null, 2));
+
+  if (process.env.PROVIDER_LIVE_E2E_VERIFY_INBOUND === '1') {
+    const marker = `[Lulu E2E INBOUND] ${crypto.randomUUID()}`;
+    const inbound = await waitForInboundReply({ workspaceId, externalAccountId, marker, startedAt });
+    console.log(JSON.stringify({
+      ...inbound,
+      provider: 'unifyport',
+      workspaceId,
+      externalAccountId,
+      marker,
+    }, null, 2));
+  }
 }
 
 try {

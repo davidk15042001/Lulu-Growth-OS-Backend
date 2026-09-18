@@ -81,5 +81,12 @@ PROVIDER_LIVE_E2E_MESSAGE="[Lulu E2E] provider acceptance test"
 Use only a dedicated test recipient. The command first verifies the selected
 tenant account is active and running, then sends one text and requires a
 provider message ID. It never retries an ambiguous send. Inbound webhook
-acceptance must still be verified separately with a provider-delivered test
-message and the signed webhook endpoint.
+acceptance can be included explicitly by adding
+`PROVIDER_LIVE_E2E_VERIFY_INBOUND=1`,
+`PROVIDER_LIVE_E2E_INBOUND_CONFIRM=I_UNDERSTAND_THIS_WAITS_FOR_A_REAL_INBOUND_REPLY`,
+and `DATABASE_URL`. The command prints a unique
+`[Lulu E2E INBOUND] ...` marker; send that exact marker from the dedicated
+test recipient. It then requires both a tenant-scoped inbound message and a
+`PROCESSED` signed webhook event for the selected account. The inbound wait is
+disabled by default and has a bounded timeout, so normal deployment never
+waits on provider traffic.
