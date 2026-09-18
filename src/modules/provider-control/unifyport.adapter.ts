@@ -1,6 +1,6 @@
 import { AppError } from '../../utils/app-error.js';
 import * as omniRepo from '../omnichannel/omnichannel.repo.js';
-import { getAccount, getWorkspace, isUnifyPortConfigured, isUnifyPortWebhookConfigured, listAccounts } from './unifyport.client.js';
+import { getAccount, getWorkspace, isUnifyPortConfigured, isUnifyPortWebhookConfigured, listAccounts, type UnifyPortAccount } from './unifyport.client.js';
 import type { ProviderAdapter, ProviderAdapterContext, ProviderCapabilityStatus, ProviderDiscoveredAccount, ProviderDiscoveredAsset, ProviderHealthStatus, ProviderSyncStatus, ProviderVerificationResult } from './provider.types.js';
 
 function errorStatus(error: unknown): { status: ProviderHealthStatus; connection: ProviderVerificationResult['status']; authorizationState: ProviderVerificationResult['authorizationState'] } {
@@ -39,6 +39,11 @@ export function isUnifyPortAccountRuntimeReady(account: { status?: unknown; runt
   const accountStatus = text(account.status)?.toLowerCase();
   const runtimeStatus = text(account.runtime_status)?.toLowerCase();
   return accountStatus === 'active' && Boolean(runtimeStatus && ['running', 'ready', 'connected'].includes(runtimeStatus));
+}
+
+function scopedAccounts(accounts: UnifyPortAccount[], externalAccountId?: string | null) {
+  const selected = accountId(externalAccountId);
+  return selected ? accounts.filter((account) => accountId(account.id) === selected) : accounts;
 }
 
 function omniMessageType(value: unknown) {
@@ -91,10 +96,19 @@ export class UnifyPortAdapter implements ProviderAdapter {
   readonly providerKey = 'unifyport';
   readonly runtimeFeatures = ['verification', 'health', 'capabilities', 'discovery', 'sync', 'webhook'] as const;
 
-  async verifyConnection(_context: ProviderAdapterContext): Promise<ProviderVerificationResult> {
+  async verifyConnection(context: ProviderAdapterContext): Promise<ProviderVerificationResult> {
     if (!isUnifyPortConfigured()) return { verified: false, status: 'AUTHORIZATION_REQUIRED', authorizationState: 'NOT_AUTHORIZED', healthStatus: 'AUTHORIZATION_REQUIRED', reason: 'UNIFYPORT_API_KEY is not configured.' };
     try {
       const workspace = await getWorkspace();
+      const selectedAccountId = accountId(context.externalAccountId);
+      if (selectedAccountId) {
+        const accounts = scopedAccounts(await listAccounts(), selectedAccountId);
+        const account = accounts[0];
+        if (!account) return { verified: false, status: 'PROVIDER_REVIEW', authorizationState: 'AUTHORIZED', healthStatus: 'PROVIDER_REVIEW', reason: `UnifyPort account ${selectedAccountId} is not available to this workspace.` };
+        if (account.provider !== 'whatsapp' || !isUnifyPortAccountRuntimeReady(account)) {
+          return { verified: false, status: 'PROVIDER_REVIEW', authorizationState: 'AUTHORIZED', healthStatus: 'PROVIDER_REVIEW', reason: `UnifyPort account ${selectedAccountId} is not an active, running WhatsApp account.` };
+        }
+      }
       return { verified: true, status: 'CONNECTED', authorizationState: 'AUTHORIZED', healthStatus: 'HEALTHY', reason: `UnifyPort workspace ${accountId(workspace.id) ?? 'configured'} is reachable.`, lastSuccessAt: new Date().toISOString() };
     } catch (error) {
       const state = errorStatus(error);
@@ -107,7 +121,7 @@ export class UnifyPortAdapter implements ProviderAdapter {
     return { status: result.healthStatus, reason: result.reason };
   }
 
-  async getCapabilities(_context: ProviderAdapterContext) {
+  async getCapabilities(context: ProviderAdapterContext) {
     if (!isUnifyPortConfigured()) {
       return [
         { capabilityKey: 'unifyport.workspace.read', status: 'AUTHORIZATION_REQUIRED' as ProviderCapabilityStatus, reason: 'UNIFYPORT_API_KEY is not configured.' },
@@ -117,7 +131,7 @@ export class UnifyPortAdapter implements ProviderAdapter {
         { capabilityKey: 'unifyport.messages.read', status: 'UNCONFIRMED' as ProviderCapabilityStatus, reason: 'Inbound messages arrive through a verified webhook.' },
       ];
     }
-    const accounts=await listAccounts();
+    const accounts=scopedAccounts(await listAccounts(), context.externalAccountId);
     const hasRunningWhatsApp=accounts.some(account=>account.provider==='whatsapp'&&account.status==='active'&&['running','ready','connected'].includes(String(account.runtime_status??'').toLowerCase()));
     return [
       { capabilityKey: 'unifyport.workspace.read', status: 'AVAILABLE' as ProviderCapabilityStatus },
@@ -128,8 +142,8 @@ export class UnifyPortAdapter implements ProviderAdapter {
     ];
   }
 
-  async discoverAccounts(_context: ProviderAdapterContext): Promise<ProviderDiscoveredAccount[]> {
-    const accounts = await listAccounts();
+  async discoverAccounts(context: ProviderAdapterContext): Promise<ProviderDiscoveredAccount[]> {
+    const accounts = scopedAccounts(await listAccounts(), context.externalAccountId);
     return accounts.flatMap((account) => {
       const externalAccountId = accountId(account.id);
       if (!externalAccountId) return [];
