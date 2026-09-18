@@ -21,6 +21,8 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - name: Prüfe Backup- und Restore-Skripte
+        run: bash -n scripts/backup-database.sh scripts/verify-database-backup.sh
       - run: npm run typecheck
       - run: npm run test:migrations
       - run: npm test
