@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `ddfa21c183127e1adc49ef84d04b4842596df994f`
-- Backend commit: `98e44e8a8a7f2c14ba8370fbfefaca9bc179419f`
+- Frontend commit: `7f34452c0c936e1c65c79fc7bec5b8d523595a61`
+- Backend commit: `f49fb826b9209789c766c12b8acb2e0ab2868903`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
