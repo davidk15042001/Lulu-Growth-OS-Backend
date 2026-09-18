@@ -20,6 +20,7 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'commerce.order.create':'AUTONOMOUS', 'commerce.order.update':'AUTONOMOUS',
   'commerce.order.transition':'AUTONOMOUS', 'commerce.inventory.adjust':'AUTONOMOUS',
   'commerce.product.create':'AUTONOMOUS', 'commerce.product.update':'AUTONOMOUS',
+  'commerce.category.create':'AUTONOMOUS', 'commerce.category.update':'AUTONOMOUS',
   'commerce.fulfillment.create':'AUTONOMOUS', 'commerce.fulfillment.transition':'AUTONOMOUS',
   'social.content.publish':'AUTONOMOUS', 'social.publication.retry':'AUTONOMOUS',
   'social.publication.cancel':'AUTONOMOUS',

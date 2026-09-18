@@ -594,6 +594,48 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('registers canonical category create and update commands with product capabilities', () => {
+    const commands = normalizeAgentExecutionCommands([
+      {
+        type: 'commerce.category.create',
+        summary: 'Create the verified category',
+        targetSystem: 'unknown',
+        riskLevel: 'high',
+        approvalPolicy: 'require_approval',
+        targetEntityType: 'category',
+        targetEntityId: null,
+        payload: { name: 'Industrial tools', slug: 'industrial-tools' },
+        idempotencyKey: 'model-category-create',
+      },
+      {
+        type: 'commerce.category.update',
+        summary: 'Update the verified category',
+        targetSystem: 'unknown',
+        riskLevel: 'high',
+        approvalPolicy: 'require_approval',
+        targetEntityType: 'category',
+        targetEntityId: 'category-123',
+        payload: { categoryId: 'category-123', name: 'Industrial equipment' },
+        idempotencyKey: 'model-category-update',
+      },
+    ], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_categories',
+      pageId: 'categories-page',
+      pageLabel: 'Categories',
+      goal: 'Maintain the verified product taxonomy',
+      jobs: ['create and update categories'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.deepEqual(commands.map((command) => command.type), ['commerce.category.create', 'commerce.category.update']);
+    assert.ok(commands.every((command) => command.targetSystem === 'ecommerce'));
+    assert.ok(commands.every((command) => command.approvalPolicy === 'allow'));
+    assert.ok(commands.every((command) => command.budgetAuthority === 'none'));
+  });
+
   it('keeps autonomous quote delivery server-owned and scoped to quote sending', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'sales.quote.send',

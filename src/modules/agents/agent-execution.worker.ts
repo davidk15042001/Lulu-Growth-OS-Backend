@@ -38,7 +38,7 @@ import { requestSocialPublishingWorkerRun } from '../social-publishing/social-pu
 import * as commercialDocumentService from '../commercial-documents/commercial-documents.service.js';
 import { createInvoiceSchema, createQuoteSchema, sendDocumentSchema } from '../commercial-documents/commercial-documents.validator.js';
 import { createNativeEventSchema } from '../calendar/calendar.validator.js';
-import { createProductSchema, updateProductSchema } from '../products/product.validator.js';
+import { createCategorySchema, createProductSchema, updateCategorySchema, updateProductSchema } from '../products/product.validator.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import * as salesPipelineService from '../sales-pipeline/sales-pipeline.service.js';
 import { SALES_PIPELINE_RESOURCE_TYPES, type SalesPipelineResourceType } from '../sales-pipeline/sales-pipeline.types.js';
@@ -127,6 +127,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   if (command.type === 'finance.invoice.issue' || command.type === 'finance.invoice.send') return 'finance_invoices';
   if (command.type === 'finance.create_automation') return 'finance_automations';
   if (command.type === 'commerce.product.create' || command.type === 'commerce.product.update') return 'ecommerce_products';
+  if (command.type === 'commerce.category.create' || command.type === 'commerce.category.update') return 'ecommerce_categories';
   return 'activities';
 }
 
@@ -792,6 +793,39 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
       version: product.version,
     });
     return { type: command.type, targetEntityId: product.id, provider: command.provider, resultRecordId: stored.id, result: product };
+  }
+
+  if (command.type === 'commerce.category.create') {
+    const category = await productService.createCategory(
+      record.workspaceId,
+      record.createdBy ?? actorUserId,
+      createCategorySchema.parse(payload),
+    );
+    const stored = await persistCommandExecutionResult(record, command, {
+      categoryId: category.id,
+      name: category.name,
+      slug: category.slug,
+      status: category.status,
+    });
+    return { type: command.type, targetEntityId: category.id, provider: command.provider, resultRecordId: stored.id, result: category };
+  }
+
+  if (command.type === 'commerce.category.update') {
+    const categoryId = textValue(payload.categoryId || command.targetEntityId);
+    if (!categoryId) throw new Error('commerce.category.update requires categoryId');
+    const category = await productService.updateCategory(
+      record.workspaceId,
+      categoryId,
+      record.createdBy ?? actorUserId,
+      updateCategorySchema.parse(payload),
+    );
+    const stored = await persistCommandExecutionResult(record, command, {
+      categoryId: category.id,
+      name: category.name,
+      slug: category.slug,
+      status: category.status,
+    });
+    return { type: command.type, targetEntityId: category.id, provider: command.provider, resultRecordId: stored.id, result: category };
   }
 
   if (command.type === 'commerce.order.update') {
