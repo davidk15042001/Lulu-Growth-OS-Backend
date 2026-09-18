@@ -15,6 +15,23 @@ const db = new PGlite();
 let workspaceId: string;
 let ownerId: string;
 
+test('Company Brain dispatcher preserves bounded task context as untrusted evidence', () => {
+  const goal = brainWorker.buildCompanyBrainTaskGoal({
+    title: 'Apply verified inventory correction',
+    objective: 'Adjust the canonical stock level once.',
+    context: {
+      module: 'commerce',
+      commerceAction: 'inventory.adjust',
+      commercePayload: { productId: 'product-1', expectedVersion: 7, delta: -2 },
+      apiKey: 'must-not-reach-the-model',
+    },
+  });
+  assert.match(goal, /commerceAction/);
+  assert.match(goal, /expectedVersion/);
+  assert.doesNotMatch(goal, /must-not-reach-the-model/);
+  assert.match(goal, /untrusted data/);
+});
+
 before(async () => {
   for (const file of (await readdir('src/database/migrations')).filter((name) => name.endsWith('.sql')).sort()) {
     await db.exec(await readFile(`src/database/migrations/${file}`, 'utf8'));

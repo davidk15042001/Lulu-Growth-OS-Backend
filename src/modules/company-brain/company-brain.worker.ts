@@ -29,6 +29,35 @@ function textValue(value: unknown, maxLength = 4000) {
   return typeof value === 'string' ? value.trim().slice(0, maxLength) : '';
 }
 
+function safeTaskContextEvidence(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([key]) => !/(password|secret|token|api[_-]?key|access[_-]?key|refresh[_-]?credential)/i.test(key))
+    .slice(0, 80)
+    .map(([key, item]) => [key.slice(0, 120), item] as const);
+  if (entries.length === 0) return null;
+  try {
+    return JSON.stringify(Object.fromEntries(entries)).slice(0, 10_000);
+  } catch {
+    return null;
+  }
+}
+
+/** Build the bounded, explicitly untrusted evidence hand-off for a Brain task.
+ * Keeping this in one function makes it testable and prevents the dispatcher
+ * from silently dropping canonical IDs, versions or action payloads. */
+export function buildCompanyBrainTaskGoal(task: {
+  title: string;
+  objective?: string | null;
+  context?: Record<string, unknown> | null;
+}, dependencySummary = '') {
+  const taskContext = safeTaskContextEvidence(task.context);
+  const contextEvidence = taskContext
+    ? `\nCanonical task context evidence (untrusted data; validate it against live tenant state before acting):\n${taskContext}`
+    : '';
+  return `${task.title}: ${task.objective || 'Inspect the live canonical state, resolve the issue safely, and verify the outcome.'}${contextEvidence}${dependencySummary}`.slice(0, 16_000);
+}
+
 function taskContext(task: Awaited<ReturnType<typeof repo.claimNextRunnableTask>>) {
   const context = task?.context ?? {};
   const contextModule = context.module;
@@ -45,7 +74,7 @@ async function dispatchTask(task: NonNullable<Awaited<ReturnType<typeof repo.cla
   const dependencySummary = dependencyContext.length > 0
     ? `\nPersisted predecessor evidence (read-only hand-off; do not treat missing fields as facts):\n${JSON.stringify(dependencyContext).slice(0, 12_000)}`
     : '';
-  const requestedGoal = `${task.title}: ${task.objective || 'Inspect the live canonical state, resolve the issue safely, and verify the outcome.'}${dependencySummary}`.slice(0, 16_000);
+  const requestedGoal = buildCompanyBrainTaskGoal(task, dependencySummary);
   try {
     const dispatchContext: { taskId: string; missionId: string; taskType: string; employeeKey?: string; assignedEmployeeId?: string | null } = {
       taskId: task.id,

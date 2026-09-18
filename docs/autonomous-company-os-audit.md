@@ -11,7 +11,7 @@ The following evidence was checked after the latest combined deployment:
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
-- Backend automated validation: typecheck, migration verification, 335 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path and historical paid-top-up invoice reconciliation are covered by idempotency tests
+- Backend automated validation: typecheck, migration verification, 342 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path and historical paid-top-up invoice reconciliation are covered by idempotency tests
 - Office route parity: all 45 persisted Digital Employee roles from the canonical roster resolve to a registered Workspace route; the frontend audit also passes with no routing, API-contract, branding, i18n, feedback, error, or agentic-UI issues
 - Read-only UnifyPort adapter check: the configured workspace and account endpoint returned `CONNECTED`/`HEALTHY`; workspace/account capabilities and WhatsApp send/receive capability were reported `AVAILABLE`. No message was sent by this check; outbound/inbound sender and webhook acceptance still require a dedicated provider E2E test.
 - A repeatable opt-in `provider:live-readiness` gate now performs the same read-only verification, health, capability, and account-discovery checks and exits non-zero on any unavailable result; the configured UnifyPort check returned `READY` with one discovered account.
@@ -25,6 +25,7 @@ The following evidence was checked after the latest combined deployment:
 - Admin billing now exposes the same idempotent paid-billing reconciliation worker used by the PAYG cycle. An authorized administrator can review successful provider-confirmed top-ups, repair seller snapshots, and generate missing AI, advertising, or storage invoices without creating funds or duplicating an invoice operation.
 - Automatic, admin, and public invoice PDFs now carry separate party context: Lulu's platform seller snapshot remains the seller, while the customer workspace profile is rendered as the buyer. The separation is covered by the paid-top-up reconciliation test and the PDF download paths reuse the same canonical invoice detail.
 - The Admin Billing & Funds dashboard links directly to the global invoice register, where all customer invoices can be searched by invoice number/workspace and downloaded as PDFs through the authenticated admin route.
+- Company Brain task dispatch preserves bounded, secret-filtered task context as explicitly untrusted evidence, so canonical IDs, versions and action payloads are not silently lost between the task graph and the executing Digital Employee.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
