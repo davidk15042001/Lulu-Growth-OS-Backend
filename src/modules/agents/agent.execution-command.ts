@@ -114,6 +114,18 @@ type InferCommandContext = {
   providerConnectionId?: string | null;
   domainId?: string | null;
   sourceText?: string | null;
+  customerRecordId?: string | null;
+  companyRecordId?: string | null;
+  leadRecordId?: string | null;
+  opportunityRecordId?: string | null;
+  factoryId?: string | null;
+  marketCode?: string | null;
+  currency?: string | null;
+  validUntil?: string | null;
+  shippingTotal?: number | string | null;
+  terms?: unknown;
+  quoteLines?: unknown[] | null;
+  conversationIdForQuote?: string | null;
   socialAccountId?: string | null;
   contentType?: 'TEXT' | 'LINK' | 'IMAGE' | null;
   contentMessage?: string | null;
@@ -347,6 +359,49 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   }
 
   if (context.targetSystem === 'sales') {
+    if (context.customerRecordId && context.currency && Array.isArray(context.quoteLines) && context.quoteLines.length > 0) {
+      const quoteLines = context.quoteLines.slice(0, 500);
+      const currency = textValue(context.currency, 3).toUpperCase();
+      return {
+        type: 'sales.quote.create',
+        summary,
+        targetSystem: 'sales',
+        provider: null,
+        riskLevel: 'medium',
+        approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+        targetEntityType: 'finance_quotes',
+        targetEntityId: context.customerRecordId,
+        payload: {
+          customerRecordId: context.customerRecordId,
+          ...(context.companyRecordId ? { companyRecordId: context.companyRecordId } : {}),
+          ...(context.leadRecordId ? { leadRecordId: context.leadRecordId } : {}),
+          ...(context.opportunityRecordId ? { opportunityRecordId: context.opportunityRecordId } : {}),
+          ...(context.factoryId ? { factoryId: context.factoryId } : {}),
+          language: textValue(context.language, 12) || 'en',
+          ...(context.marketCode ? { marketCode: context.marketCode } : {}),
+          currency,
+          ...(context.validUntil ? { validUntil: context.validUntil } : {}),
+          ...(context.shippingTotal !== null && context.shippingTotal !== undefined ? { shippingTotal: context.shippingTotal } : {}),
+          ...(context.terms && typeof context.terms === 'object' ? { terms: context.terms } : {}),
+          source: 'api',
+          creationMode: 'AUTOMATIC',
+          handlingMode: 'AUTONOMOUS',
+          ...(context.conversationIdForQuote ? { conversationId: context.conversationIdForQuote } : {}),
+          lines: quoteLines,
+        },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`customer_record:${context.customerRecordId}`, 'quote_lines'],
+          limitations: ['The canonical quote policy still validates currency, margin, terms and line data before creation.'],
+        },
+        idempotencyKey: buildIdempotencyKey([
+          'sales.quote.create',
+          context.customerRecordId,
+          currency,
+          JSON.stringify(quoteLines),
+        ]),
+      };
+    }
     return {
       type: 'sales.create_followup_task',
       summary,

@@ -402,6 +402,39 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('infers canonical quote creation when sales has a customer and grounded lines', () => {
+    const [command] = normalizeAgentExecutionCommands([], {
+      module: 'sales',
+      targetSystem: 'sales',
+      actionResourceType: 'finance_quotes',
+      pageId: 'quotes-page',
+      pageLabel: 'Quote Specialist',
+      goal: 'Prepare a quote for the qualified customer',
+      jobs: ['Create quote'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      customerRecordId: '00000000-0000-4000-8000-000000000201',
+      currency: 'CNY',
+      language: 'en',
+      quoteLines: [{ productName: 'Industrial component', quantity: 2, unitPrice: 125 }],
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'sales.quote.create');
+    assert.equal(command.targetEntityId, '00000000-0000-4000-8000-000000000201');
+    assert.deepEqual(command.payload, {
+      customerRecordId: '00000000-0000-4000-8000-000000000201',
+      language: 'en',
+      currency: 'CNY',
+      source: 'api',
+      creationMode: 'AUTOMATIC',
+      handlingMode: 'AUTONOMOUS',
+      lines: [{ productName: 'Industrial component', quantity: 2, unitPrice: 125 }],
+    });
+    assert.equal(command.quality?.confidence, 'high');
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('registers calendar event creation as an autonomous, non-budget command', () => {
     const [command] = normalizeAgentExecutionCommands([{
       type: 'calendar.event.create',

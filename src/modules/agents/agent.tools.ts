@@ -68,6 +68,18 @@ type AgentSnapshotInput = {
   companyId?: unknown;
   providerConnectionId?: unknown;
   domainId?: unknown;
+  customerRecordId?: unknown;
+  companyRecordId?: unknown;
+  leadRecordId?: unknown;
+  opportunityRecordId?: unknown;
+  factoryId?: unknown;
+  marketCode?: unknown;
+  currency?: unknown;
+  validUntil?: unknown;
+  shippingTotal?: unknown;
+  terms?: unknown;
+  quoteLines?: unknown;
+  conversationIdForQuote?: unknown;
   socialAccountId?: unknown;
   contentType?: unknown;
   contentMessage?: unknown;
@@ -717,6 +729,18 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     companyId: compactText(input.companyId, 120) || null,
     providerConnectionId: compactText(input.providerConnectionId, 120) || null,
     domainId: compactText(input.domainId, 120) || null,
+    customerRecordId: compactText(input.customerRecordId, 120) || null,
+    companyRecordId: compactText(input.companyRecordId, 120) || null,
+    leadRecordId: compactText(input.leadRecordId, 120) || null,
+    opportunityRecordId: compactText(input.opportunityRecordId, 120) || null,
+    factoryId: compactText(input.factoryId, 120) || null,
+    marketCode: compactText(input.marketCode, 20) || null,
+    currency: compactText(input.currency, 3) || null,
+    validUntil: compactText(input.validUntil, 10) || null,
+    shippingTotal: typeof input.shippingTotal === 'number' || typeof input.shippingTotal === 'string' ? input.shippingTotal : null,
+    terms: input.terms,
+    quoteLines: Array.isArray(input.quoteLines) ? input.quoteLines.slice(0, 500) : null,
+    conversationIdForQuote: compactText(input.conversationIdForQuote, 120) || null,
     socialAccountId: compactText(input.socialAccountId, 120) || null,
     contentType: input.contentType === 'TEXT' || input.contentType === 'LINK' || input.contentType === 'IMAGE' ? input.contentType : null,
     contentMessage: compactText(input.contentMessage, 63_206) || null,
@@ -793,6 +817,18 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       location: input.location ?? null,
       customerId: input.customerId ?? null,
       companyId: input.companyId ?? null,
+      customerRecordId: input.customerRecordId ?? null,
+      companyRecordId: input.companyRecordId ?? null,
+      leadRecordId: input.leadRecordId ?? null,
+      opportunityRecordId: input.opportunityRecordId ?? null,
+      factoryId: input.factoryId ?? null,
+      marketCode: input.marketCode ?? null,
+      currency: input.currency ?? null,
+      validUntil: input.validUntil ?? null,
+      shippingTotal: input.shippingTotal ?? null,
+      terms: input.terms ?? null,
+      quoteLines: Array.isArray(input.quoteLines) ? input.quoteLines.slice(0, 500) : null,
+      conversationIdForQuote: input.conversationIdForQuote ?? null,
       domainId: input.domainId ?? null,
       commands,
       delegatedContext,
