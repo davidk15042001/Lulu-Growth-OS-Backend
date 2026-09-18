@@ -110,6 +110,7 @@ type InferCommandContext = {
   location?: string | null;
   customerId?: string | null;
   companyId?: string | null;
+  orderId?: string | null;
   providerConnectionId?: string | null;
   domainId?: string | null;
   sourceText?: string | null;
@@ -387,6 +388,28 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   }
 
   if (context.targetSystem === 'finance') {
+    if (context.orderId) {
+      return {
+        type: 'finance.invoice.create_from_order',
+        summary,
+        targetSystem: 'finance',
+        provider: null,
+        riskLevel: 'medium',
+        approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+        targetEntityType: 'finance_invoices',
+        targetEntityId: context.orderId,
+        payload: {
+          orderId: context.orderId,
+          language: textValue(context.language, 16) || 'en',
+        },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`commerce_order:${context.orderId}`, 'canonical_invoice_service'],
+          limitations: ['The order must be confirmed or already fulfilling before Lulu can create the invoice.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['finance.invoice.create_from_order', context.orderId, textValue(context.language, 16) || 'en']),
+      };
+    }
     return {
       type: 'finance.create_automation',
       summary,

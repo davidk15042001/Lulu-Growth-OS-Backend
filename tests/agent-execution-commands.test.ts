@@ -262,6 +262,28 @@ describe('agent execution commands', () => {
     assert.match(decision.commands[0]?.policyReason ?? '', /permitted/i);
   });
 
+  it('infers canonical invoice creation when a finance employee has a real order', () => {
+    const [command] = normalizeAgentExecutionCommands(undefined, {
+      module: 'finance',
+      targetSystem: 'finance',
+      actionResourceType: 'finance_invoices',
+      pageId: 'invoice-manager',
+      pageLabel: 'Invoice Manager',
+      goal: 'Create the customer invoice for the confirmed order',
+      jobs: ['create invoice'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      orderId: 'order-123',
+      language: 'de',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'finance.invoice.create_from_order');
+    assert.equal(command.targetEntityId, 'order-123');
+    assert.deepEqual(command.payload, { orderId: 'order-123', language: 'de' });
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('keeps unsupported page responsibilities as explicit planning artifacts', () => {
     const [command] = normalizeAgentExecutionCommands(undefined, {
       module: 'intelligence',
