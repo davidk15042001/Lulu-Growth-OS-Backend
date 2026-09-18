@@ -82,6 +82,8 @@ type AgentSnapshotInput = {
   fulfillmentTrackingUrl?: unknown;
   fulfillmentNotes?: unknown;
   fulfillmentLines?: unknown;
+  commerceAction?: unknown;
+  commercePayload?: unknown;
   invoiceId?: unknown;
   invoiceAction?: unknown;
   providerConnectionId?: unknown;
@@ -763,6 +765,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     fulfillmentTrackingUrl: compactText(input.fulfillmentTrackingUrl, 4_000) || null,
     fulfillmentNotes: compactText(input.fulfillmentNotes, 5_000) || null,
     fulfillmentLines: Array.isArray(input.fulfillmentLines) ? input.fulfillmentLines.slice(0, 500) : null,
+    commerceAction: input.commerceAction === 'order.create' || input.commerceAction === 'order.update' || input.commerceAction === 'inventory.adjust' ? input.commerceAction : null,
+    commercePayload: input.commercePayload && typeof input.commercePayload === 'object' && !Array.isArray(input.commercePayload) ? input.commercePayload as Record<string, unknown> : null,
     invoiceId: compactText(input.invoiceId, 120) || null,
     invoiceAction: input.invoiceAction === 'issue' || input.invoiceAction === 'send' ? input.invoiceAction : null,
     providerConnectionId: compactText(input.providerConnectionId, 120) || null,
@@ -871,6 +875,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       fulfillmentTrackingUrl: input.fulfillmentTrackingUrl ?? null,
       fulfillmentNotes: input.fulfillmentNotes ?? null,
       fulfillmentLines: Array.isArray(input.fulfillmentLines) ? input.fulfillmentLines.slice(0, 500) : null,
+      commerceAction: input.commerceAction ?? null,
+      commercePayload: input.commercePayload && typeof input.commercePayload === 'object' && !Array.isArray(input.commercePayload) ? input.commercePayload : null,
       invoiceId: input.invoiceId ?? null,
       invoiceAction: input.invoiceAction ?? null,
       draftId: input.draftId ?? null,

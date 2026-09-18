@@ -126,6 +126,8 @@ type InferCommandContext = {
   fulfillmentTrackingUrl?: string | null;
   fulfillmentNotes?: string | null;
   fulfillmentLines?: unknown[] | null;
+  commerceAction?: 'order.create' | 'order.update' | 'inventory.adjust' | null;
+  commercePayload?: Record<string, unknown> | null;
   invoiceId?: string | null;
   invoiceAction?: 'issue' | 'send' | null;
   providerConnectionId?: string | null;
@@ -828,6 +830,85 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         context.sourceText.slice(0, 400),
       ]),
     };
+  }
+
+  if (
+    context.targetSystem === 'ecommerce'
+    && context.commerceAction
+    && context.commercePayload
+  ) {
+    const payload = context.commercePayload;
+    const action = context.commerceAction;
+    const orderId = textValue(payload.orderId || context.orderId, 120) || null;
+    const expectedVersion = typeof payload.expectedVersion === 'number' && Number.isInteger(payload.expectedVersion)
+      ? payload.expectedVersion
+      : typeof payload.expectedVersion === 'string' && /^\d+$/.test(payload.expectedVersion.trim())
+        ? Number.parseInt(payload.expectedVersion, 10)
+        : null;
+    const hasOrderLines = Array.isArray(payload.lines) && payload.lines.length > 0;
+    const isInventoryPayload = Boolean(
+      textValue(payload.locationId, 120)
+      && textValue(payload.productId, 120)
+      && (typeof payload.delta === 'number' || typeof payload.delta === 'string')
+      && expectedVersion !== null,
+    );
+    if (action === 'order.create' && hasOrderLines && textValue(payload.currency, 3)) {
+      return {
+        type: 'commerce.order.create',
+        summary,
+        targetSystem: 'ecommerce',
+        provider: null,
+        riskLevel: 'medium',
+        approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+        targetEntityType: 'commerce_orders',
+        targetEntityId: null,
+        payload: { ...payload },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: ['canonical_order_payload', 'order_lines'],
+          limitations: ['The canonical order service validates customer scope, line pricing, inventory and idempotency before creating the order.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['commerce.order.create', JSON.stringify(payload)]),
+      };
+    }
+    if (action === 'order.update' && orderId && expectedVersion !== null) {
+      return {
+        type: 'commerce.order.update',
+        summary,
+        targetSystem: 'ecommerce',
+        provider: null,
+        riskLevel: 'medium',
+        approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+        targetEntityType: 'commerce_orders',
+        targetEntityId: orderId,
+        payload: { ...payload, orderId, expectedVersion },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`commerce_order:${orderId}`, 'optimistic_version'],
+          limitations: ['The canonical order service validates the current version and rejects stale or empty updates.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['commerce.order.update', orderId, String(expectedVersion), JSON.stringify(payload)]),
+      };
+    }
+    if (action === 'inventory.adjust' && isInventoryPayload) {
+      return {
+        type: 'commerce.inventory.adjust',
+        summary,
+        targetSystem: 'ecommerce',
+        provider: null,
+        riskLevel: 'medium',
+        approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+        targetEntityType: 'commerce_inventory',
+        targetEntityId: textValue(payload.productId, 120),
+        payload: { ...payload, expectedVersion },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`commerce_product:${textValue(payload.productId, 120)}`, `inventory_location:${textValue(payload.locationId, 120)}`, 'optimistic_version'],
+          limitations: ['The canonical inventory service validates the level version, tenant scope and non-zero adjustment before applying the movement.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['commerce.inventory.adjust', textValue(payload.locationId, 120), textValue(payload.productId, 120), String(payload.variantId ?? ''), String(payload.delta), String(expectedVersion)]),
+      };
+    }
   }
 
   if (

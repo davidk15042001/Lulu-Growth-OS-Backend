@@ -568,6 +568,82 @@ describe('agent execution commands', () => {
       trackingNumber: 'DHL-123',
       reason: 'Mark the verified shipment as shipped',
     });
+
+    const orderCreate = normalizeAgentExecutionCommands([], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'orders-page',
+      pageLabel: 'Order Manager',
+      goal: 'Create the verified order',
+      jobs: ['Create order'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      commerceAction: 'order.create',
+      commercePayload: {
+        currency: 'CNY',
+        source: 'workspace',
+        lines: [{ productId: '00000000-0000-4000-8000-000000000505', quantity: 1 }],
+      },
+    });
+    assert.equal(orderCreate[0]?.type, 'commerce.order.create');
+    assert.deepEqual(orderCreate[0]?.payload, {
+      currency: 'CNY',
+      source: 'workspace',
+      lines: [{ productId: '00000000-0000-4000-8000-000000000505', quantity: 1 }],
+    });
+
+    const orderUpdate = normalizeAgentExecutionCommands([], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'orders-page',
+      pageLabel: 'Order Manager',
+      goal: 'Update the verified order note',
+      jobs: ['Update order'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      commerceAction: 'order.update',
+      commercePayload: {
+        orderId: '00000000-0000-4000-8000-000000000502',
+        expectedVersion: 3,
+        notes: 'Customer confirmed delivery window',
+      },
+    });
+    assert.equal(orderUpdate[0]?.type, 'commerce.order.update');
+    assert.deepEqual(orderUpdate[0]?.payload, {
+      orderId: '00000000-0000-4000-8000-000000000502',
+      expectedVersion: 3,
+      notes: 'Customer confirmed delivery window',
+    });
+
+    const inventoryAdjust = normalizeAgentExecutionCommands([], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'inventory-page',
+      pageLabel: 'Inventory Manager',
+      goal: 'Apply the verified stock correction',
+      jobs: ['Adjust inventory'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      commerceAction: 'inventory.adjust',
+      commercePayload: {
+        locationId: '00000000-0000-4000-8000-000000000506',
+        productId: '00000000-0000-4000-8000-000000000505',
+        delta: '-2',
+        expectedVersion: 7,
+        reason: 'Verified cycle count',
+      },
+    });
+    assert.equal(inventoryAdjust[0]?.type, 'commerce.inventory.adjust');
+    assert.deepEqual(inventoryAdjust[0]?.payload, {
+      locationId: '00000000-0000-4000-8000-000000000506',
+      productId: '00000000-0000-4000-8000-000000000505',
+      delta: '-2',
+      expectedVersion: 7,
+      reason: 'Verified cycle count',
+    });
   });
 
   it('registers calendar event creation as an autonomous, non-budget command', () => {

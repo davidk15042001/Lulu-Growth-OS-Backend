@@ -1092,6 +1092,8 @@ export function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) 
     fulfillmentTrackingUrl: textValue(data.fulfillmentTrackingUrl, 4_000) || null,
     fulfillmentNotes: textValue(data.fulfillmentNotes, 5_000) || null,
     fulfillmentLines: Array.isArray(data.fulfillmentLines) ? data.fulfillmentLines : null,
+    commerceAction: data.commerceAction === 'order.create' || data.commerceAction === 'order.update' || data.commerceAction === 'inventory.adjust' ? data.commerceAction : null,
+    commercePayload: data.commercePayload && typeof data.commercePayload === 'object' && !Array.isArray(data.commercePayload) ? data.commercePayload as Record<string, unknown> : null,
     invoiceId: textValue(data.invoiceId) || null,
     invoiceAction: data.invoiceAction === 'issue' || data.invoiceAction === 'send' ? data.invoiceAction : null,
     domainId: textValue(data.domainId) || null,
