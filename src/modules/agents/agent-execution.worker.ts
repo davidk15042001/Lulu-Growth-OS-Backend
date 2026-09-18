@@ -1060,6 +1060,8 @@ export function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) 
     cc: data.cc,
     subject: textValue(data.subject, 998) || null,
     bodyText: textValue(data.bodyText, 100_000) || null,
+    draftId: textValue(data.draftId) || null,
+    emailAction: data.emailAction === 'send' ? data.emailAction : null,
     replyToProviderMessageId: textValue(data.replyToProviderMessageId, 1000) || null,
     reviewId: textValue(data.reviewId) || null,
     locationId: textValue(data.locationId) || null,

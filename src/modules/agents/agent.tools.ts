@@ -52,6 +52,8 @@ type AgentSnapshotInput = {
   cc?: unknown;
   subject?: unknown;
   bodyText?: unknown;
+  draftId?: unknown;
+  emailAction?: unknown;
   replyToProviderMessageId?: unknown;
   reviewId?: unknown;
   locationId?: unknown;
@@ -715,6 +717,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     cc: input.cc,
     subject: compactText(input.subject, 998) || null,
     bodyText: compactText(input.bodyText, 100_000) || null,
+    draftId: compactText(input.draftId, 120) || null,
+    emailAction: input.emailAction === 'send' ? input.emailAction : null,
     replyToProviderMessageId: compactText(input.replyToProviderMessageId, 1000) || null,
     reviewId: compactText(input.reviewId, 200) || null,
     locationId: compactText(input.locationId, 200) || null,
@@ -823,6 +827,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       companyId: input.companyId ?? null,
       invoiceId: input.invoiceId ?? null,
       invoiceAction: input.invoiceAction ?? null,
+      draftId: input.draftId ?? null,
+      emailAction: input.emailAction ?? null,
       customerRecordId: input.customerRecordId ?? null,
       companyRecordId: input.companyRecordId ?? null,
       leadRecordId: input.leadRecordId ?? null,

@@ -96,6 +96,8 @@ type InferCommandContext = {
   cc?: unknown;
   subject?: string | null;
   bodyText?: string | null;
+  draftId?: string | null;
+  emailAction?: 'send' | null;
   replyToProviderMessageId?: string | null;
   reviewId?: string | null;
   locationId?: string | null;
@@ -612,6 +614,26 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         context.conversationId,
         textValue(context.messageText, 400),
       ]),
+    };
+  }
+
+  if (context.targetSystem === 'communication' && context.draftId && context.emailAction === 'send') {
+    return {
+      type: 'email.send_draft',
+      summary,
+      targetSystem: 'communication',
+      provider: 'email',
+      riskLevel: 'high',
+      approvalPolicy: 'allow',
+      targetEntityType: 'email_draft',
+      targetEntityId: context.draftId,
+      payload: { draftId: context.draftId },
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`email_draft:${context.draftId}`],
+        limitations: ['The canonical mail service validates draft ownership, provider readiness and send state before delivery.'],
+      },
+      idempotencyKey: buildIdempotencyKey(['email.send_draft', context.draftId]),
     };
   }
 

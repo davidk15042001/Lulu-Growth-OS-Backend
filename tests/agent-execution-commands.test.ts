@@ -564,6 +564,38 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('infers email delivery only from an explicit verified draft action', () => {
+    const [send] = normalizeAgentExecutionCommands([], {
+      module: 'email',
+      targetSystem: 'communication',
+      actionResourceType: 'ai_tasks',
+      pageId: 'email-page',
+      pageLabel: 'Email',
+      goal: 'Send the verified customer draft',
+      jobs: ['Send draft'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      draftId: '00000000-0000-4000-8000-000000000401',
+      emailAction: 'send',
+    });
+    assert.equal(send?.type, 'email.send_draft');
+    assert.deepEqual(send?.payload, { draftId: '00000000-0000-4000-8000-000000000401' });
+    assert.equal(send?.targetEntityId, '00000000-0000-4000-8000-000000000401');
+    assert.equal(send?.approvalPolicy, 'allow');
+    const [unresolved] = normalizeAgentExecutionCommands([], {
+      module: 'email',
+      targetSystem: 'communication',
+      actionResourceType: 'ai_tasks',
+      pageId: 'email-page',
+      pageLabel: 'Email',
+      goal: 'Send the customer draft',
+      jobs: ['Send draft'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+    assert.equal(unresolved?.type, 'record.create_artifact');
+  });
+
   it('infers a grounded social publication from a real account and content brief', () => {
     const [command] = normalizeAgentExecutionCommands([], {
       module: 'marketing',
