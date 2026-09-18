@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `7091588db10bf65a2e6523b0e26a036da7e51a0b`
-- Backend commit: `77fe5f49caef1307690a7ae3cac606e9d5fd7a72`
+- Frontend commit: `86925e38430050452565932cfaee33d2c486a65c`
+- Backend commit: `a8964a38e3e9fb23218f3020eba02e3f754ebeca`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -16,6 +16,7 @@ The following evidence was checked after the latest combined deployment:
 - Read-only UnifyPort adapter check: the configured workspace and account endpoint returned `CONNECTED`/`HEALTHY`; workspace/account capabilities and WhatsApp send/receive capability were reported `AVAILABLE`. No message was sent by this check; outbound/inbound sender and webhook acceptance still require a dedicated provider E2E test.
 - A repeatable opt-in `provider:live-readiness` gate now performs the same read-only verification, health, capability, and account-discovery checks and exits non-zero on any unavailable result; the configured UnifyPort check returned `READY` with one discovered account.
 - The live-readiness gate now reports provider failures as structured, secret-safe `BLOCKED` results (including provider error codes) instead of leaking a diagnostic stack trace; the unreachable-provider path was verified locally.
+- The live-readiness command also keeps the production environment parser behind its explicit opt-in guard, so missing provider secrets produce a structured `BLOCKED` result rather than an unhandled configuration stack trace.
 - UnifyPort readiness is tenant-scoped when a workspace connection supplies an external account: only that account can make messaging capabilities available, and missing, non-WhatsApp, or non-running accounts fail closed. The isolation behavior is covered by dedicated adapter tests.
 - The frontend now includes a repeatable, read-only production smoke gate covering the release manifest, public route shells, API health and API readiness. The post-deployment run against `https://lulu-ai.cn` passed all eight checks without authentication or external side effects.
 - A separate, three-guard `provider:live-e2e` command now exists for one explicitly labelled UnifyPort WhatsApp transport acceptance message. It is not part of normal deployment or readiness and refuses to run without a dedicated workspace, running account, test recipient, confirmation token and `[Lulu E2E]` message prefix.
