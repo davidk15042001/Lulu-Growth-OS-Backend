@@ -6,12 +6,13 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `7095f98ab14189ad4d066c5a1d31654838acf8f2`
+- Frontend commit: `da8a5b0c212583b99f958aedc6f28ec993c65b81`
 - Backend commit: `2cf06c6e699f68d65bde738d192158b655adadb5`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
 - Backend automated validation: typecheck, migration verification, 330 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path and historical paid-top-up invoice reconciliation are covered by idempotency tests
+- Office route parity: all 43 persisted Digital Employee roles from the canonical roster resolve to a registered Workspace route; the frontend audit also passes with no routing, API-contract, branding, i18n, feedback, error, or agentic-UI issues
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
