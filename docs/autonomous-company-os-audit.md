@@ -7,11 +7,11 @@ Status date: 2026-09-18
 The following evidence was checked after the latest combined deployment:
 
 - Frontend commit: `7095f98ab14189ad4d066c5a1d31654838acf8f2`
-- Backend commit: `d8bf787ad87b98abc8f4a4987348a623ee8bbf82`
+- Backend commit: `2cf06c6e699f68d65bde738d192158b655adadb5`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
-- Backend automated validation: typecheck, migration verification, 329 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path is covered by an idempotency test
+- Backend automated validation: typecheck, migration verification, 330 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path and historical paid-top-up invoice reconciliation are covered by idempotency tests
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
