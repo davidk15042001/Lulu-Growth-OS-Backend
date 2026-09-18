@@ -131,7 +131,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   return 'activities';
 }
 
-async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord) {
+async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord, executionStatus: 'planned' | 'executed' = 'executed') {
   const data = record.data ?? {};
   const targetSystem = textValue(data.targetSystem) || 'ai';
   const targetModule = textValue(data.targetModule) || 'general';
@@ -151,6 +151,7 @@ async function createExecutionArtifacts(record: recordRepo.WorkspaceRecord) {
     targetSystem,
     targetModule,
     executionMode: textValue(data.executionMode) || 'analysis_only',
+    executionStatus,
     policyDecision: textValue(data.policyDecision) || 'allow',
     commandTypes: stringList(data.commandTypes),
     jobs: stringList(data.jobs),
@@ -1092,7 +1093,12 @@ async function finalizeExecutionRecord(
   commandResults: CommandExecutionResult[],
 ) {
   const data = record.data ?? {};
-  const artifacts = await createExecutionArtifacts(record);
+  const planningOnly = commandResults.length > 0 && commandResults.every((item) => {
+    if (item.type !== 'record.create_artifact') return false;
+    return objectValue(item.result).executionBoundary === 'planning_artifact_only';
+  });
+  const executionStatus = planningOnly ? 'planned' as const : 'executed' as const;
+  const artifacts = await createExecutionArtifacts(record, executionStatus);
   const commandResultEntries: Array<{ id: string; resourceType: ResourceType }> = commands.flatMap((command, index) => {
     const resultId = commandResults[index]?.resultRecordId;
     return typeof resultId === 'string'
@@ -1106,14 +1112,15 @@ async function finalizeExecutionRecord(
   ];
   const update = await recordRepo.updateRecord(record.workspaceId, record.resourceType, record.id, record.createdBy, {
     status: 'completed',
-    stage: 'executed',
+    stage: planningOnly ? 'planned' : 'executed',
     data: {
       ...data,
       commands,
       commandTypes: [...new Set(commands.map((command) => command.type))],
       executionReady: false,
-      executionStatus: 'executed',
-      sideEffectsApplied: commandResults.some((item) => item.type !== 'record.create_artifact'),
+      executionStatus,
+      executionBoundary: planningOnly ? 'planning_artifact_only' : 'canonical_domain_action',
+      sideEffectsApplied: !planningOnly && commandResults.some((item) => item.type !== 'record.create_artifact'),
       executionCompletedAt: new Date().toISOString(),
       executorVersion: '1.0.0',
       executionSummary: executionSummary(record),
