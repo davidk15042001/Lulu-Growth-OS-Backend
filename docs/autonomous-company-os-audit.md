@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `7fa0aa6e9c5df2ab6684ae81fdfdb30580b6f79d`
-- Backend commit: `982b2c9079bd3235d04d2d1093b68cb211792c64`
+- The immutable production revision pair is recorded in the public
+  `/release.json` manifest after each combined deployment.
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
