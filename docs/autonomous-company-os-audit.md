@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `adefeca75d4a100d0f213d532d8a371441d536eb`
-- Backend commit: `bea82660eafbb1dc91a33ff45b848a5705167edf`
+- Frontend commit: `e2b55b89872b3709f676f0931f1c9079068dd641`
+- Backend commit: `6db0417a5c761d94b9a4a442368c1265d1198b6f`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -18,6 +18,7 @@ The following evidence was checked after the latest combined deployment:
 - The live-readiness gate now reports provider failures as structured, secret-safe `BLOCKED` results (including provider error codes) instead of leaking a diagnostic stack trace; the unreachable-provider path was verified locally.
 - UnifyPort readiness is tenant-scoped when a workspace connection supplies an external account: only that account can make messaging capabilities available, and missing, non-WhatsApp, or non-running accounts fail closed. The isolation behavior is covered by dedicated adapter tests.
 - The frontend now includes a repeatable, read-only production smoke gate covering the release manifest, public route shells, API health and API readiness. The post-deployment run against `https://lulu-ai.cn` passed all eight checks without authentication or external side effects.
+- A separate, three-guard `provider:live-e2e` command now exists for one explicitly labelled UnifyPort WhatsApp transport acceptance message. It is not part of normal deployment or readiness and refuses to run without a dedicated workspace, running account, test recipient, confirmation token and `[Lulu E2E]` message prefix.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
