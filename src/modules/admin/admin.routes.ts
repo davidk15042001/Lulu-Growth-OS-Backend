@@ -16,6 +16,7 @@ router.route('/dashboard').get(requireAuth, requireAdminCapabilities('users.read
 router.route('/search').get(requireAuth, requireAdminCapabilities('users.read', 'workspaces.read', 'providers.read'), controller.searchAll).all(methodNotAllowed);
 
 router.route('/billing-overview').get(requireAuth, requireAdminCapabilities('billing.read'), controller.overview).all(methodNotAllowed);
+router.route('/billing/reconcile-paid-invoices').post(requireAuth, requireAdminCapabilities('billing.manage'), controller.reconcilePaidInvoices).all(methodNotAllowed);
 router.route('/payments/airwallex').get(requireAuth, requireAdminCapabilities('billing.read'), controller.airwallexPayments).all(methodNotAllowed);
 
 router.route('/users').get(requireAuth, requireAdminCapabilities('users.read'), controller.getUsers).all(methodNotAllowed);

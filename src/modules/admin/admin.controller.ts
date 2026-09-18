@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { getObject } from '../../storage/s3.service.js';
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { ensurePaygProfile } from '../billing/payg-billing.repo.js';
+import { reconcilePaidBillingInvoices } from '../billing/paid-billing-invoice.service.js';
 
 function requireAdmin(req: AuthedRequest, res: Response) {
   if (!req.adminCapabilities?.length || Boolean(req.impersonator)) {
@@ -50,6 +51,30 @@ export async function overview(req: AuthedRequest, res: Response, next: NextFunc
     const range = monthRange(req.query.month);
     const customers = await repo.listCustomerBillingOverview(range.start, range.end);
     return successResponse(res, 'Admin billing overview loaded', { month: range.month, periodStart: range.start, periodEnd: range.end, customers });
+  } catch (error) { next(error); }
+}
+
+/**
+ * Runs the same idempotent reconciliation used by the PAYG worker, but makes
+ * the repair path explicit and observable for an administrator. This does not
+ * create funds or invent a payment: only provider-confirmed/credited records
+ * eligible for the canonical reconciliation query are considered.
+ */
+export async function reconcilePaidInvoices(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (!requireAdmin(req, res)) return;
+    const rawLimit = req.body?.limit;
+    const limit = rawLimit === undefined ? 200 : Number(rawLimit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+      return res.status(422).json({ success: false, error: { code: 'INVALID_RECONCILIATION_LIMIT', message: 'limit must be an integer between 1 and 200' } });
+    }
+    const result = await reconcilePaidBillingInvoices(limit);
+    await recordSecurityEvent({
+      eventType: 'ADMIN_ACTION',
+      userId: req.user!.id,
+      metadata: { action: 'billing.reconcile_paid_invoices', limit, result },
+    });
+    return successResponse(res, 'Paid billing invoice reconciliation completed', result);
   } catch (error) { next(error); }
 }
 
