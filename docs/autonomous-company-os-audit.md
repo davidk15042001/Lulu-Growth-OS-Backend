@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `ce33714ff12532bdc1b354c914cc6e4ca716ecf6`
-- Backend commit: `297bb0a817c134465f90291058da7c97649ff350`
+- Frontend commit: `15662f22943efb68da92cfb7708f0db54045e10c`
+- Backend commit: `0c20e8e016f09e86963c3afd2123f2e933b00bcb`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -25,6 +25,13 @@ The following evidence was checked after the latest combined deployment:
 - The Admin Billing & Funds dashboard links directly to the global invoice register, where all customer invoices can be searched by invoice number/workspace and downloaded as PDFs through the authenticated admin route.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
+
+The release evidence is intentionally split into two categories:
+
+- **Verified in production:** release manifest, public/API health, readiness, smoke routes, backend regression suite, invoice reconciliation/PDF routes, workspace isolation, and Office route parity.
+- **Still requiring a provider or operations window:** real UnifyPort send/receive/webhook acceptance, a real Airwallex payment-to-invoice acceptance, live mutation tests for external marketing/CMS/CRM providers, and backup/restore plus incident-recovery drills.
+
+No additional Digital Employee is required merely to close these gates. The remaining work is proof that the existing employees can safely cross each configured provider boundary and that operations can recover from external failure.
 
 This document is the source-driven baseline for Lulu's Office and Workspace architecture. It distinguishes persisted, executable capability from UI representation. A label, page, agent definition, or provider catalog entry is not treated as proof that an external side effect works.
 
