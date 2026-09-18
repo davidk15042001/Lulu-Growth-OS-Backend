@@ -1,6 +1,19 @@
 # Lulu Autonomous Company OS — architecture and capability audit
 
-Status date: 2026-09-17
+Status date: 2026-09-18
+
+## Latest verified production release
+
+The following evidence was checked after the latest combined deployment:
+
+- Frontend commit: `ddfa21c183127e1adc49ef84d04b4842596df994f`
+- Backend commit: `98e44e8a8a7f2c14ba8370fbfefaca9bc179419f`
+- `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
+- `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
+- Frontend production root: HTTP 200
+- Backend automated validation: typecheck, migration verification, 326 tests, build and smoke checks passed
+
+This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
 This document is the source-driven baseline for Lulu's Office and Workspace architecture. It distinguishes persisted, executable capability from UI representation. A label, page, agent definition, or provider catalog entry is not treated as proof that an external side effect works.
 
