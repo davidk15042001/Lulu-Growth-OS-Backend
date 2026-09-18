@@ -23,6 +23,7 @@ const { listAutomatedTargets } = await import('../src/modules/agents/agent.repo.
 const { listKnowledgeProductsAwaitingImages } = await import('../src/modules/premium-media/premium-media.worker.js');
 const { recordAirwallexWalletReversal } = await import('../src/modules/billing/airwallex-wallet-reversal.repo.js');
 const { handleWebhook, verifyAirwallexInvoiceWalletPayment } = await import('../src/modules/billing/airwallex.service.js');
+const { reconcilePaidBillingInvoices } = await import('../src/modules/billing/paid-billing-invoice.service.js');
 const {
   applyAdSpendProviderStatus,
   assertAdSpendFunded,
@@ -53,6 +54,43 @@ after(async () => {
 });
 
 describe('prepaid API and transparent usage reporting', () => {
+  it('reconciles a historically paid AI top-up into one paid Lulu invoice', async () => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email, password_hash, verified_at) VALUES($1, 'hash', NOW()) RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name, created_by) VALUES('Historical billing workspace', $1) RETURNING id`,
+      [user.id],
+    )).rows[0]!;
+    await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`, [workspace.id, user.id]);
+    const topup = await createApiTopup({ workspaceId: workspace.id, userId: user.id, amount: 1000, paymentMethod: 'wechatpay' });
+    await attachApiProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerInvoiceId: 'inv_historical_ai' });
+    await applyApiProviderStatus({ providerPaymentIntentId: null, providerInvoiceId: 'inv_historical_ai', providerStatus: 'SUCCEEDED' });
+
+    const first = await reconcilePaidBillingInvoices(50);
+    assert.ok(first.created >= 1);
+    const invoice = (await db.query<{ id: string; status: string; creationMode: string; amountPaid: string; amountDue: string }>(
+      `SELECT i.id,i.status,i.creation_mode AS "creationMode",i.amount_paid AS "amountPaid",i.amount_due AS "amountDue"
+         FROM invoices i JOIN commercial_document_operations o ON o.document_id=i.id
+        WHERE i.workspace_id=$1 AND o.operation_key=$2 AND o.operation_type='invoice.create'`,
+      [workspace.id, `billing-invoice:ai_credits:${topup.id}`],
+    )).rows[0];
+    assert.ok(invoice);
+    assert.equal(invoice.status, 'PAID');
+    assert.equal(invoice.creationMode, 'AUTOMATIC');
+    assert.equal(Number(invoice.amountPaid), 1000);
+    assert.equal(Number(invoice.amountDue), 0);
+
+    const second = await reconcilePaidBillingInvoices(50);
+    assert.equal(second.created, 0);
+    assert.equal((await db.query<{ count: number }>(
+      `SELECT count(*)::int AS count FROM commercial_document_operations
+        WHERE workspace_id=$1 AND operation_key=$2 AND operation_type='invoice.create' AND status='COMPLETED'`,
+      [workspace.id, `billing-invoice:ai_credits:${topup.id}`],
+    )).rows[0]?.count, 1);
+  });
+
   it('credits invoice-funded wallets only from exact provider-processed cash transactions', async (t) => {
     t.mock.method(globalThis, 'fetch', async (url: string | URL | Request) => {
       const value = String(url);
