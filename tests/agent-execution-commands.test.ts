@@ -558,6 +558,34 @@ describe('agent execution commands', () => {
     assert.equal(command?.payload.maxAttempts, 5);
   });
 
+  it('preserves persisted CRM provider connections for autonomous sync inference', () => {
+    const [command] = normalizedCommandsForRecord({
+      id: '00000000-0000-0000-0000-000000000458',
+      workspaceId: '00000000-0000-0000-0000-000000000459',
+      resourceType: 'crm_companies',
+      name: 'CRM company sync',
+      data: {
+        targetModule: 'crm',
+        targetSystem: 'crm',
+        pageId: 'company-page',
+        pageLabel: 'Company intelligence',
+        goal: 'Keep the verified company synchronized',
+        jobs: ['Sync company'],
+        executionMode: 'autonomous',
+        companyId: 'company-458',
+        provider: 'hubspot',
+        providerConnectionId: 'connection-458',
+      },
+    } as never);
+    assert.equal(command?.type, 'crm.company.sync');
+    assert.equal(command?.provider, 'hubspot');
+    assert.deepEqual(command?.payload, {
+      companyId: 'company-458',
+      provider: 'hubspot',
+      providerConnectionId: 'connection-458',
+    });
+  });
+
   it('infers website domain verification from a site and domain context', () => {
     const [command] = normalizeAgentExecutionCommands([], {
       module: 'website',

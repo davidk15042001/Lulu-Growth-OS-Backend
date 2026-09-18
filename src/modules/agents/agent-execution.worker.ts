@@ -1067,6 +1067,7 @@ export function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) 
     siteId: textValue(data.siteId) || null,
     jobId: textValue(data.jobId) || null,
     provider: textValue(data.provider) || null,
+    providerConnectionId: textValue(data.providerConnectionId) || null,
     eventTitle: textValue(data.eventTitle, 240) || null,
     startAt: textValue(data.startAt, 80) || null,
     endAt: textValue(data.endAt, 80) || null,
