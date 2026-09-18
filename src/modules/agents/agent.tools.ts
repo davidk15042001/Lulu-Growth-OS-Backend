@@ -829,6 +829,7 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       terms: input.terms ?? null,
       quoteLines: Array.isArray(input.quoteLines) ? input.quoteLines.slice(0, 500) : null,
       conversationIdForQuote: input.conversationIdForQuote ?? null,
+      providerConnectionId: input.providerConnectionId ?? null,
       domainId: input.domainId ?? null,
       commands,
       delegatedContext,
