@@ -32,6 +32,7 @@
     "test:smoke": "node scripts/smoke-built-server.mjs",
     "provider:live-readiness": "tsx scripts/provider-live-readiness.ts",
     "provider:live-e2e": "tsx scripts/provider-live-e2e.ts",
+    "airwallex:live-e2e": "tsx scripts/airwallex-live-e2e.ts",
     "preview:wordpress-template": "tsx scripts/preview-wordpress-template.ts",
     "check": "npm run typecheck && npm run test:migrations && npm test && npm run build && npm run test:smoke"
   },
