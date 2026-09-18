@@ -139,6 +139,14 @@ describe('Provider Control Plane', () => {
     }
   });
 
+  it('describes WhatsApp as the UnifyPort-managed channel instead of a standalone Twilio provider', () => {
+    const whatsapp = providerRegistry.PROVIDER_CATALOG.find((entry) => entry.providerKey === 'whatsapp');
+    assert.equal(whatsapp?.displayName, 'WhatsApp via UnifyPort');
+    assert.equal(whatsapp?.implementationStatus, 'PARTIAL');
+    assert.equal(whatsapp?.defaultMode, 'LULU_MANAGED');
+    assert.ok(whatsapp?.capabilities[0]?.displayName.includes('UnifyPort'));
+  });
+
   it('does not treat an active but not-yet-running UnifyPort account as connected', async () => {
     assert.equal(providerRegistry.getProviderAdapter('unifyport').providerKey, 'unifyport');
     const { isUnifyPortAccountRuntimeReady } = await import('../src/modules/provider-control/unifyport.adapter.js');

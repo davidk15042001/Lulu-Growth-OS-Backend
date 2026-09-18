@@ -73,7 +73,7 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     { capabilityKey: 'facebook_messenger.messages.status', displayName: 'Receive Messenger delivery status', requiredScopes: [], defaultStatus: 'UNCONFIRMED' },
   ] },
   { providerKey: 'instagram', displayName: 'Instagram', category: 'SOCIAL', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'instagram.content.publish', displayName: 'Publish Instagram content', requiredScopes: ['instagram_basic','instagram_content_publish','pages_show_list','pages_read_engagement'], defaultStatus: 'AUTHORIZATION_REQUIRED' }] },
-  { providerKey: 'whatsapp', displayName: 'WhatsApp', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'whatsapp.messages.send', displayName: 'Send WhatsApp messages', requiredScopes: [], defaultStatus: 'AVAILABLE' as ProviderCapabilityStatus }] },
+  { providerKey: 'whatsapp', displayName: 'WhatsApp via UnifyPort', category: 'MESSAGING', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'whatsapp.messages.send', displayName: 'Send WhatsApp messages through the managed UnifyPort transport', requiredScopes: [], defaultStatus: 'UNCONFIRMED' as ProviderCapabilityStatus }] },
   { providerKey: 'twilio', displayName: 'Twilio', category: 'MESSAGING', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [
     { capabilityKey: 'twilio.messages.send', displayName: 'Send messages', requiredScopes: [], defaultStatus: 'AVAILABLE' },
     { capabilityKey: 'twilio.messages.receive', displayName: 'Receive messages', requiredScopes: [], defaultStatus: 'AVAILABLE' },
