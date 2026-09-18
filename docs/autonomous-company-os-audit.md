@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `3773f6122079f2fd9c4cf9e300d3110eca0fdda2`
-- Backend commit: `8852501413be98f024a58920d9c6c04f21bf7c7d`
+- Frontend commit: `ce33714ff12532bdc1b354c914cc6e4ca716ecf6`
+- Backend commit: `297bb0a817c134465f90291058da7c97649ff350`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -22,6 +22,7 @@ The following evidence was checked after the latest combined deployment:
 - A separate, three-guard `provider:live-e2e` command now exists for one explicitly labelled UnifyPort WhatsApp transport acceptance message. It is not part of normal deployment or readiness and refuses to run without a dedicated workspace, running account, test recipient, confirmation token and `[Lulu E2E]` message prefix.
 - Admin billing now exposes the same idempotent paid-billing reconciliation worker used by the PAYG cycle. An authorized administrator can review successful provider-confirmed top-ups, repair seller snapshots, and generate missing AI, advertising, or storage invoices without creating funds or duplicating an invoice operation.
 - Automatic, admin, and public invoice PDFs now carry separate party context: Lulu's platform seller snapshot remains the seller, while the customer workspace profile is rendered as the buyer. The separation is covered by the paid-top-up reconciliation test and the PDF download paths reuse the same canonical invoice detail.
+- The Admin Billing & Funds dashboard links directly to the global invoice register, where all customer invoices can be searched by invoice number/workspace and downloaded as PDFs through the authenticated admin route.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
