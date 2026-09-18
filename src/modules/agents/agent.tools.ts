@@ -68,9 +68,20 @@ type AgentSnapshotInput = {
   location?: unknown;
   customerId?: unknown;
   companyId?: unknown;
+  orderId?: unknown;
   orderAction?: unknown;
   orderTargetStatus?: unknown;
   orderExpectedVersion?: unknown;
+  fulfillmentId?: unknown;
+  fulfillmentAction?: unknown;
+  fulfillmentTargetStatus?: unknown;
+  fulfillmentExpectedVersion?: unknown;
+  fulfillmentExpectedOrderVersion?: unknown;
+  fulfillmentCarrier?: unknown;
+  fulfillmentTrackingNumber?: unknown;
+  fulfillmentTrackingUrl?: unknown;
+  fulfillmentNotes?: unknown;
+  fulfillmentLines?: unknown;
   invoiceId?: unknown;
   invoiceAction?: unknown;
   providerConnectionId?: unknown;
@@ -738,9 +749,20 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     location: compactText(input.location, 500) || null,
     customerId: compactText(input.customerId, 120) || null,
     companyId: compactText(input.companyId, 120) || null,
+    orderId: compactText(input.orderId, 120) || null,
     orderAction: input.orderAction === 'transition' ? input.orderAction : null,
     orderTargetStatus: input.orderTargetStatus === 'PLACED' || input.orderTargetStatus === 'CONFIRMED' || input.orderTargetStatus === 'PROCESSING' || input.orderTargetStatus === 'CANCELLED' ? input.orderTargetStatus : null,
     orderExpectedVersion: typeof input.orderExpectedVersion === 'number' && Number.isInteger(input.orderExpectedVersion) ? input.orderExpectedVersion : null,
+    fulfillmentId: compactText(input.fulfillmentId, 120) || null,
+    fulfillmentAction: input.fulfillmentAction === 'create' || input.fulfillmentAction === 'transition' ? input.fulfillmentAction : null,
+    fulfillmentTargetStatus: input.fulfillmentTargetStatus === 'PROCESSING' || input.fulfillmentTargetStatus === 'SHIPPED' || input.fulfillmentTargetStatus === 'DELIVERED' || input.fulfillmentTargetStatus === 'CANCELLED' ? input.fulfillmentTargetStatus : null,
+    fulfillmentExpectedVersion: typeof input.fulfillmentExpectedVersion === 'number' && Number.isInteger(input.fulfillmentExpectedVersion) ? input.fulfillmentExpectedVersion : null,
+    fulfillmentExpectedOrderVersion: typeof input.fulfillmentExpectedOrderVersion === 'number' && Number.isInteger(input.fulfillmentExpectedOrderVersion) ? input.fulfillmentExpectedOrderVersion : null,
+    fulfillmentCarrier: compactText(input.fulfillmentCarrier, 200) || null,
+    fulfillmentTrackingNumber: compactText(input.fulfillmentTrackingNumber, 300) || null,
+    fulfillmentTrackingUrl: compactText(input.fulfillmentTrackingUrl, 4_000) || null,
+    fulfillmentNotes: compactText(input.fulfillmentNotes, 5_000) || null,
+    fulfillmentLines: Array.isArray(input.fulfillmentLines) ? input.fulfillmentLines.slice(0, 500) : null,
     invoiceId: compactText(input.invoiceId, 120) || null,
     invoiceAction: input.invoiceAction === 'issue' || input.invoiceAction === 'send' ? input.invoiceAction : null,
     providerConnectionId: compactText(input.providerConnectionId, 120) || null,
@@ -835,9 +857,20 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       location: input.location ?? null,
       customerId: input.customerId ?? null,
       companyId: input.companyId ?? null,
+      orderId: input.orderId ?? null,
       orderAction: input.orderAction ?? null,
       orderTargetStatus: input.orderTargetStatus ?? null,
       orderExpectedVersion: input.orderExpectedVersion ?? null,
+      fulfillmentId: input.fulfillmentId ?? null,
+      fulfillmentAction: input.fulfillmentAction ?? null,
+      fulfillmentTargetStatus: input.fulfillmentTargetStatus ?? null,
+      fulfillmentExpectedVersion: input.fulfillmentExpectedVersion ?? null,
+      fulfillmentExpectedOrderVersion: input.fulfillmentExpectedOrderVersion ?? null,
+      fulfillmentCarrier: input.fulfillmentCarrier ?? null,
+      fulfillmentTrackingNumber: input.fulfillmentTrackingNumber ?? null,
+      fulfillmentTrackingUrl: input.fulfillmentTrackingUrl ?? null,
+      fulfillmentNotes: input.fulfillmentNotes ?? null,
+      fulfillmentLines: Array.isArray(input.fulfillmentLines) ? input.fulfillmentLines.slice(0, 500) : null,
       invoiceId: input.invoiceId ?? null,
       invoiceAction: input.invoiceAction ?? null,
       draftId: input.draftId ?? null,

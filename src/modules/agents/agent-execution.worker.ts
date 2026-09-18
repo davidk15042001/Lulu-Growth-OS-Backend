@@ -128,6 +128,7 @@ function resolveCommandResultResourceType(command: AgentExecutionCommand): Resou
   if (command.type === 'finance.create_automation') return 'finance_automations';
   if (command.type === 'commerce.product.create' || command.type === 'commerce.product.update') return 'ecommerce_products';
   if (command.type === 'commerce.category.create' || command.type === 'commerce.category.update') return 'ecommerce_categories';
+  if (command.type === 'commerce.fulfillment.create' || command.type === 'commerce.fulfillment.transition') return 'ecommerce_orders';
   return 'activities';
 }
 
@@ -1081,6 +1082,16 @@ export function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) 
     orderAction: data.orderAction === 'transition' ? data.orderAction : null,
     orderTargetStatus: data.orderTargetStatus === 'PLACED' || data.orderTargetStatus === 'CONFIRMED' || data.orderTargetStatus === 'PROCESSING' || data.orderTargetStatus === 'CANCELLED' ? data.orderTargetStatus : null,
     orderExpectedVersion: typeof data.orderExpectedVersion === 'number' && Number.isInteger(data.orderExpectedVersion) ? data.orderExpectedVersion : null,
+    fulfillmentId: textValue(data.fulfillmentId) || null,
+    fulfillmentAction: data.fulfillmentAction === 'create' || data.fulfillmentAction === 'transition' ? data.fulfillmentAction : null,
+    fulfillmentTargetStatus: data.fulfillmentTargetStatus === 'PROCESSING' || data.fulfillmentTargetStatus === 'SHIPPED' || data.fulfillmentTargetStatus === 'DELIVERED' || data.fulfillmentTargetStatus === 'CANCELLED' ? data.fulfillmentTargetStatus : null,
+    fulfillmentExpectedVersion: typeof data.fulfillmentExpectedVersion === 'number' && Number.isInteger(data.fulfillmentExpectedVersion) ? data.fulfillmentExpectedVersion : null,
+    fulfillmentExpectedOrderVersion: typeof data.fulfillmentExpectedOrderVersion === 'number' && Number.isInteger(data.fulfillmentExpectedOrderVersion) ? data.fulfillmentExpectedOrderVersion : null,
+    fulfillmentCarrier: textValue(data.fulfillmentCarrier, 200) || null,
+    fulfillmentTrackingNumber: textValue(data.fulfillmentTrackingNumber, 300) || null,
+    fulfillmentTrackingUrl: textValue(data.fulfillmentTrackingUrl, 4_000) || null,
+    fulfillmentNotes: textValue(data.fulfillmentNotes, 5_000) || null,
+    fulfillmentLines: Array.isArray(data.fulfillmentLines) ? data.fulfillmentLines : null,
     invoiceId: textValue(data.invoiceId) || null,
     invoiceAction: data.invoiceAction === 'issue' || data.invoiceAction === 'send' ? data.invoiceAction : null,
     domainId: textValue(data.domainId) || null,

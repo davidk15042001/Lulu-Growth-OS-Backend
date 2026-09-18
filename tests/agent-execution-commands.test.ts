@@ -514,6 +514,59 @@ describe('agent execution commands', () => {
       reason: 'Confirm the verified order',
     });
     assert.equal(order?.approvalPolicy, 'allow');
+
+    const fulfillmentCreate = normalizeAgentExecutionCommands([], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'orders-page',
+      pageLabel: 'Order Manager',
+      goal: 'Create the verified shipment',
+      jobs: ['Create fulfillment'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      orderId: '00000000-0000-4000-8000-000000000502',
+      fulfillmentAction: 'create',
+      fulfillmentExpectedOrderVersion: 4,
+      fulfillmentCarrier: 'DHL',
+      fulfillmentLines: [{ orderLineId: '00000000-0000-4000-8000-000000000503', quantity: 2 }],
+    });
+    assert.equal(fulfillmentCreate[0]?.type, 'commerce.fulfillment.create');
+    assert.deepEqual(fulfillmentCreate[0]?.payload, {
+      orderId: '00000000-0000-4000-8000-000000000502',
+      expectedOrderVersion: 4,
+      carrier: 'DHL',
+      lines: [{ orderLineId: '00000000-0000-4000-8000-000000000503', quantity: 2 }],
+    });
+
+    const fulfillmentTransition = normalizeAgentExecutionCommands([], {
+      module: 'commerce',
+      targetSystem: 'ecommerce',
+      actionResourceType: 'ecommerce_orders',
+      pageId: 'orders-page',
+      pageLabel: 'Order Manager',
+      goal: 'Mark the verified shipment as shipped',
+      jobs: ['Ship fulfillment'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+      orderId: '00000000-0000-4000-8000-000000000502',
+      fulfillmentId: '00000000-0000-4000-8000-000000000504',
+      fulfillmentAction: 'transition',
+      fulfillmentTargetStatus: 'SHIPPED',
+      fulfillmentExpectedVersion: 2,
+      fulfillmentExpectedOrderVersion: 5,
+      fulfillmentTrackingNumber: 'DHL-123',
+    });
+    assert.equal(fulfillmentTransition[0]?.type, 'commerce.fulfillment.transition');
+    assert.deepEqual(fulfillmentTransition[0]?.payload, {
+      orderId: '00000000-0000-4000-8000-000000000502',
+      fulfillmentId: '00000000-0000-4000-8000-000000000504',
+      targetStatus: 'SHIPPED',
+      expectedVersion: 2,
+      expectedOrderVersion: 5,
+      trackingNumber: 'DHL-123',
+      reason: 'Mark the verified shipment as shipped',
+    });
   });
 
   it('registers calendar event creation as an autonomous, non-budget command', () => {

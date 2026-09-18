@@ -116,6 +116,16 @@ type InferCommandContext = {
   orderAction?: 'transition' | null;
   orderTargetStatus?: 'PLACED' | 'CONFIRMED' | 'PROCESSING' | 'CANCELLED' | null;
   orderExpectedVersion?: number | null;
+  fulfillmentId?: string | null;
+  fulfillmentAction?: 'create' | 'transition' | null;
+  fulfillmentTargetStatus?: 'PROCESSING' | 'SHIPPED' | 'DELIVERED' | 'CANCELLED' | null;
+  fulfillmentExpectedVersion?: number | null;
+  fulfillmentExpectedOrderVersion?: number | null;
+  fulfillmentCarrier?: string | null;
+  fulfillmentTrackingNumber?: string | null;
+  fulfillmentTrackingUrl?: string | null;
+  fulfillmentNotes?: string | null;
+  fulfillmentLines?: unknown[] | null;
   invoiceId?: string | null;
   invoiceAction?: 'issue' | 'send' | null;
   providerConnectionId?: string | null;
@@ -816,6 +826,94 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
         'ecommerce.generate_product_images',
         context.pageId,
         context.sourceText.slice(0, 400),
+      ]),
+    };
+  }
+
+  if (
+    context.targetSystem === 'ecommerce'
+    && context.orderId
+    && context.fulfillmentAction === 'transition'
+    && context.fulfillmentId
+    && context.fulfillmentTargetStatus
+    && context.fulfillmentExpectedVersion !== null
+    && context.fulfillmentExpectedVersion !== undefined
+    && context.fulfillmentExpectedOrderVersion !== null
+    && context.fulfillmentExpectedOrderVersion !== undefined
+  ) {
+    return {
+      type: 'commerce.fulfillment.transition',
+      summary,
+      targetSystem: 'ecommerce',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'commerce_fulfillments',
+      targetEntityId: context.fulfillmentId,
+      payload: {
+        orderId: context.orderId,
+        fulfillmentId: context.fulfillmentId,
+        targetStatus: context.fulfillmentTargetStatus,
+        expectedVersion: context.fulfillmentExpectedVersion,
+        expectedOrderVersion: context.fulfillmentExpectedOrderVersion,
+        ...(context.fulfillmentCarrier ? { carrier: context.fulfillmentCarrier } : {}),
+        ...(context.fulfillmentTrackingNumber ? { trackingNumber: context.fulfillmentTrackingNumber } : {}),
+        ...(context.fulfillmentTrackingUrl ? { trackingUrl: context.fulfillmentTrackingUrl } : {}),
+        reason: context.goal || summary,
+      },
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`commerce_order:${context.orderId}`, `commerce_fulfillment:${context.fulfillmentId}`, 'optimistic_versions'],
+        limitations: ['The canonical commerce service validates both the fulfillment and order versions before changing delivery state.'],
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'commerce.fulfillment.transition',
+        context.orderId,
+        context.fulfillmentId,
+        context.fulfillmentTargetStatus,
+        String(context.fulfillmentExpectedVersion),
+        String(context.fulfillmentExpectedOrderVersion),
+      ]),
+    };
+  }
+
+  if (
+    context.targetSystem === 'ecommerce'
+    && context.orderId
+    && context.fulfillmentAction === 'create'
+    && context.fulfillmentExpectedOrderVersion !== null
+    && context.fulfillmentExpectedOrderVersion !== undefined
+    && Array.isArray(context.fulfillmentLines)
+    && context.fulfillmentLines.length > 0
+  ) {
+    return {
+      type: 'commerce.fulfillment.create',
+      summary,
+      targetSystem: 'ecommerce',
+      provider: null,
+      riskLevel: 'medium',
+      approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+      targetEntityType: 'commerce_fulfillments',
+      targetEntityId: context.orderId,
+      payload: {
+        orderId: context.orderId,
+        expectedOrderVersion: context.fulfillmentExpectedOrderVersion,
+        ...(context.fulfillmentCarrier ? { carrier: context.fulfillmentCarrier } : {}),
+        ...(context.fulfillmentTrackingNumber ? { trackingNumber: context.fulfillmentTrackingNumber } : {}),
+        ...(context.fulfillmentTrackingUrl ? { trackingUrl: context.fulfillmentTrackingUrl } : {}),
+        ...(context.fulfillmentNotes ? { notes: context.fulfillmentNotes } : {}),
+        lines: context.fulfillmentLines.slice(0, 500),
+      },
+      quality: {
+        confidence: 'high',
+        evidenceRefs: [`commerce_order:${context.orderId}`, 'fulfillment_lines', 'optimistic_order_version'],
+        limitations: ['The canonical commerce service validates line quantities, order status and available inventory before creating the fulfillment.'],
+      },
+      idempotencyKey: buildIdempotencyKey([
+        'commerce.fulfillment.create',
+        context.orderId,
+        String(context.fulfillmentExpectedOrderVersion),
+        JSON.stringify(context.fulfillmentLines),
       ]),
     };
   }
