@@ -1,6 +1,5 @@
 import 'dotenv/config';
 import crypto from 'node:crypto';
-import { getProviderAdapter, getProviderRuntimeReadiness } from '../src/modules/provider-control/provider-registry.js';
 
 /**
  * Read-only live provider gate.
@@ -13,6 +12,9 @@ import { getProviderAdapter, getProviderRuntimeReadiness } from '../src/modules/
 
 type Capability = { capabilityKey?: string; status?: string };
 type ReadinessFailure = { code: string; message: string };
+type ProviderRegistry = typeof import('../src/modules/provider-control/provider-registry.js');
+
+let providerRegistry: ProviderRegistry | null = null;
 
 function safeFailure(cause: unknown): ReadinessFailure {
   if (cause && typeof cause === 'object') {
@@ -50,9 +52,10 @@ function assertEnabled() {
 }
 
 async function check(providerKey: string) {
-  const runtime = getProviderRuntimeReadiness(providerKey);
+  if (!providerRegistry) throw new Error('Provider registry is not initialized.');
+  const runtime = providerRegistry.getProviderRuntimeReadiness(providerKey);
   if (!runtime.adapterRegistered) throw new Error(`${providerKey}: no registered adapter`);
-  const adapter = getProviderAdapter(providerKey);
+  const adapter = providerRegistry.getProviderAdapter(providerKey);
   const input = context(providerKey);
   const verification = await adapter.verifyConnection(input);
   const health = typeof adapter.getHealth === 'function' ? await adapter.getHealth(input) : null;
@@ -80,25 +83,39 @@ async function check(providerKey: string) {
   return result;
 }
 
-assertEnabled();
-const providers = requestedProviders();
-if (providers.length === 0) throw new Error('No providers requested. Set PROVIDER_LIVE_E2E_PROVIDERS.');
+async function main() {
+  assertEnabled();
+  const providers = requestedProviders();
+  if (providers.length === 0) throw new Error('No providers requested. Set PROVIDER_LIVE_E2E_PROVIDERS.');
 
-const results: Array<Record<string, unknown>> = [];
-for (const provider of providers) {
-  try {
-    results.push(await check(provider));
-  } catch (cause) {
-    const failure = safeFailure(cause);
-    const blocked = { provider, status: 'BLOCKED', error: failure };
-    results.push(blocked);
-    console.log(JSON.stringify(blocked));
+  // Import the registry only after the explicit opt-in guard. The registry
+  // validates the complete production environment at module load time; a
+  // missing secret must become a safe BLOCKED result, never a stack trace.
+  providerRegistry = await import('../src/modules/provider-control/provider-registry.js');
+  const results: Array<Record<string, unknown>> = [];
+  for (const provider of providers) {
+    try {
+      results.push(await check(provider));
+    } catch (cause) {
+      const failure = safeFailure(cause);
+      const blocked = { provider, status: 'BLOCKED', error: failure };
+      results.push(blocked);
+      console.log(JSON.stringify(blocked));
+    }
+  }
+
+  if (results.some((result) => result.status === 'BLOCKED')) {
+    console.log(JSON.stringify({ status: 'BLOCKED', providers, results }));
+    process.exitCode = 1;
+  } else {
+    console.log(JSON.stringify({ status: 'READY', providers, results }));
   }
 }
 
-if (results.some((result) => result.status === 'BLOCKED')) {
-  console.log(JSON.stringify({ status: 'BLOCKED', providers, results }));
+try {
+  await main();
+} catch (cause) {
+  const failure = safeFailure(cause);
+  console.log(JSON.stringify({ status: 'BLOCKED', providers: requestedProviders(), error: failure }));
   process.exitCode = 1;
-} else {
-  console.log(JSON.stringify({ status: 'READY', providers, results }));
 }
