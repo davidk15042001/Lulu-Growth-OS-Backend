@@ -6,8 +6,8 @@ Status date: 2026-09-18
 
 The following evidence was checked after the latest combined deployment:
 
-- Frontend commit: `e0d32756561babe27e87da83ea7d3fdf7e6728c4`
-- Backend commit: `d8e264bc9114b49124d657a06f81f6d752cf4282`
+- Frontend commit: `7fa0aa6e9c5df2ab6684ae81fdfdb30580b6f79d`
+- Backend commit: `982b2c9079bd3235d04d2d1093b68cb211792c64`
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
@@ -20,6 +20,7 @@ The following evidence was checked after the latest combined deployment:
 - UnifyPort readiness is tenant-scoped when a workspace connection supplies an external account: only that account can make messaging capabilities available, and missing, non-WhatsApp, or non-running accounts fail closed. The isolation behavior is covered by dedicated adapter tests.
 - The frontend now includes a repeatable, read-only production smoke gate covering the release manifest, public route shells, API health and API readiness. The post-deployment run against `https://lulu-ai.cn` passed all eight checks without authentication or external side effects.
 - A separate, three-guard `provider:live-e2e` command now exists for one explicitly labelled UnifyPort WhatsApp transport acceptance message. It is not part of normal deployment or readiness and refuses to run without a dedicated workspace, running account, test recipient, confirmation token and `[Lulu E2E]` message prefix.
+- The UnifyPort live acceptance command now has an additional opt-in inbound mode. With a separate confirmation token and bounded timeout it prints a unique marker, waits for that exact tenant-scoped inbound message, and requires the corresponding signed `PROCESSED` webhook event before reporting receive success. The mode is disabled by default and was not run during deployment.
 - A separate, three-guard `airwallex:live-e2e` command now exists for a deliberately limited CNY 1.00 AI-wallet acceptance payment. It waits for the operator to complete the hosted/QR payment, then verifies provider confirmation, wallet credit, idempotent paid-invoice reconciliation and a ready Lulu PDF; it never runs in normal deployment.
 - Admin billing now exposes the same idempotent paid-billing reconciliation worker used by the PAYG cycle. An authorized administrator can review successful provider-confirmed top-ups, repair seller snapshots, and generate missing AI, advertising, or storage invoices without creating funds or duplicating an invoice operation.
 - Automatic, admin, and public invoice PDFs now carry separate party context: Lulu's platform seller snapshot remains the seller, while the customer workspace profile is rendered as the buyer. The separation is covered by the paid-top-up reconciliation test and the PDF download paths reuse the same canonical invoice detail.
