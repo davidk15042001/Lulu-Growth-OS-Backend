@@ -66,6 +66,8 @@ type AgentSnapshotInput = {
   location?: unknown;
   customerId?: unknown;
   companyId?: unknown;
+  invoiceId?: unknown;
+  invoiceAction?: unknown;
   providerConnectionId?: unknown;
   domainId?: unknown;
   customerRecordId?: unknown;
@@ -727,6 +729,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
     location: compactText(input.location, 500) || null,
     customerId: compactText(input.customerId, 120) || null,
     companyId: compactText(input.companyId, 120) || null,
+    invoiceId: compactText(input.invoiceId, 120) || null,
+    invoiceAction: input.invoiceAction === 'issue' || input.invoiceAction === 'send' ? input.invoiceAction : null,
     providerConnectionId: compactText(input.providerConnectionId, 120) || null,
     domainId: compactText(input.domainId, 120) || null,
     customerRecordId: compactText(input.customerRecordId, 120) || null,
@@ -817,6 +821,8 @@ async function pageActionWriteback(input: AgentSnapshotInput, workspaceId: strin
       location: input.location ?? null,
       customerId: input.customerId ?? null,
       companyId: input.companyId ?? null,
+      invoiceId: input.invoiceId ?? null,
+      invoiceAction: input.invoiceAction ?? null,
       customerRecordId: input.customerRecordId ?? null,
       companyRecordId: input.companyRecordId ?? null,
       leadRecordId: input.leadRecordId ?? null,

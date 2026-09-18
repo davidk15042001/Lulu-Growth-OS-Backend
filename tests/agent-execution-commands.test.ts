@@ -284,6 +284,40 @@ describe('agent execution commands', () => {
     assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
   });
 
+  it('infers canonical invoice issuing and sending only with an explicit invoice action', () => {
+    const base = {
+      module: 'finance',
+      targetSystem: 'finance',
+      actionResourceType: 'finance_invoices' as const,
+      pageId: 'invoice-manager',
+      pageLabel: 'Invoice Manager',
+      goal: 'Handle the verified invoice',
+      jobs: ['Process invoice'],
+      policyDecision: 'allow' as const,
+      executionMode: 'autonomous' as const,
+      invoiceId: '00000000-0000-4000-8000-000000000301',
+    };
+    const [issue] = normalizeAgentExecutionCommands([], { ...base, invoiceAction: 'issue' });
+    assert.equal(issue?.type, 'finance.invoice.issue');
+    assert.deepEqual(issue?.payload, { invoiceId: base.invoiceId });
+    assert.equal(issue?.targetEntityId, base.invoiceId);
+    const [send] = normalizeAgentExecutionCommands([], {
+      ...base,
+      invoiceAction: 'send',
+      conversationId: '00000000-0000-4000-8000-000000000302',
+      recipientId: 'buyer@example.com',
+    });
+    assert.equal(send?.type, 'finance.invoice.send');
+    assert.deepEqual(send?.payload, {
+      invoiceId: base.invoiceId,
+      channel: 'secure_link',
+      conversationId: '00000000-0000-4000-8000-000000000302',
+      recipient: 'buyer@example.com',
+    });
+    const [unresolved] = normalizeAgentExecutionCommands([], { ...base });
+    assert.equal(unresolved?.type, 'finance.create_automation');
+  });
+
   it('keeps unsupported page responsibilities as explicit planning artifacts', () => {
     const [command] = normalizeAgentExecutionCommands(undefined, {
       module: 'intelligence',

@@ -111,6 +111,8 @@ type InferCommandContext = {
   customerId?: string | null;
   companyId?: string | null;
   orderId?: string | null;
+  invoiceId?: string | null;
+  invoiceAction?: 'issue' | 'send' | null;
   providerConnectionId?: string | null;
   domainId?: string | null;
   sourceText?: string | null;
@@ -443,6 +445,49 @@ function inferCommand(context: InferCommandContext): AgentExecutionCommand {
   }
 
   if (context.targetSystem === 'finance') {
+    if (context.invoiceId && context.invoiceAction === 'issue') {
+      return {
+        type: 'finance.invoice.issue',
+        summary,
+        targetSystem: 'finance',
+        provider: null,
+        riskLevel: 'medium',
+        approvalPolicy: context.executionMode === 'autonomous' ? 'allow' : storedBudgetPolicy(context.policyDecision),
+        targetEntityType: 'finance_invoices',
+        targetEntityId: context.invoiceId,
+        payload: { invoiceId: context.invoiceId },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`finance_invoice:${context.invoiceId}`],
+          limitations: ['The canonical invoice service validates that the invoice is ready and has a complete seller profile before issuing.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['finance.invoice.issue', context.invoiceId]),
+      };
+    }
+    if (context.invoiceId && context.invoiceAction === 'send') {
+      return {
+        type: 'finance.invoice.send',
+        summary,
+        targetSystem: 'finance',
+        provider: null,
+        riskLevel: 'high',
+        approvalPolicy: 'allow',
+        targetEntityType: 'finance_invoices',
+        targetEntityId: context.invoiceId,
+        payload: {
+          invoiceId: context.invoiceId,
+          channel: 'secure_link',
+          ...(context.conversationId ? { conversationId: context.conversationId } : {}),
+          ...(context.recipientId ? { recipient: context.recipientId } : {}),
+        },
+        quality: {
+          confidence: 'high',
+          evidenceRefs: [`finance_invoice:${context.invoiceId}`],
+          limitations: ['The canonical invoice delivery service validates invoice status and any target conversation before sending.'],
+        },
+        idempotencyKey: buildIdempotencyKey(['finance.invoice.send', context.invoiceId, context.conversationId, context.recipientId]),
+      };
+    }
     if (context.orderId) {
       return {
         type: 'finance.invoice.create_from_order',

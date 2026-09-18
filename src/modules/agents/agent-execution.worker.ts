@@ -1076,6 +1076,8 @@ export function normalizedCommandsForRecord(record: recordRepo.WorkspaceRecord) 
     customerId: textValue(data.customerId) || null,
     companyId: textValue(data.companyId) || null,
     orderId: textValue(data.orderId) || null,
+    invoiceId: textValue(data.invoiceId) || null,
+    invoiceAction: data.invoiceAction === 'issue' || data.invoiceAction === 'send' ? data.invoiceAction : null,
     domainId: textValue(data.domainId) || null,
     sourceText: textValue(data.sourceText, 20_000) || null,
     customerRecordId: textValue(data.customerRecordId) || null,
