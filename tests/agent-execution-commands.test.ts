@@ -262,6 +262,28 @@ describe('agent execution commands', () => {
     assert.match(decision.commands[0]?.policyReason ?? '', /permitted/i);
   });
 
+  it('keeps unsupported page responsibilities as explicit planning artifacts', () => {
+    const [command] = normalizeAgentExecutionCommands(undefined, {
+      module: 'intelligence',
+      targetSystem: 'analytics',
+      actionResourceType: 'kpis',
+      pageId: 'intelligence-page',
+      pageLabel: 'Intelligence Overview',
+      goal: 'Aggregate verified business signals',
+      jobs: ['cluster themes', 'surface anomalies'],
+      policyDecision: 'allow',
+      executionMode: 'autonomous',
+    });
+
+    assert.ok(command);
+    assert.equal(command.type, 'record.create_artifact');
+    assert.equal(command.payload.executionBoundary, 'planning_artifact_only');
+    assert.deepEqual(command.quality?.limitations, [
+      'No canonical domain mutation is registered for this page yet; Lulu records the plan without claiming an external side effect.',
+    ]);
+    assert.equal(applyExecutionCommandPolicies([command], 'autonomous').overallDecision, 'allow');
+  });
+
   it('allows internal sales follow-up task creation in autonomous mode', () => {
     const [command] = normalizeAgentExecutionCommands(undefined, {
       module: 'sales',

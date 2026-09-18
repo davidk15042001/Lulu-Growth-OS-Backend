@@ -266,6 +266,7 @@ function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCom
       goal: context.goal,
       jobs: context.jobs,
       module: context.module,
+      executionBoundary: 'planning_artifact_only',
     },
     idempotencyKey: buildIdempotencyKey([
       'record.create_artifact',
@@ -274,6 +275,13 @@ function defaultArtifactCommand(context: InferCommandContext): AgentExecutionCom
       context.goal,
       jobsSummary,
     ]),
+    quality: {
+      confidence: 'medium',
+      evidenceRefs: [context.pageId ? `workspace_page:${context.pageId}` : 'workspace_context'],
+      limitations: [
+        'No canonical domain mutation is registered for this page yet; Lulu records the plan without claiming an external side effect.',
+      ],
+    },
   };
 }
 

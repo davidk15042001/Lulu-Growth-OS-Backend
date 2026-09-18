@@ -239,6 +239,38 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
   const payload = objectValue(command.payload);
   const actorUserId = record.createdBy ?? 'system';
 
+  // A page without a domain-specific command must never look like it caused
+  // an external mutation. Keep the fallback useful and idempotent by storing
+  // an explicit planning artifact that can later be mapped to a canonical
+  // service, while making the execution boundary visible to the Office and
+  // Workspace surfaces.
+  if (command.type === 'record.create_artifact') {
+    const stored = await persistCommandExecutionResult(record, command, {
+      status: 'planned',
+      executionBoundary: 'planning_artifact_only',
+      sideEffectsApplied: false,
+      canonicalActionRegistered: false,
+      actionResourceType: textValue(payload.actionResourceType, 120) || record.resourceType,
+      pageId: textValue(payload.pageId, 120) || null,
+      pageLabel: textValue(payload.pageLabel, 240) || record.name,
+      goal: textValue(payload.goal, 4_000) || command.summary,
+      jobs: Array.isArray(payload.jobs) ? payload.jobs : [],
+      nextStep: 'Map this responsibility to a canonical domain command before enabling external execution.',
+    });
+    return {
+      type: command.type,
+      targetEntityId: stored.id,
+      provider: command.provider,
+      resultRecordId: stored.id,
+      result: {
+        status: 'planned',
+        executionBoundary: 'planning_artifact_only',
+        sideEffectsApplied: false,
+        canonicalActionRegistered: false,
+      },
+    };
+  }
+
   if (command.type === 'crm.company.enrich') {
     const companyId = textValue(payload.companyId || payload.recordId || command.targetEntityId);
     if (!companyId) throw new Error('crm.company.enrich requires companyId or recordId');
