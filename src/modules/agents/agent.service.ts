@@ -33,6 +33,7 @@ import {
   type AgentDefinition,
 } from './agent.ecosystem.js';
 import { growthAgentContractSummary } from './growth-operating-model.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 const tools = new Map<string, AgentTool>();
 const activeRuns = new Set<string>();
@@ -837,6 +838,7 @@ export async function prepareAutomaticAgentTeam(
   preferredModules: readonly AgentModule[] = [],
   preferredPageIds: readonly string[] = [],
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const calculated = await calculateWorkspaceTeam(workspaceId, preferredModules, preferredPageIds);
   const cycle = await repo.createAgentTeamCycle({
     workspaceId,
@@ -918,6 +920,7 @@ export async function startRun(
   pageInput?: unknown,
   dedupeMinutes?: number,
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const subscription = await repo.getWorkspacePlan(workspaceId);
   if (!['active', 'trialing', 'billing_skipped'].includes(subscription.status)) throw new AppError(403, 'AGENT_PLAN_INACTIVE', 'An active workspace subscription or audited billing skip is required for agent analysis');
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
@@ -956,6 +959,7 @@ export async function startAutomaticRun(
   teamContext?: AgentTeamContext,
   dispatchContext?: { taskId: string; missionId: string; taskType: string; employeeKey?: string; assignedEmployeeId?: string | null },
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const subscription = await repo.getWorkspacePlan(workspaceId);
   const page = sanitizeAgentPageContext(pageInput as Record<string, unknown> | null | undefined);
   if (pageInput && !page) throw new AppError(400, 'AGENT_PAGE_UNKNOWN', 'The requested page agent is not registered');

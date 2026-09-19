@@ -154,7 +154,9 @@ export async function createMessage(input:{workspaceId:string;conversationId:str
 
 export async function claimAiReplyJob(messageId:string) {
   const {rows}=await query<{messageId:string;workspaceId:string;conversationId:string;attempts:number;maxAttempts:number}>(`UPDATE omni_ai_reply_jobs SET status='PROCESSING',attempts=attempts+1,locked_at=NOW(),updated_at=NOW()
-    WHERE message_id=$1 AND attempts<max_attempts AND (
+    WHERE message_id=$1
+      AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=omni_ai_reply_jobs.workspace_id), FALSE)
+      AND attempts<max_attempts AND (
       (status='PENDING' AND available_at<=NOW()) OR status='WAITING_FUNDS'
       OR (status='PROCESSING' AND locked_at<NOW()-INTERVAL '5 minutes')
     )
@@ -193,7 +195,9 @@ export async function listWaitingAiReplyMessageIds(workspaceId:string,limit=100)
 
 export async function listReadyAiReplyMessageIds(limit=100) {
   const {rows}=await query<{messageId:string}>(`SELECT message_id AS "messageId" FROM omni_ai_reply_jobs
-    WHERE attempts<max_attempts AND (
+    WHERE attempts<max_attempts
+      AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=omni_ai_reply_jobs.workspace_id), FALSE)
+      AND (
       (status='PENDING' AND available_at<=NOW())
       OR (status='PROCESSING' AND locked_at<NOW()-INTERVAL '5 minutes')
     )

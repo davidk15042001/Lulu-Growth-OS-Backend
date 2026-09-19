@@ -466,7 +466,8 @@ export async function claimExecutionReadyRecords(limit = 20) {
       `SELECT ${recordSelect}
        FROM workspace_records
        WHERE deleted_at IS NULL
-         AND source = 'page_agent'
+       AND source = 'page_agent'
+         AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=workspace_records.workspace_id), FALSE)
          AND stage = 'queued_for_execution'
          AND COALESCE(data ->> 'executionReady', 'false') = 'true'
          AND (

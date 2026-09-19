@@ -71,7 +71,9 @@ export async function claimNextJob(workerId: string, leaseSeconds: number, maxAt
        SET status='failed', current_phase='failed', completed_at=NOW(),
            error_message='The content refresh exceeded its crash-recovery retry limit.',
            worker_id=NULL, heartbeat_at=NULL
-       WHERE status IN ('queued','running') AND attempt_count >= $2
+       WHERE status IN ('queued','running')
+         AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=workspace_content_refresh_jobs.workspace_id), FALSE)
+         AND attempt_count >= $2
          AND (worker_id IS NULL OR COALESCE(heartbeat_at, updated_at) < NOW() - ($1::integer * INTERVAL '1 second'))
        RETURNING id, workspace_id AS "workspaceId", attempt_count AS "attemptCount"`,
       [leaseSeconds, maxAttempts],
@@ -92,7 +94,9 @@ export async function claimNextJob(workerId: string, leaseSeconds: number, maxAt
       `WITH candidate AS (
          SELECT id AS candidate_id
          FROM workspace_content_refresh_jobs
-         WHERE status IN ('queued','running') AND attempt_count < $3
+         WHERE status IN ('queued','running')
+           AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=workspace_content_refresh_jobs.workspace_id), FALSE)
+           AND attempt_count < $3
            AND (worker_id IS NULL OR COALESCE(heartbeat_at, updated_at) < NOW() - ($2::integer * INTERVAL '1 second'))
          ORDER BY created_at ASC
          LIMIT 1

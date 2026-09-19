@@ -4,6 +4,7 @@ import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
+import { requestWorkspaceAutomationPause } from '../workspaces/workspace-automation.service.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AWS_USAGE_CUSTOMER_MULTIPLIER, getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
@@ -753,6 +754,8 @@ export async function updateWorkspaceSettings(
       client,
     );
     const settings = rows[0]!;
+    const requestedPause = input.agents?.paused;
+    if (requestedPause === true) await requestWorkspaceAutomationPause(workspaceId, true, client);
     return { settings, before: before?.settings ?? {} };
   });
 

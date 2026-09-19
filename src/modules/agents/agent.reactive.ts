@@ -14,6 +14,7 @@ import {
   markReactiveDeferralResumed,
   releaseReactiveDeferral,
 } from './agent-reactive-deferral.repo.js';
+import { isWorkspaceAutomationPaused } from '../workspaces/workspace-automation.service.js';
 
 const REACTIVE_DEDUPE_MINUTES = 30;
 
@@ -391,6 +392,7 @@ export function startReactiveDispatcher() {
     eventTypes: [...new Set(REGISTERED_EVENT_TYPES)],
     async handle(event) {
       if (!event.workspaceId || isAgentOutput(event)) return { ignored: true };
+      if (await isWorkspaceAutomationPaused(event.workspaceId)) return { ignored: true, paused: true };
       const dispatch = trackReactiveDispatch(async () => {
         if (event.type === DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED) {
           if (!(await hasFundedAiWallet(event.workspaceId!))) return { triggered: false, waitingFor: 'ai_funds' };

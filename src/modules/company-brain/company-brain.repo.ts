@@ -376,6 +376,7 @@ export async function claimNextRunnableTask(workerId: string, leaseSeconds = 120
          )
            AND m.status NOT IN ('BLOCKED','CANCELLED','COMPLETED')
            AND t.agent_run_id IS NULL
+           AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=t.workspace_id), FALSE)
            AND t.attempt_count < t.max_attempts
            AND (t.due_at IS NULL OR t.due_at <= NOW())
            AND (t.claimed_by IS NULL OR t.claimed_at < NOW() - ($1::integer * INTERVAL '1 second'))

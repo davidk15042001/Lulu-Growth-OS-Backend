@@ -8,6 +8,7 @@ import * as workspaceRepo from '../workspaces/workspace.repo.js';
 import * as repo from './omnichannel.repo.js';
 import { sendAutonomousMessage } from './omnichannel.service.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
+import { isWorkspaceAutomationPaused } from '../workspaces/workspace-automation.service.js';
 
 let started=false;
 let retryTimer:NodeJS.Timeout|undefined;
@@ -30,6 +31,10 @@ async function processMessage(messageId:string) {
   const job=await repo.claimAiReplyJob(messageId);
   if(!job)return {ignored:true};
   try {
+    if (await isWorkspaceAutomationPaused(job.workspaceId)) {
+      await repo.markAiReplyJob(messageId,'FAILED','Workspace automation is paused.');
+      return { paused: true };
+    }
     const detail=await repo.getConversation(job.workspaceId,job.conversationId);
     if(!detail||detail.conversation.handlingMode!=='AI_AUTO'){
       await repo.markAiReplyJob(messageId,'SUCCEEDED');

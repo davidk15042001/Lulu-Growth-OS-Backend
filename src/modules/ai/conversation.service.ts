@@ -17,6 +17,7 @@ import type {
   ListMessagesQuery,
   UpdateConversationInput,
 } from './conversation.validator.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 export const listConversations = (
   workspaceId: string,
@@ -35,6 +36,7 @@ export async function createConversation(
   userId: string,
   input: CreateConversationInput
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const id = await repo.createConversation(workspaceId, userId, input);
   if (!id) throw new Error('Conversation insert did not return an id');
   return getConversation(workspaceId, userId, id);
@@ -46,6 +48,7 @@ export async function updateConversation(
   conversationId: string,
   input: UpdateConversationInput
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   if (!(await repo.updateConversation(workspaceId, userId, conversationId, input))) {
     throw notFoundError('Conversation not found');
   }
@@ -53,6 +56,7 @@ export async function updateConversation(
 }
 
 export async function archiveConversation(workspaceId: string, userId: string, conversationId: string) {
+  await assertWorkspaceAutomationActive(workspaceId);
   if (!(await repo.archiveConversation(workspaceId, userId, conversationId))) {
     throw notFoundError('Conversation not found');
   }
@@ -71,6 +75,7 @@ export async function createUserMessage(
   conversationId: string,
   input: CreateMessageInput
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const message = await repo.createUserMessage(workspaceId, userId, conversationId, input);
   if (!message) throw notFoundError('Conversation not found');
   return message;
@@ -82,6 +87,7 @@ export async function respond(
   conversationId: string,
   input: CreateMessageInput
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   if (!isAiGenerationConfigured()) {
     throw new AppError(503, 'AI_NOT_CONFIGURED', 'The configured AI provider is not configured');
   }
@@ -136,6 +142,7 @@ export async function respondAgentic(
   conversationId: string,
   input: CreateMessageInput
 ) {
+  await assertWorkspaceAutomationActive(workspaceId);
   if (!isAiGenerationConfigured()) {
     throw new AppError(503, 'AI_NOT_CONFIGURED', 'The configured AI provider is not configured');
   }
@@ -202,6 +209,7 @@ export async function listActions(workspaceId: string, userId: string, conversat
 }
 
 export async function executeAction(workspaceId: string, userId: string, conversationId: string, actionId: string) {
+  await assertWorkspaceAutomationActive(workspaceId);
   await getConversation(workspaceId, userId, conversationId);
   return executeAssistantActionRequest(workspaceId, userId, conversationId, actionId);
 }

@@ -2,6 +2,7 @@ import type { DomainEvent } from '../../events/domain-event.types.js';
 import * as repo from './company-brain.repo.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
 import * as metricRepo from '../metrics/metric.repo.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 const MARKET_LEADERSHIP_NORTH_STAR = 'Become the number-one autonomous business operating system in the market.';
 
@@ -83,6 +84,7 @@ export const listDecisions = repo.listDecisions;
 export async function createMission(input: {
   workspaceId: string; signalId: string; title?: string; objective?: string; priority: number; createdBy: string;
 }) {
+  await assertWorkspaceAutomationActive(input.workspaceId);
   const signal = await repo.getSignal(input.workspaceId, input.signalId);
   if (!signal) throw notFoundError('Brain signal not found');
   const title = input.title ?? `Investigate ${signal.signalType.replaceAll('_', ' ')}`;
@@ -93,6 +95,7 @@ export async function createMission(input: {
 }
 
 export async function updateMission(workspaceId: string, missionId: string, status: string, outcome?: Record<string, unknown>) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const mission = await repo.updateMission(workspaceId, missionId, status, outcome);
   if (!mission) throw notFoundError('Brain mission not found');
   return mission;
@@ -105,12 +108,14 @@ export const getTaskGraph = repo.getTaskGraph;
 export const listLearning = repo.listLearning;
 
 export async function createTask(input: Parameters<typeof repo.createTask>[0]) {
+  await assertWorkspaceAutomationActive(input.workspaceId);
   const result = await repo.createTask(input);
   if (!result) throw notFoundError('Company Brain mission, parent task, or employee not found');
   return result;
 }
 
 export async function addTaskDependency(input: Parameters<typeof repo.addTaskDependency>[0]) {
+  await assertWorkspaceAutomationActive(input.workspaceId);
   try {
     const result = await repo.addTaskDependency(input);
     if (!result) throw notFoundError('Company Brain task or dependency not found');

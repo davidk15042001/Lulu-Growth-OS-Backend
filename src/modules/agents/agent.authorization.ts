@@ -15,6 +15,7 @@ import { assertAdBudgetAuthorization } from '../adspend/adspend.repo.js';
 import { requiredCapabilitiesForAgentCommands } from './agent.command-capabilities.js';
 import { providerRequirementForAgentCommand } from './agent.provider-requirements.js';
 import { assertWorkspaceProviderLaunchReady } from '../provider-control/provider.service.js';
+import { isWorkspaceAutomationPaused } from '../workspaces/workspace-automation.service.js';
 
 export type AgentExecutionIdentity = {workspaceId:string;userId:string;runId:string;stepId:string};
 type AgentIdentityState = {
@@ -122,12 +123,7 @@ export async function authorizeAgentIdentity(context:AgentExecutionIdentity,writ
   if(!isAgentModule(state.module) || !['active','trialing','billing_skipped'].includes(state.subscription_status)) return deny(context,'inactive_entitlement');
   const effectiveEntitlements = await resolveWorkspaceEntitlements(context.workspaceId);
   if (!effectiveEntitlements['ai.enabled'].enabled) return deny(context, 'ai_entitlement_disabled');
-  const executionSettings = await query<{ paused: boolean }>(
-    `SELECT COALESCE((settings->'agents'->>'paused')::boolean, FALSE) AS paused
-     FROM workspace_settings WHERE workspace_id=$1`,
-    [context.workspaceId],
-  );
-  if (executionSettings.rows[0]?.paused === true) return deny(context, 'workspace_agent_execution_paused');
+  if (await isWorkspaceAutomationPaused(context.workspaceId)) return deny(context, 'workspace_automation_paused');
   // Plan-specific agent behavior is retained for compatibility, but it may
   // never exceed the backend-owned effective entitlement set. In particular,
   // autonomous/write actions require an explicit autonomous-agent entitlement.

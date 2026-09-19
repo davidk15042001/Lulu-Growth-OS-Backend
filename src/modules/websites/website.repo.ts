@@ -479,6 +479,10 @@ export async function claimNextGenerationJob(workerId: string, leaseSeconds: num
            AND (job.worker_id IS NULL OR COALESCE(job.heartbeat_at, job.locked_at, job.updated_at) < NOW() - ($2::int * INTERVAL '1 second'))
          )
        )
+       AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean
+                         FROM workspace_settings ws
+                         JOIN workspace_sites paused_site ON paused_site.workspace_id=ws.workspace_id
+                         WHERE paused_site.id=job.site_id), FALSE)
        ORDER BY job.created_at
        FOR UPDATE OF job SKIP LOCKED
        LIMIT 1

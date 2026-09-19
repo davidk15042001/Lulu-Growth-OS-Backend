@@ -17,6 +17,7 @@ import type {
   SocialProvider,
   SocialProviderContext,
 } from './social-publishing.types.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 type MetaClient = ReturnType<typeof createMetaGraphClient>;
 
@@ -245,6 +246,7 @@ export async function createPublication(input: {
   maxAttempts: number;
   idempotencyKey: string;
 }) {
+  await assertWorkspaceAutomationActive(input.workspaceId);
   const [account, content] = await Promise.all([
     repo.getAccount(input.workspaceId, input.socialAccountId),
     repo.getContent(input.workspaceId, input.contentId),
@@ -277,6 +279,7 @@ export async function transitionPublication(input: {
   action: 'QUEUE' | 'CANCEL' | 'RETRY';
   scheduledAt?: string | null;
 }) {
+  if (input.action !== 'CANCEL') await assertWorkspaceAutomationActive(input.workspaceId);
   if (input.action !== 'CANCEL') {
     const job = await getPublicationJob(input.workspaceId, input.jobId);
     if (!job.account || !job.content) throw conflict('SOCIAL_PUBLICATION_BROKEN_REFERENCE', 'The publication no longer has its canonical account or content.');
@@ -293,6 +296,7 @@ export async function transitionPublication(input: {
 function retryDelayMs(attempt: number) { return Math.min(15 * 60_000, 2_000 * (2 ** Math.max(0, attempt - 1))); }
 
 export async function processClaimedPublication(job: ClaimedSocialPublication, options: { graphClient?: MetaClient } = {}) {
+  await assertWorkspaceAutomationActive(job.workspaceId);
   const runtime = await runtimePublicationIssue(job.account, job.content);
   if (runtime.issue || !runtime.context) {
     return repo.failPublication({ job, status: 'BLOCKED', attemptStatus: 'BLOCKED', code: runtime.issue?.code ?? 'SOCIAL_PROVIDER_UNAVAILABLE', message: runtime.issue?.message ?? 'The provider is unavailable.' });

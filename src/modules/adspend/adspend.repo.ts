@@ -5,6 +5,7 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AppError } from '../../utils/app-error.js';
 import { applyPendingAirwallexWalletReversals } from '../billing/airwallex-wallet-reversal.repo.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 export const AD_SPEND_FEE_BASIS_POINTS = 400;
 export type AdSpendPaymentMethod = 'card' | 'alipaycn' | 'wechatpay';
@@ -668,6 +669,7 @@ export async function reserveAdSpend(input: {
   currency: string;
   metadata?: Record<string, unknown>;
 }) {
+  await assertWorkspaceAutomationActive(input.workspaceId);
   if (!input.authorizationId || !input.provider?.trim() || !input.accountId?.trim() || !input.campaignId?.trim() || !input.currency?.trim()) {
     throw new AppError(409, 'AD_BUDGET_AUTHORIZATION_REQUIRED', 'A campaign-specific customer budget authorization is required in addition to prepaid funds.');
   }

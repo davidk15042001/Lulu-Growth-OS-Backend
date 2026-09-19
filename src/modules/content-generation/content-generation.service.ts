@@ -5,6 +5,7 @@ import * as agentRepo from '../agents/agent.repo.js';
 import type { AgentModule } from '../agents/agent.capabilities.js';
 import * as onboardingService from '../onboarding/onboarding.service.js';
 import * as aiProfileService from '../onboarding/onboarding.ai-profile.service.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 const ACTIVE_JOB_STALE_MS = 2 * 60 * 1000;
 
@@ -20,6 +21,7 @@ const moduleGoals: Record<repo.ContentModule, string> = {
 };
 
 export async function startContentRefresh(workspaceId: string, userId: string, requestedModules: repo.ContentModule[] = [...repo.CONTENT_MODULES]) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const active = await repo.getActiveJob(workspaceId);
   const heartbeatAt = active?.heartbeatAt ? Date.parse(active.heartbeatAt) : NaN;
   const updatedAt = active?.updatedAt ? Date.parse(active.updatedAt) : NaN;
@@ -116,11 +118,13 @@ async function executeManualModule(workspaceId: string, userId: string, module: 
 
 export async function executeContentRefresh(workspaceId: string, userId: string, jobId: string, modules: repo.ContentModule[]) {
   try {
+    await assertWorkspaceAutomationActive(workspaceId);
     await repo.updateJob(workspaceId, jobId, { status: 'running', current_phase: 'modules', started_at: new Date(), heartbeat_at: new Date() });
     const moduleStatus: Record<string, unknown> = {};
     for (let index = 0; index < modules.length; index += 1) {
       const currentJob = await repo.getJob(workspaceId, jobId);
       if (currentJob?.status === 'cancelled') return;
+      await assertWorkspaceAutomationActive(workspaceId);
       const module = modules[index]!;
       moduleStatus[module] = { status: 'queued', goal: moduleGoals[module] };
       await repo.updateJob(workspaceId, jobId, { current_phase: module, progress: Math.round((index / modules.length) * 100), module_status: JSON.stringify(moduleStatus), heartbeat_at: new Date() });

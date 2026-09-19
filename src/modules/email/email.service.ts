@@ -3,6 +3,7 @@ import { registerDomainEventHandler } from '../../events/domain-event.registry.j
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { logger } from '../../config/logger.js';
 import { AppError, notFoundError } from '../../utils/app-error.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 import { encryptSecret } from '../../utils/secret-box.js';
 import * as workspaceService from '../workspaces/workspace.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
@@ -126,6 +127,7 @@ export async function updateDraft(workspaceId: string, draftId: string, input: U
 function responseLanguage(code: string) { return code === 'de' ? 'German' : code === 'zh-CN' ? 'Simplified Chinese' : 'English'; }
 
 export async function createAiDraft(workspaceId: string, userId: string, threadId: string, input: { accountId: string; instruction?: string | undefined; tone: string; language: string }, source: 'ai' | 'automation' = 'ai', metadata: Record<string, unknown> = {}) {
+  await assertWorkspaceAutomationActive(workspaceId);
   if (!isAiGenerationConfigured()) throw new AppError(503, 'AI_NOT_CONFIGURED', 'No AI provider is configured');
   const thread = await getThread(workspaceId, threadId) as Record<string, unknown> & { messages: Array<Record<string, unknown>> };
   if (thread.accountId !== input.accountId) throw new AppError(409, 'EMAIL_ACCOUNT_MISMATCH', 'Email thread belongs to another account');
@@ -151,6 +153,7 @@ export async function createAiDraft(workspaceId: string, userId: string, threadI
 }
 
 export async function sendDraft(workspaceId: string, draftId: string) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const draft = await repo.getDraft(workspaceId, draftId) as Record<string, unknown> | null;
   if (!draft) throw notFoundError('Email draft not found');
   if (draft.status !== 'draft') throw new AppError(409, 'EMAIL_DRAFT_STATE_INVALID', 'Only an unsent draft can be sent');

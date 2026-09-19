@@ -620,6 +620,7 @@ export async function claimNextPublication(workerId: string) {
          SELECT id AS candidate_id FROM social_publication_jobs
           WHERE ((status='QUEUED' AND available_at<=NOW())
              OR (status='SCHEDULED' AND scheduled_at<=NOW()))
+            AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=social_publication_jobs.workspace_id), FALSE)
           ORDER BY COALESCE(scheduled_at,available_at),created_at
           LIMIT 1 FOR UPDATE SKIP LOCKED
        )

@@ -23,6 +23,7 @@ import {
   scheduleGoogleAdsSpendAllocation,
   type GoogleAdsSpendAllocation,
 } from './google-ads-spend.repo.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 export type GoogleAdsOperation = {
   provider: 'google-ads';
@@ -305,6 +306,7 @@ async function mutateGoogleCampaign(workspaceId: string, payer: GoogleAdsPayer, 
 }
 
 export async function launchGoogleAdsAllocation(workspaceId: string, input: GoogleAdsOperation) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const requested = launchBudget(input);
   const payer = requiredPayer();
   if (input.loginCustomerId && digits(input.loginCustomerId) !== payer.loginCustomerId) {

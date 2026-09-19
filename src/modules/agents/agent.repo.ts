@@ -412,6 +412,7 @@ export async function claimNextRunnableRun(workerId: string, leaseSeconds: numbe
            error_message='The agent run was paused after one failed execution. Resume it manually to try again.',
            finished_at=NOW(), worker_id=NULL, locked_at=NULL, heartbeat_at=NULL
        WHERE status IN ('queued','planning','running')
+         AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=agent_runs.workspace_id), FALSE)
          AND attempt_count >= $2
          AND (worker_id IS NULL OR COALESCE(heartbeat_at, locked_at, updated_at) < NOW() - ($1::integer * INTERVAL '1 second'))
        RETURNING id, workspace_id AS "workspaceId", attempt_count AS "attemptCount"`,
@@ -434,6 +435,7 @@ export async function claimNextRunnableRun(workerId: string, leaseSeconds: numbe
        SELECT id AS candidate_id
          FROM agent_runs
          WHERE status IN ('queued','planning','running')
+           AND NOT COALESCE((SELECT (settings->'agents'->>'paused')::boolean FROM workspace_settings WHERE workspace_id=agent_runs.workspace_id), FALSE)
            AND attempt_count < $3
            AND (
              worker_id IS NULL

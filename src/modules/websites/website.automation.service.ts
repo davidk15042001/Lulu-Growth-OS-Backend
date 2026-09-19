@@ -1,6 +1,7 @@
 import { AppError } from '../../utils/app-error.js';
 import { firstWebflowSiteWithCollection, wordpressMedia, wordpressSites } from './website.provider.service.js';
 import { logger } from '../../config/logger.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
@@ -100,6 +101,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
   const heartbeatTimer = setInterval(() => void heartbeat(), 15_000);
   heartbeatTimer.unref();
   try {
+    await assertWorkspaceAutomationActive(input.workspaceId);
     if (!input.createdBy) throw new AppError(409, 'WEBSITE_GENERATION_USER_MISSING', 'The user who started this website generation no longer exists');
     await assertGenerationNotCancelled(input.siteId, input.id);
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'generating');
@@ -140,6 +142,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       imageAssets,
       ...(input.requestedLanguage ? { language: input.requestedLanguage } : {}),
       onProgress: async (progress) => {
+        await assertWorkspaceAutomationActive(input.workspaceId);
         await assertGenerationNotCancelled(input.siteId, input.id);
         const nextPreview = {
           ...previewState,

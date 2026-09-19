@@ -8,6 +8,7 @@ import { publishWebsiteJob, verifyWordpressSetup } from './website.publish.servi
 import { getActiveWebsiteGenerationJob, resetWebsiteProviderState, startAutomaticWebsiteGeneration, syncWordpressProviderSites } from './website.automation.service.js';
 import { webflowCollections, webflowCustomDomains, webflowSites, wordpressMedia, wordpressPages, wordpressPosts } from './website.provider.service.js';
 import { requestWebsiteGenerationWorkerRun } from './website.worker.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 type WorkspaceRequest = Request & { user?: { id: string } };
 function workspaceId(req: Request) { return String(req.params.workspaceId); }
@@ -74,6 +75,7 @@ export async function syncProvider(req: WorkspaceRequest, res: Response, next: N
 
 export async function automaticGenerate(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
+    await assertWorkspaceAutomationActive(workspaceId(req));
     const input = automaticGenerationSchema.parse(req.body);
     const result = await startAutomaticWebsiteGeneration({
       workspaceId: workspaceId(req),
@@ -114,6 +116,7 @@ export async function renewDomain(req: WorkspaceRequest, res: Response, next: Ne
 export async function createJob(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = siteIdParams.parse(req.params);
+    await assertWorkspaceAutomationActive(params.workspaceId);
     const site = await repo.getSite(params.workspaceId, params.siteId);
     if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found');
     const active = await repo.findActiveJob(params.siteId);
@@ -165,6 +168,7 @@ export async function cancelJob(req: Request, res: Response, next: NextFunction)
 export async function resumeJob(req: Request, res: Response, next: NextFunction) {
   try {
     const params = jobParams.parse(req.params);
+    await assertWorkspaceAutomationActive(params.workspaceId);
     const site = await repo.getSite(params.workspaceId, params.siteId);
     if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found');
     const result = await repo.resumeJob(params.siteId, params.jobId);
@@ -177,4 +181,4 @@ export async function resumeJob(req: Request, res: Response, next: NextFunction)
     return successResponse(res, result.resumed ? 'Website generation resumed from the last checkpoint' : 'Website generation is already running', result.job);
   } catch (error) { next(error); }
 }
-export async function publishJob(req: Request, res: Response, next: NextFunction) { try { const params = jobParams.parse(req.params); return successResponse(res, 'Website published', await publishWebsiteJob(params.workspaceId, params.siteId, params.jobId)); } catch (error) { next(error); } }
+export async function publishJob(req: Request, res: Response, next: NextFunction) { try { const params = jobParams.parse(req.params); await assertWorkspaceAutomationActive(params.workspaceId); return successResponse(res, 'Website published', await publishWebsiteJob(params.workspaceId, params.siteId, params.jobId)); } catch (error) { next(error); } }

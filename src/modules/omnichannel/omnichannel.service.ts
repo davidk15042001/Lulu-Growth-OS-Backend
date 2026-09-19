@@ -8,6 +8,7 @@ import { asTwilioAddress, sendTwilioMessage } from '../provider-control/twilio.c
 import { env } from '../../config/env.js';
 import { getWorkspaceTwilioContentSid, getWorkspaceTwilioCredentials } from '../provider-control/twilio-workspace.service.js';
 import { sendMessage as sendUnifyPortMessage } from '../provider-control/unifyport.client.js';
+import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 
 export async function assertWorkspace(workspaceId:string,userId:string,capability:'omnichannel.read'|'omnichannel.reply'|'omnichannel.manage') { await assertWorkspaceCapability({workspaceId,userId,capability}); }
 export async function list(workspaceId:string,userId:string,filters:any){await assertWorkspace(workspaceId,userId,'omnichannel.read');return repo.listConversations(workspaceId,filters);}
@@ -29,6 +30,7 @@ export function requiresWhatsAppTemplate(messages:Array<{direction:string;receiv
 }
 
 async function deliverOutboundMessage(workspaceId:string,id:string,userId:string,input:{text:string;messageType:string;clientMessageId:string;accountId?:string;recipientId?:string;recipientType?:'user'|'group'|'channel';senderType:'USER'|'AI_AGENT'}) {
+  await assertWorkspaceAutomationActive(workspaceId);
   const detail=await repo.getConversation(workspaceId,id);
   if(!detail)throw notFoundError('Conversation not found');
   if(detail.conversation.status==='SPAM'||detail.conversation.status==='CLOSED')throw forbiddenError('This conversation is not accepting messages');
