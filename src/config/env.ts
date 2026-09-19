@@ -351,6 +351,7 @@ if ((raw.NODE_ENV ?? 'development') === 'production') {
       'TWILIO_WEBHOOK_URL',
       'TWILIO_STATUS_CALLBACK_URL',
       'META_CLIENT_ID',
+      'META_CLIENT_SECRET',
       'META_WHATSAPP_EMBEDDED_SIGNUP_CONFIG_ID',
       'TWILIO_PARTNER_SOLUTION_ID',
       'META_GRAPH_VERSION',
