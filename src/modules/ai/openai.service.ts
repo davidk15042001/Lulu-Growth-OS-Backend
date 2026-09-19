@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import type { AssistantPendingAction } from './assistant-action.types.js';
-import { env, hasAiProvider, hasAlibaba, hasGroq, hasKie, hasOpenAI } from '../../config/env.js';
+import { env, hasAiProvider, hasAlibaba, hasGroq, hasKie, hasOpenAI, hasPerplexity } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
 import { CUSTOMER_API_RATE, recordUsage } from '../usage/usage.service.js';
@@ -55,6 +55,8 @@ export type ResponsesClient = {
 export type AiRequestOptions = {
   timeout?: number;
   maxRetries?: number;
+  /** Explicit provider override for a specialised, user-requested operation. */
+  provider?: AiProviderName;
   billing?: {
     workspaceId: string;
     userId?: string | null;
@@ -68,8 +70,9 @@ let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
 let groqClient: OpenAI | undefined;
 let kieClient: OpenAI | undefined;
+let perplexityClient: OpenAI | undefined;
 
-type AiProviderName = 'openai' | 'alibaba' | 'groq' | 'kie';
+export type AiProviderName = 'openai' | 'alibaba' | 'groq' | 'kie' | 'perplexity';
 
 type ProviderCircuitState = {
   failures: number;
@@ -97,11 +100,12 @@ function providerConfigured(provider: AiProviderName) {
   if (provider === 'openai') return hasOpenAI;
   if (provider === 'alibaba') return hasAlibaba;
   if (provider === 'groq') return hasGroq;
-  return hasKie;
+  if (provider === 'kie') return hasKie;
+  return hasPerplexity;
 }
 
 function configuredProviders() {
-  const allowed = new Set<AiProviderName>(['openai', 'alibaba', 'groq', 'kie']);
+  const allowed = new Set<AiProviderName>(['openai', 'alibaba', 'groq', 'kie', 'perplexity']);
   const fallback = env.AI_PROVIDER_FALLBACK_ORDER
     .split(',')
     .map((value) => value.trim().toLowerCase())
@@ -131,6 +135,10 @@ function getProviderClient(provider: AiProviderName) {
     kieClient ??= new OpenAI({apiKey:env.KIE_API_KEY,baseURL,timeout:env.AI_REQUEST_TIMEOUT_MS,maxRetries:env.AI_MAX_RETRIES});
     return kieClient;
   }
+  if (provider === 'perplexity' && hasPerplexity) {
+    perplexityClient ??= new OpenAI({ apiKey: env.PERPLEXITY_API_KEY, baseURL: env.PERPLEXITY_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
+    return perplexityClient;
+  }
   throw new AppError(503, 'AI_PROVIDER_NOT_CONFIGURED', `AI provider ${provider} is not configured`);
 }
 
@@ -138,7 +146,8 @@ function modelForProvider(provider: AiProviderName) {
   if (provider === 'openai') return env.OPENAI_MODEL;
   if (provider === 'alibaba') return env.DASHSCOPE_MODEL;
   if (provider === 'groq') return env.GROQ_MODEL;
-  return env.KIE_QUALITY_MODEL;
+  if (provider === 'kie') return env.KIE_QUALITY_MODEL;
+  return env.PERPLEXITY_MODEL;
 }
 
 function providerErrorStatus(error: unknown) {
@@ -285,7 +294,7 @@ export function configuredModel(requestedModel?: string | null) {
 }
 
 export function getAiProviderHealth() {
-  return (['openai', 'alibaba', 'groq', 'kie'] as const).map((provider) => {
+  return (['openai', 'alibaba', 'groq', 'kie', 'perplexity'] as const).map((provider) => {
     const state = providerCircuits.get(provider);
     const operational = providerConfigured(provider) && !circuitIsOpen(provider) && !providerHasBlockingFailure(provider);
     return {
@@ -409,8 +418,12 @@ export function getOpenAIResponsesClient(): ResponsesClient {
     options?: AiRequestOptions,
   ): Promise<any> => {
     const bounded = boundedAiParams(rawParams, kind);
-    const attemptedModel = String(bounded.params.model ?? configuredModel());
-    const providers = configuredProviders().filter((provider) => !circuitIsOpen(provider));
+    const requestedProvider = options?.provider;
+    if (requestedProvider && !providerConfigured(requestedProvider)) {
+      throw new AppError(503, 'AI_PROVIDER_NOT_CONFIGURED', `AI provider ${requestedProvider} is not configured`);
+    }
+    const attemptedModel = String(bounded.params.model ?? (requestedProvider ? modelForProvider(requestedProvider) : configuredModel()));
+    const providers = (requestedProvider ? [requestedProvider] : configuredProviders()).filter((provider) => !circuitIsOpen(provider));
     if (!providers.length) {
       throw new AppError(503, 'AI_PROVIDER_CIRCUITS_OPEN', 'All configured AI providers are unavailable or cooling down.');
     }
@@ -442,6 +455,11 @@ export function getOpenAIResponsesClient(): ResponsesClient {
     };
 
     if (!options?.billing) {
+      if (requestedProvider) {
+        const result = await callProvider(requestedProvider, false);
+        markProviderSuccess(requestedProvider);
+        return { provider: requestedProvider, response: result, params: bounded.params };
+      }
       const { provider, result } = await executeWithFailover((candidate) => callProvider(candidate, false));
       return { provider, response: result, params: bounded.params };
     }
@@ -449,7 +467,7 @@ export function getOpenAIResponsesClient(): ResponsesClient {
     const operation = options.billing.operation?.trim() || (kind === 'responses' ? 'responses.create' : 'chat.completions.create');
     const estimate = reservationEstimate(bounded.params, bounded.maximumOutputTokens);
     const selectedProvider = providers[0]!;
-    const selectedModel = selectedProvider === env.AI_PROVIDER ? attemptedModel : modelForProvider(selectedProvider);
+    const selectedModel = selectedProvider === env.AI_PROVIDER || requestedProvider ? attemptedModel : modelForProvider(selectedProvider);
     const requestKey = reservationKey(options, operation);
     const reserved = await reserveAiSpend({
       workspaceId: options.billing.workspaceId,
@@ -465,6 +483,11 @@ export function getOpenAIResponsesClient(): ResponsesClient {
     });
 
     if (reserved.funding.mode === 'PLATFORM_FUNDED') {
+      if (requestedProvider) {
+        const result = await callProvider(requestedProvider, false);
+        await recordBilledUsage(requestedProvider, bounded.params, result, options, null, 'PLATFORM_FUNDED');
+        return { provider: requestedProvider, response: result, params: bounded.params };
+      }
       const { provider, result } = await executeWithFailover((candidate) => callProvider(candidate, false));
       await recordBilledUsage(provider, bounded.params, result, options, null, 'PLATFORM_FUNDED');
       return { provider, response: result, params: bounded.params };

@@ -85,7 +85,17 @@ export async function getPlatformBillingSellerProfile(client?: PoolClient): Prom
   const configuredWorkspaceId = env.LULU_BILLING_SELLER_WORKSPACE_ID?.trim();
   if (configuredWorkspaceId) {
     const configuredProfile = await getCurrentDocumentSellerProfile(configuredWorkspaceId, client);
-    if (configuredProfile) return configuredProfile;
+    if (configuredProfile) {
+      return {
+        ...configuredProfile,
+        // Keep a platform invoice branded even when the dedicated seller
+        // workspace has no logo uploaded yet. An explicit env logo always
+        // wins, followed by the workspace logo and then Lulu's public mark.
+        logoUrl: configuredProfile.logoUrl
+          ?? env.LULU_BILLING_SELLER_LOGO_URL
+          ?? 'https://lulu-ai.cn/branding/lulu-agentic-logo.png',
+      };
+    }
   }
 
   return {
@@ -101,7 +111,7 @@ export async function getPlatformBillingSellerProfile(client?: PoolClient): Prom
     bankOpeningBank: env.LULU_BILLING_SELLER_BANK_OPENING_BANK ?? null,
     bankBranch: env.LULU_BILLING_SELLER_BANK_BRANCH ?? null,
     bankCode: env.LULU_BILLING_SELLER_BANK_CODE ?? null,
-    logoUrl: env.LULU_BILLING_SELLER_LOGO_URL ?? null,
+    logoUrl: env.LULU_BILLING_SELLER_LOGO_URL ?? 'https://lulu-ai.cn/branding/lulu-agentic-logo.png',
   };
 }
 

@@ -645,9 +645,7 @@ export async function getDashboardStats() {
     query(`SELECT
       COUNT(*)::int AS "total",
       COUNT(*) FILTER (WHERE status = 'published')::int AS "published",
-      COUNT(*) FILTER (WHERE provider = 'wordpress')::int AS "wordpress",
-      (SELECT COUNT(*)::int FROM provider_accounts WHERE provider_key='shopify') AS "shopify",
-      COUNT(*) FILTER (WHERE provider = 'webflow')::int AS "webflow",
+      COUNT(*) FILTER (WHERE provider = 'managed')::int AS "managed",
       NULL::int AS "woocommerce"
     FROM workspace_sites`),
     query(`SELECT
@@ -1521,12 +1519,9 @@ export async function listWebsites(limit = 100, offset = 0, search?: string) {
       (SELECT MAX(j.updated_at) FROM website_generation_jobs j WHERE j.site_id=ws.id AND j.status IN ('generated','preview','published')) AS "lastGeneratedAt",
       ws.created_at AS "createdAt", ws.updated_at AS "updatedAt"
     FROM (
-      SELECT id,workspace_id,name,provider,status,external_site_url,created_at,updated_at FROM workspace_sites
-      UNION ALL
-      SELECT a.id,c.workspace_id,COALESCE(a.name,a.external_account_id),a.provider_key,a.status,
-        NULL::text,a.created_at,a.updated_at
-      FROM provider_accounts a JOIN provider_connections c ON c.id=a.provider_connection_id
-      WHERE a.provider_key='shopify' AND c.workspace_id IS NOT NULL
+      SELECT id,workspace_id,name,provider,status,external_site_url,created_at,updated_at
+      FROM workspace_sites
+      WHERE provider = 'managed'
     ) ws
     JOIN workspaces w ON w.id = ws.workspace_id
     WHERE ${where}
@@ -1638,8 +1633,7 @@ export async function listOAuthConnections(limit = 100, offset = 0, search?: str
           c.platform_id IS NOT NULL
           OR p.integration_key IN (
             'salesforce', 'pipedrive', 'hubspot', 'google-ads',
-            'google-analytics', 'google-business', 'meta', 'linkedin',
-            'webflow', 'wordpress', 'shopify'
+            'google-analytics', 'google-business', 'meta', 'linkedin'
           )
         )
 

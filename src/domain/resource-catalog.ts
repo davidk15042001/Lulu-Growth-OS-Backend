@@ -41,6 +41,9 @@ export const RESOURCE_CATALOG = [
   { key: 'crm_leads', domain: 'crm', label: 'CRM Leads', description: 'CRM lead records.' },
   { key: 'crm_pipeline_stages', domain: 'crm', label: 'CRM Pipeline Stages', description: 'Pipeline stage configuration.' },
   { key: 'crm_tasks', domain: 'crm', label: 'CRM Tasks', description: 'CRM-related tasks.' },
+  { key: 'crm_partners', domain: 'crm', label: 'Partnerunternehmen', description: 'Handwerkspartner with contact, service area and media profiles.' },
+  { key: 'crm_partner_reviews', domain: 'crm', label: 'Partner Reviews', description: 'Post-job ratings and feedback for partner companies.' },
+  { key: 'crm_partner_work_orders', domain: 'crm', label: 'Partner Work Orders', description: 'Work orders and LV line items assigned to partner companies.' },
 
   { key: 'sales_activities', domain: 'sales', label: 'Sales Activities', description: 'Sales calls, meetings and outreach.' },
   { key: 'sales_commissions', domain: 'sales', label: 'Sales Commissions', description: 'Commission plans and results.' },

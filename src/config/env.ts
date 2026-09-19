@@ -64,11 +64,10 @@ const EnvSchema = z
     MAILCOW_SMTP_SECURE: booleanString.default(false),
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
-    // OpenAI/ChatGPT is the canonical provider for all text and agent work.
-    // Other adapters remain available only when explicitly configured for a
-    // migration or specialised workload; they are never selected by default.
-    AI_PROVIDER: z.enum(['openai', 'alibaba', 'groq', 'kie']).default('openai'),
-    AI_PROVIDER_FALLBACK_ORDER: z.string().default('openai'),
+    // Kie.ai is Lulu's canonical AI gateway for text, agents and media.
+    // External providers remain opt-in and must be selected explicitly.
+    AI_PROVIDER: z.enum(['openai', 'alibaba', 'groq', 'kie', 'perplexity']).default('kie'),
+    AI_PROVIDER_FALLBACK_ORDER: z.string().default('kie'),
     AI_CIRCUIT_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
@@ -79,10 +78,13 @@ const EnvSchema = z
     GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
     GROQ_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
     // Optional research and creative providers. Registration does not imply
-    // runtime availability; adapters remain blocked until implemented and
-    // verified through the Provider Control Plane.
+    // runtime availability; adapters remain blocked until their server key is
+    // configured and the capability is explicitly requested.
     PERPLEXITY_API_KEY: optionalNonEmptyString,
     PERPLEXITY_BASE_URL: z.string().url().default('https://api.perplexity.ai'),
+    PERPLEXITY_MODEL: z.string().min(1).default('sonar-pro'),
+    PERPLEXITY_RESEARCH_MODEL: z.string().min(1).default('sonar-deep-research'),
+    COMPOSIO_API_KEY: optionalNonEmptyString,
     FIRECRAWL_API_KEY: optionalNonEmptyString,
     FIRECRAWL_BASE_URL: z.string().url().default('https://api.firecrawl.dev'),
     HIGGSFIELD_API_KEY: optionalNonEmptyString,
@@ -226,13 +228,6 @@ const EnvSchema = z
     TIKTOK_ADS_AUTH_URL: z.string().url().default('https://business-api.tiktok.com/portal/auth'),
     TIKTOK_ADS_TOKEN_URL: z.string().url().default('https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/'),
     TIKTOK_ADS_SCOPES: z.string().default('user.info.basic,advertiser.read,ad.read,ad.write'),
-    WEBFLOW_CLIENT_ID: z.string().min(1).optional(),
-    WEBFLOW_CLIENT_SECRET: z.string().min(1).optional(),
-    WORDPRESS_CLIENT_ID: z.string().min(1).optional(),
-    WORDPRESS_CLIENT_SECRET: z.string().min(1).optional(),
-    SHOPIFY_CLIENT_ID: z.string().min(1).optional(),
-    SHOPIFY_CLIENT_SECRET: z.string().min(1).optional(),
-    SHOPIFY_SCOPES: z.string().default('read_products,read_content'),
     DATAFORSEO_API_KEY: optionalNonEmptyString,
     DATAFORSEO_LOGIN: optionalNonEmptyString,
     DATAFORSEO_PASSWORD: optionalNonEmptyString,
@@ -309,6 +304,9 @@ const EnvSchema = z
     if (data.AI_PROVIDER === 'kie' && !data.KIE_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['KIE_API_KEY'], message: 'KIE_API_KEY is required when AI_PROVIDER=kie in production' });
     }
+    if (data.AI_PROVIDER === 'perplexity' && !data.PERPLEXITY_API_KEY) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PERPLEXITY_API_KEY'], message: 'PERPLEXITY_API_KEY is required when AI_PROVIDER=perplexity in production' });
+    }
     // Provider credentials may predate the dedicated encryption key.  Keeping
     // the key optional lets those legacy v1 credentials remain readable while
     // the application is being upgraded. New provider credentials are still
@@ -356,7 +354,7 @@ if ((raw.NODE_ENV ?? 'development') === 'production') {
       'TWILIO_PARTNER_SOLUTION_ID',
       'META_GRAPH_VERSION',
     ]);
-    for (const line of fs.readFileSync(twilioSecretFile, 'utf8').split(/\n?\n/)) {
+    for (const line of fs.readFileSync(twilioSecretFile, 'utf8').split(/\r?\n/)) {
       if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
       const separator = line.indexOf('=');
       const key = line.slice(0, separator).trim();
@@ -372,7 +370,7 @@ if ((raw.NODE_ENV ?? 'development') === 'production') {
   const unifyPortSecretFile = path.resolve(raw.UNIFYPORT_RUNTIME_ENV_FILE ?? path.join(process.cwd(), '.runtime-secrets', 'unifyport.env'));
   try {
     const allowed = new Set(['UNIFYPORT_API_KEY', 'UNIFYPORT_WEBHOOK_SIGNING_SECRET']);
-    for (const line of fs.readFileSync(unifyPortSecretFile, 'utf8').split(/\n?\n/)) {
+    for (const line of fs.readFileSync(unifyPortSecretFile, 'utf8').split(/\r?\n/)) {
       if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
       const separator = line.indexOf('=');
       const key = line.slice(0, separator).trim();
@@ -435,4 +433,6 @@ export const hasOpenAI = !!env.OPENAI_API_KEY;
 export const hasAlibaba = !!env.DASHSCOPE_API_KEY;
 export const hasGroq = !!env.GROQ_API_KEY;
 export const hasKie = !!env.KIE_API_KEY;
-export const hasAiProvider = hasOpenAI || hasAlibaba || hasGroq || hasKie;
+export const hasPerplexity = !!env.PERPLEXITY_API_KEY;
+export const hasComposio = !!env.COMPOSIO_API_KEY;
+export const hasAiProvider = hasOpenAI || hasAlibaba || hasGroq || hasKie || hasPerplexity;

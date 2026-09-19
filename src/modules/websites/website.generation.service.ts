@@ -177,6 +177,7 @@ function configuredModel() {
   if (env.AI_PROVIDER === 'alibaba') return env.DASHSCOPE_MODEL;
   if (env.AI_PROVIDER === 'groq') return env.GROQ_MODEL;
   if (env.AI_PROVIDER === 'kie') return env.KIE_QUALITY_MODEL;
+  if (env.AI_PROVIDER === 'perplexity') return env.PERPLEXITY_MODEL;
   return env.OPENAI_MODEL;
 }
 

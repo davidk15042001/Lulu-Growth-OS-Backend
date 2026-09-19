@@ -1,11 +1,10 @@
-import { decryptSecret } from '../../utils/secret-box.js';
 import { AppError } from '../../utils/app-error.js';
 import type { ResourceType } from '../../domain/resource-catalog.js';
 import * as onboardingService from '../onboarding/onboarding.service.js';
-import * as onboardingRepo from '../onboarding/onboarding.repo.js';
-import { refreshStoredOAuthCredential } from '../onboarding/oauth.service.js';
 import * as websiteRepo from '../websites/website.repo.js';
 import type { WebsiteSite } from '../websites/website.types.js';
+// Legacy provider helpers are retained only so historical jobs can be read safely.
+// New analysis/apply flows below target Lulu's managed website exclusively.
 import {
   createWebflowItem,
   createWordpressPage,
@@ -16,6 +15,9 @@ import {
   withProviderConnectionError,
   wordpressPages,
 } from '../websites/website.provider.service.js';
+import * as onboardingRepo from '../onboarding/onboarding.repo.js';
+import { refreshStoredOAuthCredential } from '../onboarding/oauth.service.js';
+import { decryptSecret } from '../../utils/secret-box.js';
 import {
   fetchGoogleOrganicSerp,
   fetchKeywordOverview,
@@ -41,7 +43,7 @@ type ChannelSummary = {
   resourceType: ResourceType;
   dataSource: 'dataforseo';
   connectedTargets: Array<{
-    provider: 'wordpress' | 'webflow' | 'shopify';
+    provider: 'managed';
     id: string;
     label: string;
     url: string | null;
@@ -57,7 +59,7 @@ type ChannelSummary = {
 };
 
 type AppliedSearchTarget = {
-  provider: 'wordpress' | 'webflow' | 'shopify';
+  provider: 'managed';
   targetId: string;
   label: string;
   url: string | null;
@@ -65,7 +67,7 @@ type AppliedSearchTarget = {
 };
 
 type FailedSearchTarget = {
-  provider: 'wordpress' | 'webflow' | 'shopify';
+  provider: 'managed';
   targetId: string;
   label: string;
   url: string | null;
@@ -90,7 +92,7 @@ function normalizeText(value: unknown) {
 
 function isAutoApplyReadySite(site: WebsiteSite) {
   return (
-    (site.provider === 'wordpress' || site.provider === 'webflow')
+    site.provider === 'managed'
     && ['connected', 'preview', 'publishing', 'published'].includes(site.status)
   );
 }
@@ -252,32 +254,19 @@ function deriveSeedKeywords(snapshot: Awaited<ReturnType<typeof onboardingServic
 }
 
 function connectedTargetsFromSnapshot(
-  snapshot: Awaited<ReturnType<typeof onboardingService.getSnapshot>>,
+  _snapshot: Awaited<ReturnType<typeof onboardingService.getSnapshot>>,
   sites: WebsiteSite[],
 ) {
   const websiteTargets = sites
     .filter(isAutoApplyReadySite)
     .map((site) => ({
-      provider: site.provider as 'wordpress' | 'webflow',
+      provider: 'managed' as const,
       id: site.id,
       label: site.name,
       url: site.externalSiteUrl,
     }));
 
-  const shopifyTargets = snapshot.platforms
-    .filter((platform) => platform.integrationKey === 'shopify')
-    .map((platform) => {
-      const settings = objectValue(platform.settings);
-      const shop = normalizeText(settings.shop);
-      return {
-        provider: 'shopify' as const,
-        id: platform.id,
-        label: platform.name,
-        url: shop ? `https://${shop}` : null,
-      };
-    });
-
-  return [...websiteTargets, ...shopifyTargets];
+  return websiteTargets;
 }
 
 function recordSummary(
@@ -554,7 +543,8 @@ function buildInsightPage(
   };
 }
 
-async function applyToWordpressSite(
+/** @deprecated External CMS publishing is retired; kept for historical job inspection only. */
+export async function applyToWordpressSite(
   workspaceId: string,
   site: WebsiteSite,
   page: ReturnType<typeof buildInsightPage>,
@@ -593,7 +583,7 @@ async function applyToWordpressSite(
       )
     : draft;
   return {
-    provider: 'wordpress' as const,
+    provider: 'managed' as never,
     targetId: site.id,
     label: site.name,
     url: normalizeText(published?.URL ?? published?.url ?? published?.link) || site.externalSiteUrl,
@@ -601,7 +591,8 @@ async function applyToWordpressSite(
   };
 }
 
-async function applyToWebflowSite(
+/** @deprecated External CMS publishing is retired; kept for historical job inspection only. */
+export async function applyToWebflowSite(
   workspaceId: string,
   site: WebsiteSite,
   page: ReturnType<typeof buildInsightPage>,
@@ -649,7 +640,7 @@ async function applyToWebflowSite(
     );
   }
   return {
-    provider: 'webflow' as const,
+    provider: 'managed' as never,
     targetId: site.id,
     label: site.name,
     url: site.externalSiteUrl,
@@ -666,7 +657,7 @@ async function shopifyTokenFor(workspaceId: string) {
   if (expiresAt && Number.isFinite(expiresAt) && expiresAt <= Date.now() + 60_000) {
     return refreshStoredOAuthCredential({
       workspaceId,
-      provider: 'shopify',
+      provider: 'shopify' as never,
       encryptedRefreshToken: credential.encryptedRefreshToken,
     });
   }
@@ -700,7 +691,8 @@ async function shopifyRequest(
   return payload ?? {};
 }
 
-async function applyToShopify(
+/** @deprecated External commerce publishing is retired; kept for historical job inspection only. */
+export async function applyToShopify(
   workspaceId: string,
   platform: Awaited<ReturnType<typeof onboardingService.getSnapshot>>['platforms'][number],
   page: ReturnType<typeof buildInsightPage>,
@@ -744,7 +736,7 @@ async function applyToShopify(
     );
   }
   return {
-    provider: 'shopify' as const,
+    provider: 'managed' as never,
     targetId: platform.id,
     label: platform.name,
     url: `https://${shop}/pages/${page.slug}`,
@@ -772,32 +764,21 @@ export async function applyChannel(
     ? sites.filter((site) => input.targetSiteIds!.includes(site.id))
     : sites;
   const connectedSites = selectedSites.filter(isAutoApplyReadySite);
-  const shopifyPlatforms = snapshot.platforms.filter((platform) =>
-    platform.integrationKey === 'shopify'
-    && (!input.targetSiteIds?.length || input.targetSiteIds.includes(platform.id)),
-  );
-
-  if (connectedSites.length === 0 && shopifyPlatforms.length === 0) {
+  if (connectedSites.length === 0) {
     throw new AppError(
       409,
       'WEBSITE_PROVIDER_NOT_CONNECTED',
-      'Connect WordPress, Webflow or Shopify before running auto-apply',
+      'Create and publish a Lulu website before running auto-apply',
     );
   }
 
   const appliedTargets: AppliedSearchTarget[] = [];
   const failedTargets: FailedSearchTarget[] = [];
-  const recordApplyFailure = (
-    provider: FailedSearchTarget['provider'],
-    targetId: string,
-    label: string,
-    url: string | null,
-    error: unknown,
-  ) => {
+  const recordApplyFailure = (targetId: string, label: string, url: string | null, error: unknown) => {
     if (error instanceof AppError) {
       const details = objectValue(error.details);
       failedTargets.push({
-        provider,
+        provider: 'managed',
         targetId,
         label,
         url,
@@ -808,7 +789,7 @@ export async function applyChannel(
       return;
     }
     failedTargets.push({
-      provider,
+      provider: 'managed',
       targetId,
       label,
       url,
@@ -818,22 +799,32 @@ export async function applyChannel(
     });
   };
   for (const site of connectedSites) {
-    const provider = site.provider === 'wordpress' ? 'wordpress' : 'webflow';
     try {
-      if (site.provider === 'wordpress') {
-        appliedTargets.push(await applyToWordpressSite(workspaceId, site, page, input.publish));
-      } else if (site.provider === 'webflow') {
-        appliedTargets.push(await applyToWebflowSite(workspaceId, site, page, input.publish));
-      }
+      const settings = objectValue(site.settings);
+      const previous = objectValue(settings.searchIntelligence);
+      await websiteRepo.updateSiteSettings(workspaceId, site.id, {
+        searchIntelligence: {
+          ...previous,
+          [channel]: {
+            title: page.title,
+            slug: page.slug,
+            html: page.html,
+            seoTitle: page.seoTitle,
+            seoDescription: page.seoDescription,
+            published: input.publish,
+            updatedAt: new Date().toISOString(),
+          },
+        },
+      });
+      appliedTargets.push({
+        provider: 'managed',
+        targetId: site.id,
+        label: site.name,
+        url: site.externalSiteUrl,
+        status: input.publish ? 'applied' : 'drafted',
+      });
     } catch (error) {
-      recordApplyFailure(provider, site.id, site.name, site.externalSiteUrl, error);
-    }
-  }
-  for (const platform of shopifyPlatforms) {
-    try {
-      appliedTargets.push(await applyToShopify(workspaceId, platform, page, input.publish));
-    } catch (error) {
-      recordApplyFailure('shopify', platform.id, platform.name, normalizeText(objectValue(platform.settings).siteUrl) || null, error);
+      recordApplyFailure(site.id, site.name, site.externalSiteUrl, error);
     }
   }
 

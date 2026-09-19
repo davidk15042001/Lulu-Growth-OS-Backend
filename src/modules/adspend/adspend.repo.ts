@@ -203,7 +203,8 @@ async function ensureWallet(workspaceId: string, client?: PoolClient) {
   // still exposing the reserve once the wallet is requested.
   await query(`INSERT INTO workspace_ad_spend_wallets(workspace_id,payment_reserved_amount)
     SELECT $1,COALESCE((SELECT SUM(net_amount) FROM workspace_ad_spend_topups
-      WHERE workspace_id=$1 AND credited_at IS NULL AND status IN ('CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')),0)
+      WHERE workspace_id=$1 AND credited_at IS NULL
+        AND status NOT IN ('FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK')),0)
     ON CONFLICT DO NOTHING`, [workspaceId], client);
   const row = (await query<WalletRow>(`SELECT ${walletSelect} FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspaceId], client)).rows[0];
   if (!row) throw new Error('Ad spend wallet could not be created');
@@ -322,6 +323,13 @@ export async function applyAdSpendProviderStatus(input: {
   providerStatus: string;
   paidAt?: string | null;
   providerResponse?: Record<string, unknown>;
+  /**
+   * A successful PaymentIntent only confirms the provider payment. Wallet
+   * funds are minted only after Airwallex independently confirms settlement.
+   * Billing invoices set this after their Billing Transaction proof; QR
+   * PaymentIntents set it after a Settlement Record is found.
+   */
+  settlementVerified?: boolean;
 }) {
   return withTransaction(async (client) => {
     const matches = await query<AdSpendTopupRow>(
@@ -365,25 +373,26 @@ export async function applyAdSpendProviderStatus(input: {
           ? 'SUCCEEDED'
           : mappedStatus;
     const successful = status === 'SUCCEEDED';
-    const newlyCredited = successful && topup.creditStatus !== 'AVAILABLE';
+    const settlementVerified = input.settlementVerified === true;
+    const newlyCredited = successful && settlementVerified && topup.creditStatus !== 'AVAILABLE';
     const newlyReleased = !topup.creditedAt && ['FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK'].includes(status);
     const newlyReversed = reversal && topup.creditStatus === 'AVAILABLE' && !wasReversed;
     const paymentStatus = status === 'SUCCEEDED' ? 'SUCCEEDED' : ['CREATED','PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION'].includes(status) ? 'PENDING' : status;
     await query(
       `UPDATE workspace_ad_spend_topups SET status=$2::varchar,provider_status=$3,payment_status=$4,
-       credit_status=CASE WHEN $2::varchar='SUCCEEDED' THEN 'AVAILABLE' WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'REVERSED' ELSE credit_status END,
-       settlement_status=CASE WHEN $2::varchar='SUCCEEDED' THEN 'COMPLETED' WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'COMPLETED' WHEN $2::varchar IN ('FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK') THEN 'NOT_APPLICABLE' ELSE settlement_status END,
+       credit_status=CASE WHEN $9::boolean AND $2::varchar='SUCCEEDED' THEN 'AVAILABLE' WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'REVERSED' ELSE credit_status END,
+       settlement_status=CASE WHEN $9::boolean AND $2::varchar='SUCCEEDED' THEN 'COMPLETED' WHEN $2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL THEN 'COMPLETED' WHEN $2::varchar IN ('FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK') THEN 'NOT_APPLICABLE' ELSE settlement_status END,
        paid_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(paid_at,$5::timestamptz,NOW()) ELSE paid_at END,
        confirmed_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(confirmed_at,$5::timestamptz,NOW()) ELSE confirmed_at END,
-       settled_at=CASE WHEN $2::varchar='SUCCEEDED' OR ($2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL) THEN COALESCE(settled_at,$5::timestamptz,NOW()) ELSE settled_at END,
-       credited_at=CASE WHEN $2::varchar='SUCCEEDED' THEN COALESCE(credited_at,NOW()) ELSE credited_at END,
+       settled_at=CASE WHEN ($9::boolean AND $2::varchar='SUCCEEDED') OR ($2::varchar IN ('REFUNDED','CHARGEBACK') AND credited_at IS NOT NULL) THEN COALESCE(settled_at,$5::timestamptz,NOW()) ELSE settled_at END,
+       credited_at=CASE WHEN $9::boolean AND $2::varchar='SUCCEEDED' THEN COALESCE(credited_at,NOW()) ELSE credited_at END,
        cancelled_at=CASE WHEN $4::varchar IN ('FAILED','CANCELLED','EXPIRED','REFUNDED','CHARGEBACK') THEN COALESCE(cancelled_at,NOW()) ELSE cancelled_at END,
        provider_response=provider_response || $6::jsonb,
        provider_payment_intent_id=COALESCE(provider_payment_intent_id,$7),
        provider_invoice_id=COALESCE(provider_invoice_id,$8)
-       WHERE id=$1`,
+      WHERE id=$1`,
       [topup.id, status, input.providerStatus, paymentStatus, input.paidAt ?? null, JSON.stringify(input.providerResponse ?? {}),
-        input.providerPaymentIntentId ?? null, input.providerInvoiceId ?? null], client,
+        input.providerPaymentIntentId ?? null, input.providerInvoiceId ?? null, settlementVerified], client,
     );
     if (newlyCredited) {
       await ensureWallet(topup.workspaceId, client);
@@ -467,6 +476,59 @@ export async function applyAdSpendProviderStatus(input: {
     return (await query<AdSpendTopupRow>(
       `SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE workspace_id=$1 AND id=$2`,
       [topup.workspaceId, topup.id], client,
+    )).rows[0] ?? null;
+  });
+}
+
+/**
+ * Repairs a legacy QR top-up that was credited before settlement verification
+ * existed. This is deliberately fail-closed: when the wallet has already been
+ * consumed or reserved we leave the funds untouched and let an operator
+ * reconcile the exact allocation instead of inventing a negative balance.
+ */
+export async function holdAdSpendTopupForSettlement(input: {
+  topupId: string;
+  providerResponse?: Record<string, unknown>;
+}) {
+  return withTransaction(async (client) => {
+    const topup = (await query<AdSpendTopupRow>(
+      `SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE id=$1 FOR UPDATE`,
+      [input.topupId], client,
+    )).rows[0];
+    if (!topup || topup.creditStatus !== 'AVAILABLE' || !topup.creditedAt) return topup ?? null;
+    await ensureWallet(topup.workspaceId, client);
+    const wallet = (await query<WalletRow>(
+      `UPDATE workspace_ad_spend_wallets SET
+         available_amount=available_amount-$2,
+         payment_reserved_amount=payment_reserved_amount+$2,
+         total_funded_amount=GREATEST(0,total_funded_amount-$2),
+         total_fee_amount=GREATEST(0,total_fee_amount-$3),
+         version=version+1
+       WHERE workspace_id=$1 AND available_amount >= $2
+         AND reserved_amount=0 AND spent_amount=0
+       RETURNING ${walletSelect}`,
+      [topup.workspaceId, topup.netAmount, topup.feeAmount], client,
+    )).rows[0];
+    if (!wallet) return topup;
+    await query(
+      `INSERT INTO workspace_ad_spend_ledger(
+         workspace_id,topup_id,entry_type,amount_delta,balance_after,reserved_after,currency,idempotency_key,metadata
+       ) VALUES($1,$2,'ADJUSTMENT',$3,$4,$5,'CNY',$6,$7::jsonb) ON CONFLICT DO NOTHING`,
+      [topup.workspaceId, topup.id, (-Number(topup.netAmount)).toFixed(2), wallet.availableAmount, wallet.paymentReservedAmount,
+        `adspend-topup:${topup.id}:settlement-hold`, JSON.stringify({
+          provider: 'airwallex', reason: 'settlement_pending',
+          totalAmount: Number(topup.totalAmount), feeAmount: Number(topup.feeAmount),
+        })], client,
+    );
+    await query(
+      `UPDATE workspace_ad_spend_topups
+          SET credit_status='NOT_CREDITED',settlement_status='PENDING',settled_at=NULL,credited_at=NULL,
+              provider_response=provider_response || $2::jsonb
+        WHERE id=$1`,
+      [topup.id, JSON.stringify({ ...(input.providerResponse ?? {}), settlementReconciled: 'pending' })], client,
+    );
+    return (await query<AdSpendTopupRow>(
+      `SELECT ${topupSelect} FROM workspace_ad_spend_topups WHERE id=$1`, [topup.id], client,
     )).rows[0] ?? null;
   });
 }

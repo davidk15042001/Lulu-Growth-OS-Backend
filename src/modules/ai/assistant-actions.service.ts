@@ -223,7 +223,7 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
     const amount=Number(payload.budgetAmountCny);
     const authorizationId=textValue(payload.authorizationId);
     if(!Number.isFinite(amount)||amount<=0||!authorizationId)throw new AppError(409,'AD_BUDGET_AUTHORIZATION_REQUIRED','Campaign launch requires an explicit amount and customer budget authorization.');
-    const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'launch',campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,authorizationId,operationKey:`assistant:${action.id}:ad-spend`});
+    const result=await executeAdvertisingProviderOperation(workspaceId,{...common,action:'launch',campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,authorizationId,operationKey:`assistant:${action.id}:ad-spend`,compliance:payload.compliance && typeof payload.compliance==='object' && !Array.isArray(payload.compliance) ? payload.compliance as Record<string, unknown> : {}});
     return {status:'executed',resourceType:'ad_optimizations' as ResourceType,recordId:null,message:'Google Ads campaign launched.',...result};
   }
 

@@ -13,8 +13,6 @@ import { analyzeChannel } from '../search-intelligence/search-intelligence.servi
 import { discoverCompetitors } from '../onboarding/onboarding.service.js';
 import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
-import { startAutomaticWebsiteGeneration, syncWordpressProviderSites } from '../websites/website.automation.service.js';
-import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
 import {
   applyPaygInvoiceWebhook,
   assertAiBillingAccess,
@@ -38,6 +36,7 @@ import {
   applyAdSpendProviderStatus,
   attachAdSpendProviderPayment,
   getAdSpendTopup,
+  holdAdSpendTopupForSettlement,
   type AdSpendTopupRow,
 } from '../adspend/adspend.repo.js';
 import {
@@ -148,6 +147,23 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
   if (!response.ok) {
     const providerCode = data.code ?? data.error_code ?? null;
     const providerMessage = data.message ?? data.error ?? null;
+    const legalEntityConfigured = Object.prototype.hasOwnProperty.call(body, 'legal_entity_id')
+      || Object.prototype.hasOwnProperty.call(body, 'default_legal_entity_id');
+    const legalEntityMissing = legalEntityConfigured
+      && String(providerCode ?? '').toLowerCase() === 'resource_not_found'
+      && /legal\s*entity/i.test(String(providerMessage ?? ''));
+    if (legalEntityMissing) {
+      // A legal-entity ID is optional for these billing resources. Airwallex
+      // returns resource_not_found when a sandbox/live ID from another
+      // account is configured. Retry once without the optional override so
+      // the account's default legal entity can be used instead of turning a
+      // valid wallet checkout into a 502.
+      const retryBody = { ...body };
+      delete retryBody.legal_entity_id;
+      delete retryBody.default_legal_entity_id;
+      logger.warn({ requestId, path, operation }, 'Airwallex legal entity override was not found; retrying with the account default');
+      return airwallexRequest(path, retryBody, deterministicBillingRequestId(`${requestId}:account-default-legal-entity`), operation);
+    }
     logger.warn({ requestId, path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
     throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
   }
@@ -822,6 +838,69 @@ async function verifiedWalletInvoiceStatus(input: {
   return { providerStatus: proof.verified ? 'SUCCEEDED' : 'PENDING_PAYMENT', proof };
 }
 
+/**
+ * A PaymentIntent reaching SUCCEEDED confirms the payment flow, but it does
+ * not prove that Airwallex has settled the money into the Wallet. QR
+ * PaymentIntents therefore stay in the payment reserve until a Settlement
+ * Record with a settled_at timestamp and the exact charged amount exists.
+ */
+async function verifyAirwallexPaymentIntentSettlement(input: {
+  paymentIntentId: string;
+  expectedAmount: number | string;
+  currency?: string;
+}) {
+  const expectedMinor = exactProviderMinor(input.expectedAmount);
+  if (expectedMinor === null || expectedMinor <= 0) {
+    throw providerError('AIRWALLEX_WALLET_EXPECTED_AMOUNT_INVALID', 'The expected wallet payment amount is invalid.', undefined, 500);
+  }
+  const expectedCurrency = (input.currency ?? 'CNY').trim().toUpperCase();
+  let page: string | null = null;
+  const seenPages = new Set<string>();
+  try {
+    for (let index = 0; index < 10; index += 1) {
+      const search = new URLSearchParams({ payment_intent_id: input.paymentIntentId, page_size: '100' });
+      if (page) search.set('page', page);
+      const response = await airwallexGet(`/api/v1/pa/settlement_records?${search.toString()}`, 'WALLET_SETTLEMENT_RECORDS');
+      const items = Array.isArray(response.items) ? response.items : [];
+      for (const raw of items) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const item = raw as AirwallexObject;
+        const recordPaymentIntentId = webhookString(item.payment_intent_id);
+        if (recordPaymentIntentId && recordPaymentIntentId !== input.paymentIntentId) continue;
+        const settledAt = webhookString(item.settled_at);
+        if (!settledAt) continue;
+        const currency = String(item.settlement_currency ?? item.transaction_currency ?? item.currency ?? '').toUpperCase();
+        if (currency !== expectedCurrency) continue;
+        const amountMinor = [item.transaction_amount, item.gross_amount, item.amount]
+          .map(exactProviderMinor)
+          .find((value): value is number => value === expectedMinor);
+        if (amountMinor !== expectedMinor) continue;
+        return {
+          verified: true as const,
+          reason: null,
+          settledAt,
+          settlementRecord: item,
+        };
+      }
+      const next = webhookString(response.page_after);
+      if (!next) break;
+      if (seenPages.has(next)) throw providerError('AIRWALLEX_SETTLEMENT_PAGINATION_INVALID', 'Airwallex repeated a settlement record page cursor.');
+      seenPages.add(next);
+      page = next;
+    }
+  } catch (error) {
+    // No record yet is a normal state while a payment is waiting for
+    // settlement. Provider/network failures remain errors so the worker will
+    // retry without ever minting wallet money.
+    if (error instanceof AppError && error.details && typeof error.details === 'object'
+      && Number((error.details as Record<string, unknown>).providerHttpStatus) === 404) {
+      return { verified: false as const, reason: 'settlement_not_found' };
+    }
+    throw error;
+  }
+  return { verified: false as const, reason: 'settlement_pending' };
+}
+
 /** Creates the only customer authorization required for paid advertising. */
 export async function createAdSpendProviderPayment(topup: AdSpendTopupRow, returnUrl: string) {
   if (!getPaygDirectPaymentMethods().includes(topup.paymentMethod)) {
@@ -916,16 +995,37 @@ export async function createAdSpendProviderPayment(topup: AdSpendTopupRow, retur
 }
 
 export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
-  if (topup.status === 'SUCCEEDED') return topup;
+  const hasVerifiedSettlement = topup.providerResponse?.walletSettlementProof
+    && typeof topup.providerResponse.walletSettlementProof === 'object'
+    && (topup.providerResponse.walletSettlementProof as AirwallexObject).verified === true;
+  if (topup.status === 'SUCCEEDED' && topup.creditStatus === 'AVAILABLE' && hasVerifiedSettlement) return topup;
   if (topup.providerPaymentIntentId) {
     const intent = await airwallexGet(`/api/v1/pa/payment_intents/${encodeURIComponent(topup.providerPaymentIntentId)}`, 'AD_SPEND_PAYMENT_STATUS');
+    const providerStatus = String(intent.status ?? 'PENDING');
+    const normalizedStatus = providerStatus.trim().toUpperCase();
+    const settlementProof = ['SUCCEEDED', 'SETTLED', 'PAID', 'COMPLETED'].includes(normalizedStatus)
+      ? await verifyAirwallexPaymentIntentSettlement({
+        paymentIntentId: topup.providerPaymentIntentId,
+        expectedAmount: topup.totalAmount,
+        currency: topup.currency,
+      })
+      : null;
+    if (['SUCCEEDED', 'SETTLED', 'PAID', 'COMPLETED'].includes(normalizedStatus)
+      && settlementProof?.verified !== true
+      && topup.status === 'SUCCEEDED' && topup.creditStatus === 'AVAILABLE') {
+      return holdAdSpendTopupForSettlement({
+        topupId: topup.id,
+        providerResponse: { ...intent, walletSettlementProof: settlementProof },
+      });
+    }
     const updated = await applyAdSpendProviderStatus({
       providerPaymentIntentId: topup.providerPaymentIntentId,
-      providerStatus: String(intent.status ?? 'PENDING'),
+      providerStatus,
       paidAt: typeof intent.paid_at === 'string' ? intent.paid_at : null,
-      providerResponse: intent,
+      providerResponse: settlementProof ? { ...intent, walletSettlementProof: settlementProof } : intent,
+      settlementVerified: settlementProof?.verified === true,
     });
-    if (updated?.status === 'SUCCEEDED') {
+    if (updated?.status === 'SUCCEEDED' && updated.creditStatus === 'AVAILABLE') {
       await createPaidAdSpendInvoice({
         topupId: updated.id,
         workspaceId: updated.workspaceId,
@@ -954,8 +1054,9 @@ export async function syncAdSpendProviderPayment(topup: AdSpendTopupRow) {
       providerStatus: verified.providerStatus,
       paidAt: typeof invoice.paid_at === 'string' ? invoice.paid_at : null,
       providerResponse: { ...invoice, walletPaymentProof: verified.proof },
+      settlementVerified: verified.proof?.verified === true,
     });
-    if (updated?.status === 'SUCCEEDED') {
+    if (updated?.status === 'SUCCEEDED' && updated.creditStatus === 'AVAILABLE') {
       await createPaidAdSpendInvoice({
         topupId: updated.id,
         workspaceId: updated.workspaceId,
@@ -1108,7 +1209,7 @@ export async function reconcilePendingWalletInvoicePayments(limit = 50) {
       const updated = candidate.walletType === 'API'
         ? await syncApiWalletProviderPayment(topup as ApiTopupRow)
         : await syncAdSpendProviderPayment(topup as AdSpendTopupRow);
-      if (updated?.status === 'SUCCEEDED') credited += 1;
+      if (updated?.status === 'SUCCEEDED' && updated.creditStatus === 'AVAILABLE') credited += 1;
     } catch (error) {
       failed += 1;
       logger.warn({ error, ...candidate }, 'Pending Airwallex wallet invoice reconciliation failed');
@@ -1125,11 +1226,17 @@ export async function reconcilePendingWalletPaymentIntents(limit = 50) {
   const pending = await query<{ walletType: 'API' | 'AD_SPEND'; workspaceId: string; topupId: string; createdAt: string }>(
     `SELECT 'API'::text AS "walletType",workspace_id AS "workspaceId",id::text AS "topupId",created_at AS "createdAt"
        FROM workspace_api_topups
-      WHERE provider_payment_intent_id IS NOT NULL AND status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+      WHERE provider_payment_intent_id IS NOT NULL
+        AND (status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+          OR (status='SUCCEEDED' AND credit_status='NOT_CREDITED'))
      UNION ALL
      SELECT 'AD_SPEND'::text AS "walletType",workspace_id AS "workspaceId",id::text AS "topupId",created_at AS "createdAt"
-       FROM workspace_ad_spend_topups
-      WHERE provider_payment_intent_id IS NOT NULL AND status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+      FROM workspace_ad_spend_topups
+      WHERE provider_payment_intent_id IS NOT NULL
+        AND (status IN ('PENDING_PAYMENT','REQUIRES_CUSTOMER_ACTION')
+          OR (status='SUCCEEDED' AND credit_status='NOT_CREDITED')
+          OR (status='SUCCEEDED' AND credit_status='AVAILABLE'
+              AND COALESCE(provider_response->'walletSettlementProof'->>'verified','false') <> 'true'))
       ORDER BY "createdAt","topupId" LIMIT $1`, [boundedLimit],
   );
   let checked = 0; let credited = 0; let failed = 0;
@@ -1143,7 +1250,7 @@ export async function reconcilePendingWalletPaymentIntents(limit = 50) {
       const updated = candidate.walletType === 'API'
         ? await syncApiWalletProviderPayment(topup as ApiTopupRow)
         : await syncAdSpendProviderPayment(topup as AdSpendTopupRow);
-      if (updated?.status === 'SUCCEEDED') credited += 1;
+      if (updated?.status === 'SUCCEEDED' && updated.creditStatus === 'AVAILABLE') credited += 1;
     } catch (error) {
       failed += 1;
       logger.warn({ error, ...candidate }, 'Pending Airwallex wallet PaymentIntent reconciliation failed');
@@ -1345,55 +1452,11 @@ async function startPostPaymentSearchAutomation(workspaceId: string, userId: str
 }
 
 async function startPostPaymentWebsiteAutomation(workspaceId: string, userId: string) {
-  let queuedWorker = false;
-
-  try {
-    const platforms = await onboardingRepo.listPlatforms(workspaceId);
-    const connectedPlatforms = new Set(
-      platforms
-        .filter((platform) => platform.connectionStatus === 'connected' && platform.integrationKey)
-        .map((platform) => platform.integrationKey as string),
-    );
-
-    if (connectedPlatforms.has('wordpress')) {
-      try {
-        const sites = await syncWordpressProviderSites(workspaceId);
-        const wordpressSites = sites.filter((site) => site.provider === 'wordpress' && site.externalSiteId && site.status !== 'error');
-        if (wordpressSites.length === 1) {
-          await startAutomaticWebsiteGeneration({
-            workspaceId,
-            userId,
-            provider: 'wordpress',
-            targetMode: 'existing',
-            siteId: wordpressSites[0]!.id,
-          });
-          queuedWorker = true;
-        } else if (wordpressSites.length > 1) {
-          logger.info({ workspaceId, siteCount: wordpressSites.length }, 'Post-payment WordPress website automation skipped because a site selection is required');
-        }
-      } catch (error) {
-        logger.error({ error, workspaceId, userId, provider: 'wordpress' }, 'Post-payment website automation failed');
-      }
-    }
-
-    if (connectedPlatforms.has('webflow')) {
-      try {
-        await startAutomaticWebsiteGeneration({
-          workspaceId,
-          userId,
-          provider: 'webflow',
-          targetMode: 'existing',
-        });
-        queuedWorker = true;
-      } catch (error) {
-        logger.error({ error, workspaceId, userId, provider: 'webflow' }, 'Post-payment website automation failed');
-      }
-    }
-
-    if (queuedWorker) requestWebsiteGenerationWorkerRun();
-  } catch (error) {
-    logger.error({ error, workspaceId, userId }, 'Post-payment website automation orchestration failed');
-  }
+  // External website providers were retired. Lulu-owned website generation is
+  // started explicitly from the managed Website workspace after payment; a
+  // successful payment must never attempt a WordPress/Webflow side effect.
+  void workspaceId;
+  void userId;
 }
 
 async function startPostPaymentAutomation(workspaceId: string, trigger: string) {
@@ -1942,6 +2005,7 @@ export async function handleWebhook(event: AirwallexObject) {
       let providerStatus = paymentIntentStatus ?? 'PENDING';
       let providerResponse = paymentIntent;
       let effectivePaymentIntentId = paymentIntentId;
+      let settlementVerified = false;
       if (normalizedEventType.startsWith('invoice.')) {
         if (!providerInvoiceId) {
           throw providerError('AIRWALLEX_WALLET_INVOICE_ID_MISSING', 'Airwallex invoice event is missing its invoice ID.', { eventType }, 409);
@@ -1961,6 +2025,7 @@ export async function handleWebhook(event: AirwallexObject) {
         providerStatus = verified.providerStatus;
         effectivePaymentIntentId = verified.proof?.paymentIntentId ?? effectivePaymentIntentId;
         providerResponse = { ...invoice, walletPaymentProof: verified.proof };
+        settlementVerified = verified.proof?.verified === true;
       }
       const handled = await applyAdSpendProviderStatus({
         topupId: adSpendTopupId,
@@ -1970,9 +2035,10 @@ export async function handleWebhook(event: AirwallexObject) {
         providerStatus,
         paidAt: webhookString(paymentIntent.paid_at) ?? webhookString(invoice.paid_at),
         providerResponse,
+        settlementVerified,
       });
       if (!handled) throw providerError('AIRWALLEX_WALLET_TOPUP_NOT_FOUND', 'Airwallex advertising wallet top-up was not found.', { adSpendTopupId }, 409);
-      if (handled.status === 'SUCCEEDED') {
+      if (handled.status === 'SUCCEEDED' && handled.creditStatus === 'AVAILABLE') {
         await createPaidAdSpendInvoice({
           topupId: handled.id,
           workspaceId: handled.workspaceId,

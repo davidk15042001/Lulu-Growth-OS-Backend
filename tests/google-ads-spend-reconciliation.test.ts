@@ -129,7 +129,7 @@ async function fixture() {
   const topup = await adSpend.createAdSpendTopup({ workspaceId: workspace.id, userId: user.id,
     netAmount: 100, feeAmount: 4, totalAmount: 104, paymentMethod: 'card' });
   await adSpend.attachAdSpendProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: `pi_${workspace.id}` });
-  await adSpend.applyAdSpendProviderStatus({ providerPaymentIntentId: `pi_${workspace.id}`, providerStatus: 'SUCCEEDED' });
+  await adSpend.applyAdSpendProviderStatus({ providerPaymentIntentId: `pi_${workspace.id}`, providerStatus: 'SUCCEEDED', settlementVerified: true });
   const authorization = await adSpend.createAdBudgetAuthorization({
     workspaceId: workspace.id,
     userId: user.id,

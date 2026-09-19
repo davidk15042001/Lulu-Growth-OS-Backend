@@ -61,7 +61,7 @@ function productCandidates(text: string) {
 
 function crmCandidates(text: string, resourceType: ResourceType) {
   return tabularCandidates(text).map((row) => {
-    const name = resourceType === 'crm_companies'
+    const name = ['crm_companies', 'crm_partners'].includes(resourceType)
       ? row.companyname || row.company || row.name || row.title
       : row.fullname || row.contactname || row.name || row.title || row.subject || row.companyname || row.company;
     return name ? { name, row } : null;
@@ -248,7 +248,7 @@ export async function ingestRecord(
     analysis.productCandidates = candidates.length;
     analysis.productsCreated = importedProducts;
   }
-  if (['crm_contacts', 'crm_companies', 'crm_activities', 'crm_tasks'].includes(resourceType)) {
+  if (['crm_contacts', 'crm_companies', 'crm_partners', 'crm_activities', 'crm_tasks'].includes(resourceType)) {
     const candidates = crmCandidates(extractedText || input.text, resourceType);
     let importedRecords = 0;
     let firstImported: Awaited<ReturnType<typeof repo.createRecord>> | null = null;

@@ -1,17 +1,16 @@
 import { AppError } from '../../utils/app-error.js';
-import { firstWebflowSiteWithCollection, wordpressMedia, wordpressSites } from './website.provider.service.js';
 import { logger } from '../../config/logger.js';
 import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
 import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
-import * as onboardingRepo from '../onboarding/onboarding.repo.js';
 import type { WebsiteGenerationTargetMode, WebsiteGenerationWorkItem } from './website.types.js';
 import { appendGenerationActivity } from './website.activity.js';
 
 export const DEFAULT_WEBSITE_PROMPT = `Create factual, conversion-focused website copy from verified Lulu workspace data for the fixed Lulu Standard template. Generate only structured text and SEO content. The application owns the layout, pages, colors and HTML rendering. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
 
-function wordpressImageAssets(value: unknown) {
+/** @deprecated External CMS media imports are retired; kept for historical job inspection only. */
+export function wordpressImageAssets(value: unknown) {
   const items = Array.isArray(value) ? value : [];
   return items.map((item) => item && typeof item === 'object' ? item as Record<string, unknown> : {}).map((item) => {
     const metadata = item.metadata && typeof item.metadata === 'object' ? item.metadata as Record<string, unknown> : {};
@@ -19,45 +18,6 @@ function wordpressImageAssets(value: unknown) {
     const altText = String(item.alt ?? item.alt_text ?? item.caption ?? item.title ?? '').replace(/<[^>]+>/g, '').trim();
     return { url, altText: altText || 'Company image' };
   }).filter((asset) => /^https?:\/\//i.test(asset.url)).slice(0, 8);
-}
-
-export async function resetWebsiteProviderState(workspaceId: string, provider: 'wordpress' | 'webflow') {
-  await repo.deleteSitesByProvider(workspaceId, provider).catch(() => undefined);
-  await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
-}
-
-export async function disconnectWebsiteProvider(workspaceId: string, provider: 'wordpress' | 'webflow') {
-  // Remove both the OAuth/platform record and cached website rows. Keeping the
-  // latter makes a deleted external site reappear as a stale local fallback.
-  await repo.deleteSitesByProvider(workspaceId, provider).catch(() => undefined);
-  await onboardingRepo.removePlatformByIntegration(workspaceId, provider).catch(() => undefined);
-}
-
-async function getOrCreateProviderSite(workspaceId: string, provider: 'wordpress' | 'webflow', selectedSiteId?: string) {
-  if (selectedSiteId) {
-    const selected = await repo.getSite(workspaceId, selectedSiteId);
-    if (!selected || selected.provider !== provider) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'The selected website could not be found for this provider');
-    return selected;
-  }
-  const localSites = await repo.listSites(workspaceId);
-  const localProviderSites = localSites.filter((site) => site.provider === provider && site.externalSiteId && site.status !== 'error');
-  if (localProviderSites.length === 1) return localProviderSites[0];
-  if (localProviderSites.length > 1) throw new AppError(409, 'WEBSITE_PROVIDER_SITE_SELECTION_REQUIRED', 'Select a WordPress website before starting generation');
-  if (provider === 'wordpress') throw new AppError(409, 'WEBSITE_PROVIDER_NO_SITE_AVAILABLE', 'No synchronized WordPress website is available. Refresh the provider sites and select one before generating.');
-  const target = await firstWebflowSiteWithCollection(workspaceId);
-  const existing = await repo.findSiteByExternalSiteId(workspaceId, provider, target.id);
-  if (existing) return existing;
-  const site = await repo.createSite({ workspaceId, provider, ownershipMode: 'connected', name: target.name, externalSiteId: target.id, externalSiteUrl: target.url });
-  if (!site) throw new AppError(500, 'WEBSITE_SITE_CREATE_FAILED', 'The connected Webflow site could not be registered');
-  return repo.updateSiteSettings(site.workspaceId, site.id, { collectionId: target.collectionId });
-}
-
-function shouldDisconnectProvider(error: unknown) {
-  if (!(error instanceof AppError)) return false;
-  if (['WEBSITE_PROVIDER_NOT_CONNECTED', 'WEBSITE_PROVIDER_TOKEN_INVALID', 'WEBSITE_PROVIDER_WRITE_SCOPE_MISSING'].includes(error.code)) return true;
-  if (error.code !== 'WEBSITE_PROVIDER_REQUEST_FAILED' || !error.details || typeof error.details !== 'object') return false;
-  const status = (error.details as Record<string, unknown>).providerHttpStatus;
-  return status === 401 || status === 403;
 }
 
 function generationErrorMessage(error: unknown) {
@@ -102,6 +62,9 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
   heartbeatTimer.unref();
   try {
     await assertWorkspaceAutomationActive(input.workspaceId);
+    if (input.provider !== 'managed') {
+      throw new AppError(410, 'PROVIDER_RETIRED', 'External website providers are retired. Use the Lulu managed website instead.');
+    }
     if (!input.createdBy) throw new AppError(409, 'WEBSITE_GENERATION_USER_MISSING', 'The user who started this website generation no longer exists');
     await assertGenerationNotCancelled(input.siteId, input.id);
     await repo.updateSiteStatus(input.workspaceId, input.siteId, 'generating');
@@ -124,22 +87,12 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       status: 'planning',
       preview: previewState,
     });
-    let imageAssets: Array<{ url: string; altText: string }> = [];
-    const generationSite = await repo.getSite(input.workspaceId, input.siteId);
-    if (input.provider === 'wordpress' && generationSite?.externalSiteId) {
-      try {
-        imageAssets = wordpressImageAssets(await wordpressMedia(input.workspaceId, generationSite.externalSiteId));
-      } catch (error) {
-        logger.warn({ jobId: input.id, siteId: input.siteId, error: error instanceof Error ? error.message : String(error) }, 'WordPress media could not be loaded; rendering the standard template without images');
-      }
-    }
     const plan = await generateWebsitePlan({
       workspaceId: input.workspaceId,
       userId: input.createdBy,
       prompt: input.prompt,
       provider: input.provider,
       existingPlan: input.plan,
-      imageAssets,
       ...(input.requestedLanguage ? { language: input.requestedLanguage } : {}),
       onProgress: async (progress) => {
         await assertWorkspaceAutomationActive(input.workspaceId);
@@ -184,7 +137,6 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
     if (!previewJob) await assertGenerationNotCancelled(input.siteId, input.id);
     if (input.autoPublish) {
       await publishWebsiteJob(input.workspaceId, input.siteId, input.id);
-      if (input.provider === 'wordpress' || input.provider === 'webflow') await onboardingRepo.markPlatformConnected(input.workspaceId, input.provider);
     } else {
       await repo.updateSiteStatus(input.workspaceId, input.siteId, 'preview');
     }
@@ -233,7 +185,6 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
         }, 'Website generation failure fallback could not be persisted');
       }
     }
-    if (shouldDisconnectProvider(error) && (input.provider === 'wordpress' || input.provider === 'webflow')) await disconnectWebsiteProvider(input.workspaceId, input.provider);
   } finally {
     clearInterval(heartbeatTimer);
     if (activeHeartbeat) await activeHeartbeat;
@@ -241,64 +192,41 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
   }
 }
 
-export async function syncWordpressProviderSites(workspaceId: string) {
-  const data = await wordpressSites(workspaceId);
-  const rawSites: unknown[] = Array.isArray(data) ? data : Array.isArray(data?.sites) ? data.sites : [];
-  const discovered = rawSites.map((value: unknown) => value as Record<string, unknown>).map((site: Record<string, unknown>) => ({
-    id: String(site.ID ?? site.id ?? '').trim(),
-    name: String(site.name ?? site.title ?? site.URL ?? site.domain ?? 'WordPress site').trim(),
-    url: site.URL ?? site.url ?? site.link ?? null,
-  })).filter((site: { id: string }) => site.id);
-  await repo.deleteSitesByProviderExcept(workspaceId, 'wordpress', discovered.map((site: { id: string }) => site.id));
-  for (const site of discovered) {
-    const existing = await repo.findSiteByExternalSiteId(workspaceId, 'wordpress', site.id);
-    if (existing) await repo.updateSiteExternalDetails(workspaceId, existing.id, site.name, typeof site.url === 'string' ? site.url : undefined);
-    else await repo.createSite({ workspaceId, provider: 'wordpress', ownershipMode: 'connected', name: site.name, externalSiteId: site.id, externalSiteUrl: typeof site.url === 'string' ? site.url : undefined });
+/** Start a generation job for a Lulu-managed website. External CMS providers are retired. */
+export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; targetMode: WebsiteGenerationTargetMode; siteId: string; language?: string }) {
+  const site = await repo.getSite(input.workspaceId, input.siteId);
+  if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'The selected Lulu website could not be found');
+  if (site.provider !== 'managed') throw new AppError(410, 'WEBSITE_PROVIDER_RETIRED', 'Only Lulu-managed websites can be generated');
+  const active = await repo.findActiveJob(site.id);
+  if (active) return { site, job: active, reused: true };
+  const cancelled = await repo.findLatestCancelledJob(site.id);
+  if (cancelled && cancelled.preview?.targetMode === input.targetMode) {
+    const resumed = await repo.resumeJob(site.id, cancelled.id);
+    if (resumed.job) return { site, job: resumed.job, reused: true };
   }
-  return repo.listSites(workspaceId);
-}
-
-export async function startAutomaticWebsiteGeneration(input: { workspaceId: string; userId: string; provider: 'wordpress' | 'webflow'; targetMode: WebsiteGenerationTargetMode; siteId?: string; language?: string }) {
-  try {
-    if (input.provider === 'wordpress' && !input.siteId) {
-      throw new AppError(409, 'WEBSITE_PROVIDER_SITE_SELECTION_REQUIRED', 'Select the WordPress website that should receive the generated content');
-    }
-    let site = await getOrCreateProviderSite(input.workspaceId, input.provider, input.siteId);
-    if (!site) throw new AppError(500, 'WEBSITE_SITE_CREATE_FAILED', 'The connected provider site could not be registered');
-    const active = await repo.findActiveJob(site.id);
-    if (active) return { site, job: active, reused: true };
-    const cancelled = await repo.findLatestCancelledJob(site.id);
-    if (cancelled && cancelled.preview?.targetMode === input.targetMode) {
-      const resumed = await repo.resumeJob(site.id, cancelled.id);
-      if (resumed.job) return { site, job: resumed.job, reused: true };
-    }
-    site = await repo.updateSiteSettings(input.workspaceId, site.id, {
-      generationTargetMode: input.targetMode,
-      generationTargetConfirmedAt: new Date().toISOString(),
-    }) ?? site;
-    const initialPreview = appendGenerationActivity(
-      { targetMode: input.targetMode },
-      {
-        id: `target-selected:${input.targetMode}`,
-        code: input.targetMode === 'new' ? 'target_new_selected' : 'target_existing_selected',
-        tone: 'info',
-        params: { mode: input.targetMode, site: site.name },
-      },
-    );
-    const created = await repo.createJob({
-      siteId: site.id,
-      prompt: DEFAULT_WEBSITE_PROMPT,
-      createdBy: input.userId,
-      autoPublish: true,
-      preview: initialPreview,
-      ...(input.language ? { requestedLanguage: input.language } : {}),
-    });
-    if (!created.job) throw new AppError(500, 'WEBSITE_GENERATION_JOB_CREATE_FAILED', 'The automatic website generation job could not be created');
-    return { site, job: created.job, reused: !created.created };
-  } catch (error) {
-    if (shouldDisconnectProvider(error)) await resetWebsiteProviderState(input.workspaceId, input.provider);
-    throw error;
-  }
+  const updatedSite = await repo.updateSiteSettings(input.workspaceId, site.id, {
+    generationTargetMode: input.targetMode,
+    generationTargetConfirmedAt: new Date().toISOString(),
+  }) ?? site;
+  const initialPreview = appendGenerationActivity(
+    { targetMode: input.targetMode, provider: 'managed' },
+    {
+      id: `target-selected:${input.targetMode}`,
+      code: input.targetMode === 'new' ? 'target_new_selected' : 'target_existing_selected',
+      tone: 'info',
+      params: { mode: input.targetMode, site: updatedSite.name },
+    },
+  );
+  const created = await repo.createJob({
+    siteId: updatedSite.id,
+    prompt: DEFAULT_WEBSITE_PROMPT,
+    createdBy: input.userId,
+    autoPublish: true,
+    preview: initialPreview,
+    ...(input.language ? { requestedLanguage: input.language } : {}),
+  });
+  if (!created.job) throw new AppError(500, 'WEBSITE_GENERATION_JOB_CREATE_FAILED', 'The automatic website generation job could not be created');
+  return { site: updatedSite, job: created.job, reused: !created.created };
 }
 
 export async function getActiveWebsiteGenerationJob(input: { workspaceId: string; siteId: string }) {

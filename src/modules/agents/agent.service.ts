@@ -134,6 +134,7 @@ function buildPipeline(
             'Do not guess provider identifiers, recipients, monetary amounts, customer intent or publishing targets.',
             'If a safe action cannot be fully materialized from the available evidence, return an empty commands array and explain the missing evidence.',
             'Every non-empty command must include quality metadata: quality.confidence (never low for an executable action), quality.evidenceRefs pointing to exact supplied records or source references, and quality.limitations. Never create a command from an unsupported inference.',
+            ...(module === 'ads' ? ['For every paid-ad launch, include payload.compliance with the exact target countries, industry, final ad copy/claims, HTTPS landingPageUrl, privacyPolicyUrl/consentMechanism where applicable, and platformPolicyAcknowledged. Missing compliance evidence must result in no executable command.'] : []),
           ].join(' '),
           successCriteria: ['registered command types only', 'evidence-backed payload values', 'zero invented identifiers or monetary amounts'],
         }]

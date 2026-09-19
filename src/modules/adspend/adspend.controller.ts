@@ -8,13 +8,23 @@ import {
   adSpendWorkspaceParamsSchema,
   createAdBudgetAuthorizationSchema,
   createAdSpendTopupSchema,
+  adComplianceListQuerySchema,
   revokeAdBudgetAuthorizationSchema,
 } from './adspend.validator.js';
+import { listAdsComplianceChecks } from '../advertising-compliance/advertising-compliance.service.js';
 
 export async function overview(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const { workspaceId } = adSpendWorkspaceParamsSchema.parse(req.params);
     return successResponse(res, 'Ad spend wallet loaded', await service.getAdSpendOverview(workspaceId));
+  } catch (error) { next(error); }
+}
+
+export async function listComplianceChecks(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId } = adSpendWorkspaceParamsSchema.parse(req.params);
+    const { limit } = adComplianceListQuerySchema.parse(req.query);
+    return successResponse(res, 'Ads compliance checks loaded', await listAdsComplianceChecks(workspaceId, limit));
   } catch (error) { next(error); }
 }
 

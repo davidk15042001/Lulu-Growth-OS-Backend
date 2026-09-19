@@ -479,7 +479,7 @@ describe('ad spend authorization boundary',()=>{
     const ws=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Ad spend test',$1) RETURNING id`,[user.id])).rows[0]!;
     const topup=await adSpend.createAdSpendTopup({workspaceId:ws.id,userId:user.id,netAmount:100,feeAmount:4,totalAmount:104,paymentMethod:'alipaycn'});
     await adSpend.attachAdSpendProviderPayment({topupId:topup.id,status:'REQUIRES_CUSTOMER_ACTION',providerPaymentIntentId:'pi-adspend-test'});
-    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'SUCCEEDED'});
+    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'SUCCEEDED',settlementVerified:true});
     await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'SUCCEEDED'});
     await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-test',providerStatus:'PENDING'});
     const overview=await adSpend.getAdSpendOverview(ws.id);
@@ -521,7 +521,7 @@ describe('ad spend authorization boundary',()=>{
     const otherWs=(await db.query<{id:string}>(`INSERT INTO workspaces(name,created_by) VALUES('Other ad spend tenant',$1) RETURNING id`,[user.id])).rows[0]!;
     const otherTopup=await adSpend.createAdSpendTopup({workspaceId:otherWs.id,userId:user.id,netAmount:100,feeAmount:4,totalAmount:104,paymentMethod:'alipaycn'});
     await adSpend.attachAdSpendProviderPayment({topupId:otherTopup.id,status:'PENDING_PAYMENT',providerPaymentIntentId:'pi-adspend-other-tenant'});
-    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-other-tenant',providerStatus:'SUCCEEDED'});
+    await adSpend.applyAdSpendProviderStatus({providerPaymentIntentId:'pi-adspend-other-tenant',providerStatus:'SUCCEEDED',settlementVerified:true});
     const otherAuthorization=await adSpend.createAdBudgetAuthorization({workspaceId:otherWs.id,userId:user.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY',amount:100,startsAt:new Date(Date.now()-60_000).toISOString(),endsAt:new Date(Date.now()+86_400_000).toISOString(),idempotencyKey:'authorize-other-tenant'});
     const sameTenantLocalKey=await adSpend.reserveAdSpend({workspaceId:otherWs.id,authorizationId:otherAuthorization.id,provider:'google-ads',accountId:'1234567890',campaignId:'987654321',currency:'CNY',amount:1,idempotencyKey:'reserve-consume'});
     assert.equal(sameTenantLocalKey.status,'RESERVED');

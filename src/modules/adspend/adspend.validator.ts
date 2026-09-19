@@ -3,6 +3,7 @@ import { z } from 'zod';
 export const adSpendWorkspaceParamsSchema = z.object({ workspaceId: z.string().uuid() });
 export const adSpendTopupParamsSchema = z.object({ workspaceId: z.string().uuid(), topupId: z.string().uuid() });
 export const adBudgetAuthorizationParamsSchema = z.object({ workspaceId: z.string().uuid(), authorizationId: z.string().uuid() });
+export const adComplianceListQuerySchema = z.object({ limit: z.coerce.number().int().min(1).max(200).default(50) });
 
 export const createAdSpendTopupSchema = z.object({
   // Preset packages remain available in the UI, but customers may also fund

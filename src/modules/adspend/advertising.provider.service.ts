@@ -4,6 +4,7 @@ import {
   pauseGoogleAdsCampaign,
   type GoogleAdsOperation,
 } from './google-ads-spend.service.js';
+import { assertAdsCompliancePassed, runAdsComplianceGate } from '../advertising-compliance/advertising-compliance.service.js';
 
 /**
  * Provider mutations remain one canonical entry point for both the autonomous
@@ -15,5 +16,17 @@ export async function executeAdvertisingProviderOperation(workspaceId: string, i
     throw new AppError(409, 'AD_PROVIDER_EXECUTION_UNAVAILABLE', `Autonomous paid-campaign execution is not enabled for provider ${String(input.provider)}.`);
   }
   if (input.action === 'pause') return pauseGoogleAdsCampaign(workspaceId, input);
+  const compliance = await runAdsComplianceGate({
+    workspaceId,
+    provider: input.provider,
+    action: 'launch',
+    context: {
+      accountId: input.customerId,
+      campaignId: input.campaignId,
+      idempotencyKey: input.operationKey ?? null,
+      ...(input.compliance ?? {}),
+    },
+  });
+  assertAdsCompliancePassed(compliance);
   return launchGoogleAdsAllocation(workspaceId, input);
 }

@@ -4,21 +4,21 @@ import { assertWorkspaceCapability } from '../workspaces/workspace-authorization
 import { recordSecurityEvent } from '../security/security-event.service.js';
 import { resolveWorkspaceEntitlements } from '../entitlements/entitlement.service.js';
 import * as repo from './provider.repo.js';
-import { PROVIDER_CATALOG, canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, getProviderRuntimeReadiness, isProviderRegistered, providerError } from './provider-registry.js';
+import { PROVIDER_CATALOG, RETIRED_PROVIDER_KEYS, canonicalProviderKey, getProviderAdapter, getProviderCatalogEntry, getProviderRuntimeReadiness, isProviderRegistered, providerError } from './provider-registry.js';
 import type { ProviderCapabilityStatus, ProviderConnectionStatus, ProviderHealthStatus, ProviderMode } from './provider.types.js';
 import { verifyWebhookSignature as verifyUnifyPortWebhookSignature } from './unifyport.client.js';
 
 export async function listProviderCatalog() {
   const catalog = await repo.listProviderCatalog();
-  return catalog.map((entry) => ({ ...entry, runtime: getProviderRuntimeReadiness(String(entry.providerKey)) }));
+  return catalog
+    .filter((entry) => !RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(String(entry.providerKey))))
+    .map((entry) => ({ ...entry, runtime: getProviderRuntimeReadiness(String(entry.providerKey)) }));
 }
 
 const PROVIDER_ENTITLEMENTS: Record<string, string> = {
   google_ads: 'advertising.google',
   meta: 'advertising.meta',
   lulu_managed_website: 'website.managed_mode',
-  wordpress: 'website.enabled',
-  webflow: 'website.enabled',
   gmail: 'email.enabled',
   microsoft_email: 'email.enabled',
   imap_smtp: 'email.enabled',
@@ -53,16 +53,19 @@ async function applyEffectiveCapabilityPolicy(workspaceId: string, connections: 
 }
 
 export async function listWorkspaceProviders(workspaceId: string) {
-  return applyEffectiveCapabilityPolicy(workspaceId, await repo.listProviderConnections(workspaceId));
+  const active = (await repo.listProviderConnections(workspaceId)).filter((connection) => !RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(connection.providerKey)));
+  return applyEffectiveCapabilityPolicy(workspaceId, active);
 }
 
-export function listAdminProviders() {
-  return repo.listAdminProviderConnections();
+export async function listAdminProviders() {
+  const connections = await repo.listAdminProviderConnections() as Array<Record<string, unknown>>;
+  return connections.filter((connection) => !RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(String(connection['providerKey']))));
 }
 
 export async function getWorkspaceProvider(workspaceId: string, connectionId: string) {
   const connection = await repo.getProviderConnection(workspaceId, connectionId);
   if (!connection) throw providerError('PROVIDER_CONNECTION_NOT_FOUND', 'Provider connection not found', undefined, 404);
+  if (RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(connection.providerKey))) throw providerError('PROVIDER_RETIRED', 'This provider has been retired. Use Lulu managed Website and Shop instead.', { provider: connection.providerKey }, 410);
   return (await applyEffectiveCapabilityPolicy(workspaceId, [connection]))[0];
 }
 
@@ -98,6 +101,7 @@ export async function verifyWorkspaceProvider(workspaceId: string, connectionId:
   await assertWorkspaceCapability({ workspaceId, userId: actorId, capability: 'providers.manage' });
   const row = await repo.getProviderConnectionInternal(connectionId);
   if (!row || String(row.workspaceId) !== workspaceId) throw providerError('PROVIDER_CONNECTION_NOT_FOUND', 'Provider connection not found', undefined, 404);
+  if (RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(String(row.providerKey)))) throw providerError('PROVIDER_RETIRED', 'This provider has been retired. Use Lulu managed Website and Shop instead.', { provider: row.providerKey }, 410);
   const adapter = getProviderAdapter(String(row.providerKey));
   const context = connectionContext(row);
   const result = await adapter.verifyConnection(context);
@@ -169,6 +173,7 @@ export async function runWorkspaceProviderContractCheck(workspaceId: string, con
   const row = await repo.getProviderConnectionInternal(connectionId);
   if (!row || String(row.workspaceId) !== workspaceId) throw providerError('PROVIDER_CONNECTION_NOT_FOUND', 'Provider connection not found', undefined, 404);
   const providerKey = String(row.providerKey);
+  if (RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(providerKey))) throw providerError('PROVIDER_RETIRED', 'This provider has been retired. Use Lulu managed Website and Shop instead.', { provider: providerKey }, 410);
   const check = await repo.createProviderContractCheck({ workspaceId, providerConnectionId: connectionId, providerKey, createdBy: actorId });
   if (!check) throw providerError('PROVIDER_CONTRACT_CHECK_CREATE_FAILED', 'The provider contract check could not be created', undefined, 500);
   const adapter = getProviderAdapter(providerKey);

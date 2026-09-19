@@ -458,7 +458,7 @@ async function executeAgentCommand(record: recordRepo.WorkspaceRecord, command: 
     const amount=numberValue(payload.budgetAmountCny);
     const authorizationId=textValue(payload.authorizationId);
     if(amount<=0||!authorizationId)throw new Error('advertising.create_optimization launch requires an explicit budgetAmountCny and customer authorizationId');
-    const result=await executeAdvertisingProviderOperation(record.workspaceId,{provider:'google-ads',action:'launch',customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,authorizationId,operationKey:`agent:${command.idempotencyKey}:ad-spend`,...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})});
+      const result=await executeAdvertisingProviderOperation(record.workspaceId,{provider:'google-ads',action:'launch',customerId:textValue(payload.customerId),campaignId:textValue(payload.campaignId),campaignBudgetId:textValue(payload.campaignBudgetId),accountCurrency:textValue(payload.accountCurrency),budgetAmountCny:amount,authorizationId,operationKey:`agent:${command.idempotencyKey}:ad-spend`,compliance:objectValue(payload.compliance),...(textValue(payload.loginCustomerId)?{loginCustomerId:textValue(payload.loginCustomerId)}:{})});
     const item=await persistCommandExecutionResult(record,command,{status:'executed',...result});
     return {type:command.type,targetEntityId:command.targetEntityId,provider,resultRecordId:item.id,result};
   }

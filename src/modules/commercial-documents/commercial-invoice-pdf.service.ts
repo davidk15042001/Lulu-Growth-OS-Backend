@@ -66,13 +66,42 @@ function drawRule(doc: PDFKit.PDFDocument, y: number) {
   doc.moveTo(48, y).lineTo(547, y).strokeColor('#d8deea').stroke();
 }
 
+/**
+ * Resolve a seller logo without making PDF generation dependent on storage or
+ * an image CDN. A failed/unsupported image is intentionally ignored; the
+ * legal seller text remains in the document.
+ */
+async function loadSellerLogo(seller: DocumentSellerProfile | null): Promise<Buffer | null> {
+  const configured = String(seller?.logoUrl ?? '').trim();
+  const fallback = seller?.companyName?.trim().toLowerCase() === 'lulu ai'
+    ? 'https://lulu-ai.cn/branding/lulu-agentic-logo.png'
+    : '';
+  const source = configured || fallback;
+  if (!source) return null;
+  try {
+    if (source.startsWith('data:image/png;base64,')) return Buffer.from(source.slice('data:image/png;base64,'.length), 'base64');
+    if (source.startsWith('data:image/jpeg;base64,')) return Buffer.from(source.slice('data:image/jpeg;base64,'.length), 'base64');
+    if (!/^https?:\/\//i.test(source)) return null;
+    const response = await fetch(source, { signal: AbortSignal.timeout(5_000) });
+    if (!response.ok) return null;
+    const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+    // PDFKit does not decode WebP/SVG directly. Keep the invoice reliable and
+    // let the seller text render when the uploaded format is unsupported.
+    if (contentType && !contentType.includes('png') && !contentType.includes('jpeg') && !contentType.includes('jpg')) return null;
+    return Buffer.from(await response.arrayBuffer());
+  } catch {
+    return null;
+  }
+}
+
 /** Render a deterministic, print-ready invoice PDF from the canonical invoice snapshot. */
 export function renderInvoicePdf(detail: InvoicePdfDetail): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const invoice = detail.invoice;
     const seller = detail.sellerProfile;
     const buyer = detail.buyerProfile ?? null;
     const currency = text(invoice.currency, 'CNY');
+    const sellerLogo = await loadSellerLogo(seller);
     const document = new PDFDocument({ size: 'A4', margin: 48, info: {
       Title: `Invoice ${text(invoice.invoiceNumber)}`,
       Author: seller?.companyName ?? 'Lulu AI',
@@ -87,8 +116,23 @@ export function renderInvoicePdf(detail: InvoicePdfDetail): Promise<Buffer> {
     const right = 547;
     document.fillColor('#111827').font('Helvetica-Bold').fontSize(24).text('INVOICE', left, 48);
     document.fillColor('#4f46e5').fontSize(10).text(text(invoice.invoiceNumber), left, 80);
-    document.fillColor('#111827').font('Helvetica-Bold').fontSize(13).text(text(seller?.companyName, 'Lulu AI'), right - 210, 50, { width: 210, align: 'right' });
-    document.fillColor('#5b6578').font('Helvetica').fontSize(9).text([seller?.address, seller?.countryRegion, seller?.phoneNumber].filter(Boolean).map(String).join(' · ') || 'Digital company platform', right - 260, 70, { width: 260, align: 'right' });
+    const sellerTextWidth = sellerLogo ? 155 : 210;
+    const sellerTextX = right - sellerTextWidth;
+    if (sellerLogo) {
+      try { document.image(sellerLogo, right - 62, 45, { fit: [52, 42], align: 'center', valign: 'center' }); } catch { /* unsupported/corrupt image; text still renders */ }
+    }
+    document.fillColor('#111827').font('Helvetica-Bold').fontSize(13).text(text(seller?.companyName, 'Lulu AI'), sellerTextX, 50, { width: sellerTextWidth, align: 'right' });
+    const sellerDetails = [
+      seller?.address ? `Address: ${seller.address}` : null,
+      seller?.countryRegion ? `Country: ${seller.countryRegion}` : null,
+      seller?.taxId ? `Tax ID: ${seller.taxId}` : null,
+      seller?.legalForm ? `Legal form: ${seller.legalForm}` : null,
+      seller?.legalRepresentative ? `Representative: ${seller.legalRepresentative}` : null,
+      seller?.phoneNumber ? `Phone: ${seller.phoneNumber}` : null,
+      seller?.bankAccountNumber ? `Bank account: ${seller.bankAccountNumber}` : null,
+      seller?.bankOpeningBank ? `Bank: ${seller.bankOpeningBank}` : null,
+    ].filter((value): value is string => Boolean(value));
+    document.fillColor('#5b6578').font('Helvetica').fontSize(8).text(sellerDetails.join('\n') || 'Digital company platform', sellerTextX, 70, { width: sellerTextWidth, align: 'right', lineGap: 1 });
     drawRule(document, 104);
 
     document.fillColor('#6b7280').fontSize(8).text('BILL TO', left, 125);

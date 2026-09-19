@@ -17,10 +17,8 @@ import { GoogleBusinessAdapter } from './google-business.adapter.js';
 import { ManagedWebsiteAdapter } from './managed-website.adapter.js';
 import { AirwallexAdapter } from './airwallex.adapter.js';
 import { GoogleAdsAdapter } from './google-ads.adapter.js';
-import { WebsiteProviderAdapter } from './website-provider.adapter.js';
 import { GoogleAnalyticsAdapter } from './google-analytics.adapter.js';
 import { MetaSocialAdapter } from './meta-social.adapter.js';
-import { ShopifyAdapter } from './shopify.adapter.js';
 import { CrmProviderAdapter } from './crm-provider.adapter.js';
 import { FacebookMessengerAdapter } from './facebook-messenger.adapter.js';
 import { MetaAdsAdapter } from './meta-ads.adapter.js';
@@ -47,6 +45,8 @@ const providerAliases: Record<string, string> = {
   'fire-crawl': 'firecrawl',
   firecrawl: 'firecrawl',
   perplexity: 'perplexity',
+  composio: 'composio',
+  'composio-dev': 'composio',
   higgsfield: 'higgsfield',
   'google-business': 'google_business',
   google_business: 'google_business',
@@ -62,6 +62,12 @@ const providerAliases: Record<string, string> = {
   unify_port: 'unifyport',
   'twilio-messaging': 'twilio',
 };
+
+/** Providers that were intentionally retired from the product.  Existing
+ * database rows are kept as historical records, but they must never be
+ * exposed as executable integrations or accepted by a new connection.
+ */
+export const RETIRED_PROVIDER_KEYS = new Set(['wordpress', 'webflow', 'shopify', 'resend']);
 
 export function canonicalProviderKey(value: string) {
   const normalized = value.trim().toLowerCase();
@@ -85,7 +91,8 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
   { providerKey: 'google_merchant', displayName: 'Google Merchant Center', category: 'COMMERCE', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'google_merchant.products.read', displayName: 'Read Merchant products', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'google_merchant.products.manage', displayName: 'Manage Merchant products', requiredScopes: [], defaultStatus: 'PROVIDER_REVIEW' }] },
   { providerKey: 'google_local_services', displayName: 'Google Local Services Ads', category: 'ADVERTISING', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'google_local_services.leads.read', displayName: 'Read Local Services leads', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'bigquery', displayName: 'Google BigQuery', category: 'DATA', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'bigquery.tenant_reporting.read', displayName: 'Read tenant-partitioned reporting data', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
-  { providerKey: 'perplexity', displayName: 'Perplexity Research', category: 'RESEARCH', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'perplexity.research.run', displayName: 'Run cited web research', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
+  { providerKey: 'perplexity', displayName: 'Perplexity Research', category: 'RESEARCH', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'perplexity.research.run', displayName: 'Run cited web research', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
+  { providerKey: 'composio', displayName: 'Composio', category: 'AUTOMATION', implementationStatus: 'PARTIAL', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'composio.sessions.create', displayName: 'Create a tenant-scoped Composio tool session', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'firecrawl', displayName: 'Firecrawl', category: 'RESEARCH', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'firecrawl.website.crawl', displayName: 'Crawl an approved website', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'higgsfield', displayName: 'Higgsfield', category: 'MEDIA', implementationStatus: 'NOT_IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'higgsfield.media.generate', displayName: 'Generate reviewed creative media', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'google_business', displayName: 'Google Business Profile', category: 'LOCAL', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'google_business.locations.read', displayName: 'Read Business Profile locations', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'google_business.reviews.read', displayName: 'Read Business Profile reviews', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'google_business.reviews.reply', displayName: 'Reply to reviews', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
@@ -117,9 +124,6 @@ export const PROVIDER_CATALOG: readonly ProviderCatalogEntry[] = [
     { capabilityKey: 'website.site.publish', displayName: 'Publish verified managed website plan', requiredScopes: [], defaultStatus: 'AVAILABLE' },
     { capabilityKey: 'website.domain.verify', displayName: 'Verify managed website domain ownership', requiredScopes: [], defaultStatus: 'AVAILABLE' },
   ] },
-  { providerKey: 'wordpress', displayName: 'WordPress', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'HYBRID', capabilities: [{ capabilityKey: 'wordpress.site.read', displayName: 'Read website', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'wordpress.site.publish', displayName: 'Publish website content', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'wordpress.media.upload', displayName: 'Upload media', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
-  { providerKey: 'webflow', displayName: 'Webflow', category: 'WEBSITE', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'webflow.site.read', displayName: 'Read Webflow sites', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'webflow.cms.write', displayName: 'Write CMS content', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
-  { providerKey: 'shopify', displayName: 'Shopify', category: 'COMMERCE', implementationStatus: 'PARTIAL', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'shopify.products.read', displayName: 'Read products', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'shopify.products.write', displayName: 'Write products', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'shopify.orders.read', displayName: 'Read orders', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'airwallex', displayName: 'Airwallex', category: 'PAYMENTS', implementationStatus: 'IMPLEMENTED', defaultMode: 'LULU_MANAGED', capabilities: [{ capabilityKey: 'airwallex.subscription.billing', displayName: 'Manage Lulu subscription billing', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'airwallex.payment.checkout', displayName: 'Create buyer payment checkout', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'airwallex.connected_accounts', displayName: 'Manage connected accounts', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'airwallex.funds_split', displayName: 'Split funds', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }, { capabilityKey: 'airwallex.payouts', displayName: 'Create payouts', requiredScopes: [], defaultStatus: 'UNCONFIRMED' }] },
   { providerKey: 'gmail', displayName: 'Gmail', category: 'EMAIL', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'email.read', displayName: 'Read email', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'email.send', displayName: 'Send email', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
   { providerKey: 'microsoft_email', displayName: 'Microsoft Email', category: 'EMAIL', implementationStatus: 'IMPLEMENTED', defaultMode: 'CUSTOMER_OWNED', capabilities: [{ capabilityKey: 'email.read', displayName: 'Read email', requiredScopes: [], defaultStatus: 'AVAILABLE' }, { capabilityKey: 'email.send', displayName: 'Send email', requiredScopes: [], defaultStatus: 'AVAILABLE' }] },
@@ -165,12 +169,9 @@ adapters.set('google_business', new GoogleBusinessAdapter());
 adapters.set('lulu_managed_website', new ManagedWebsiteAdapter());
 adapters.set('airwallex', new AirwallexAdapter());
 adapters.set('google_ads', new GoogleAdsAdapter());
-adapters.set('wordpress', new WebsiteProviderAdapter('wordpress'));
-adapters.set('webflow', new WebsiteProviderAdapter('webflow'));
 adapters.set('google_analytics', new GoogleAnalyticsAdapter());
 adapters.set('facebook', new MetaSocialAdapter('facebook'));
 adapters.set('instagram', new MetaSocialAdapter('instagram'));
-adapters.set('shopify', new ShopifyAdapter());
 adapters.set('salesforce', new CrmProviderAdapter('salesforce'));
 adapters.set('hubspot', new CrmProviderAdapter('hubspot'));
 adapters.set('pipedrive', new CrmProviderAdapter('pipedrive'));
@@ -180,7 +181,9 @@ adapters.set('linkedin', new LinkedInAdsAdapter());
 adapters.set('tiktok_ads', new TikTokAdsAdapter());
 
 export function getProviderAdapter(providerKey: string) {
-  const adapter = adapters.get(canonicalProviderKey(providerKey));
+  const canonical = canonicalProviderKey(providerKey);
+  if (RETIRED_PROVIDER_KEYS.has(canonical)) throw providerError('PROVIDER_RETIRED', 'This provider has been retired. Use Lulu managed Website and Shop instead.', { provider: canonical }, 410);
+  const adapter = adapters.get(canonical);
   if (!adapter) throw providerError('PROVIDER_NOT_REGISTERED', 'This provider is not registered in the Provider Control Plane', { provider: providerKey }, 404);
   return adapter;
 }
@@ -203,9 +206,11 @@ export function getProviderRuntimeReadiness(providerKey: string): ProviderRuntim
 }
 
 export function getProviderCatalogEntry(providerKey: string) {
-  return PROVIDER_CATALOG.find((entry) => entry.providerKey === canonicalProviderKey(providerKey));
+  const canonical = canonicalProviderKey(providerKey);
+  if (RETIRED_PROVIDER_KEYS.has(canonical)) return undefined;
+  return PROVIDER_CATALOG.find((entry) => entry.providerKey === canonical);
 }
 
 export function isProviderRegistered(providerKey: string) {
-  return Boolean(getProviderCatalogEntry(providerKey));
+  return !RETIRED_PROVIDER_KEYS.has(canonicalProviderKey(providerKey)) && Boolean(getProviderCatalogEntry(providerKey));
 }

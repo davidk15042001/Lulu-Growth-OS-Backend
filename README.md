@@ -150,23 +150,23 @@ Content-Type: application/json
 
 ## AI integration
 
-AI conversation storage works without a provider key. OpenAI/ChatGPT is the
-default provider for text and agent execution:
+AI conversation storage works without a provider key. Kie.ai is the default
+gateway for text, agent execution and premium media. External providers are
+opt-in and must be selected explicitly:
 
 ```dotenv
-AI_PROVIDER=openai
-AI_PROVIDER_FALLBACK_ORDER=openai
-OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5-mini
+AI_PROVIDER=kie
+AI_PROVIDER_FALLBACK_ORDER=kie
+KIE_API_KEY=...
+KIE_QUALITY_MODEL=gemini-3-pro
 AI_REQUEST_TIMEOUT_MS=180000
 AI_MAX_RETRIES=1
 ```
 
-Set another provider only when it is explicitly required for a migration or
-specialised workload. KIE remains available for premium image/video generation,
-but is not used as a text-agent fallback. Website generation is processed by a
-database-backed worker with resumable page checkpoints. No API key is committed
-to the repository.
+Set `AI_PROVIDER=perplexity` only for a deployment that intentionally routes
+all text work through Perplexity. For targeted deep research, keep Kie as the
+default and call the authenticated `/workspaces/:workspaceId/research/perplexity/deep`
+operation. No API key is committed to the repository.
 
 ## Prepaid execution and storage billing
 

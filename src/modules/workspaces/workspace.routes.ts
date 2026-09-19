@@ -39,6 +39,8 @@ import qualityRoutes from '../quality/quality.routes.js';
 import companyBrainRoutes from '../company-brain/company-brain.routes.js';
 import salesPipelineRoutes from '../sales-pipeline/sales-pipeline.routes.js';
 import multer from 'multer';
+import researchRoutes from '../research/research.routes.js';
+import composioRoutes from '../composio/composio.routes.js';
 
 const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 
@@ -99,6 +101,8 @@ router.use('/:workspaceId/agent-runs', agentRoutes);
 router.use('/:workspaceId/growth-approvals', growthApprovalRoutes);
 router.use('/:workspaceId/websites', websiteRoutes);
 router.use('/:workspaceId/search-intelligence', searchIntelligenceRoutes);
+router.use('/:workspaceId/research', researchRoutes);
+router.use('/:workspaceId/composio', composioRoutes);
 router.use('/:workspaceId/product-images', productImageRoutes);
 router.use('/:workspaceId/usage', usageRoutes);
 router.use('/:workspaceId/email', emailRoutes);

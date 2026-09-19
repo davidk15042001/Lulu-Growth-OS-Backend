@@ -9,6 +9,10 @@ router.route('/')
   .get(requireWorkspaceMember, controller.overview)
   .all(methodNotAllowed);
 
+router.route('/compliance-checks')
+  .get(requireWorkspaceCapability('advertising.read', { enforceWriteEntitlement: false }), controller.listComplianceChecks)
+  .all(methodNotAllowed);
+
 router.route('/topups')
   .post(requireWorkspaceAdmin, controller.createTopup)
   .all(methodNotAllowed);

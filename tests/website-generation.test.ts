@@ -106,13 +106,13 @@ describe('website generation target selection', () => {
   const siteId = '5895ec11-4459-4645-ac91-2380d083f758';
 
   it('requires an explicit existing-or-new decision', () => {
-    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId }).success, false);
-    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'existing' }).success, true);
-    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'new' }).success, true);
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'managed', siteId }).success, false);
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'managed', siteId, targetMode: 'existing' }).success, true);
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'managed', siteId, targetMode: 'new' }).success, true);
   });
 
   it('rejects unsupported target modes', () => {
-    assert.equal(automaticGenerationSchema.safeParse({ provider: 'wordpress', siteId, targetMode: 'overwrite' }).success, false);
+    assert.equal(automaticGenerationSchema.safeParse({ provider: 'managed', siteId, targetMode: 'overwrite' }).success, false);
   });
 
   it('reuses canonical WordPress slugs in both modes without overwriting unrelated pages by title', () => {

@@ -435,6 +435,15 @@ export async function getWorkspaceCredits(workspaceId: string) {
     periodStart: new Date(new Date().getFullYear(), 0, 1).toISOString(),
     periodEnd: new Date(new Date().getFullYear() + 1, 0, 1).toISOString(),
   };
+  const activeModel = env.AI_PROVIDER === 'alibaba'
+    ? env.DASHSCOPE_MODEL
+    : env.AI_PROVIDER === 'groq'
+      ? env.GROQ_MODEL
+      : env.AI_PROVIDER === 'kie'
+        ? env.KIE_QUALITY_MODEL
+        : env.AI_PROVIDER === 'perplexity'
+          ? env.PERPLEXITY_MODEL
+          : env.OPENAI_MODEL;
   return {
     periodStart: new Date(row.periodStart).toISOString(),
     periodEnd: new Date(row.periodEnd).toISOString(),
@@ -446,11 +455,11 @@ export async function getWorkspaceCredits(workspaceId: string) {
     customerCostUsd: Number(row.customerCostUsd),
     tokensPerCredit: TOKENS_PER_CREDIT,
     customerMarkupMultiplier: null,
-    model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.AI_PROVIDER === 'kie' ? env.KIE_QUALITY_MODEL : env.OPENAI_MODEL,
+    model: activeModel,
     pricing: CUSTOMER_API_RATE,
     providerPricing: rateFor(
       env.AI_PROVIDER,
-      env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.AI_PROVIDER === 'kie' ? env.KIE_QUALITY_MODEL : env.OPENAI_MODEL,
+      activeModel,
     ),
   };
 }

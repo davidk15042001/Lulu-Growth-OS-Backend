@@ -37,7 +37,7 @@ const jobSelect = `SELECT id, site_id AS "siteId", prompt, status, plan, preview
 
 export async function listSites(workspaceId: string) {
   const [sites, domains] = await Promise.all([
-    query<any>(`${siteSelect} WHERE workspace_id = $1 ORDER BY updated_at DESC`, [workspaceId]),
+    query<any>(`${siteSelect} WHERE workspace_id = $1 AND provider = 'managed' ORDER BY updated_at DESC`, [workspaceId]),
     query<any>(`${domainSelect} WHERE site_id IN (SELECT id FROM workspace_sites WHERE workspace_id = $1) AND status <> 'removed' ORDER BY created_at`, [workspaceId]),
   ]);
   const domainMap = new Map<string, WebsiteDomain[]>();
@@ -92,7 +92,7 @@ export async function updateSiteSettings(workspaceId: string, siteId: string, se
 }
 
 export async function getSite(workspaceId: string, siteId: string) {
-  const site = await query<any>(`${siteSelect} WHERE workspace_id = $1 AND id = $2 LIMIT 1`, [workspaceId, siteId]);
+  const site = await query<any>(`${siteSelect} WHERE workspace_id = $1 AND id = $2 AND provider = 'managed' LIMIT 1`, [workspaceId, siteId]);
   if (!site.rows[0]) return null;
   const domains = await query<any>(`${domainSelect} WHERE site_id = $1 AND status <> 'removed' ORDER BY created_at`, [siteId]);
   return mapSite(site.rows[0], domains.rows.map(mapDomain));

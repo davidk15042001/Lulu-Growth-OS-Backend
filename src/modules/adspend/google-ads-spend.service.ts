@@ -27,6 +27,8 @@ import {
   type GoogleAdsSpendAllocation,
 } from './google-ads-spend.repo.js';
 import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
+import type { AdsComplianceContext } from '../advertising-compliance/advertising-compliance.service.js';
+import { assertAdsCompliancePassed, runAdsComplianceGate } from '../advertising-compliance/advertising-compliance.service.js';
 
 export type GoogleAdsOperation = {
   provider: 'google-ads';
@@ -39,7 +41,14 @@ export type GoogleAdsOperation = {
   loginCustomerId?: string;
   authorizationId?: string;
   operationKey?: string;
+  /** Evidence supplied to the mandatory Ads Compliance Agent before launch. */
+  compliance?: AdsComplianceContext | null;
 };
+
+async function assertGoogleAdsCompliance(workspaceId: string, operationKey: string, context: AdsComplianceContext | null | undefined) {
+  const result = await runAdsComplianceGate({ workspaceId, provider: 'google-ads', action: 'launch', context: { ...(context ?? {}), idempotencyKey: operationKey } });
+  assertAdsCompliancePassed(result);
+}
 
 type GoogleAdsPayer = {
   loginCustomerId: string;
@@ -380,7 +389,15 @@ export async function launchGoogleAdsAllocation(workspaceId: string, input: Goog
       paymentsAccountId: snapshot.paymentsAccountId,
       paymentsProfileId: snapshot.paymentsProfileId,
       providerCampaignStatus: snapshot.campaignStatus,
-      metadata: { contextRequestId: snapshot.contextRequestId, costRequestId: snapshot.costRequestId, billingRequestId: snapshot.billingRequestId },
+      metadata: {
+        contextRequestId: snapshot.contextRequestId,
+        costRequestId: snapshot.costRequestId,
+        billingRequestId: snapshot.billingRequestId,
+        // Keep the evidence that cleared the publication gate with the
+        // allocation.  Workspace-wide pause/resume must re-use the same
+        // canonical compliance context instead of silently bypassing it.
+        compliance: input.compliance ?? null,
+      },
     });
   } catch (error) {
     if (!reservation.idempotent) {
@@ -488,6 +505,8 @@ export async function resumeWorkspaceGoogleAdsCampaigns(workspaceId: string) {
       // atomically before Google Ads is enabled again.
       if (allocation.closureState === 'FINALIZED') {
         const budgetAmountCny = Number(BigInt(allocation.capMicros)) / 1_000_000;
+        const complianceContext = allocation.metadata?.compliance as AdsComplianceContext | undefined;
+        await assertGoogleAdsCompliance(workspaceId, `workspace-resume:${allocation.reservationId}`, complianceContext);
         await launchGoogleAdsAllocation(workspaceId, {
           provider: 'google-ads', action: 'launch',
           customerId: allocation.customerId, campaignId: allocation.campaignId,
@@ -495,6 +514,7 @@ export async function resumeWorkspaceGoogleAdsCampaigns(workspaceId: string) {
           authorizationId: allocation.authorizationId,
           budgetAmountCny,
           operationKey: `workspace-resume:${allocation.reservationId}`,
+          compliance: complianceContext ?? null,
         });
         results.push({ reservationId: allocation.reservationId, status: 'RESUMED' });
         continue;
@@ -537,7 +557,10 @@ export async function resumeWorkspaceGoogleAdsCampaigns(workspaceId: string) {
       }
       const provider = snapshot.campaignStatus === 'ENABLED'
         ? null
-        : await mutateGoogleCampaign(workspaceId, payer, allocation.customerId, launchMutationBody(snapshot, desiredBudget));
+        : await (async () => {
+          await assertGoogleAdsCompliance(workspaceId, `workspace-resume:${allocation.reservationId}`, allocation.metadata?.compliance as AdsComplianceContext | undefined);
+          return mutateGoogleCampaign(workspaceId, payer, allocation.customerId, launchMutationBody(snapshot, desiredBudget));
+        })();
       const resumed = await markGoogleAdsAllocationResumed({
         workspaceId, reservationId: allocation.reservationId, providerRequestId: provider?.requestId ?? null,
       });

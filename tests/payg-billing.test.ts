@@ -515,7 +515,7 @@ describe('prepaid API and transparent usage reporting', () => {
     const topup = await createAdSpendTopup({ workspaceId: workspace.id, userId: user.id,
       netAmount: 10_000, feeAmount: 400, totalAmount: 10_400, paymentMethod: 'card' });
     await attachAdSpendProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_ad_reversal' });
-    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_reversal', providerStatus: 'SUCCEEDED' });
+    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_reversal', providerStatus: 'SUCCEEDED', settlementVerified: true });
     const authorization = await createAdBudgetAuthorization({ workspaceId: workspace.id, userId: user.id,
       provider: 'google-ads', accountId: '1234567890', campaignId: '987654321', currency: 'CNY', amount: 200,
       startsAt: new Date(Date.now() - 60_000).toISOString(), endsAt: new Date(Date.now() + 86_400_000).toISOString(),
@@ -553,7 +553,7 @@ describe('prepaid API and transparent usage reporting', () => {
     const recoveryTopup = await createAdSpendTopup({ workspaceId: workspace.id, userId: user.id,
       netAmount: 50, feeAmount: 2, totalAmount: 52, paymentMethod: 'card' });
     await attachAdSpendProviderPayment({ topupId: recoveryTopup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'pi_ad_recovery' });
-    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_recovery', providerStatus: 'SUCCEEDED' });
+    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'pi_ad_recovery', providerStatus: 'SUCCEEDED', settlementVerified: true });
     const partiallyRecovered = (await db.query<{ available: string; debt: string }>(
       `SELECT available_amount AS available,reversal_debt_amount AS debt
        FROM workspace_ad_spend_wallets WHERE workspace_id=$1`, [workspace.id],
@@ -707,7 +707,7 @@ describe('prepaid API and transparent usage reporting', () => {
     const topup = await createAdSpendTopup({ workspaceId: workspace.id, userId: user.id,
       netAmount: 10_000, feeAmount: 400, totalAmount: 10_400, paymentMethod: 'card' });
     await attachAdSpendProviderPayment({ topupId: topup.id, status: 'PENDING_PAYMENT', providerPaymentIntentId: 'int_partial_ad' });
-    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'int_partial_ad', providerStatus: 'SUCCEEDED' });
+    await applyAdSpendProviderStatus({ providerPaymentIntentId: 'int_partial_ad', providerStatus: 'SUCCEEDED', settlementVerified: true });
 
     await recordAirwallexWalletReversal({
       eventId: 'evt_partial_ad_1', eventType: 'refund.settled', reversalKind: 'REFUND',

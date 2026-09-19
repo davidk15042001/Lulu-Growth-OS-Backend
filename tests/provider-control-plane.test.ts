@@ -101,12 +101,12 @@ describe('Provider Control Plane', () => {
     assert.ok(unifyPort?.runtime?.supportedFeatures.includes('webhook'));
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('airwallex'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('google_ads'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
-    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('wordpress'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
-    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('webflow'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('wordpress'), { adapterRegistered: false, supportedFeatures: [] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('webflow'), { adapterRegistered: false, supportedFeatures: [] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('google_analytics'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('facebook'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('instagram'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
-    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('shopify'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
+    assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('shopify'), { adapterRegistered: false, supportedFeatures: [] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('salesforce'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('hubspot'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });
     assert.deepEqual(providerRegistry.getProviderRuntimeReadiness('pipedrive'), { adapterRegistered: true, supportedFeatures: ['verification', 'health', 'capabilities', 'discovery', 'sync'] });

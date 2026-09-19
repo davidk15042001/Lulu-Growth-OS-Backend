@@ -33,11 +33,11 @@
     "provider:live-readiness": "tsx scripts/provider-live-readiness.ts",
     "provider:live-e2e": "tsx scripts/provider-live-e2e.ts",
     "airwallex:live-e2e": "tsx scripts/airwallex-live-e2e.ts",
-    "preview:wordpress-template": "tsx scripts/preview-wordpress-template.ts",
     "check": "npm run typecheck && npm run test:migrations && npm test && npm run build && npm run test:smoke"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",
+    "@composio/core": "^0.18.1",
     "agora-token": "^2.0.6",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",

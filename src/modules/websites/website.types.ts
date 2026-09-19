@@ -1,3 +1,5 @@
+// External website providers are legacy-only records. New API writes are
+// constrained to the Lulu-managed provider by website.validator.ts.
 export type WebsiteProvider = 'wordpress' | 'webflow' | 'managed';
 export type OwnershipMode = 'connected' | 'managed';
 export type WebsiteStatus = 'draft' | 'connected' | 'generating' | 'preview' | 'publishing' | 'published' | 'error' | 'disconnected';

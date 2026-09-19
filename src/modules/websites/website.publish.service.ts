@@ -462,6 +462,12 @@ export async function publishWebsiteJob(workspaceId: string, siteId: string, job
   const job = await repo.getJob(siteId, jobId);
   if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found');
   if (!job) throw new AppError(404, 'WEBSITE_GENERATION_JOB_NOT_FOUND', 'Website generation job was not found');
+  // External website providers were retired. Keep the legacy publishing code
+  // below only for historical job inspection, but never allow a new request
+  // to execute it or make an outbound WordPress/Webflow call.
+  if (site.provider !== 'managed') {
+    throw new AppError(410, 'WEBSITE_PROVIDER_RETIRED', 'Only Lulu-managed websites can be published. WordPress, Webflow and Shopify integrations are retired.');
+  }
   if (job.status !== 'preview' && job.status !== 'generated') throw new AppError(409, 'WEBSITE_PUBLISH_STATE_INVALID', 'Only a generated preview can be published');
   const plan = job.plan as any;
   const targetMode = job.preview?.targetMode === 'new' ? 'new' : 'existing';
