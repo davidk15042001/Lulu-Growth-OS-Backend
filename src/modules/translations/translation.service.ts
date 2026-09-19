@@ -92,7 +92,7 @@ export async function translateStrings(
           schema: TRANSLATION_SCHEMA,
         },
       },
-      reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : env.AI_PROVIDER === 'deepseek' ? 'high' : 'low' },
+      reasoning: { effort: env.AI_PROVIDER === 'alibaba' ? 'none' : 'low' },
       max_output_tokens: env.OPENAI_MAX_OUTPUT_TOKENS,
       ...(env.AI_PROVIDER === 'openai' ? { safety_identifier: buildSafetyIdentifier(`translation:${input.requesterId}`) } : {}),
       store: false,

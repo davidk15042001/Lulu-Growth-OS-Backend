@@ -45,7 +45,7 @@ describe('security and finance hardening', () => {
     const user = (await db.query<{ id: string }>(`INSERT INTO users(email,password_hash,verified_at) VALUES($1,'hash',NOW()) RETURNING id`, [`${crypto.randomUUID()}@example.test`])).rows[0]!.id;
     const workspace = (await db.query<{ id: string }>(`INSERT INTO workspaces(name,created_by) VALUES('Usage workspace',$1) RETURNING id`, [user])).rows[0]!.id;
     await db.query(`INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')`, [workspace, user]);
-    const input = { workspaceId: workspace, userId: null, provider: 'deepseek', model: 'deepseek-v4-pro', inputTokens: 100, outputTokens: 50, responseId: `response-${crypto.randomUUID()}` };
+    const input = { workspaceId: workspace, userId: null, provider: 'openai', model: 'gpt-5-mini', inputTokens: 100, outputTokens: 50, responseId: `response-${crypto.randomUUID()}` };
     const first = await usage.recordUsage(input);
     const second = await usage.recordUsage(input);
     assert.ok(first?.id);

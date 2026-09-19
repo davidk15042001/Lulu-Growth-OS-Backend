@@ -150,18 +150,23 @@ Content-Type: application/json
 
 ## AI integration
 
-AI conversation storage works without a provider key. DeepSeek is the default provider:
+AI conversation storage works without a provider key. OpenAI/ChatGPT is the
+default provider for text and agent execution:
 
 ```dotenv
-AI_PROVIDER=deepseek
-DEEPSEEK_API_KEY=...
-DEEPSEEK_BASE_URL=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-v4-pro
+AI_PROVIDER=openai
+AI_PROVIDER_FALLBACK_ORDER=openai
+OPENAI_API_KEY=...
+OPENAI_MODEL=gpt-5-mini
 AI_REQUEST_TIMEOUT_MS=180000
 AI_MAX_RETRIES=1
 ```
 
-Set `AI_PROVIDER=alibaba`, `AI_PROVIDER=openai`, or `AI_PROVIDER=groq` with the corresponding provider variables to use another provider. Website generation is processed by a database-backed worker with resumable page checkpoints. No API key is committed to the repository.
+Set another provider only when it is explicitly required for a migration or
+specialised workload. KIE remains available for premium image/video generation,
+but is not used as a text-agent fallback. Website generation is processed by a
+database-backed worker with resumable page checkpoints. No API key is committed
+to the repository.
 
 ## Prepaid execution and storage billing
 

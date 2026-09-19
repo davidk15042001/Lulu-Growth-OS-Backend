@@ -64,17 +64,17 @@ const EnvSchema = z
     MAILCOW_SMTP_SECURE: booleanString.default(false),
     MAILCOW_SMTP_USER: z.string().min(1).optional(),
     MAILCOW_SMTP_PASS: z.string().min(1).optional(),
-    AI_PROVIDER: z.enum(['openai', 'alibaba', 'deepseek', 'groq', 'kie']).default('deepseek'),
-    AI_PROVIDER_FALLBACK_ORDER: z.string().default('openai,alibaba,deepseek,groq,kie'),
+    // OpenAI/ChatGPT is the canonical provider for all text and agent work.
+    // Other adapters remain available only when explicitly configured for a
+    // migration or specialised workload; they are never selected by default.
+    AI_PROVIDER: z.enum(['openai', 'alibaba', 'groq', 'kie']).default('openai'),
+    AI_PROVIDER_FALLBACK_ORDER: z.string().default('openai'),
     AI_CIRCUIT_BREAKER_COOLDOWN_MS: z.coerce.number().int().min(10_000).max(3_600_000).default(300_000),
     OPENAI_API_KEY: z.string().min(1).optional(),
     OPENAI_MODEL: z.string().min(1).default('gpt-5-mini'),
     DASHSCOPE_API_KEY: z.string().min(1).optional(),
     DASHSCOPE_BASE_URL: z.string().url().default('https://dashscope-intl.aliyuncs.com/compatible-mode/v1'),
     DASHSCOPE_MODEL: z.string().min(1).default('qwen3.7-plus'),
-    DEEPSEEK_API_KEY: z.string().min(1).optional(),
-    DEEPSEEK_BASE_URL: z.string().url().default('https://api.deepseek.com'),
-    DEEPSEEK_MODEL: z.string().min(1).default('deepseek-v4-pro'),
     GROQ_API_KEY: z.string().min(1).optional(),
     GROQ_BASE_URL: z.string().url().default('https://api.groq.com/openai/v1'),
     GROQ_MODEL: z.string().min(1).default('llama-3.3-70b-versatile'),
@@ -303,9 +303,6 @@ const EnvSchema = z
     if (data.AI_PROVIDER === 'alibaba' && !data.DASHSCOPE_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DASHSCOPE_API_KEY'], message: 'DASHSCOPE_API_KEY is required when AI_PROVIDER=alibaba in production' });
     }
-    if (data.AI_PROVIDER === 'deepseek' && !data.DEEPSEEK_API_KEY) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['DEEPSEEK_API_KEY'], message: 'DEEPSEEK_API_KEY is required when AI_PROVIDER=deepseek in production' });
-    }
     if (data.AI_PROVIDER === 'groq' && !data.GROQ_API_KEY) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['GROQ_API_KEY'], message: 'GROQ_API_KEY is required when AI_PROVIDER=groq in production' });
     }
@@ -358,7 +355,7 @@ if ((raw.NODE_ENV ?? 'development') === 'production') {
       'TWILIO_PARTNER_SOLUTION_ID',
       'META_GRAPH_VERSION',
     ]);
-    for (const line of fs.readFileSync(twilioSecretFile, 'utf8').split(/\r?\n/)) {
+    for (const line of fs.readFileSync(twilioSecretFile, 'utf8').split(/\n?\n/)) {
       if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
       const separator = line.indexOf('=');
       const key = line.slice(0, separator).trim();
@@ -374,7 +371,7 @@ if ((raw.NODE_ENV ?? 'development') === 'production') {
   const unifyPortSecretFile = path.resolve(raw.UNIFYPORT_RUNTIME_ENV_FILE ?? path.join(process.cwd(), '.runtime-secrets', 'unifyport.env'));
   try {
     const allowed = new Set(['UNIFYPORT_API_KEY', 'UNIFYPORT_WEBHOOK_SIGNING_SECRET']);
-    for (const line of fs.readFileSync(unifyPortSecretFile, 'utf8').split(/\r?\n/)) {
+    for (const line of fs.readFileSync(unifyPortSecretFile, 'utf8').split(/\n?\n/)) {
       if (!line || line.trimStart().startsWith('#') || !line.includes('=')) continue;
       const separator = line.indexOf('=');
       const key = line.slice(0, separator).trim();
@@ -435,7 +432,6 @@ export const hasDb = !!env.DATABASE_URL;
 // configured secondary provider can take over when the primary is unavailable.
 export const hasOpenAI = !!env.OPENAI_API_KEY;
 export const hasAlibaba = !!env.DASHSCOPE_API_KEY;
-export const hasDeepSeek = !!env.DEEPSEEK_API_KEY;
 export const hasGroq = !!env.GROQ_API_KEY;
 export const hasKie = !!env.KIE_API_KEY;
-export const hasAiProvider = hasOpenAI || hasAlibaba || hasDeepSeek || hasGroq || hasKie;
+export const hasAiProvider = hasOpenAI || hasAlibaba || hasGroq || hasKie;

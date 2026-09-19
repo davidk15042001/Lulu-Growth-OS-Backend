@@ -245,7 +245,7 @@ describe('prepaid API and transparent usage reporting', () => {
     await db.query(
       `INSERT INTO ai_usage_ledger(
          workspace_id, user_id, provider, model, input_tokens, output_tokens, customer_cost_usd
-       ) VALUES($1, $2, 'alibaba', 'deepseek-v4-pro', 1000, 500, 0.25)`,
+       ) VALUES($1, $2, 'openai', 'gpt-5-mini', 1000, 500, 0.25)`,
       [workspace.id, user.id],
     );
 

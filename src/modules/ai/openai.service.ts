@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import type { AssistantPendingAction } from './assistant-action.types.js';
-import { env, hasAiProvider, hasAlibaba, hasDeepSeek, hasGroq, hasKie, hasOpenAI } from '../../config/env.js';
+import { env, hasAiProvider, hasAlibaba, hasGroq, hasKie, hasOpenAI } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
 import { logger } from '../../config/logger.js';
 import { CUSTOMER_API_RATE, recordUsage } from '../usage/usage.service.js';
@@ -66,11 +66,10 @@ export type AiRequestOptions = {
 
 let openAIClient: OpenAI | undefined;
 let alibabaClient: OpenAI | undefined;
-let deepSeekClient: OpenAI | undefined;
 let groqClient: OpenAI | undefined;
 let kieClient: OpenAI | undefined;
 
-type AiProviderName = 'openai' | 'alibaba' | 'deepseek' | 'groq' | 'kie';
+type AiProviderName = 'openai' | 'alibaba' | 'groq' | 'kie';
 
 type ProviderCircuitState = {
   failures: number;
@@ -97,20 +96,20 @@ const providerCircuits = new Map<AiProviderName, ProviderCircuitState>();
 function providerConfigured(provider: AiProviderName) {
   if (provider === 'openai') return hasOpenAI;
   if (provider === 'alibaba') return hasAlibaba;
-  if (provider === 'deepseek') return hasDeepSeek;
   if (provider === 'groq') return hasGroq;
   return hasKie;
 }
 
 function configuredProviders() {
-  const allowed = new Set<AiProviderName>(['openai', 'alibaba', 'deepseek', 'groq', 'kie']);
+  const allowed = new Set<AiProviderName>(['openai', 'alibaba', 'groq', 'kie']);
   const fallback = env.AI_PROVIDER_FALLBACK_ORDER
     .split(',')
     .map((value) => value.trim().toLowerCase())
     .filter((value): value is AiProviderName => allowed.has(value as AiProviderName));
-  // Keep Kie as the final premium fallback even when a deployment still carries
-  // an older, explicitly configured fallback list from before Kie was supported.
-  return Array.from(new Set<AiProviderName>([env.AI_PROVIDER, ...fallback, 'kie'])).filter(providerConfigured);
+  // Do not silently route text/agent work through a premium media provider.
+  // Fallbacks must be explicit in deployment configuration so billing and
+  // provider selection remain predictable.
+  return Array.from(new Set<AiProviderName>([env.AI_PROVIDER, ...fallback])).filter(providerConfigured);
 }
 
 function getProviderClient(provider: AiProviderName) {
@@ -121,10 +120,6 @@ function getProviderClient(provider: AiProviderName) {
   if (provider === 'alibaba' && hasAlibaba) {
     alibabaClient ??= new OpenAI({ apiKey: env.DASHSCOPE_API_KEY, baseURL: env.DASHSCOPE_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
     return alibabaClient;
-  }
-  if (provider === 'deepseek' && hasDeepSeek) {
-    deepSeekClient ??= new OpenAI({ apiKey: env.DEEPSEEK_API_KEY, baseURL: env.DEEPSEEK_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
-    return deepSeekClient;
   }
   if (provider === 'groq' && hasGroq) {
     groqClient ??= new OpenAI({ apiKey: env.GROQ_API_KEY, baseURL: env.GROQ_BASE_URL, timeout: env.AI_REQUEST_TIMEOUT_MS, maxRetries: env.AI_MAX_RETRIES });
@@ -142,7 +137,6 @@ function getProviderClient(provider: AiProviderName) {
 function modelForProvider(provider: AiProviderName) {
   if (provider === 'openai') return env.OPENAI_MODEL;
   if (provider === 'alibaba') return env.DASHSCOPE_MODEL;
-  if (provider === 'deepseek') return env.DEEPSEEK_MODEL;
   if (provider === 'groq') return env.GROQ_MODEL;
   return env.KIE_QUALITY_MODEL;
 }
@@ -256,7 +250,7 @@ function chatParamsForProvider(params:Record<string,unknown>,provider:AiProvider
   delete next.safety_identifier;
   delete next.reasoning;
   delete next.reasoning_effort;
-  if(provider!=='deepseek')delete next.thinking;
+  delete next.thinking;
   if(typeof next.max_completion_tokens==='number'&&next.max_tokens===undefined)next.max_tokens=next.max_completion_tokens;
   delete next.max_completion_tokens;
   return next;
@@ -291,7 +285,7 @@ export function configuredModel(requestedModel?: string | null) {
 }
 
 export function getAiProviderHealth() {
-  return (['openai', 'alibaba', 'deepseek', 'groq', 'kie'] as const).map((provider) => {
+  return (['openai', 'alibaba', 'groq', 'kie'] as const).map((provider) => {
     const state = providerCircuits.get(provider);
     const operational = providerConfigured(provider) && !circuitIsOpen(provider) && !providerHasBlockingFailure(provider);
     return {

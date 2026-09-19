@@ -76,26 +76,6 @@ function rateFor(provider: string, model: string): Rate {
     return { inputPerMillionUsd: 0.4, outputPerMillionUsd: 1.6 };
   }
 
-  if (normalizedProvider === 'alibaba' && normalizedModel.includes('deepseek-v4-pro')) {
-    return { inputPerMillionUsd: 1.65, outputPerMillionUsd: 3.301 };
-  }
-
-  if (normalizedProvider === 'alibaba' && normalizedModel.includes('deepseek-v4-flash')) {
-    return { inputPerMillionUsd: 0.18, outputPerMillionUsd: 0.72 };
-  }
-
-  if (normalizedProvider === 'alibaba' && normalizedModel.includes('deepseek-v3.2')) {
-    return { inputPerMillionUsd: 0.28, outputPerMillionUsd: 1.1 };
-  }
-
-  if (normalizedProvider === 'deepseek' && normalizedModel.includes('deepseek-v4-pro')) {
-    return { inputPerMillionUsd: 1.32, outputPerMillionUsd: 3.96 };
-  }
-
-  if (normalizedProvider === 'deepseek' && normalizedModel.includes('deepseek-v4-flash')) {
-    return { inputPerMillionUsd: 0.44, outputPerMillionUsd: 1.32 };
-  }
-
   // The ledger remains complete for other providers. Their rates can be added
   // as explicit configuration later without changing the accounting schema.
   return DEFAULT_RATE;
@@ -466,11 +446,11 @@ export async function getWorkspaceCredits(workspaceId: string) {
     customerCostUsd: Number(row.customerCostUsd),
     tokensPerCredit: TOKENS_PER_CREDIT,
     customerMarkupMultiplier: null,
-    model: env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.AI_PROVIDER === 'kie' ? env.KIE_QUALITY_MODEL : env.OPENAI_MODEL,
+    model: env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.AI_PROVIDER === 'kie' ? env.KIE_QUALITY_MODEL : env.OPENAI_MODEL,
     pricing: CUSTOMER_API_RATE,
     providerPricing: rateFor(
       env.AI_PROVIDER,
-      env.AI_PROVIDER === 'deepseek' ? env.DEEPSEEK_MODEL : env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.AI_PROVIDER === 'kie' ? env.KIE_QUALITY_MODEL : env.OPENAI_MODEL,
+      env.AI_PROVIDER === 'alibaba' ? env.DASHSCOPE_MODEL : env.AI_PROVIDER === 'groq' ? env.GROQ_MODEL : env.AI_PROVIDER === 'kie' ? env.KIE_QUALITY_MODEL : env.OPENAI_MODEL,
     ),
   };
 }

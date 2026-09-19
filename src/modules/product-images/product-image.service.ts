@@ -1,5 +1,4 @@
 import { AppError } from '../../utils/app-error.js';
-import { env } from '../../config/env.js';
 import { configuredModel, getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { extractTextFromFile, type IngestFile } from '../records/record.service.js';
 import * as recordRepo from '../records/record.repo.js';
@@ -76,7 +75,6 @@ export async function extractProductsFromText(text: string, workspaceId: string,
         { role: 'user', content: text.slice(0, 20_000) },
       ],
       response_format: { type: 'json_object' },
-      ...(env.AI_PROVIDER === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
       temperature: 0.15,
       max_tokens: 8000,
     },

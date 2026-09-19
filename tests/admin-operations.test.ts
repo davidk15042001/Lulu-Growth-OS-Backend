@@ -34,7 +34,7 @@ it('shows API and server customer costs for verified or unpaid workspaces',async
   const start=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1)).toISOString().slice(0,10);
   const end=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,0)).toISOString().slice(0,10);
   await db.query(`INSERT INTO ai_usage_ledger(workspace_id,user_id,provider,model,input_tokens,output_tokens,customer_cost_usd)
-    VALUES($1,$2,'deepseek','deepseek-v4-pro',1,1,12.34)`,[workspaceId,userId]);
+    VALUES($1,$2,'openai','gpt-5-mini',1,1,12.34)`,[workspaceId,userId]);
   await db.query(`INSERT INTO workspace_server_usage_ledger(workspace_id,usage_date,provider_cost_usd,customer_cost_usd)
     VALUES($1,CURRENT_DATE,2.835,5.67)`,[workspaceId]);
   const customer=(await repo.listCustomerBillingOverview(start,end)).find((row:any)=>row.id===workspaceId);

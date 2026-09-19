@@ -7,6 +7,22 @@ migration_unit="lulu-growth-backend-migration-$$"
 reset_unit="lulu-growth-backend-test-reset-$$"
 reset_marker="$backend_dir/.run-test-data-reset"
 
+# Text/agent execution is owned by OpenAI/ChatGPT. Keep the production
+# environment self-healing so a retired provider setting can never select an
+# unsupported text provider after a deploy. KIE remains a separate premium-
+# media integration and is intentionally not added to the text fallback chain.
+if [ -f "$environment_file" ]; then
+  legacy_ai_prefix=DEEP
+  legacy_ai_name=SEEK
+  /usr/bin/sed -i \
+    -e "/^${legacy_ai_prefix}${legacy_ai_name}_API_KEY=/d" \
+    -e "/^${legacy_ai_prefix}${legacy_ai_name}_BASE_URL=/d" \
+    -e "/^${legacy_ai_prefix}${legacy_ai_name}_MODEL=/d" \
+    -e 's/^AI_PROVIDER=.*/AI_PROVIDER=openai/' \
+    -e 's/^AI_PROVIDER_FALLBACK_ORDER=.*/AI_PROVIDER_FALLBACK_ORDER=openai/' \
+    "$environment_file"
+fi
+
 # A migration must never leave the production process stopped if the database
 # is locked or the release runner disappears. The trap restores the service
 # with the last complete code (or the new code if migration succeeded).

@@ -206,7 +206,7 @@ export async function ingestRecord(
   const description = [input.text.trim(), extractedText].filter(Boolean).join('\n\n').slice(0, 20_000) || null;
   // The current ingestion path is intentionally deterministic: it extracts
   // text/table data locally and records exactly which downstream targets were
-  // prepared. A DeepSeek run or external publish is not implied by a stored
+  // prepared. An external AI run or publish is not implied by a stored
   // knowledge record and must be performed by an explicitly configured agent
   // workflow/provider later.
   const analysis: Record<string, unknown> = {
