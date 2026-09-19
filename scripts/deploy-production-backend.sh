@@ -18,9 +18,26 @@ if [ -f "$environment_file" ]; then
     -e "/^${legacy_ai_prefix}${legacy_ai_name}_API_KEY=/d" \
     -e "/^${legacy_ai_prefix}${legacy_ai_name}_BASE_URL=/d" \
     -e "/^${legacy_ai_prefix}${legacy_ai_name}_MODEL=/d" \
-    -e 's/^AI_PROVIDER=.*/AI_PROVIDER=openai/' \
-    -e 's/^AI_PROVIDER_FALLBACK_ORDER=.*/AI_PROVIDER_FALLBACK_ORDER=openai/' \
     "$environment_file"
+  if /usr/bin/grep -q '^OPENAI_API_KEY=[^[:space:]]' "$environment_file"; then
+    /usr/bin/sed -i \
+      -e 's/^AI_PROVIDER=.*/AI_PROVIDER=openai/' \
+      -e 's/^AI_PROVIDER_FALLBACK_ORDER=.*/AI_PROVIDER_FALLBACK_ORDER=openai/' \
+      "$environment_file"
+  elif /usr/bin/grep -q '^KIE_API_KEY=[^[:space:]]' "$environment_file"; then
+    # Keep an existing installation available until its ChatGPT key is added.
+    # This is an explicit transitional mode; new environments default to
+    # OpenAI and never include a retired provider in their fallback chain.
+    /usr/bin/sed -i \
+      -e 's/^AI_PROVIDER=.*/AI_PROVIDER=kie/' \
+      -e 's/^AI_PROVIDER_FALLBACK_ORDER=.*/AI_PROVIDER_FALLBACK_ORDER=kie/' \
+      "$environment_file"
+  else
+    /usr/bin/sed -i \
+      -e 's/^AI_PROVIDER=.*/AI_PROVIDER=openai/' \
+      -e 's/^AI_PROVIDER_FALLBACK_ORDER=.*/AI_PROVIDER_FALLBACK_ORDER=openai/' \
+      "$environment_file"
+  fi
 fi
 
 # A migration must never leave the production process stopped if the database
