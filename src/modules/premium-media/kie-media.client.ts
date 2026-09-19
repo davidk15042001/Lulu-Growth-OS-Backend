@@ -171,6 +171,7 @@ async function requestJson(
         await pause(250 * (2 ** attempt));
         continue;
       }
+      break;
     }
   }
   throw new AppError(502, 'KIE_NETWORK_ERROR', 'Kie.ai could not be reached', {
