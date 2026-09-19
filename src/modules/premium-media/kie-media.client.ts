@@ -1,5 +1,6 @@
 import { env, hasKie } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
+import { waitForKieGenerationSlot } from './kie-rate-limiter.js';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -105,15 +106,32 @@ async function pause(delayMs: number) {
   await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
 }
 
+function isKiePost(url: URL, method?: string) {
+  if (String(method ?? 'GET').toUpperCase() !== 'POST') return false;
+  return [env.KIE_BASE_URL, env.KIE_UPLOAD_BASE_URL].some((base) => {
+    try { return new URL(base).origin === url.origin; } catch { return false; }
+  });
+}
+
+function retryAfterMs(headers: Headers) {
+  const value = headers.get('retry-after')?.trim();
+  if (!value) return 0;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) return Math.min(60_000, Math.max(250, Math.round(seconds * 1_000)));
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.min(60_000, Math.max(250, date - Date.now())) : 0;
+}
+
 async function requestJson(
   url: URL,
   init: RequestInit = {},
   options: { retries?: number; timeoutMs?: number } = {},
 ): Promise<JsonRecord> {
-  const retries = kieRequestRetryBudget(init.method, options.retries);
+  let retries = kieRequestRetryBudget(init.method, options.retries);
   let lastError: unknown;
-  for (let attempt = 0; attempt <= retries; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     try {
+      if (isKiePost(url, init.method)) await waitForKieGenerationSlot();
       const response = await fetch(url, {
         ...init,
         headers: {
@@ -129,8 +147,13 @@ async function requestJson(
       try { body = asRecord(text ? JSON.parse(text) : {}); } catch { body = { raw: text.slice(0, 2_000) }; }
       if (!response.ok) {
         const retryable = response.status === 429 || response.status >= 500;
+        // Kie explicitly does not enqueue quota-exceeded requests. A 429 is
+        // therefore safe to retry after waiting for another global slot, while
+        // billable POST 5xx responses remain non-replayed because their outcome
+        // may be ambiguous.
+        if (response.status === 429) retries = Math.max(retries, 2);
         if (retryable && attempt < retries) {
-          await pause(250 * (2 ** attempt));
+          await pause(response.status === 429 ? retryAfterMs(response.headers) || 750 : 250 * (2 ** attempt));
           continue;
         }
         const code = response.status === 402 ? 'KIE_CREDITS_REQUIRED' : 'KIE_REQUEST_FAILED';
@@ -151,7 +174,7 @@ async function requestJson(
     }
   }
   throw new AppError(502, 'KIE_NETWORK_ERROR', 'Kie.ai could not be reached', {
-    reason: lastError instanceof Error ? lastError.message : 'Unknown provider error',
+    reason: lastError instanceof Error ? (lastError as Error).message : String(lastError ?? 'Unknown provider error'),
   });
 }
 
