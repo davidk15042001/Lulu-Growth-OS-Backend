@@ -5,6 +5,7 @@ import { logger } from '../../config/logger.js';
 import { buildUpdateSet } from '../../db/update-builder.js';
 import { query, withTransaction } from '../../db/pool.js';
 import { requestWorkspaceAutomationPause } from '../workspaces/workspace-automation.service.js';
+import { resumeWorkspaceGoogleAdsCampaigns } from '../adspend/google-ads-spend.service.js';
 import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { AWS_USAGE_CUSTOMER_MULTIPLIER, getLatestPaygPaymentMethodSetup, isBillingAdminUser } from '../billing/payg-billing.repo.js';
@@ -756,7 +757,9 @@ export async function updateWorkspaceSettings(
     const settings = rows[0]!;
     const requestedPause = input.agents?.paused;
     if (requestedPause === true) await requestWorkspaceAutomationPause(workspaceId, true, client);
-    return { settings, before: before?.settings ?? {} };
+    const wasPaused = before?.settings?.agents && typeof before.settings.agents === 'object'
+      && (before.settings.agents as Record<string, unknown>).paused === true;
+    return { settings, before: before?.settings ?? {}, resumeRequested: requestedPause === false && wasPaused };
   });
 
   try {
@@ -768,6 +771,16 @@ export async function updateWorkspaceSettings(
     );
   } catch (error) {
     logger.error({ error, workspaceId, userId }, 'Workspace settings audit could not be recorded');
+  }
+
+  // Provider resume is deliberately best-effort.  The switch itself is
+  // already persisted as active; a missing connection, changed campaign
+  // mapping, or insufficient ad funds must leave that campaign paused rather
+  // than making the settings request fail or spending without authorization.
+  if (result.resumeRequested) {
+    await resumeWorkspaceGoogleAdsCampaigns(workspaceId).catch((error) => {
+      logger.warn({ error, workspaceId, userId }, 'Google Ads campaigns could not be resumed after workspace activation');
+    });
   }
 
   return result.settings;

@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { env } from '../../config/env.js';
+import { logger } from '../../config/logger.js';
 import { AppError } from '../../utils/app-error.js';
 import { decryptSecret } from '../../utils/secret-box.js';
 import { getPlatformOAuthCredential } from '../onboarding/onboarding.repo.js';
@@ -16,11 +17,13 @@ import {
   markGoogleAdsLaunchRejected,
   markGoogleAdsLaunchUncertain,
   markGoogleAdsPauseOutcome,
+  markGoogleAdsAllocationResumed,
   recordGoogleAdsBillingEvidence,
   recordGoogleAdsCostObservation,
   renewGoogleAdsSpendAllocationLease,
   requestGoogleAdsAllocationClosure,
   scheduleGoogleAdsSpendAllocation,
+  listWorkspacePausedGoogleAdsAllocations,
   type GoogleAdsSpendAllocation,
 } from './google-ads-spend.repo.js';
 import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
@@ -456,6 +459,100 @@ export async function pauseGoogleAdsCampaign(workspaceId: string, input: GoogleA
     if (allocation) await markGoogleAdsPauseOutcome({ workspaceId, reservationId: allocation.reservationId, definitive: false, error }).catch(() => undefined);
     throw error;
   }
+}
+
+/**
+ * Resume campaigns that were paused by the workspace-wide Agents switch.
+ *
+ * An allocation whose prepaid reservation is still held is resumed in place;
+ * no additional ad budget is created.  Once the old allocation has already
+ * completed provider billing, the normal launch path is used instead.  That
+ * path re-checks the customer authorization and the available ad wallet, so
+ * a campaign never restarts without an explicit, funded budget.
+ *
+ * Provider failures are intentionally isolated per campaign.  The workspace
+ * switch remains enabled and the affected campaign stays paused until a
+ * later reconciliation or an explicit retry can safely resume it.
+ */
+export async function resumeWorkspaceGoogleAdsCampaigns(workspaceId: string) {
+  await assertWorkspaceAutomationActive(workspaceId);
+  const allocations = await listWorkspacePausedGoogleAdsAllocations(workspaceId);
+  const results: Array<{ reservationId: string; status: 'RESUMED' | 'SKIPPED' | 'FAILED'; reason?: string }> = [];
+
+  for (const allocation of allocations) {
+    try {
+      await assertWorkspaceAutomationActive(workspaceId);
+
+      // A finalized allocation has released its old hold.  Relaunch through
+      // the regular launch flow so authorization and wallet funds are checked
+      // atomically before Google Ads is enabled again.
+      if (allocation.closureState === 'FINALIZED') {
+        const budgetAmountCny = Number(BigInt(allocation.capMicros)) / 1_000_000;
+        await launchGoogleAdsAllocation(workspaceId, {
+          provider: 'google-ads', action: 'launch',
+          customerId: allocation.customerId, campaignId: allocation.campaignId,
+          loginCustomerId: allocation.loginCustomerId,
+          authorizationId: allocation.authorizationId,
+          budgetAmountCny,
+          operationKey: `workspace-resume:${allocation.reservationId}`,
+        });
+        results.push({ reservationId: allocation.reservationId, status: 'RESUMED' });
+        continue;
+      }
+
+      // The original prepaid hold is the budget for an in-place resume.  If
+      // reconciliation has already released it, leave the campaign paused;
+      // the finalized branch above is the only safe relaunch path.
+      if (allocation.reservationStatus !== 'RESERVED') {
+        results.push({ reservationId: allocation.reservationId, status: 'SKIPPED', reason: 'Ad budget reservation is no longer held.' });
+        continue;
+      }
+
+      const payer: GoogleAdsPayer = {
+        loginCustomerId: allocation.loginCustomerId,
+        paymentsAccountId: allocation.paymentsAccountId,
+        paymentsProfileId: allocation.paymentsProfileId,
+      };
+      if (!configuredPayerMatches(allocation, requiredPayer())) {
+        results.push({ reservationId: allocation.reservationId, status: 'SKIPPED', reason: 'Google Ads payer mapping changed.' });
+        continue;
+      }
+      const snapshot = await readGoogleCampaignSnapshot(workspaceId, allocation.customerId, allocation.campaignId, payer);
+      if (snapshot.billingSetupResourceName !== allocation.billingSetupResourceName
+        || snapshot.paymentsAccountId !== allocation.paymentsAccountId
+        || snapshot.paymentsProfileId !== allocation.paymentsProfileId) {
+        results.push({ reservationId: allocation.reservationId, status: 'SKIPPED', reason: 'Google Ads billing mapping changed.' });
+        continue;
+      }
+      const desiredBudget = BigInt(allocation.desiredTotalBudgetMicros);
+      // Never use the activation switch to increase an externally changed
+      // campaign budget.  The customer must authorize that explicitly.
+      if (snapshot.budgetTotalMicros !== desiredBudget) {
+        results.push({ reservationId: allocation.reservationId, status: 'SKIPPED', reason: 'Campaign budget no longer matches the authorized cap.' });
+        continue;
+      }
+      if (!['PAUSED', 'ENABLED'].includes(snapshot.campaignStatus)) {
+        results.push({ reservationId: allocation.reservationId, status: 'SKIPPED', reason: `Campaign is ${snapshot.campaignStatus}, not safely resumable.` });
+        continue;
+      }
+      const provider = snapshot.campaignStatus === 'ENABLED'
+        ? null
+        : await mutateGoogleCampaign(workspaceId, payer, allocation.customerId, launchMutationBody(snapshot, desiredBudget));
+      const resumed = await markGoogleAdsAllocationResumed({
+        workspaceId, reservationId: allocation.reservationId, providerRequestId: provider?.requestId ?? null,
+      });
+      if (!resumed || resumed.closureState !== 'OPEN') {
+        results.push({ reservationId: allocation.reservationId, status: 'SKIPPED', reason: 'Allocation was already finalized during resume.' });
+      } else {
+        results.push({ reservationId: allocation.reservationId, status: 'RESUMED' });
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      logger.warn({ error, workspaceId, reservationId: allocation.reservationId }, 'Google Ads campaign could not be resumed after workspace activation');
+      results.push({ reservationId: allocation.reservationId, status: 'FAILED', reason: reason.slice(0, 500) });
+    }
+  }
+  return results;
 }
 
 function observationKey(allocation: GoogleAdsSpendAllocation, snapshot: GoogleCampaignSnapshot) {

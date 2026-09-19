@@ -227,6 +227,63 @@ export async function listGoogleAdsSpendAllocations(workspaceId: string) {
   });
 }
 
+/**
+ * Allocations that were stopped by the workspace-wide Agents switch.  The
+ * latest allocation per campaign wins so a previously finalized, old pause
+ * cannot accidentally relaunch a campaign that has since been allocated
+ * again.  The reservation status is returned for the resume safety check:
+ * an allocation may only be resumed in-place while its prepaid hold still
+ * exists.
+ */
+export async function listWorkspacePausedGoogleAdsAllocations(workspaceId: string) {
+  return (await query<GoogleAdsSpendAllocation & { reservationStatus: string }>(
+    `SELECT a.*,r.status AS "reservationStatus"
+       FROM (SELECT ${allocationSelect}
+               FROM workspace_google_ads_spend_allocations
+              WHERE workspace_id=$1) a
+       JOIN workspace_ad_spend_reservations r
+         ON r.workspace_id=a."workspaceId" AND r.id=a."reservationId"
+      WHERE a."workspaceId"=$1
+        AND a."launchState"='APPLIED'
+        AND a."closeReason"='Workspace automation paused'
+        AND a."createdAt"=(
+          SELECT MAX(latest.created_at)
+            FROM workspace_google_ads_spend_allocations latest
+           WHERE latest.workspace_id=a."workspaceId"
+             AND latest.customer_id=a."customerId"
+             AND latest.campaign_id=a."campaignId"
+             AND latest.launch_state='APPLIED'
+        )
+      ORDER BY a.created_at DESC`,
+    [workspaceId],
+  )).rows;
+}
+
+/** Mark an allocation active again after the provider accepted an enable
+ * mutation.  This deliberately refuses finalized rows: those have already
+ * settled their provider billing and must be relaunched through the normal
+ * budget/reservation path instead of reopening settled funds. */
+export async function markGoogleAdsAllocationResumed(input: {
+  workspaceId: string;
+  reservationId: string;
+  providerRequestId?: string | null;
+}) {
+  const row = (await query<GoogleAdsSpendAllocation>(
+    `UPDATE workspace_google_ads_spend_allocations SET
+       closure_state='OPEN',close_requested_at=NULL,close_reason=NULL,
+       provider_campaign_status='ENABLED',provider_request_id=COALESCE($3,provider_request_id),
+       provider_paused_at=NULL,billing_evidence_at=NULL,billing_evidence='{}'::jsonb,
+       finalized_at=NULL,next_reconcile_at=NOW(),lease_owner=NULL,lease_expires_at=NULL,
+       last_error_code=NULL,last_error_message=NULL
+     WHERE workspace_id=$1 AND reservation_id=$2
+       AND launch_state='APPLIED' AND closure_state<>'FINALIZED'
+       AND close_reason='Workspace automation paused'
+     RETURNING ${allocationSelect}`,
+    [input.workspaceId, input.reservationId, input.providerRequestId ?? null],
+  )).rows[0];
+  return row ?? getGoogleAdsSpendAllocation(input.workspaceId, input.reservationId);
+}
+
 export async function markGoogleAdsLaunchApplied(input: {
   workspaceId: string;
   reservationId: string;
