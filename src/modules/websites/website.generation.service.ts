@@ -175,8 +175,8 @@ const forbiddenContent = /hello world|under construction|website is being built|
 
 function configuredModel() {
   if (env.AI_PROVIDER === 'alibaba') return env.DASHSCOPE_MODEL;
-  if (env.AI_PROVIDER === 'deepseek') return env.DEEPSEEK_MODEL;
   if (env.AI_PROVIDER === 'groq') return env.GROQ_MODEL;
+  if (env.AI_PROVIDER === 'kie') return env.KIE_QUALITY_MODEL;
   return env.OPENAI_MODEL;
 }
 
@@ -249,7 +249,6 @@ async function createJsonCompletion(input: { workspaceId: string; userId: string
     model: configuredModel(),
     messages: [{ role: 'system', content: input.system }, { role: 'user', content: input.user }],
     response_format: { type: 'json_object' },
-    ...(env.AI_PROVIDER === 'deepseek' ? { thinking: { type: 'disabled' } } : {}),
     temperature: 0.15,
     ...tokenLimit,
   };
