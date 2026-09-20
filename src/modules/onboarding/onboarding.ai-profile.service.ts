@@ -2,7 +2,11 @@ import { AppError, notFoundError } from '../../utils/app-error.js';
 import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import { getKnowledgeBundle } from '../agents/agent.repo.js';
+import { logger } from '../../config/logger.js';
+import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
+import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import * as repo from './onboarding.repo.js';
+import { ensureBusinessContextDefaults } from './onboarding.service.js';
 
 type GeneratedCompetitorDraft = repo.GeneratedCompetitorInput;
 type CompetitorContext = Pick<
@@ -199,14 +203,14 @@ function buildAiBusinessProfileInstructions() {
     'Use the provided workspace context, offerings, segments, connected platforms, existing intelligence, and exactly the provided competitor set.',
     'Return exactly one high-quality value proposition, exactly one durable vision statement, and exactly five distinct, ranked target-market recommendations.',
     'Return 5 to 10 high-quality options for each remaining category: primary ICPs, USPs, short brand descriptions, primary challenges, and languages.',
-    'Also return exactly 20 customer segments ranked from strongest to weakest opportunity for this business.',
+    'Also return exactly 10 audience/customer segments ranked from strongest to weakest opportunity for this business. These must be the best available segments, not filler.',
     'Every option must be materially distinct, strategically useful, specific, and stronger than a generic marketing phrase.',
     'The suggestions must explicitly use competitor gaps, weaknesses, blind spots, or whitespace opportunities from the competitor set.',
     'Do not invent company facts, certifications, metrics, customers, or product capabilities that are not supported by the context.',
     'Treat the output as strategic recommendations, not verified facts.',
     'Also return a recommended best profile consisting of the generated value proposition, vision, top-ranked target market, primary ICP, USP, short brand description, plus the best list of primary challenges and languages.',
     'For each customer segment include: name, industry, companySize, region, maturityLevel, painPoints, jobsToBeDone, decisionCriteria, useCases, buyingRoles, priceSensitivity, primarySegment, notes, score, and whyItFits.',
-    'The 20 customer segments must be the best 20, not filler. They should be ordered by expected strategic fit and revenue opportunity.',
+    'The 10 audience/customer segments must be the best 10, not filler. They should be ordered by expected strategic fit and revenue opportunity.',
     'Also compare all 10 competitors and explain for each where whitespace exists and why the workspace can win.',
     'Use only valid JSON without markdown fences.',
     'Output shape: {"summary":string,"recommendedProfile":{"valueProposition":string,"vision":string,"targetMarket":string,"primaryIcp":string,"usp":string,"shortBrandDescription":string,"primaryChallenges":string[],"languages":string[]},"suggestions":{"valuePropositions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"visions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"targetMarkets":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryIcps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"usps":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"shortBrandDescriptions":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"primaryChallenges":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}],"languages":[{"value":string,"whyItFits":string,"competitorGap":string,"score":number}]},"customerSegments":[{"name":string,"industry":string|null,"companySize":string|null,"region":string|null,"maturityLevel":string|null,"painPoints":string[],"jobsToBeDone":string[],"decisionCriteria":string[],"useCases":string[],"buyingRoles":string[],"priceSensitivity":string|null,"primarySegment":boolean,"notes":string|null,"score":number,"whyItFits":string}],"competitorComparison":[{"name":string,"websiteUrl":string|null,"competitorType":string|null,"market":string|null,"positioning":string|null,"strengths":string[],"weaknesses":string[],"whitespace":string[],"whyYouCanWin":string}]}',
@@ -289,7 +293,7 @@ function normaliseGeneratedCustomerSegments(
       seen.add(key);
       return true;
     })
-    .slice(0, 20)
+    .slice(0, 10)
     .map((entry, index) => ({
       ...entry,
       primarySegment: typeof raw[index] === 'object' && raw[index] !== null && typeof (raw[index] as Record<string, unknown>).primarySegment === 'boolean'
@@ -297,9 +301,9 @@ function normaliseGeneratedCustomerSegments(
         : index < 3,
     }));
 
-  if (normalized.length < 20 && fallbackSegments.length > 0) {
+  if (normalized.length < 10 && fallbackSegments.length > 0) {
     for (const fallback of fallbackSegments) {
-      if (normalized.length >= 20) break;
+      if (normalized.length >= 10) break;
       const key = fallback.name.trim().toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
@@ -323,11 +327,11 @@ function normaliseGeneratedCustomerSegments(
     }
   }
 
-  if (normalized.length < 20) {
-    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return the required 20 usable customer segments');
+  if (normalized.length < 5) {
+    throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return at least 5 usable audience segments');
   }
 
-  return normalized.slice(0, 20).map((entry, index) => ({
+  return normalized.slice(0, 10).map((entry, index) => ({
     ...entry,
     primarySegment: index < 3 ? entry.primarySegment : false,
   }));
@@ -378,11 +382,11 @@ export function normaliseAiBusinessProfilePayload(
     valuePropositions: normaliseSuggestionList(suggestionsValue.valuePropositions, 1, 1),
     visions: normaliseSuggestionList(suggestionsValue.visions, 1, 1),
     targetMarkets: normaliseSuggestionList(suggestionsValue.targetMarkets, 5, 5),
-    primaryIcps: normaliseSuggestionList(suggestionsValue.primaryIcps),
-    usps: normaliseSuggestionList(suggestionsValue.usps),
-    shortBrandDescriptions: normaliseSuggestionList(suggestionsValue.shortBrandDescriptions),
-    primaryChallenges: normaliseSuggestionList(suggestionsValue.primaryChallenges),
-    languages: normaliseSuggestionList(suggestionsValue.languages),
+    primaryIcps: normaliseSuggestionList(suggestionsValue.primaryIcps, 5, 10),
+    usps: normaliseSuggestionList(suggestionsValue.usps, 5, 10),
+    shortBrandDescriptions: normaliseSuggestionList(suggestionsValue.shortBrandDescriptions, 5, 10),
+    primaryChallenges: normaliseSuggestionList(suggestionsValue.primaryChallenges, 5, 10),
+    languages: normaliseSuggestionList(suggestionsValue.languages, 5, 10),
   } satisfies repo.AiBusinessProfilePayload['suggestions'];
 
   if (
@@ -395,7 +399,7 @@ export function normaliseAiBusinessProfilePayload(
       suggestions.shortBrandDescriptions,
       suggestions.primaryChallenges,
       suggestions.languages,
-    ].some((group) => group.length < 3)
+    ].some((group) => group.length < 5)
   ) {
     throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return enough usable profile suggestions');
   }
@@ -447,7 +451,11 @@ export function getAiBusinessProfile(workspaceId: string) {
   return repo.getAiBusinessProfile(workspaceId);
 }
 
-export async function generateAiBusinessProfile(workspaceId: string, userId: string) {
+export async function generateAiBusinessProfile(
+  workspaceId: string,
+  userId: string,
+  options: { persistGeneratedLists?: boolean } = {},
+) {
   if (!isAiGenerationConfigured()) {
     throw new AppError(503, 'AI_NOT_CONFIGURED', 'The AI provider is not configured for AI business profile generation');
   }
@@ -463,9 +471,15 @@ export async function generateAiBusinessProfile(workspaceId: string, userId: str
     getKnowledgeBundle(workspaceId).catch(() => null),
   ]);
 
-  const competitors = storedCompetitors.length >= 10
-    ? storedCompetitors.slice(0, 10)
-    : await generateCompetitorDrafts(workspaceId, userId);
+  let generatedCompetitors: GeneratedCompetitorDraft[] = [];
+  if (storedCompetitors.length < 10) {
+    generatedCompetitors = await generateCompetitorDrafts(workspaceId, userId);
+  }
+  const existingCompetitorNames = new Set(storedCompetitors.map((item) => item.name.trim().toLocaleLowerCase()));
+  const competitors = [
+    ...storedCompetitors,
+    ...generatedCompetitors.filter((item) => !existingCompetitorNames.has(item.name.trim().toLocaleLowerCase())),
+  ].slice(0, 10);
 
   if (competitors.length === 0) {
     throw new AppError(422, 'SEARCH_INTELLIGENCE_CONTEXT_MISSING', 'At least one competitor is required for AI business profile generation');
@@ -522,12 +536,26 @@ export async function generateAiBusinessProfile(workspaceId: string, userId: str
   }, { billing: { workspaceId, userId } });
 
   const payload = normaliseAiBusinessProfilePayload(extractJson(response.output_text), competitors, customerSegments);
-  return repo.saveAiBusinessProfile({
+  const profile = await repo.saveAiBusinessProfile({
     workspaceId,
     payload,
     model,
     generatedAt: new Date().toISOString(),
   });
+
+  // Automatic activation may persist the ranked AI lists into the canonical
+  // onboarding tables, but only when the customer has not entered any data.
+  // Manual profile generation keeps its existing draft-only behaviour.
+  if (options.persistGeneratedLists) {
+    if (storedCompetitors.length === 0 && generatedCompetitors.length > 0) {
+      await repo.replaceGeneratedCompetitors(workspaceId, userId, generatedCompetitors.slice(0, 10));
+    }
+    if (customerSegments.length === 0 && payload.customerSegments.length >= 5) {
+      await repo.replaceGeneratedCustomerSegments(workspaceId, payload.customerSegments.slice(0, 10));
+    }
+  }
+
+  return profile;
 }
 
 export function applyGeneratedCustomerSegments(workspaceId: string, segments: repo.AiGeneratedCustomerSegment[]) {
@@ -541,3 +569,63 @@ export async function applyStoredAiCustomerSegments(workspaceId: string) {
   }
   return repo.replaceGeneratedCustomerSegments(workspaceId, profile.payload.customerSegments);
 }
+
+const automaticProfileRuns = new Set<string>();
+
+/**
+ * Prepare the Business Context for every activation path. The deterministic
+ * draft is written first, so the UI is immediately useful even when an AI
+ * provider is unavailable or the customer has not funded AI execution yet.
+ * When possible, the full AI profile is generated in the background and its
+ * recommendations are applied only where the customer has not edited a field.
+ */
+export async function ensureAutomaticallyGeneratedBusinessContext(workspaceId: string, userId: string) {
+  if (automaticProfileRuns.has(workspaceId)) return { workspaceId, status: 'already_running' };
+  automaticProfileRuns.add(workspaceId);
+  try {
+    const prepared = await ensureBusinessContextDefaults(workspaceId);
+    if (!prepared) return { workspaceId, status: 'workspace_missing' };
+
+    const existing = await repo.getAiBusinessProfile(workspaceId);
+    if (existing?.generatedAt && existing.payload?.recommendedProfile) {
+      return { workspaceId, status: 'already_generated', generatedAt: existing.generatedAt };
+    }
+
+    if (!isAiGenerationConfigured()) return { workspaceId, status: 'draft_ready', ai: 'not_configured' };
+
+    try {
+      const profile = await generateAiBusinessProfile(workspaceId, userId, { persistGeneratedLists: true });
+      if (!profile?.payload?.recommendedProfile) return { workspaceId, status: 'draft_ready', ai: 'empty' };
+      await repo.applyRecommendedBusinessContext(workspaceId, prepared.defaults, profile.payload.recommendedProfile);
+      return { workspaceId, status: 'generated', generatedAt: profile.generatedAt ?? null };
+    } catch (error) {
+      // A provider, wallet or rate-limit failure must not turn the activation
+      // event into an endless retry loop. The safe draft remains persisted.
+      logger.warn({
+        error: error instanceof Error ? error.message : String(error),
+        workspaceId,
+      }, 'Automatic business context enrichment deferred; deterministic draft retained');
+      return { workspaceId, status: 'draft_ready', ai: 'deferred' };
+    }
+  } finally {
+    automaticProfileRuns.delete(workspaceId);
+  }
+}
+
+registerDomainEventHandler({
+  name: 'onboarding.automatic-business-context',
+  eventTypes: [
+    DOMAIN_EVENT_TYPES.BILLING_ACTIVATED,
+    DOMAIN_EVENT_TYPES.WORKSPACE_ACTIVATED,
+    DOMAIN_EVENT_TYPES.API_FUNDS_FUNDED,
+  ],
+  async handle(event) {
+    if (!event.workspaceId) return { status: 'ignored', reason: 'workspace_missing' };
+    const workspace = await findWorkspaceById(event.workspaceId);
+    if (!workspace) return { status: 'ignored', reason: 'workspace_missing' };
+    const actorId = typeof event.metadata?.actorId === 'string' && event.metadata.actorId.trim()
+      ? event.metadata.actorId
+      : workspace.createdBy;
+    return ensureAutomaticallyGeneratedBusinessContext(event.workspaceId, actorId);
+  },
+});

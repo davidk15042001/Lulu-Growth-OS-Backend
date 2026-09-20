@@ -1457,6 +1457,15 @@ export async function updateWorkspaceStatus(workspaceId: string, action: 'lock' 
         if (!before.onboardingCompletedAt && before.onboardingStep === 'billing') {
           await query(`UPDATE workspaces SET onboarding_step='profile_completion',billing_skipped_at=NOW(),billing_skipped_by=$2,onboarding_file_reupload_required=FALSE,updated_at=NOW() WHERE id=$1`,[workspaceId,actorId],client);
           await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,before_data,after_data) VALUES($1::uuid,$2,'onboarding.billing_skipped','workspace',$1::text,$3::jsonb,$4::jsonb)`,[workspaceId,actorId,JSON.stringify(before),JSON.stringify({onboardingStep:'profile_completion',billingSkipped:true,subscriptionChanged:false,creditsGranted:false})],client);
+          await appendDomainEvent({
+            workspaceId,
+            type: DOMAIN_EVENT_TYPES.WORKSPACE_ACTIVATED,
+            aggregateType: 'workspace',
+            aggregateId: workspaceId,
+            payload: { trigger: 'admin_billing_skip' },
+            metadata: { actorId, source: 'admin' },
+            idempotencyKey: `workspace-activated:admin-billing-skip:${workspaceId}`,
+          }, client);
         }
       });
       break;

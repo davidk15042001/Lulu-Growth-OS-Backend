@@ -887,6 +887,109 @@ export async function archivePlatform(workspaceId: string, platformId: string) {
   return rowCount > 0;
 }
 
+export type BusinessContextDefaults = {
+  businessDescription: string;
+  valueProposition: string;
+  targetMarket: string;
+  shortBrandDescription: string;
+  positioningTags: string[];
+  primaryIcp: string;
+  usp: string;
+  mission: string;
+  vision: string;
+  primaryChallenges: string[];
+  languages: string[];
+};
+
+/**
+ * Make the business context usable immediately after account activation.
+ *
+ * These are deliberately conservative drafts derived only from verified
+ * company information. They never overwrite a value entered by the customer;
+ * the later AI enrichment may replace only values that still equal these
+ * drafts.
+ */
+export async function ensureBusinessContextDefaults(workspaceId: string, defaults: BusinessContextDefaults) {
+  const { rows } = await query(
+    `UPDATE workspaces
+        SET business_description = COALESCE(NULLIF(trim(business_description), ''), $2),
+            value_proposition = COALESCE(NULLIF(trim(value_proposition), ''), $3),
+            target_market = COALESCE(NULLIF(trim(target_market), ''), $4),
+            short_brand_description = COALESCE(NULLIF(trim(short_brand_description), ''), $5),
+            positioning_tags = CASE WHEN COALESCE(array_length(positioning_tags, 1), 0) = 0 THEN $6::text[] ELSE positioning_tags END,
+            primary_icp = COALESCE(NULLIF(trim(primary_icp), ''), $7),
+            usp = COALESCE(NULLIF(trim(usp), ''), $8),
+            mission = COALESCE(NULLIF(trim(mission), ''), $9),
+            vision = COALESCE(NULLIF(trim(vision), ''), $10),
+            primary_challenges = CASE WHEN COALESCE(array_length(primary_challenges, 1), 0) = 0 THEN $11::text[] ELSE primary_challenges END,
+            languages = CASE WHEN COALESCE(array_length(languages, 1), 0) = 0 THEN $12::text[] ELSE languages END,
+            updated_at = NOW()
+      WHERE id = $1 AND deleted_at IS NULL
+      RETURNING id`,
+    [
+      workspaceId,
+      defaults.businessDescription,
+      defaults.valueProposition,
+      defaults.targetMarket,
+      defaults.shortBrandDescription,
+      defaults.positioningTags,
+      defaults.primaryIcp,
+      defaults.usp,
+      defaults.mission,
+      defaults.vision,
+      defaults.primaryChallenges,
+      defaults.languages,
+    ],
+  );
+  return rows[0] ?? null;
+}
+
+export type RecommendedBusinessContext = Pick<
+  BusinessContextDefaults,
+  'valueProposition' | 'targetMarket' | 'shortBrandDescription' | 'primaryIcp' | 'usp' | 'vision' | 'primaryChallenges' | 'languages'
+>;
+
+/** Apply AI recommendations without overwriting customer-entered values. */
+export async function applyRecommendedBusinessContext(
+  workspaceId: string,
+  defaults: BusinessContextDefaults,
+  recommended: RecommendedBusinessContext,
+) {
+  const { rowCount } = await query(
+    `UPDATE workspaces
+        SET value_proposition = CASE WHEN NULLIF(trim(value_proposition), '') IS NULL OR value_proposition = $2 THEN $3 ELSE value_proposition END,
+            target_market = CASE WHEN NULLIF(trim(target_market), '') IS NULL OR target_market = $4 THEN $5 ELSE target_market END,
+            short_brand_description = CASE WHEN NULLIF(trim(short_brand_description), '') IS NULL OR short_brand_description = $6 THEN $7 ELSE short_brand_description END,
+            primary_icp = CASE WHEN NULLIF(trim(primary_icp), '') IS NULL OR primary_icp = $8 THEN $9 ELSE primary_icp END,
+            usp = CASE WHEN NULLIF(trim(usp), '') IS NULL OR usp = $10 THEN $11 ELSE usp END,
+            vision = CASE WHEN NULLIF(trim(vision), '') IS NULL OR vision = $12 THEN $13 ELSE vision END,
+            primary_challenges = CASE WHEN COALESCE(array_length(primary_challenges, 1), 0) = 0 OR primary_challenges = $14::text[] THEN $15::text[] ELSE primary_challenges END,
+            languages = CASE WHEN COALESCE(array_length(languages, 1), 0) = 0 OR languages = $16::text[] THEN $17::text[] ELSE languages END,
+            updated_at = NOW()
+      WHERE id = $1 AND deleted_at IS NULL`,
+    [
+      workspaceId,
+      defaults.valueProposition,
+      recommended.valueProposition,
+      defaults.targetMarket,
+      recommended.targetMarket,
+      defaults.shortBrandDescription,
+      recommended.shortBrandDescription,
+      defaults.primaryIcp,
+      recommended.primaryIcp,
+      defaults.usp,
+      recommended.usp,
+      defaults.vision,
+      recommended.vision,
+      defaults.primaryChallenges,
+      recommended.primaryChallenges,
+      defaults.languages,
+      recommended.languages,
+    ],
+  );
+  return rowCount > 0;
+}
+
 export type AiPreferences = AiPreferencesInput & { workspaceId: string; createdAt: string; updatedAt: string };
 
 export type AiBusinessProfileSuggestion = {

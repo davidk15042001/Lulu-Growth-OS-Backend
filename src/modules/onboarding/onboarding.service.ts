@@ -27,6 +27,9 @@ import type {
 } from './onboarding.validator.js';
 
 export async function getSnapshot(workspaceId: string, userId: string) {
+  // Existing workspaces created before automatic context generation must also
+  // become useful immediately when the page is opened for the first time.
+  await ensureBusinessContextDefaults(workspaceId);
   const [workspace, offerings, customerSegments, competitors, platforms, aiPreferences, completion, aiBusinessProfile] = await Promise.all([
     workspaceService.getWorkspace(workspaceId, userId),
     repo.listOfferings(workspaceId),
@@ -39,6 +42,48 @@ export async function getSnapshot(workspaceId: string, userId: string) {
   ]);
 
   return { workspace, offerings, customerSegments, competitors, platforms, aiPreferences: aiPreferences ?? null, completion, aiBusinessProfile };
+}
+
+function defaultLanguages(countryRegion: string | null) {
+  const region = String(countryRegion ?? '').toLowerCase();
+  const languages = ['English'];
+  if (/(germany|deutschland|austria|österreich|switzerland|schweiz|deutsch)/i.test(region)) languages.push('German');
+  if (/(china|中国|hong kong|香港|taiwan|台湾|中文)/i.test(region)) languages.push('Chinese');
+  return languages;
+}
+
+export function businessContextDefaults(workspace: { companyName: string; industry: string | null; countryRegion: string | null }) {
+  const companyName = workspace.companyName?.trim() || 'This company';
+  const industry = workspace.industry?.trim() || 'its target industry';
+  const region = workspace.countryRegion?.trim();
+  const market = region ? `${region} and relevant international markets` : 'Relevant customers in the target market';
+  const industryLabel = industry.toLowerCase() === 'its target industry' ? industry : industry;
+  return {
+    businessDescription: `${companyName} operates in ${industryLabel} and develops solutions for its customers.`,
+    valueProposition: `${companyName} helps customers in ${industryLabel} solve important business problems with reliable, practical solutions.`,
+    targetMarket: market,
+    shortBrandDescription: `${companyName} is a customer-focused ${industryLabel} company.`,
+    positioningTags: [industry],
+    primaryIcp: `Decision-makers and teams looking for dependable ${industryLabel} solutions.`,
+    usp: `A focused, reliable approach tailored to the needs of customers in ${industryLabel}.`,
+    mission: `Create measurable customer value through dependable solutions in ${industryLabel}.`,
+    vision: `Become a trusted and recognised provider in ${industryLabel}.`,
+    primaryChallenges: ['Clarify the ideal customer profile', 'Build predictable demand', 'Improve conversion and customer retention'],
+    languages: defaultLanguages(workspace.countryRegion),
+  } satisfies repo.BusinessContextDefaults;
+}
+
+/**
+ * Fill only missing fields with a safe, traceable draft derived from the
+ * company profile. This is intentionally synchronous and provider-free so a
+ * payment, admin skip, or first page load can never leave the form blank.
+ */
+export async function ensureBusinessContextDefaults(workspaceId: string) {
+  const workspace = await findWorkspaceById(workspaceId);
+  if (!workspace) return null;
+  const defaults = businessContextDefaults(workspace);
+  await repo.ensureBusinessContextDefaults(workspaceId, defaults);
+  return { workspaceId, defaults };
 }
 
 export async function saveCompanyInformation(
@@ -61,6 +106,7 @@ export async function saveCompanyInformation(
     await authRepo.updateUserProfile(userId, { firstName, lastName });
   }
   await repo.saveCompanyInformation(workspaceId, input);
+  await ensureBusinessContextDefaults(workspaceId);
   return workspaceService.getWorkspace(workspaceId, userId);
 }
 
