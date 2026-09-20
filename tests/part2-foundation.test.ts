@@ -152,8 +152,10 @@ describe('Part 2 tenant and authorization foundation', () => {
       address: 'Shanghai',
       legalForm: 'Limited liability company',
       legalRepresentative: 'Ada Owner',
+      phoneNumber: '+86 21 0000 0000',
       bankAccountNumber: '123456789012',
       bankOpeningBank: 'Example Bank',
+      bankBranch: 'Shanghai Branch',
       bankCode: '123456789012',
       branch: 'Software',
     });

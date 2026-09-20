@@ -157,11 +157,13 @@ const workspaceProfileSelect = `
     CASE WHEN NULLIF(trim(w.tax_id),'') IS NULL THEN 'taxId' END,
     CASE WHEN NULLIF(trim(w.legal_form),'') IS NULL THEN 'legalForm' END,
     CASE WHEN NULLIF(trim(w.legal_representative),'') IS NULL THEN 'legalRepresentative' END,
+    CASE WHEN NULLIF(trim(w.phone_number),'') IS NULL THEN 'phoneNumber' END,
     CASE WHEN NULLIF(trim(w.address),'') IS NULL THEN 'address' END,
     CASE WHEN NULLIF(trim(w.logo_storage_reference),'') IS NULL OR w.logo_mime_type IS NULL THEN 'companyLogo' END,
     CASE WHEN NULLIF(trim(w.bank_account_number),'') IS NULL THEN 'bankAccountNumber' END,
     CASE WHEN NULLIF(trim(w.bank_code),'') IS NULL THEN 'bankCode' END,
-    CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankName' END,
+    CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankOpeningBank' END,
+    CASE WHEN NULLIF(trim(w.bank_branch),'') IS NULL THEN 'bankBranch' END,
     CASE WHEN NULLIF(trim(w.branch),'') IS NULL THEN 'branch' END
   ],NULL) AS "missingRequiredFields"
 `;
@@ -498,11 +500,13 @@ export async function updateWorkspaceProfile(
            CASE WHEN NULLIF(trim(w.tax_id),'') IS NULL THEN 'taxId' END,
            CASE WHEN NULLIF(trim(w.legal_form),'') IS NULL THEN 'legalForm' END,
            CASE WHEN NULLIF(trim(w.legal_representative),'') IS NULL THEN 'legalRepresentative' END,
+           CASE WHEN NULLIF(trim(w.phone_number),'') IS NULL THEN 'phoneNumber' END,
            CASE WHEN NULLIF(trim(w.address),'') IS NULL THEN 'address' END,
            CASE WHEN NULLIF(trim(w.logo_storage_reference),'') IS NULL OR w.logo_mime_type IS NULL THEN 'companyLogo' END,
            CASE WHEN NULLIF(trim(w.bank_account_number),'') IS NULL THEN 'bankAccountNumber' END,
            CASE WHEN NULLIF(trim(w.bank_code),'') IS NULL THEN 'bankCode' END,
-           CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankName' END,
+           CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankOpeningBank' END,
+           CASE WHEN NULLIF(trim(w.bank_branch),'') IS NULL THEN 'bankBranch' END,
            CASE WHEN NULLIF(trim(w.branch),'') IS NULL THEN 'branch' END
          ],NULL) AS missing
          FROM workspaces w
