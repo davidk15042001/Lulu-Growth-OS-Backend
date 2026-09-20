@@ -37,11 +37,11 @@ The repository contains [database-backup-restore.md](operations/database-backup-
 
 ### Zero-downtime release and rollout (120, 139–141)
 
-Migrations follow expand/contract rules and the release manifest makes the deployed backend/frontend pair observable. `npm run release:gate` validates a deployed manifest and optional canary health/readiness endpoints. Traffic shifting, rollback thresholds, and a multi-version compatibility window remain deployment responsibilities. Do not treat a green build as a canary result.
+Migrations follow expand/contract rules and the release manifest makes the deployed backend/frontend pair observable. Workspace feature flags are persisted, deterministic, and auditable. `npm run release:gate` validates a deployed manifest and optional canary health/readiness endpoints. Traffic shifting, rollback thresholds, and a multi-version compatibility window remain deployment responsibilities. Do not treat a green build as a canary result.
 
 ### Observability and SLOs (148–149)
 
-Correlation IDs and structured logs are present, and `/metrics` exposes token-protected Prometheus request metrics. A live database dashboard, queue-lag alerting, provider error-rate alerting, and published SLO/error-budget policy still need deployment-specific telemetry and alert destinations.
+Correlation IDs and structured logs are present, `/metrics` exposes token-protected Prometheus request metrics, and `npm run db:observability` reports read-only sessions, locks, and queue depth. Alert routing, historical SLO storage, and provider-specific dashboards still need deployment-specific telemetry destinations.
 
 ## Review policy
 

@@ -43,6 +43,9 @@ async function main() {
       'data_retention_policies',
       'data_retention_holds',
       'data_retention_runs',
+      'feature_flags',
+      'workspace_feature_flags',
+      'feature_flag_changes',
     ];
     const tables = await query<{ table_name: string }>(
       `SELECT table_name
@@ -106,6 +109,9 @@ async function main() {
       'data_retention_policies->workspaces',
       'data_retention_holds->workspaces',
       'data_retention_runs->data_retention_policies',
+      'workspace_feature_flags->workspaces',
+      'workspace_feature_flags->feature_flags',
+      'feature_flag_changes->feature_flags',
     ]) {
       assert.ok(foreignKeyPairs.has(pair), `Schema contract missing foreign key: ${pair}`);
     }
@@ -122,7 +128,7 @@ async function main() {
          AND tc.constraint_type IN ('UNIQUE', 'PRIMARY KEY')
          AND tc.table_name = ANY($1::text[])
        GROUP BY tc.table_name, tc.constraint_name`,
-      [['workspace_members', 'invoices', 'quotes', 'financial_ledger_entries', 'idempotency_keys', 'data_retention_holds', 'data_retention_runs']],
+      [['workspace_members', 'invoices', 'quotes', 'financial_ledger_entries', 'idempotency_keys', 'data_retention_holds', 'data_retention_runs', 'workspace_feature_flags']],
     );
     const uniquePairs = new Set(uniqueConstraints.map((row) => `${row.table_name}:${row.columns}`));
     for (const pair of [
@@ -133,6 +139,7 @@ async function main() {
       'idempotency_keys:workspace_id,key',
       'data_retention_holds:workspace_id,data_class,subject_type,subject_id',
       'data_retention_runs:workspace_id,idempotency_key',
+      'workspace_feature_flags:workspace_id,flag_key',
     ]) {
       assert.ok(uniquePairs.has(pair), `Schema contract missing unique key: ${pair}`);
     }
@@ -142,7 +149,7 @@ async function main() {
        FROM pg_indexes
        WHERE schemaname = 'public'
          AND tablename = ANY($1::text[])`,
-      [['workspace_records', 'agent_runs', 'invoices', 'financial_ledger_entries', 'domain_events', 'data_retention_holds', 'data_retention_runs']],
+      [['workspace_records', 'agent_runs', 'invoices', 'financial_ledger_entries', 'domain_events', 'data_retention_holds', 'data_retention_runs', 'workspace_feature_flags']],
     );
     const indexText = indexes.map((row) => `${row.tablename}:${row.indexname}:${row.indexdef}`.toLowerCase());
     const requireIndex = (label: string, predicate: (value: string) => boolean) =>
@@ -155,6 +162,7 @@ async function main() {
     requireIndex('domain event idempotency index', (value) => value.includes('domain_events') && value.includes('idempotency_key'));
     requireIndex('retention hold lookup index', (value) => value.includes('data_retention_holds') && value.includes('data_class') && value.includes('subject_id'));
     requireIndex('retention run status index', (value) => value.includes('data_retention_runs') && value.includes('status'));
+    requireIndex('workspace feature flag lookup index', (value) => value.includes('workspace_feature_flags') && value.includes('workspace_id') && value.includes('flag_key'));
 
     const domainEventColumns = await query<{ column_name: string }>(
       `SELECT column_name
@@ -193,9 +201,9 @@ async function main() {
       contract: {
         tables: expectedTables.length,
         workspaceScopedTables: workspaceScopedTables.length,
-        requiredForeignKeys: 14,
-        requiredUniqueKeys: 7,
-        requiredIndexes: 8,
+        requiredForeignKeys: 17,
+        requiredUniqueKeys: 8,
+        requiredIndexes: 9,
         appendOnlyLedger: true,
         versionedIdempotentEvents: true,
         duplicateCanonicalTables: false,

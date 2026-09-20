@@ -35,6 +35,7 @@
     "retention:execute": "tsx scripts/execute-retention-policy.ts",
     "backup:policy": "node scripts/verify-backup-policy.mjs",
     "release:gate": "node scripts/verify-release-gate.mjs",
+    "db:observability": "tsx scripts/database-observability.ts",
     "test:smoke": "node scripts/smoke-built-server.mjs",
     "audit:architecture": "node scripts/architecture-audit.mjs ..\\Lulu-Growth-OS-Frontend",
     "provider:live-readiness": "tsx scripts/provider-live-readiness.ts",

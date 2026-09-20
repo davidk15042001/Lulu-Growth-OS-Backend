@@ -72,6 +72,7 @@ npm run retention:audit         # read-only retention and legal-hold inventory
 npm run retention:execute       # guarded, tenant-scoped dry-run by default
 npm run backup:policy           # verifies a protected backup directory and checksum
 npm run release:gate            # validates a deployed manifest and optional canary endpoints
+npm run db:observability        # read-only sessions, locks, and durable queue-depth snapshot
 ```
 
 In production, set `METRICS_TOKEN` and scrape `/metrics` only from the internal monitoring network. The endpoint is hidden when production has no token configured.

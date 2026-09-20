@@ -31,7 +31,10 @@ try {
   // Cold starts on production-sized bundles can take several seconds on busy
   // CI hosts. Keep polling the health endpoint instead of reporting a false
   // failure after the previous three-second window.
-  for (let attempt = 0; attempt < 120; attempt += 1) {
+  // The production bundle imports every route and worker module before it
+  // starts listening. On Windows CI and small production hosts that cold
+  // start can exceed twelve seconds even though the process is healthy.
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     try {
       response = await fetch(`http://127.0.0.1:${port}/health`);
       if (response.ok) break;
