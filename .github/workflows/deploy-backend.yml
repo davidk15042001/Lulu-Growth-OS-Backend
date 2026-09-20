@@ -23,8 +23,12 @@ jobs:
       - run: npm ci
       - name: Prüfe Backup- und Restore-Skripte
         run: bash -n scripts/backup-database.sh scripts/verify-database-backup.sh
+      - name: Prüfe Betriebs-Gates
+        run: node --check scripts/verify-backup-policy.mjs scripts/verify-release-gate.mjs
       - run: npm run typecheck
+      - run: npm run audit:architecture
       - run: npm run test:migrations
+      - run: npm run test:schema-contracts
       - run: npm test
       - run: npm run build
       - run: npm run test:smoke

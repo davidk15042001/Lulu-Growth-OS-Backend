@@ -33,15 +33,15 @@ Retention must be configured per data class (audit, financial ledger, messages, 
 
 ### Backups, restore, and disaster recovery (117–118)
 
-The repository contains [database-backup-restore.md](operations/database-backup-restore.md) and verification scripts. A production operator must still schedule encrypted backups, copy them to an independent failure domain, and run a restore drill. The proposed initial objectives are RPO 15 minutes and RTO 60 minutes; these are targets until the restore drill measures them.
+The repository contains [database-backup-restore.md](operations/database-backup-restore.md), a guarded backup-policy check, and verification scripts. A production operator must still schedule encrypted backups, copy them to an independent failure domain, and run a restore drill. The proposed initial objectives are RPO 15 minutes and RTO 60 minutes; these are targets until the restore drill measures them.
 
 ### Zero-downtime release and rollout (120, 139–141)
 
-Migrations follow expand/contract rules and the release manifest makes the deployed backend/frontend pair observable. A full canary, automated rollback threshold, and multi-version compatibility window are not yet implemented. Do not treat a green build as a canary result.
+Migrations follow expand/contract rules and the release manifest makes the deployed backend/frontend pair observable. `npm run release:gate` validates a deployed manifest and optional canary health/readiness endpoints. Traffic shifting, rollback thresholds, and a multi-version compatibility window remain deployment responsibilities. Do not treat a green build as a canary result.
 
 ### Observability and SLOs (148–149)
 
-Correlation IDs and structured logs are present. A live database dashboard, queue-lag alerting, provider error-rate alerting, and published SLO/error-budget policy still need deployment-specific telemetry and alert destinations.
+Correlation IDs and structured logs are present, and `/metrics` exposes token-protected Prometheus request metrics. A live database dashboard, queue-lag alerting, provider error-rate alerting, and published SLO/error-budget policy still need deployment-specific telemetry and alert destinations.
 
 ## Review policy
 
@@ -56,4 +56,3 @@ Every change is complete only when:
 - logs contain request/event correlation and sensitive data is redacted;
 - rollback and restore procedures are documented for the release;
 - a real staging or production smoke test confirms the deployed version.
-

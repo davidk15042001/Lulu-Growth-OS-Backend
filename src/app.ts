@@ -8,6 +8,7 @@ import { notFound } from './middlewares/notFound.middleware.js';
 import { errorHandler } from './middlewares/error.middleware.js';
 import v1Routes from './modules/v1.routes.js';
 import { getRuntimeReadiness, toPublicRuntimeReadiness } from './operations/runtime-readiness.js';
+import { metricsMiddleware, renderPrometheusMetrics } from './operations/prometheus.js';
 
 export function createApp() {
   const app = express();
@@ -16,6 +17,7 @@ export function createApp() {
 
   app.disable('x-powered-by');
   app.use(requestLogger);
+  app.use(metricsMiddleware);
   app.use(helmet());
 
   const allowedOrigins = (env.CORS_ORIGIN ?? '')
@@ -88,6 +90,19 @@ export function createApp() {
     } catch (error) {
       next(error);
     }
+  });
+
+  app.get('/metrics', (req: Request, res: Response) => {
+    const configuredToken = env.METRICS_TOKEN;
+    if (env.NODE_ENV === 'production' && !configuredToken) {
+      res.status(404).end();
+      return;
+    }
+    if (configuredToken && req.header('authorization') !== `Bearer ${configuredToken}`) {
+      res.status(401).json({ success: false, error: { code: 'METRICS_UNAUTHORIZED' } });
+      return;
+    }
+    res.type('text/plain').send(renderPrometheusMetrics());
   });
 
   app.use('/api/v1', v1Routes);

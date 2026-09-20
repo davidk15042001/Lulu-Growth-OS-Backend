@@ -64,6 +64,18 @@ npm run check
 
 This runs strict TypeScript validation, all SQL migrations in a PostgreSQL-compatible test engine, API/unit tests, and the production build.
 
+Operational gates are available separately:
+
+```bash
+npm run benchmark:performance   # requires isolated PERFORMANCE_DATABASE_URL and PERFORMANCE_WORKSPACE_ID
+npm run retention:audit         # read-only retention and legal-hold inventory
+npm run retention:execute       # guarded, tenant-scoped dry-run by default
+npm run backup:policy           # verifies a protected backup directory and checksum
+npm run release:gate            # validates a deployed manifest and optional canary endpoints
+```
+
+In production, set `METRICS_TOKEN` and scrape `/metrics` only from the internal monitoring network. The endpoint is hidden when production has no token configured.
+
 ## Event-driven runtime
 
 Asynchronous business workflows use the durable PostgreSQL event runtime in `src/events`. A business change and its versioned domain event are written in the same database transaction, so a committed action cannot lose its follow-up work. PostgreSQL `LISTEN/NOTIFY` wakes consumers immediately; ordered database catch-up remains the recovery path after disconnects or restarts.

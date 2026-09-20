@@ -14,6 +14,13 @@ describe('HTTP application', () => {
     assert.equal(response.body.data.status, 'ok');
   });
 
+  it('exposes authenticated-safe Prometheus metrics in non-production tests', async () => {
+    const response = await request(createApp()).get('/metrics');
+    assert.equal(response.status, 200);
+    assert.match(response.text, /lulu_process_uptime_seconds/);
+    assert.match(response.text, /lulu_http_requests_total/);
+  });
+
   it('reports public backend deployment metadata without requiring a database', async () => {
     const response = await request(createApp()).get('/api/v1/version');
 

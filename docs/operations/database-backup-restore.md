@@ -8,8 +8,8 @@ Dieses Runbook beschreibt die sichere Sicherung und Wiederherstellung der Lulu-G
 
 | Ziel | Vorgabe |
 |---|---|
-| RPO | 24 Stunden als Mindestziel; für Billing-/Webhook-Daten nach Möglichkeit kürzer |
-| RTO | 4 Stunden als Mindestziel für vollständigen Dienstbetrieb |
+| RPO | 15 Minuten als Betriebsziel; Billing-/Webhook-Replay muss zusätzlich geprüft werden |
+| RTO | 60 Minuten als Betriebsziel für vollständigen Dienstbetrieb |
 | Backup-Frequenz | Mindestens täglich; zusätzlich vor größeren Migrationen |
 | Aufbewahrung | Standardmäßig 14 Tage; Compliance-Anforderungen können längere Aufbewahrung verlangen |
 | Restore-Ziel | Ausschließlich isolierte Restore-Datenbank oder neue Umgebung |
@@ -28,6 +28,8 @@ sudo -u lulu-growth env \
 ```
 
 Das Ergebnis ist nur dann gültig, wenn die Datei erzeugt, die SHA-256-Prüfung geschrieben und `pg_restore --list` erfolgreich ausgeführt wurde. Backups dürfen nicht im Git-Repository oder in öffentlich erreichbaren Webverzeichnissen liegen.
+
+Die Policy-Prüfung kann zusätzlich mit `BACKUP_DIR=/var/backups/lulu-growth-os npm run backup:policy` ausgeführt werden. In einem strikten Produktionsjob muss `BACKUP_REMOTE_URI` auf eine unabhängige Fehlerdomäne zeigen; die Prüfung selbst lädt nichts hoch und löscht nichts.
 
 ## Restore-Verifikation
 
@@ -52,4 +54,4 @@ Nach einem vollständigen Ausfall wird zuerst PostgreSQL wiederhergestellt, ansc
 
 ## Offener Nachweis
 
-Die Sandbox dieses Audits enthält keine PostgreSQL-Clientwerkzeuge und keine Produktions-DATABASE_URL. Deshalb wurde kein Restore gegen reale Daten ausgeführt. Der Nachweis ist auf dem Server mit einer isolierten Restore-Datenbank durchzuführen und anschließend als Runbook-Protokoll zu archivieren.
+Die Sandbox dieses Audits enthält keine PostgreSQL-Clientwerkzeuge und keine Produktions-DATABASE_URL. Deshalb wurde kein Restore gegen reale Daten ausgeführt. Der Nachweis ist auf dem Server mit einer isolierten Restore-Datenbank durchzuführen und anschließend als Runbook-Protokoll zu archivieren. Ein grüner `backup:policy`-Check ersetzt keinen Restore-Drill.
