@@ -93,8 +93,8 @@ export async function saveCompanyInformation(
 ) {
   const workspace=await findWorkspaceById(workspaceId);
   const initial=workspace?.onboardingStep==='company_information'&&!workspace.onboardingCompletedAt;
-  if(initial&&(!input.fullName||!input.password||!input.repeatPassword||!input.industry?.trim())) {
-    throw new AppError(422,'COMPANY_INFORMATION_INCOMPLETE','Full name, password, company name and industry are required.');
+  if(initial&&(!input.fullName||!input.industry?.trim())) {
+    throw new AppError(422,'COMPANY_INFORMATION_INCOMPLETE','Full name, company name and industry are required.');
   }
   if(input.password){
     if(!input.fullName)throw new AppError(422,'FULL_NAME_REQUIRED','A full name is required when confirming the account password.');

@@ -148,8 +148,6 @@ describe('company-first account bootstrap',()=>{
 
     const advanced=await onboarding.saveCompanyInformation(workspace.id,user.id,{
       fullName:'Onboarding Order',
-      password:'Test-password-2026!',
-      repeatPassword:'Test-password-2026!',
       companyName:'Onboarding Order',
       industry:'Software',
       countryRegion:null,
