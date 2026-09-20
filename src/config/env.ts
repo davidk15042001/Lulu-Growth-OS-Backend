@@ -41,6 +41,9 @@ const EnvSchema = z
     AGENT_RUN_WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(3),
     AGENT_RUN_WORKER_LEASE_SECONDS: z.coerce.number().int().min(30).max(1_800).default(900),
     AGENT_RUN_WORKER_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
+    EXECUTIVE_OPERATIONS_WORKER_INTERVAL_MS: z.coerce.number().int().min(5_000).max(900_000).default(60_000),
+    EXECUTIVE_OPERATIONS_WORKER_LEASE_SECONDS: z.coerce.number().int().min(30).max(3_600).default(300),
+    EXECUTIVE_OPERATIONS_WORKER_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(20),
     CONTENT_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(60_000).default(15_000),
     CONTENT_JOB_LEASE_SECONDS: z.coerce.number().int().min(60).max(3_600).default(1_800),
     CONTENT_JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
@@ -88,6 +91,7 @@ const EnvSchema = z
     COMPOSIO_API_KEY: optionalNonEmptyString,
     COMPOSIO_WEBHOOK_SECRET: optionalNonEmptyString,
     COMPOSIO_WEBHOOK_URL: z.string().url().optional(),
+    ZEP_API_KEY: optionalNonEmptyString,
     FIRECRAWL_API_KEY: optionalNonEmptyString,
     FIRECRAWL_BASE_URL: z.string().url().default('https://api.firecrawl.dev'),
     HIGGSFIELD_API_KEY: optionalNonEmptyString,
@@ -438,4 +442,5 @@ export const hasGroq = !!env.GROQ_API_KEY;
 export const hasKie = !!env.KIE_API_KEY;
 export const hasPerplexity = !!env.PERPLEXITY_API_KEY;
 export const hasComposio = !!env.COMPOSIO_API_KEY;
+export const hasZep = !!env.ZEP_API_KEY;
 export const hasAiProvider = hasOpenAI || hasAlibaba || hasGroq || hasKie || hasPerplexity;

@@ -27,6 +27,7 @@ export const autonomousWorkerManifest = [
   { name: 'google-ads-spend-reconciliation', required: true, staleAfterMs: Math.max(180_000, env.GOOGLE_ADS_RECONCILIATION_WORKER_INTERVAL_MS * 4) },
   { name: 'quality-intelligence', required: true, staleAfterMs: 120_000, eventDriven: true },
   { name: 'company-brain-task-dispatch', required: true, staleAfterMs: 60_000, eventDriven: true },
+  { name: 'executive-operating', required: true, staleAfterMs: Math.max(60_000, env.EXECUTIVE_OPERATIONS_WORKER_INTERVAL_MS * 6) },
   { name: 'integration-sync', required: true, staleAfterMs: Math.max(60_000, env.INTEGRATION_SYNC_WORKER_INTERVAL_MS * 4) },
   { name: 'rate-limit-cleanup', required: false },
   { name: 'onboarding-cleanup', required: false },

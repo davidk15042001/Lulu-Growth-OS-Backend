@@ -30,6 +30,7 @@ import { startQualityIntelligenceWorker, stopQualityIntelligenceWorker } from '.
 import { registerCompanyBrainEventHandler } from './modules/company-brain/company-brain.event-handler.js';
 import { startCompanyBrainTaskWorker, stopCompanyBrainTaskWorker } from './modules/company-brain/company-brain.worker.js';
 import { startIntegrationSyncWorker, stopIntegrationSyncWorker } from './modules/workspace-app/integration-sync.worker.js';
+import { startExecutiveOperatingWorker, stopExecutiveOperatingWorker } from './modules/executive-ops/executive-ops.worker.js';
 import { autonomousWorkerManifest } from './operations/autonomous-worker-manifest.js';
 import {
   createIdempotentShutdown,
@@ -66,6 +67,7 @@ async function stopBackgroundWorkers() {
       stopGoogleAdsSpendReconciliationWorker(),
       stopQualityIntelligenceWorker(),
       stopCompanyBrainTaskWorker(),
+      stopExecutiveOperatingWorker(),
       stopIntegrationSyncWorker(),
     ] : []),
   ]);
@@ -108,6 +110,7 @@ async function bootstrap() {
       startGoogleAdsSpendReconciliationWorker();
       startQualityIntelligenceWorker();
       startCompanyBrainTaskWorker();
+      startExecutiveOperatingWorker();
       startIntegrationSyncWorker();
       await startWorkerSupervisorHeartbeat(autonomousWorkerManifest);
     }

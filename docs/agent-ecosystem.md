@@ -25,6 +25,46 @@ Selection cycles are stored in `workspace_agent_team_cycles`. Per-workspace rout
 
 Every run contains structured steps for planning, evidence collection, strategy, bounded execution and independent outcome verification. Steps have stable agent identities, task types, dependencies, success criteria, idempotency keys and verification state.
 
+## Coordination ledger
+
+Every real `agent_run` receives one durable, workspace-scoped collaboration
+thread. Messages represent planning, evidence, specialist handoffs, proposals,
+execution status, independent verification, errors, and the terminal decision.
+They are idempotent and tied to the originating run/step rather than presented
+as simulated agent chat. The next reasoning step receives a bounded history as
+explicitly untrusted evidence, and the Office can render the same thread for a
+member with `agents.read`. The Zep mirror supports long-term recall, while the
+local ledger remains the source of truth for audit and recovery. A local sync
+acknowledgement prevents acknowledged messages from being mirrored repeatedly;
+unsynced messages are retried before the next reasoning or terminal-memory
+write.
+
+The agents also retrieve bounded results from the standalone Zep organization
+graph for trusted platform-owned policies and product facts. That graph is not
+a workspace data store: customer/workspace facts stay in a workspace-scoped
+user graph and all Zep context remains untrusted evidence.
+
+## Executive operating loop
+
+The Executive Operating System gives the Executive Orchestrator a durable daily
+and weekly company-review cadence. A completed cycle has a fixed data cutoff,
+bounded canonical evidence, explicit data gaps, persisted findings, transparent
+metric forecasts, and a later calibration record when observed evidence becomes
+available. It does not turn agent chat into operational evidence.
+
+The first forecast model is deliberately narrow: it labels a two-point trend,
+stores low/base/high `NUMERIC` values, and records its assumptions. Saved
+scenarios are explicit percentage sensitivities over a forecast; they do not
+change actual metrics or make a causal claim. Financial observations remain
+separate by currency.
+
+An executive finding may create a plan proposal, but the proposal is always
+`plan_only`, requires a human decision, and receives a durable append-only
+event trail. On approval, Lulu rechecks the proposal's domain capability and
+workspace automation state, then hands a plan-only mission to Company Brain.
+The normal Company Brain, command, funding, provider, and quality gates still
+own any subsequent execution.
+
 ## Autonomy boundary
 
 Routine execution does not create a human approval request. Paid media has two independent customer-controlled boundaries: settled prepaid funds and a time-bounded authorization for the exact provider account, campaign, currency and amount.

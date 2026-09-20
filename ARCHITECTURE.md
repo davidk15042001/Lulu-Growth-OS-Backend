@@ -28,8 +28,9 @@ HTTP / webhook / schedule / provider signal
   identity, tenancy and permissions.
 - `src/modules/records`, `crm-company`, `sales-pipeline`, `commerce`,
   `commercial-documents`, `finance`: canonical business objects and ledgers.
-- `src/modules/agents`, `office`, `company-brain`, `quality`: autonomous
-  planning, Digital Employee projection, evidence, execution and review.
+- `src/modules/agents`, `office`, `company-brain`, `executive-ops`, `quality`:
+  autonomous planning, Digital Employee projection, evidence, executive
+  operating cycles, execution and review.
 - `src/modules/provider-control` and provider/domain adapters: stable
   tenant-scoped integration boundary and readiness evidence.
 - `src/events`, `operations`, worker modules and `background_jobs`: durable
@@ -69,14 +70,54 @@ capability, risk, budget and idempotency policy. Provider work is not
 considered complete merely because a request was queued: workers must record a
 verified terminal state or an explicit ambiguous/dead-letter state.
 
+Each persisted agent run also owns one tenant-scoped collaboration thread.
+Planning, evidence, specialist handoffs, proposals, verification and terminal
+outcomes are immutable, idempotent messages linked to the real run and, where
+present, its Company Brain task. The next reasoning step reads this bounded
+ledger as untrusted evidence. Zep mirrors the same thread for long-term
+memory. Mirroring has a local sync acknowledgement and retries only messages
+that have not been acknowledged. Zep is advisory only: Lulu's PostgreSQL
+collaboration ledger, canonical domain services and action packets remain
+authoritative.
+
+Zep users are workspace-scoped (`workspace:<workspaceId>:user:<userId>`), so
+memory cannot bridge tenant boundaries. Chat and agent reasoning retrieve only
+bounded, explicitly untrusted user memory. The standalone organization graph
+is queried separately for platform-owned policies and product facts; no
+workspace/customer data is written there. Its results are also untrusted and
+never confer permissions, funding, provider readiness, or execution evidence.
+
 The initial post-onboarding analysis is a read-only observe/understand/
 diagnose phase. It stores company brain, audience, competitor, funnel,
 financial, creative, integration, compliance and measurement sections plus
 actual metric evidence. It does not publish, message customers or spend funds.
 
+The Executive Operating System adds durable daily and weekly loops above the
+same canonical services. A leased worker initializes schedules only for
+automation-eligible workspaces, claims a workspace-scoped lease, and records a
+time-bounded data cutoff for every cycle. Each cycle reads bounded canonical
+facts such as open Company Brain signals, blocked tasks, failed agent runs,
+overdue invoices grouped by currency, and usable metric history. Missing inputs
+are persisted as data gaps rather than being filled with invented conclusions.
+
+Forecasts use an explicitly labelled, transparent two-point trend model until a
+stronger model earns its own evidence and calibration contract. Low/base/high
+values and scenario sensitivity calculations are stored as PostgreSQL `NUMERIC`;
+scenarios never overwrite a canonical metric or financial record. When the
+first later metric point becomes available, forecast calibration is appended as
+verified learning evidence.
+
+Executive proposals are always `plan_only` and require an explicit human
+decision. Approval rechecks the proposal's domain capability and automation
+state, then creates a Company Brain observation, signal, and plan-only mission.
+It does not directly publish, send, spend, alter a CRM record, or bypass the
+existing provider, funding, attribution, settlement, or compliance gates. The
+Company Brain worker remains the only canonical route from an approved plan to
+Digital Employee work.
+
 ## Known boundaries and target improvements
 
-- The current application has 137 migrations and approximately 236 relational
+- The current application has 144 migrations and approximately 247 relational
   tables. The existing `docs/autonomous-company-os-audit.md` is the source-led
   capability matrix and production release evidence.
 - PostgreSQL row-level security is not currently the tenant boundary; service

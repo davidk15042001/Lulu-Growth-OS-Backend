@@ -14,6 +14,7 @@ type Conversation = {
   userId: string;
   title: string;
   model: string | null;
+  zepThreadId: string | null;
   metadata: Record<string, unknown>;
   messageCount: number;
   lastMessageAt: string | null;
@@ -28,6 +29,7 @@ const conversationSelect = `
   c.user_id AS "userId",
   c.title,
   c.model,
+  c.zep_thread_id AS "zepThreadId",
   c.metadata,
   (SELECT count(*)::int FROM ai_messages m WHERE m.conversation_id = c.id) AS "messageCount",
   (SELECT max(m.created_at) FROM ai_messages m WHERE m.conversation_id = c.id) AS "lastMessageAt",
@@ -100,6 +102,21 @@ export async function createConversation(
     [workspaceId, userId, input.title ?? 'New conversation', input.model ?? null, input.metadata ?? {}]
   );
   return rows[0]?.id;
+}
+
+export async function setConversationZepThreadId(
+  workspaceId: string,
+  userId: string,
+  conversationId: string,
+  zepThreadId: string
+) {
+  const { rowCount } = await query(
+    `UPDATE ai_conversations
+     SET zep_thread_id = $4
+     WHERE workspace_id = $1 AND user_id = $2 AND id = $3 AND archived_at IS NULL`,
+    [workspaceId, userId, conversationId, zepThreadId]
+  );
+  return rowCount > 0;
 }
 
 const conversationUpdateColumns: Partial<Record<keyof UpdateConversationInput, string>> = {

@@ -25,6 +25,11 @@ advisory deployment lock.
   wallet ledger; `TOOL_CALL` and `TRIGGER` both cost `0.500000 CNY`.
 - `domain_events`, receipts, jobs, agent runs/steps/action packets and audit
   tables own operational history and recovery state.
+- `executive_operating_schedules`, `executive_operating_cycles`, findings,
+  forecasts, scenarios, proposal events and learning records own the Executive
+  Operating System's tenant-scoped evidence. Cycles retain their data cutoff and
+  gaps; forecasts/scenarios use `NUMERIC` values; proposals are plan-only and
+  their append-only events record human decisions and Company Brain hand-off.
 - Provider tables store external references, capability/readiness evidence and
   redacted payload snapshots. They do not replace canonical Lulu entities.
 

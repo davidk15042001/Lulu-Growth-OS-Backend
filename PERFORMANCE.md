@@ -12,6 +12,7 @@ they are priorities, not claims of measured production latency:
 | Admin repository | ~1,966 lines | broad admin joins can over-fetch customer data |
 | Commerce repository | ~2,023 lines | catalog/order lists can become expensive with growth |
 | Agent execution worker | ~1,483 lines | long work, retries and provider calls must not hold DB transactions |
+| Executive operating worker | scheduled cross-domain reads | daily/weekly cycles must use bounded facts, per-workspace leases and no provider calls in their transaction |
 | Agent registry | generated ~3,193 lines | generated data should stay separate from orchestration logic |
 | Provider repository | ~983 lines | readiness/discovery payloads need bounded detail/list separation |
 | Premium media and website services | >800–1,300 lines | long-running AI/media operations belong in leased workers |
@@ -44,6 +45,9 @@ cache or rewrite SQL before locating the slow layer.
 - Prefer keyset cursors `(created_at, id)` for high-growth event, message,
   audit, agent-run, webhook and invoice lists.
 - Batch related counts and records; eliminate per-row repository calls.
+- Executive operating cycles retrieve bounded cross-domain facts, group financial
+  evidence by currency, and never wait for AI or providers while a cycle or
+  schedule lease transaction is open.
 - Do not return provider payloads, AI output blobs or audit metadata in list
   responses unless explicitly requested.
 - Avoid repeated frontend requests: use one bootstrap query, cache only with a
@@ -64,4 +68,3 @@ cache or rewrite SQL before locating the slow layer.
 
 Any target that is missed should produce a trace and query plan before a fix is
 selected. Keep a before/after note in the change or the release record.
-

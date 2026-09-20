@@ -3,7 +3,7 @@ import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './agent.service.js';
 import { latestWorkspaceDomainEventSequence, listAgentEventsAfter, subscribeAgentEvents, type WorkspaceAgentEvent } from './agent.events.js';
-import { agentRunParamsSchema, agentRunQuerySchema, createAgentRunSchema } from './agent.validator.js';
+import { agentCollaborationQuerySchema, agentRunParamsSchema, agentRunQuerySchema, createAgentRunSchema } from './agent.validator.js';
 
 export async function create(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
@@ -44,6 +44,18 @@ export async function detail(req: WorkspaceRequest, res: Response, next: NextFun
   try {
     const params = agentRunParamsSchema.parse(req.params);
     return successResponse(res, 'Agent run loaded', await service.getRunDetails(params.workspaceId, params.runId!));
+  } catch (error) { next(error); }
+}
+export async function collaboration(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = agentRunParamsSchema.parse(req.params);
+    const query = agentCollaborationQuerySchema.parse(req.query);
+    return successResponse(res, 'Agent collaboration loaded', await service.getRunCollaboration(
+      params.workspaceId,
+      params.runId!,
+      query.limit,
+      query.beforeMessageId,
+    ));
   } catch (error) { next(error); }
 }
 export async function cancel(req: WorkspaceRequest, res: Response, next: NextFunction) {

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { requireWorkspaceEditor, requireWorkspaceEntitlement, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
+import { requireWorkspaceCapability, requireWorkspaceEditor, requireWorkspaceEntitlement, requireWorkspaceMember } from '../../middlewares/workspace.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './agent.controller.js';
 
@@ -19,6 +19,9 @@ router.route('/')
   .all(methodNotAllowed);
 router.route('/stream')
   .get(requireWorkspaceMember, controller.stream)
+  .all(methodNotAllowed);
+router.route('/:runId/collaboration')
+  .get(requireWorkspaceCapability('agents.read'), controller.collaboration)
   .all(methodNotAllowed);
 router.route('/:runId')
   .get(requireWorkspaceMember, controller.detail)

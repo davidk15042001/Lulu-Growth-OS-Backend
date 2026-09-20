@@ -6,6 +6,7 @@ import { assertAdminCapability, getAdminCapabilities } from '../admin/admin.auth
 import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
+import { ensureAgentMemoryUser } from '../agent-memory/agent-memory.service.js';
 
 export type RegisterResult = { ok: true; userId: string; verificationRequired: false } | { conflict: true };
 type SessionUser = {
@@ -62,6 +63,7 @@ export async function registerUser(email: string, password: string, firstName: s
   let user;
   try { user = await repo.createVerifiedUser(email, passwordHash, firstName, lastName); }
   catch(error) { if((error as {code?:string}).code==='23505') return {conflict:true}; throw error; }
+  await ensureAgentMemoryUser({ userId: user.id, email, firstName, lastName });
   return { ok: true, userId: user.id, verificationRequired: false };
 }
 

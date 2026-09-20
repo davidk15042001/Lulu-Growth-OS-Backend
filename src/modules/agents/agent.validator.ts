@@ -8,6 +8,10 @@ export const agentRunParamsSchema = z.object({
 export const agentRunQuerySchema = z.object({
   pageId: z.string().trim().regex(/^[a-z0-9-]+$/).max(120).optional(),
 });
+export const agentCollaborationQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(80),
+  beforeMessageId: z.string().uuid().optional(),
+});
 export const createAgentRunSchema = z.object({
   // Kept optional for backwards compatibility. The backend always applies Lulu's permanent mission.
   goal: z.string().trim().max(4000).optional(),

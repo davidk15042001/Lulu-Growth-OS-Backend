@@ -41,6 +41,7 @@ import salesPipelineRoutes from '../sales-pipeline/sales-pipeline.routes.js';
 import multer from 'multer';
 import researchRoutes from '../research/research.routes.js';
 import composioRoutes from '../composio/composio.routes.js';
+import executiveOperatingRoutes from '../executive-ops/executive-ops.routes.js';
 
 const logoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024, files: 1 } });
 
@@ -86,6 +87,7 @@ router.use('/:workspaceId/api-wallet', apiWalletRoutes);
 router.use('/:workspaceId/office', officeRoutes);
 router.use('/:workspaceId/quality', qualityRoutes);
 router.use('/:workspaceId/brain', companyBrainRoutes);
+router.use('/:workspaceId/executive', executiveOperatingRoutes);
 router.use('/:workspaceId/sales-pipeline', salesPipelineRoutes);
 router.use('/:workspaceId/finance', financeRoutes);
 router.use('/:workspaceId/commerce', commerceRoutes);
