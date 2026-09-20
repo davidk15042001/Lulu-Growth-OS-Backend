@@ -1,5 +1,6 @@
 import type { NextFunction, Response } from 'express';
 import { z } from 'zod';
+import type { AuthedRequest } from '../../middlewares/auth.middleware.js';
 import type { WorkspaceRequest } from '../../middlewares/workspace.middleware.js';
 import { AppError } from '../../utils/app-error.js';
 import { successResponse } from '../../utils/response.js';
@@ -20,6 +21,36 @@ export async function listToolkits(req: WorkspaceRequest, res: Response, next: N
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
     const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
     return successResponse(res, 'Composio toolkits loaded', await service.listWorkspaceToolkits({ workspaceId, userId: req.user!.id, ...(search ? { search } : {}), ...(cursor ? { cursor } : {}) }));
+  } catch (error) { next(error); }
+}
+
+export async function listAdminCatalog(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+    return successResponse(res, 'Composio admin catalog loaded', await service.listAdminCatalog({
+      userId: req.user!.id,
+      ...(search ? { search } : {}),
+      ...(cursor ? { cursor } : {}),
+    }));
+  } catch (error) { next(error); }
+}
+
+export async function setAdminCatalogAvailability(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const toolkit = typeof req.params.toolkit === 'string' ? req.params.toolkit : '';
+    const body = z.object({
+      displayName: z.string().min(1).max(200),
+      logoUrl: z.string().url().max(1000).nullable().optional(),
+      customerAvailable: z.boolean(),
+    }).parse(req.body ?? {});
+    return successResponse(res, body.customerAvailable ? 'Composio integration published' : 'Composio integration unpublished', await service.setAdminCatalogAvailability({
+      toolkit,
+      displayName: body.displayName,
+      ...(body.logoUrl !== undefined ? { logoUrl: body.logoUrl } : {}),
+      customerAvailable: body.customerAvailable,
+      adminUserId: req.user!.id,
+    }));
   } catch (error) { next(error); }
 }
 

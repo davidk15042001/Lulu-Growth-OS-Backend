@@ -36,9 +36,11 @@ HTTP / webhook / schedule / provider signal
   event delivery, leasing, retries, heartbeats and dead letters.
 - `src/modules/ai`, `premium-media`, `research`, `content-generation`: bounded
   model/provider work with prepaid reservations where applicable.
-- `src/modules/composio`: tenant-scoped Composio connection, tool execution and
-  trigger webhook boundary. Tool calls and accepted trigger events are charged
-  from the existing prepaid AI wallet before external work is accepted.
+- `src/modules/composio`: tenant-scoped Composio connection, governed catalog,
+  tool execution and trigger webhook boundary. The full catalog is admin-only;
+  customer workspaces receive only non-managed toolkits published in the
+  catalog. Tool calls and accepted trigger events are charged from the existing
+  prepaid AI wallet before external work is accepted.
 - `src/modules/onboarding`, `websites`, `storefront`, `omnichannel`,
   `calendar`, `email`, `notifications`: customer-facing operational domains.
 
@@ -104,3 +106,6 @@ actual metric evidence. It does not publish, message customers or spend funds.
    customer charge and billable wallet debit, while ordinary workspace admins
    are still metered;
    the workspace session endpoint never exposes an unmetered MCP transport.
+8. Composio customer availability is enforced by the backend catalog registry;
+   the frontend may present the published list but cannot grant provider access.
+   The technical raw tool list is restricted to platform administrators.

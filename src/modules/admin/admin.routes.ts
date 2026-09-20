@@ -9,6 +9,7 @@ import { streamAdminOmniEvents } from '../omnichannel/omnichannel.stream.js';
 import * as commercialDocuments from '../commercial-documents/commercial-documents.controller.js';
 import { adminSupportRoutes } from '../support/support.routes.js';
 import * as providerController from '../provider-control/provider.controller.js';
+import * as composioController from '../composio/composio.controller.js';
 
 const router = Router();
 
@@ -37,6 +38,8 @@ router.route('/crm').get(requireAuth, requireAdminCapabilities('workspaces.read'
 router.route('/websites').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getWebsites).all(methodNotAllowed);
 router.route('/agents').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getAgents).all(methodNotAllowed);
 router.route('/integrations').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getIntegrations).all(methodNotAllowed);
+router.route('/composio/catalog').get(requireAuth, requireAdminCapabilities('providers.read'), composioController.listAdminCatalog).all(methodNotAllowed);
+router.route('/composio/catalog/:toolkit').put(requireAuth, requireAdminCapabilities('providers.manage'), composioController.setAdminCatalogAvailability).all(methodNotAllowed);
 router.route('/oauth-connections').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getOAuthConnections).all(methodNotAllowed);
 router.route('/oauth-connections/:provider/start').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.startManagedOAuth).all(methodNotAllowed);
 router.route('/oauth-connections/:provider').delete(requireAuth, requireAdminCapabilities('providers.manage'), controller.disconnectManagedOAuth).all(methodNotAllowed);

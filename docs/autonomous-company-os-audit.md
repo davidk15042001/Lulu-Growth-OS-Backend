@@ -1,6 +1,6 @@
 # Lulu Autonomous Company OS — architecture and capability audit
 
-Status date: 2026-09-18
+Status date: 2026-09-20
 
 ## Latest verified production release
 
@@ -26,6 +26,7 @@ The following evidence was checked after the latest combined deployment:
 - Automatic, admin, and public invoice PDFs now carry separate party context: Lulu's platform seller snapshot remains the seller, while the customer workspace profile is rendered as the buyer. The separation is covered by the paid-top-up reconciliation test and the PDF download paths reuse the same canonical invoice detail.
 - The Admin Billing & Funds dashboard links directly to the global invoice register, where all customer invoices can be searched by invoice number/workspace and downloaded as PDFs through the authenticated admin route.
 - Company Brain task dispatch preserves bounded, secret-filtered task context as explicitly untrusted evidence, so canonical IDs, versions and action payloads are not silently lost between the task graph and the executing Digital Employee.
+- Composio customer access now has a canonical `composio_integration_catalog` registry: the full catalog is exposed only to platform administrators, customer availability is enforced server-side, and the four Lulu-managed providers (WhatsApp, Meta Ads, Google Ads, LinkedIn Ads) cannot be published to customer workspaces. Customer tool calls and triggers remain metered at 0.50 CNY, with platform-admin bypass retained.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 

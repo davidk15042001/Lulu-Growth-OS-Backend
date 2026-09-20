@@ -4,6 +4,19 @@ Composio is connected with a stable identity in the form
 `lulu:<workspace_id>:<user_id>`. Credentials remain with Composio; Lulu stores
 only connection state and the identifiers needed for the tenant-scoped flow.
 
+## Catalog and customer access
+
+The full Composio catalog is available only in the platform Admin Panel under
+Integrations. The admin catalog is synchronized into the
+`composio_integration_catalog` registry and exposes a server-side customer
+availability switch. Workspace users receive only the published, non-managed
+toolkits through `GET /api/v1/workspaces/:workspaceId/composio/toolkits` and
+can connect their own account through the corresponding authorize route.
+
+WhatsApp, Meta Ads, Google Ads and LinkedIn Ads are always Lulu-managed and
+cannot be published to customer workspaces. The technical raw tool list is
+admin-only; customer pages do not expose provider tool IDs or schemas.
+
 ## Metering
 
 The customer AI wallet is charged in CNY:
