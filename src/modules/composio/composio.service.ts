@@ -123,7 +123,7 @@ export async function listWorkspaceToolkits(input: { workspaceId: string; userId
     manageConnections: { enable: true },
   });
   const result = await session.toolkits({
-    limit: 100,
+    limit: 50,
     ...(input.cursor ? { cursor: input.cursor } : {}),
     ...(input.search ? { search: input.search.trim().slice(0, 80) } : {}),
   });
@@ -158,7 +158,7 @@ export async function listAdminCatalog(input: { userId: string; search?: string;
     manageConnections: { enable: true },
   });
   const result = await session.toolkits({
-    limit: 100,
+    limit: 50,
     ...(input.cursor ? { cursor: input.cursor } : {}),
     ...(input.search ? { search: input.search.trim().slice(0, 80) } : {}),
   });
