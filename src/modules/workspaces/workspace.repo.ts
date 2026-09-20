@@ -389,7 +389,7 @@ export async function findWorkspaceProfileForAdmin(workspaceId: string, userId: 
        JOIN users u ON u.id = wm.user_id
       WHERE w.id = $1
         AND wm.user_id = $2
-        AND wm.role IN ('owner', 'admin')
+        AND (wm.role IN ('owner', 'admin') OR (w.created_by = $2 AND w.onboarding_step = 'profile_completion' AND w.onboarding_completed_at IS NULL))
         AND w.deleted_at IS NULL
       LIMIT 1`,
     [workspaceId, userId],
@@ -420,7 +420,8 @@ export async function updateWorkspaceLogo(
     `UPDATE workspaces w
         SET logo_storage_reference=$3,logo_mime_type=$4,logo_file_name=$5,logo_updated_at=NOW(),updated_at=NOW()
       WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS (
-        SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=w.id AND wm.user_id=$2 AND wm.role IN ('owner','admin')
+        SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=w.id AND wm.user_id=$2
+          AND (wm.role IN ('owner','admin') OR (w.created_by=$2 AND w.onboarding_step='profile_completion' AND w.onboarding_completed_at IS NULL))
       )
       RETURNING NULL::text AS "previousStorageReference"`,
     [workspaceId, userId, input.storageReference, input.mimeType, input.fileName],
@@ -433,7 +434,8 @@ export async function clearWorkspaceLogo(workspaceId: string, userId: string) {
   const result = await query(
     `UPDATE workspaces w SET logo_storage_reference=NULL,logo_mime_type=NULL,logo_file_name=NULL,logo_updated_at=NULL,updated_at=NOW()
       WHERE w.id=$1 AND w.deleted_at IS NULL AND EXISTS (
-        SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=w.id AND wm.user_id=$2 AND wm.role IN ('owner','admin')
+        SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=w.id AND wm.user_id=$2
+          AND (wm.role IN ('owner','admin') OR (w.created_by=$2 AND w.onboarding_step='profile_completion' AND w.onboarding_completed_at IS NULL))
       )`,
     [workspaceId, userId],
   );
@@ -480,7 +482,7 @@ export async function updateWorkspaceProfile(
             SELECT 1 FROM workspace_members wm
              WHERE wm.workspace_id = w.id
                AND wm.user_id = $2
-               AND wm.role IN ('owner', 'admin')
+               AND (wm.role IN ('owner', 'admin') OR (w.created_by = $2 AND w.onboarding_step = 'profile_completion' AND w.onboarding_completed_at IS NULL))
           )`,
       values,
       client,

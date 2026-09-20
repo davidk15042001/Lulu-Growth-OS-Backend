@@ -112,6 +112,18 @@ describe('Part 2 tenant and authorization foundation', () => {
     assert.deepEqual(persisted, { name: 'Workspace A International', taxId: 'CN-TAX-1', bankCode: 'EXAMPLECN' });
   });
 
+  it('allows the onboarding creator to complete a profile with a legacy member role', async () => {
+    const f = await fixture();
+    await db.query(`UPDATE workspace_members SET role='owner' WHERE workspace_id=$1 AND user_id=$2`, [f.a, f.member]);
+    await db.query(`UPDATE workspace_members SET role='member' WHERE workspace_id=$1 AND user_id=$2`, [f.a, f.owner]);
+    await db.query(`UPDATE workspaces SET onboarding_step='profile_completion',onboarding_completed_at=NULL WHERE id=$1`, [f.a]);
+
+    const profile = await workspaceRepo.findWorkspaceProfileForAdmin(f.a, f.owner);
+    assert.equal(profile?.workspaceId, f.a);
+    const saved = await workspaceRepo.updateWorkspaceProfile(f.a, f.owner, { companyName: 'Creator Workspace' });
+    assert.equal(saved?.companyName, 'Creator Workspace');
+  });
+
   it('keeps profile incomplete until every required profile field is present', async () => {
     const f = await fixture();
     await db.query(

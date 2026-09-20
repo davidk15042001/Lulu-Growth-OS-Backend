@@ -2,7 +2,7 @@ import type { NextFunction, Response } from 'express';
 import { z } from 'zod';
 import type { AuthedRequest } from './auth.middleware.js';
 import { AppError, forbiddenError, notFoundError } from '../utils/app-error.js';
-import { findMembership, type WorkspaceRole } from '../modules/workspaces/workspace.repo.js';
+import { findMembership, findWorkspaceForUser, type WorkspaceRole } from '../modules/workspaces/workspace.repo.js';
 import { getCompletionState } from '../modules/onboarding/onboarding.repo.js';
 import { assertWorkspaceCapability } from '../modules/workspaces/workspace-authorization.service.js';
 import type { WorkspaceCapability } from '../modules/workspaces/workspace-permissions.js';
@@ -61,6 +61,40 @@ export function requireWorkspaceRole(...allowedRoles: WorkspaceRole[]) {
       next(error);
     }
   };
+}
+
+/**
+ * Company profile access is normally limited to owners/admins. During the
+ * unfinished profile activation, the account that created the workspace must
+ * also be able to complete its own onboarding even if an older workspace row
+ * has an inconsistent membership role.
+ */
+export async function requireWorkspaceProfileAccess(
+  req: WorkspaceRequest,
+  _res: Response,
+  next: NextFunction,
+) {
+  try {
+    const userId = req.user?.id;
+    if (!userId) { next(forbiddenError('Authentication is required')); return; }
+    const workspaceId = workspaceIdSchema.parse(req.params.workspaceId);
+    const membership = await findMembership(workspaceId, userId);
+    if (!membership) { next(notFoundError('Workspace not found')); return; }
+    if (membership.role === 'owner' || membership.role === 'admin') {
+      req.workspaceAccess = { id: workspaceId, role: membership.role };
+      next();
+      return;
+    }
+    const workspace = await findWorkspaceForUser(workspaceId, userId);
+    if (workspace?.createdBy === userId && workspace.onboardingStep === 'profile_completion' && !workspace.onboardingCompletedAt) {
+      req.workspaceAccess = { id: workspaceId, role: membership.role };
+      next();
+      return;
+    }
+    next(forbiddenError('Your workspace role does not allow this action'));
+  } catch (error) {
+    next(error);
+  }
 }
 
 /** Canonical capability middleware for new and migrated workspace routes. */
