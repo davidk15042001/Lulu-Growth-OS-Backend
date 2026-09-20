@@ -40,7 +40,7 @@ export async function syncDiscoveredToolkits(items: Array<{ toolkitSlug: string;
   });
   await query(
     `INSERT INTO composio_integration_catalog
-      (toolkit_slug, display_name, logo_url, customer_available, certification_status, published_at)
+      (toolkit_slug, display_name, logo_url, customer_available)
      VALUES ${placeholders.join(', ')}
      ON CONFLICT (toolkit_slug) DO UPDATE SET
        display_name = EXCLUDED.display_name,
