@@ -83,7 +83,7 @@ describe('agent memory Zep adapter', () => {
         id: 'message-1',
         role: 'user',
         content: 'Hallo',
-        createdAt: '2026-09-20T00:00:00.000Z',
+        createdAt: new Date('2026-09-20T00:00:00.000Z') as any,
         metadata: { workspace_id: 'foreign-workspace', source: 'untrusted', api_key: 'must-not-leave-lulu', label: 'customer-chat' },
       }],
     });
@@ -91,6 +91,7 @@ describe('agent memory Zep adapter', () => {
     const addMessages = calls.find((call) => call.name === 'thread.addMessages');
     assert.ok(addMessages);
     assert.equal(addMessages.args[0], 'conversation:conversation-1');
+    assert.equal((addMessages.args[1] as any).messages[0].createdAt, '2026-09-20T00:00:00.000Z');
     assert.deepEqual((addMessages.args[1] as any).messages[0].metadata, {
       workspace_id: 'workspace-1',
       user_id: 'user-1',
@@ -104,15 +105,27 @@ describe('agent memory Zep adapter', () => {
     const ok = fakeClient();
     setAgentMemoryClientForTests(ok.client);
     assert.equal(await getAgentMemoryContext({ workspaceId: 'workspace-1', userId: 'user-1', threadId: 'thread-1', conversationId: 'conversation-1' }), 'Customer prefers concise German updates.');
-    assert.equal(await getOrganizationKnowledgeContext({ query: 'What evidence is required for a settlement?' }), 'Lulu policy requires verified settlement evidence.');
+    assert.equal(await getOrganizationKnowledgeContext({ query: 'What evidence is required for a settlement?'.repeat(30) }), 'Lulu policy requires verified settlement evidence.');
     const search = ok.calls.find((call) => call.name === 'graph.search');
     assert.equal((search?.args[0] as { graphId?: string }).graphId, ZEP_ORG_KNOWLEDGE_GRAPH_ID);
+    assert.equal(((search?.args[0] as { query?: string }).query ?? '').length, 400);
 
     const failing = fakeClient({ fail: true });
     setAgentMemoryClientForTests(failing.client);
     assert.equal(await getAgentMemoryContext({ workspaceId: 'workspace-1', userId: 'user-1', threadId: 'thread-1', conversationId: 'conversation-1' }), null);
     assert.equal(await getOrganizationKnowledgeContext({ query: 'What evidence is required for a settlement?' }), null);
     assert.deepEqual(await createAgentMemoryThread({ workspaceId: 'workspace-1', userId: 'user-1', conversationId: 'conversation-1' }), { configured: true, threadId: null });
+  });
+
+  it('treats Zep duplicate-user responses as idempotent success', async () => {
+    const client = fakeClient().client;
+    client.user.add = async () => {
+      const error = new Error('bad request: user already exists with user_id: workspace:workspace-1:user:user-1') as Error & { status?: number };
+      error.status = 400;
+      throw error;
+    };
+    setAgentMemoryClientForTests(client);
+    assert.deepEqual(await ensureAgentMemoryUser({ userId: 'workspace:workspace-1:user:user-1', workspaceId: 'workspace-1' }), { configured: true, ok: true });
   });
 
   it('adds user business data and shared organization knowledge to the correct graph targets', async () => {

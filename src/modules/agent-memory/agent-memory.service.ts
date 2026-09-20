@@ -66,7 +66,7 @@ const maxZepMetadataKeys = 10;
 const maxZepMetadataStringLength = 1_000;
 const maxUserContextLength = 12_000;
 const maxOrganizationContextLength = 8_000;
-const maxOrganizationQueryLength = 4_000;
+const maxOrganizationQueryLength = 400;
 const sensitiveMetadataKey = /(password|secret|token|api[_-]?key|credential|authorization|cookie)/i;
 const sensitiveText = /((?:password|secret|token|api[_-]?key|credential|authorization)\s*[:=]\s*)\S+/gi;
 
@@ -136,6 +136,18 @@ function asJsonData(data: Record<string, unknown> | string) {
   return typeof data === 'string' ? data : JSON.stringify(data);
 }
 
+function zepCreatedAt(value: unknown) {
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : undefined;
+  }
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? value.toISOString() : undefined;
+  }
+  return undefined;
+}
+
 function safeError(error: unknown) {
   const status = error && typeof error === 'object'
     ? (error as { statusCode?: unknown; status?: unknown }).statusCode ?? (error as { status?: unknown }).status
@@ -146,8 +158,11 @@ function safeError(error: unknown) {
 
 function isConflict(error: unknown) {
   if (!error || typeof error !== 'object') return false;
-  const candidate = error as { statusCode?: unknown; status?: unknown; name?: unknown };
-  return candidate.statusCode === 409 || candidate.status === 409 || candidate.name === 'ConflictError';
+  const candidate = error as { statusCode?: unknown; status?: unknown; name?: unknown; message?: unknown };
+  return candidate.statusCode === 409
+    || candidate.status === 409
+    || candidate.name === 'ConflictError'
+    || (typeof candidate.message === 'string' && /\balready exists\b/i.test(candidate.message));
 }
 
 export async function ensureAgentMemoryUser(user: AgentMemoryUser) {
@@ -206,19 +221,22 @@ export async function addAgentMemoryMessages(input: {
   if (!client || !input.threadId || input.messages.length === 0) return { configured: Boolean(client), ok: false as const };
   try {
     await client.thread.addMessages(input.threadId, {
-      messages: input.messages.map((message) => ({
-        role: message.role,
-        name: message.role === 'user' ? 'Workspace user' : message.role === 'assistant' ? 'Lulu AI' : 'Lulu system',
-        content: message.content,
-        ...(message.id ? { uuid: message.id } : {}),
-        ...(message.createdAt ? { createdAt: message.createdAt } : {}),
-        metadata: metadata(message.metadata, {
-          workspace_id: input.workspaceId,
-          user_id: input.userId,
-          conversation_id: input.conversationId,
-          source: 'lulu.ai_conversation',
-        }),
-      })),
+      messages: input.messages.map((message) => {
+        const createdAt = zepCreatedAt(message.createdAt);
+        return {
+          role: message.role,
+          name: message.role === 'user' ? 'Workspace user' : message.role === 'assistant' ? 'Lulu AI' : 'Lulu system',
+          content: message.content,
+          ...(message.id ? { uuid: message.id } : {}),
+          ...(createdAt ? { createdAt } : {}),
+          metadata: metadata(message.metadata, {
+            workspace_id: input.workspaceId,
+            user_id: input.userId,
+            conversation_id: input.conversationId,
+            source: 'lulu.ai_conversation',
+          }),
+        };
+      }),
     }, requestOptions);
     return { configured: true as const, ok: true as const };
   } catch (error) {
@@ -276,21 +294,24 @@ export async function addAgentCollaborationMemoryMessages(input: {
   if (!client || !input.threadId || input.messages.length === 0) return { configured: Boolean(client), ok: false as const };
   try {
     await client.thread.addMessages(input.threadId, {
-      messages: input.messages.map((message) => ({
-        role: message.senderType === 'system' ? 'system' : message.senderType === 'human' ? 'user' : 'assistant',
-        name: boundedText(message.senderAgentId ?? (message.senderType === 'human' ? 'Workspace user' : 'Lulu system'), 120),
-        content: message.content,
-        ...(message.id ? { uuid: message.id } : {}),
-        ...(message.createdAt ? { createdAt: message.createdAt } : {}),
-        metadata: metadata(message.metadata, {
-          workspace_id: input.workspaceId,
-          user_id: input.userId,
-          agent_run_id: input.runId,
-          source: 'lulu.agent_collaboration',
-          ...(message.senderAgentId ? { sender_agent_id: message.senderAgentId } : {}),
-          ...(message.messageType ? { message_type: message.messageType } : {}),
-        }),
-      })),
+      messages: input.messages.map((message) => {
+        const createdAt = zepCreatedAt(message.createdAt);
+        return {
+          role: message.senderType === 'system' ? 'system' : message.senderType === 'human' ? 'user' : 'assistant',
+          name: boundedText(message.senderAgentId ?? (message.senderType === 'human' ? 'Workspace user' : 'Lulu system'), 120),
+          content: message.content,
+          ...(message.id ? { uuid: message.id } : {}),
+          ...(createdAt ? { createdAt } : {}),
+          metadata: metadata(message.metadata, {
+            workspace_id: input.workspaceId,
+            user_id: input.userId,
+            agent_run_id: input.runId,
+            source: 'lulu.agent_collaboration',
+            ...(message.senderAgentId ? { sender_agent_id: message.senderAgentId } : {}),
+            ...(message.messageType ? { message_type: message.messageType } : {}),
+          }),
+        };
+      }),
     }, requestOptions);
     return { configured: true as const, ok: true as const };
   } catch (error) {
@@ -344,12 +365,13 @@ export async function addUserBusinessDataToMemory(input: AgentMemoryBusinessData
   const ensured = await ensureAgentMemoryUser({ userId: zepUserId, workspaceId: input.workspaceId });
   if (!ensured.configured || !('ok' in ensured && ensured.ok)) return { configured: ensured.configured, ok: false as const };
   try {
+    const createdAt = zepCreatedAt(input.createdAt);
     await client.graph.add({
       userId: zepUserId,
       type: typeof input.data === 'string' ? 'text' : 'json',
       data: asJsonData(input.data),
       sourceDescription: input.source,
-      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+      ...(createdAt ? { createdAt } : {}),
       metadata: metadata(input.metadata, {
         workspace_id: input.workspaceId,
         user_id: input.userId,
@@ -368,12 +390,13 @@ export async function addOrganizationKnowledgeToMemory(input: AgentMemoryOrgKnow
   const client = configuredClient();
   if (!client) return { configured: false as const };
   try {
+    const createdAt = zepCreatedAt(input.createdAt);
     await client.graph.add({
       graphId: ZEP_ORG_KNOWLEDGE_GRAPH_ID,
       type: typeof input.data === 'string' ? 'text' : 'json',
       data: asJsonData(input.data),
       sourceDescription: input.source,
-      ...(input.createdAt ? { createdAt: input.createdAt } : {}),
+      ...(createdAt ? { createdAt } : {}),
       metadata: metadata(input.metadata, {
         source: input.source,
         ...(input.sourceId ? { source_id: input.sourceId } : {}),
