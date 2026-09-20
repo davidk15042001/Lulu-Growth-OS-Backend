@@ -185,6 +185,29 @@ export async function listAdminCatalog(input: { userId: string; search?: string;
   };
 }
 
+export async function listAdminTools(input: { toolkit: string; search?: string }) {
+  const toolkit = normalizeComposioToolkit(input.toolkit);
+  const search = input.search?.trim().slice(0, 120);
+  const result = await client().tools.getRawComposioTools({
+    toolkits: [toolkit],
+    limit: 500,
+    ...(search ? { search } : {}),
+  });
+  return {
+    items: result.map((tool) => ({
+      slug: tool.slug,
+      name: tool.name,
+      description: tool.description?.trim().slice(0, 500) ?? null,
+      toolkitSlug: tool.toolkit?.slug ?? toolkit,
+      toolkitName: tool.toolkit?.name ?? toolkit,
+      ...(tool.toolkit?.logo ? { logo: tool.toolkit.logo } : {}),
+      isNoAuth: Boolean(tool.isNoAuth),
+    })),
+    total: result.length,
+    truncated: result.length >= 500,
+  };
+}
+
 export async function setAdminCatalogAvailability(input: {
   toolkit: string;
   displayName: string;

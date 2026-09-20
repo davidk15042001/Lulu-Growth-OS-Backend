@@ -36,6 +36,14 @@ export async function listAdminCatalog(req: AuthedRequest, res: Response, next: 
   } catch (error) { next(error); }
 }
 
+export async function listAdminTools(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    const toolkit = typeof req.params.toolkit === 'string' ? req.params.toolkit : '';
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    return successResponse(res, 'Composio admin tools loaded', await service.listAdminTools({ toolkit, ...(search ? { search } : {}) }));
+  } catch (error) { next(error); }
+}
+
 export async function setAdminCatalogAvailability(req: AuthedRequest, res: Response, next: NextFunction) {
   try {
     const toolkit = typeof req.params.toolkit === 'string' ? req.params.toolkit : '';

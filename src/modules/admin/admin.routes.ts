@@ -39,6 +39,7 @@ router.route('/websites').get(requireAuth, requireAdminCapabilities('providers.r
 router.route('/agents').get(requireAuth, requireAdminCapabilities('agents.read'), controller.getAgents).all(methodNotAllowed);
 router.route('/integrations').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getIntegrations).all(methodNotAllowed);
 router.route('/composio/catalog').get(requireAuth, requireAdminCapabilities('providers.read'), composioController.listAdminCatalog).all(methodNotAllowed);
+router.route('/composio/catalog/:toolkit/tools').get(requireAuth, requireAdminCapabilities('providers.read'), composioController.listAdminTools).all(methodNotAllowed);
 router.route('/composio/catalog/:toolkit').put(requireAuth, requireAdminCapabilities('providers.manage'), composioController.setAdminCatalogAvailability).all(methodNotAllowed);
 router.route('/oauth-connections').get(requireAuth, requireAdminCapabilities('providers.read'), controller.getOAuthConnections).all(methodNotAllowed);
 router.route('/oauth-connections/:provider/start').post(requireAuth, requireAdminCapabilities('providers.manage'), controller.startManagedOAuth).all(methodNotAllowed);
