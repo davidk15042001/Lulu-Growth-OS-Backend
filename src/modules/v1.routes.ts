@@ -18,6 +18,7 @@ import { publicOmniRouter } from './omnichannel/omnichannel.routes.js';
 import { publicCommercialDocumentRoutes } from './commercial-documents/commercial-documents.routes.js';
 import { publicLogo } from './workspaces/workspace.controller.js';
 import storefrontRoutes from './storefront/storefront.routes.js';
+import { publicComposioRoutes } from './composio/composio.routes.js';
 
 const router = Router();
 
@@ -69,6 +70,7 @@ router.use('/calendar', calendarOAuthRoutes);
 router.use('/public/calendar', publicCalendarRoutes);
 router.use('/public', publicRoutes);
 router.use('/provider-webhooks', providerWebhookRoutes);
+router.use('/composio', publicComposioRoutes);
 router.use('/public/omnichannel', publicOmniRouter);
 router.use('/public/commercial-documents', publicCommercialDocumentRoutes);
 // Public Lulu-owned websites and storefronts. These routes only expose

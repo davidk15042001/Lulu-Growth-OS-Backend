@@ -1,6 +1,12 @@
 import { Composio } from '@composio/core';
 import { env, hasComposio } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
+import { findMembership } from '../workspaces/workspace.repo.js';
+import {
+  chargeComposioUsage,
+  finalizeComposioUsage,
+  getComposioUsageSummary,
+} from './composio-usage.repo.js';
 
 let composio: Composio | undefined;
 
@@ -30,6 +36,38 @@ export function normalizeComposioToolkit(value: string) {
   return toolkit;
 }
 
+export function normalizeComposioToolSlug(value: string) {
+  const slug = value.trim();
+  if (!slug || slug.length > 200 || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(slug)) {
+    throw new AppError(422, 'COMPOSIO_TOOL_INVALID', 'A valid Composio tool slug is required.');
+  }
+  return slug;
+}
+
+export function normalizeComposioTriggerSlug(value: string) {
+  const slug = value.trim();
+  if (!slug || slug.length > 200 || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(slug)) {
+    throw new AppError(422, 'COMPOSIO_TRIGGER_INVALID', 'A valid Composio trigger slug is required.');
+  }
+  return slug;
+}
+
+export function normalizeComposioIdempotencyKey(value: string) {
+  const key = value.trim();
+  if (!key || key.length > 240 || /[\u0000-\u001f\u007f]/.test(key)) {
+    throw new AppError(422, 'COMPOSIO_IDEMPOTENCY_KEY_INVALID', 'A valid Composio idempotency key is required.');
+  }
+  return key;
+}
+
+export function parseComposioUserId(value: string) {
+  const parts = value.split(':');
+  if (parts.length !== 3 || parts[0] !== 'lulu' || !parts[1] || !parts[2]) {
+    throw new AppError(422, 'COMPOSIO_USER_INVALID', 'The Composio user identity is not a Lulu workspace identity.');
+  }
+  return { workspaceId: parts[1], userId: parts[2] };
+}
+
 export function isComposioConfigured() {
   return hasComposio;
 }
@@ -39,13 +77,11 @@ export async function createWorkspaceSession(input: { workspaceId: string; userI
   const session = await client().sessions.create(scopedUserId(input.workspaceId, input.userId), {
     ...(toolkits.length ? { toolkits: { enable: toolkits } } : {}),
     manageConnections: { enable: true },
-    mcp: true,
   });
   return {
     sessionId: session.sessionId,
     userId: scopedUserId(input.workspaceId, input.userId),
     toolkits,
-    mcp: session.mcp,
   };
 }
 
@@ -89,3 +125,142 @@ export async function authorizeWorkspaceToolkit(input: { workspaceId: string; us
     redirectUrl: connection.redirectUrl,
   };
 }
+
+export async function executeWorkspaceTool(input: {
+  workspaceId: string;
+  userId: string;
+  toolkit: string;
+  toolSlug: string;
+  arguments: Record<string, unknown>;
+  idempotencyKey: string;
+}) {
+  const toolkit = normalizeComposioToolkit(input.toolkit);
+  const toolSlug = normalizeComposioToolSlug(input.toolSlug);
+  const idempotencyKey = normalizeComposioIdempotencyKey(input.idempotencyKey);
+
+  // Creating a session is not billable. The charge is committed immediately
+  // before the remote tool call, so an accepted call can never run unfunded.
+  const session = await client().sessions.create(scopedUserId(input.workspaceId, input.userId), {
+    toolkits: { enable: [toolkit] },
+    manageConnections: { enable: true },
+  });
+  const charge = await chargeComposioUsage({
+    workspaceId: input.workspaceId,
+    userId: input.userId,
+    usageType: 'TOOL_CALL',
+    toolkitSlug: toolkit,
+    toolSlug,
+    idempotencyKey,
+    metadata: { source: 'workspace_composio_execute' },
+  });
+  if (!charge.charged) {
+    throw new AppError(409, 'COMPOSIO_REQUEST_ALREADY_PROCESSED', 'This Composio idempotency key was already processed. Retry with a new key only for a new tool call.', {
+      status: charge.usage.status,
+      usageId: charge.usage.id,
+    });
+  }
+
+  try {
+    const result = await session.execute(toolSlug, input.arguments);
+    try {
+      await finalizeComposioUsage({
+        workspaceId: input.workspaceId,
+        usageId: charge.usage.id,
+        status: result.error ? 'FAILED' : 'SUCCEEDED',
+        providerLogId: result.logId || null,
+        ...(result.error ? { errorCode: 'COMPOSIO_TOOL_ERROR' } : {}),
+      });
+    } catch {
+      throw new AppError(503, 'COMPOSIO_BILLING_AMBIGUOUS', 'The Composio tool result was received, but billing finalization is pending reconciliation.');
+    }
+    return {
+      data: result.data,
+      error: result.error,
+      logId: result.logId,
+      billing: { charged: true, amountCny: charge.amountCny, currency: 'CNY' as const, usageType: 'TOOL_CALL' as const },
+    };
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'COMPOSIO_BILLING_AMBIGUOUS') throw error;
+    try {
+      await finalizeComposioUsage({
+        workspaceId: input.workspaceId,
+        usageId: charge.usage.id,
+        status: 'FAILED',
+        errorCode: error instanceof AppError ? error.code : 'COMPOSIO_TOOL_EXECUTION_FAILED',
+      });
+    } catch {
+      throw new AppError(503, 'COMPOSIO_BILLING_AMBIGUOUS', 'The Composio tool call outcome is ambiguous and requires reconciliation.');
+    }
+    throw error;
+  }
+}
+
+export async function createWorkspaceTrigger(input: {
+  workspaceId: string;
+  userId: string;
+  triggerSlug: string;
+  triggerConfig?: Record<string, unknown>;
+  connectedAccountId?: string;
+}) {
+  const triggerSlug = normalizeComposioTriggerSlug(input.triggerSlug);
+  const webhookUrl = env.COMPOSIO_WEBHOOK_URL
+    ?? (env.OAUTH_CALLBACK_BASE_URL ? `${env.OAUTH_CALLBACK_BASE_URL.replace(/\/$/, '')}/composio/webhook` : undefined);
+  if (!env.COMPOSIO_WEBHOOK_SECRET || !webhookUrl) {
+    throw new AppError(503, 'COMPOSIO_WEBHOOK_NOT_CONFIGURED', 'Composio triggers require a public webhook URL and COMPOSIO_WEBHOOK_SECRET.');
+  }
+  const composioClient = client();
+  await composioClient.triggers.setWebhookSubscription({
+    webhookUrl,
+    version: 'V3',
+  });
+  const trigger = await composioClient.triggers.create(scopedUserId(input.workspaceId, input.userId), triggerSlug, {
+    ...(input.triggerConfig ? { triggerConfig: input.triggerConfig } : {}),
+    ...(input.connectedAccountId ? { connectedAccountId: input.connectedAccountId } : {}),
+  });
+  return { triggerId: trigger.triggerId, triggerSlug, webhookConfigured: true };
+}
+
+export async function handleComposioWebhook(input: { rawBody: string; headers: Record<string, string | string[] | undefined> }) {
+  if (!env.COMPOSIO_WEBHOOK_SECRET) {
+    throw new AppError(503, 'COMPOSIO_WEBHOOK_NOT_CONFIGURED', 'Composio webhook verification is not configured.');
+  }
+  const parsed = await client().triggers.parse(
+    { body: input.rawBody, headers: input.headers },
+    { verifySecret: env.COMPOSIO_WEBHOOK_SECRET },
+  );
+  const event = parsed.payload;
+  const identity = parseComposioUserId(event.userId);
+  if (!await findMembership(identity.workspaceId, identity.userId)) {
+    throw new AppError(404, 'COMPOSIO_WORKSPACE_NOT_FOUND', 'The Composio trigger is not attached to an active Lulu workspace member.');
+  }
+  const toolkitSlug = normalizeComposioToolkit(event.toolkitSlug);
+  const triggerSlug = normalizeComposioTriggerSlug(event.triggerSlug);
+  const eventId = normalizeComposioIdempotencyKey(event.id);
+  const charge = await chargeComposioUsage({
+    workspaceId: identity.workspaceId,
+    userId: identity.userId,
+    usageType: 'TRIGGER',
+    toolkitSlug,
+    triggerSlug,
+    providerEventId: eventId,
+    idempotencyKey: eventId,
+    metadata: { source: 'composio_webhook', eventUuid: event.uuid },
+  });
+  if (charge.charged) {
+    await finalizeComposioUsage({
+      workspaceId: identity.workspaceId,
+      usageId: charge.usage.id,
+      status: 'SUCCEEDED',
+      providerLogId: event.uuid,
+    });
+  }
+  return {
+    accepted: true,
+    duplicate: !charge.charged,
+    eventId,
+    workspaceId: identity.workspaceId,
+    billing: { charged: charge.charged, amountCny: charge.amountCny, currency: 'CNY' as const, usageType: 'TRIGGER' as const },
+  };
+}
+
+export { getComposioUsageSummary };

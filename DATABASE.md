@@ -2,8 +2,8 @@
 
 ## Current inventory
 
-The migration directory currently contains 131 ordered migrations, about 228
-table definitions and 317 declared indexes (counts from the read-only
+The migration directory currently contains 137 ordered migrations, about 236
+table definitions and 342 declared indexes (counts from the read-only
 architecture audit; generated/provider-specific SQL may change the exact live
 catalog). The schema is PostgreSQL-first and migrations are serialized with an
 advisory deployment lock.
@@ -20,6 +20,9 @@ advisory deployment lock.
 - `workspace_api_wallets` and `workspace_ad_spend_wallets` are separate
   financial authorities. Their ledgers, reservations and payment lifecycle
   tables are append-only/idempotent evidence, not display-only counters.
+- `workspace_composio_usage_ledger` owns the fixed-price Composio meter. Each
+  row is tenant-scoped, idempotent and linked to one negative entry in the AI
+  wallet ledger; `TOOL_CALL` and `TRIGGER` both cost `0.500000 CNY`.
 - `domain_events`, receipts, jobs, agent runs/steps/action packets and audit
   tables own operational history and recovery state.
 - Provider tables store external references, capability/readiness evidence and
@@ -84,4 +87,3 @@ truncate production data as a shortcut for a migration or test.
 5. Deploy code that can read old and new state during the transition.
 6. Verify counts, foreign keys, tenant isolation and query plans.
 7. Remove legacy structures only after functional parity and a release window.
-

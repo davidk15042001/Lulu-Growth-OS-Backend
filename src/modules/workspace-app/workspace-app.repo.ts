@@ -23,6 +23,7 @@ import type {
 } from './workspace-app.validator.js';
 import type { WorkspaceRole } from '../workspaces/workspace-permissions.js';
 import { API_TOPUP_PACKAGES } from '../api-wallet/api-wallet.validator.js';
+import { getComposioUsageSummary } from '../composio/composio-usage.repo.js';
 
 export type WorkspaceSettings = {
   workspaceId: string;
@@ -455,7 +456,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
     values.push(filters.to);
     usageConditions.push(`period_start <= $${values.length}`);
   }
-  const [subscription, usage, paygCurrent, paygUsageBreakdown, paygInvoices, latestPaygPaymentSetup, apiWallet] = await Promise.all([
+  const [subscription, usage, paygCurrent, paygUsageBreakdown, paygInvoices, latestPaygPaymentSetup, apiWallet, composioUsage] = await Promise.all([
     query(
       `SELECT workspace_id AS "workspaceId", provider, plan_key AS "planKey", status, seats,
               trial_ends_at AS "trialEndsAt", current_period_starts_at AS "currentPeriodStartsAt",
@@ -617,6 +618,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
               COALESCE(w.spent_amount,0) AS "spentAmount",COALESCE(w.reversal_debt_amount,0) AS "reversalDebtAmount",
               COALESCE(w.total_funded_amount,0) AS "totalFundedAmount",COALESCE(w.currency,'CNY') AS currency
        FROM (SELECT $1::uuid AS workspace_id) x LEFT JOIN workspace_api_wallets w ON w.workspace_id=x.workspace_id`, [workspaceId]),
+    getComposioUsageSummary(workspaceId, filters),
   ]);
   const current = paygCurrent.rows[0];
   const subscriptionRow = subscription.rows[0] ?? null;
@@ -630,7 +632,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       reversalDebtAmount: Number(apiWallet.rows[0].reversalDebtAmount),
       totalFundedAmount: Number(apiWallet.rows[0].totalFundedAmount), currency: apiWallet.rows[0].currency,
       packages: [...API_TOPUP_PACKAGES], enabled: Number(apiWallet.rows[0].availableAmount) > 0 && Number(apiWallet.rows[0].reversalDebtAmount) === 0,
-    } : { availableAmount: 0, reservedAmount: 0, paymentReservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [...API_TOPUP_PACKAGES], enabled: false },
+      composioUsage,
+    } : { availableAmount: 0, reservedAmount: 0, paymentReservedAmount: 0, spentAmount: 0, reversalDebtAmount: 0, totalFundedAmount: 0, currency: 'CNY', packages: [...API_TOPUP_PACKAGES], enabled: false, composioUsage },
     storagePricing: {
       currency: 'USD', freeTierDeduction: false, providerMarkupPercent: 10,
       additionalStoragePerGbMonthUsd: 0.2,

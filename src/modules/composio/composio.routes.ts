@@ -14,5 +14,16 @@ router.route('/authorize')
 router.route('/session')
   .post(requireWorkspaceEditor, controller.createSession)
   .all(methodNotAllowed);
+router.route('/execute')
+  .post(requireWorkspaceEditor, controller.executeTool)
+  .all(methodNotAllowed);
+router.route('/triggers')
+  .post(requireWorkspaceEditor, controller.createTrigger)
+  .all(methodNotAllowed);
 
 export default router;
+
+export const publicComposioRoutes = Router();
+publicComposioRoutes.route('/webhook')
+  .post(controller.webhook)
+  .all(methodNotAllowed);

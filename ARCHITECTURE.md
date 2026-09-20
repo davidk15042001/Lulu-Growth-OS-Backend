@@ -36,6 +36,9 @@ HTTP / webhook / schedule / provider signal
   event delivery, leasing, retries, heartbeats and dead letters.
 - `src/modules/ai`, `premium-media`, `research`, `content-generation`: bounded
   model/provider work with prepaid reservations where applicable.
+- `src/modules/composio`: tenant-scoped Composio connection, tool execution and
+  trigger webhook boundary. Tool calls and accepted trigger events are charged
+  from the existing prepaid AI wallet before external work is accepted.
 - `src/modules/onboarding`, `websites`, `storefront`, `omnichannel`,
   `calendar`, `email`, `notifications`: customer-facing operational domains.
 
@@ -71,7 +74,7 @@ actual metric evidence. It does not publish, message customers or spend funds.
 
 ## Known boundaries and target improvements
 
-- The current application has 131 migrations and approximately 228 relational
+- The current application has 137 migrations and approximately 236 relational
   tables. The existing `docs/autonomous-company-os-audit.md` is the source-led
   capability matrix and production release evidence.
 - PostgreSQL row-level security is not currently the tenant boundary; service
@@ -96,4 +99,5 @@ actual metric evidence. It does not publish, message customers or spend funds.
    an action packet, or a provider operation.
 6. Failed or blocked work must stop or enter a bounded retry/dead-letter path;
    it must not silently repeat expensive AI/provider calls.
-
+7. Composio execution is only accepted through the server-side metered route;
+   the workspace session endpoint never exposes an unmetered MCP transport.

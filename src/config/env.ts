@@ -86,6 +86,8 @@ const EnvSchema = z
     PERPLEXITY_MODEL: z.string().min(1).default('sonar-pro'),
     PERPLEXITY_RESEARCH_MODEL: z.string().min(1).default('sonar-deep-research'),
     COMPOSIO_API_KEY: optionalNonEmptyString,
+    COMPOSIO_WEBHOOK_SECRET: optionalNonEmptyString,
+    COMPOSIO_WEBHOOK_URL: z.string().url().optional(),
     FIRECRAWL_API_KEY: optionalNonEmptyString,
     FIRECRAWL_BASE_URL: z.string().url().default('https://api.firecrawl.dev'),
     HIGGSFIELD_API_KEY: optionalNonEmptyString,
