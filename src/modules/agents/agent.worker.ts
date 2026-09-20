@@ -6,6 +6,7 @@ import { appendDomainEvent } from '../../events/domain-event.repo.js';
 import { registerDomainEventHandler } from '../../events/domain-event.registry.js';
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
+import { AppError } from '../../utils/app-error.js';
 
 const intervalMs = 15 * 60 * 1000;
 const defaultCadenceMinutes = 6 * 60;
@@ -14,6 +15,10 @@ let timer: NodeJS.Timeout | undefined;
 let activeCycle: Promise<void> | null = null;
 let activeScheduleRequest: Promise<void> | null = null;
 let stopping = false;
+
+function isWorkspaceAutomationPaused(error: unknown): boolean {
+  return error instanceof AppError && error.code === 'WORKSPACE_AUTOMATION_PAUSED';
+}
 
 function requestAutomaticAnalysisCycle(): Promise<void> {
   if (stopping) return Promise.resolve();
@@ -45,31 +50,42 @@ export function runAutomaticAnalysisCycle(): Promise<void> {
         const elapsedMinutes = (Date.now() - Date.parse(target.last_scheduled_at)) / 60_000;
         if (Number.isFinite(elapsedMinutes) && elapsedMinutes < cadenceMinutes) continue;
       }
-      const prepared = await prepareAutomaticAgentTeam(target.workspace_id, 'scheduled');
-      const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
-      for (const selected of prepared.selection.specialists) {
-        if (stopping) break;
-        if (selected.definition.module === 'ads' && !target.ad_spend_funded) continue;
-        const page = automaticPageProfiles.find((profile) => profile.pageId === selected.definition.pageId);
-        if (!page) continue;
-        const goal = buildPageAgentGoal(page);
-        const pageDedupeMinutes = selected.reasons.includes('recovery required') ? 15 : cadenceMinutes;
-        if (await repo.getRecentPageRun(target.workspace_id, page.pageId, pageDedupeMinutes)) continue;
-        await startAutomaticRun(
-          target.workspace_id,
-          goal,
-          selected.definition.module,
-          page,
-          pageDedupeMinutes,
-          target.actor_user_id ?? undefined,
-          {
-            cycleId: prepared.cycle!.id,
-            selectedAgentIds,
-            selectionReason: selected.reasons,
-          },
-        );
+      try {
+        const prepared = await prepareAutomaticAgentTeam(target.workspace_id, 'scheduled');
+        const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
+        for (const selected of prepared.selection.specialists) {
+          if (stopping) break;
+          if (selected.definition.module === 'ads' && !target.ad_spend_funded) continue;
+          const page = automaticPageProfiles.find((profile) => profile.pageId === selected.definition.pageId);
+          if (!page) continue;
+          const goal = buildPageAgentGoal(page);
+          const pageDedupeMinutes = selected.reasons.includes('recovery required') ? 15 : cadenceMinutes;
+          if (await repo.getRecentPageRun(target.workspace_id, page.pageId, pageDedupeMinutes)) continue;
+          await startAutomaticRun(
+            target.workspace_id,
+            goal,
+            selected.definition.module,
+            page,
+            pageDedupeMinutes,
+            target.actor_user_id ?? undefined,
+            {
+              cycleId: prepared.cycle!.id,
+              selectedAgentIds,
+              selectionReason: selected.reasons,
+            },
+          );
+        }
+        processed += 1;
+      } catch (error: unknown) {
+        // A paused customer workspace is an expected tenant state, not a
+        // failed global worker. Skip it and keep the scheduler healthy for all
+        // other workspaces; the workspace switch will resume future cycles.
+        if (isWorkspaceAutomationPaused(error)) {
+          logger.info({ workspaceId: target.workspace_id }, 'Automatic analysis skipped for paused workspace');
+          continue;
+        }
+        throw error;
       }
-      processed += 1;
     }
     runtimeMonitor.progress({ phase: 'completed', processed });
   })()
