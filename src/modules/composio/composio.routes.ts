@@ -8,6 +8,9 @@ router.use(requireWorkspaceMember);
 router.route('/toolkits')
   .get(controller.listToolkits)
   .all(methodNotAllowed);
+router.route('/tools')
+  .get(controller.listTools)
+  .all(methodNotAllowed);
 router.route('/authorize')
   .post(requireWorkspaceEditor, controller.authorizeToolkit)
   .all(methodNotAllowed);

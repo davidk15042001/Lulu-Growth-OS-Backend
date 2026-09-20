@@ -86,12 +86,13 @@ export async function createWorkspaceSession(input: { workspaceId: string; userI
   };
 }
 
-export async function listWorkspaceToolkits(input: { workspaceId: string; userId: string; search?: string }) {
+export async function listWorkspaceToolkits(input: { workspaceId: string; userId: string; search?: string; cursor?: string }) {
   const session = await client().sessions.create(scopedUserId(input.workspaceId, input.userId), {
     manageConnections: { enable: true },
   });
   const result = await session.toolkits({
     limit: 100,
+    ...(input.cursor ? { cursor: input.cursor } : {}),
     ...(input.search ? { search: input.search.trim().slice(0, 80) } : {}),
   });
   return {
@@ -106,6 +107,31 @@ export async function listWorkspaceToolkits(input: { workspaceId: string; userId
     })),
     nextCursor: result.cursor ?? null,
     totalPages: result.totalPages,
+  };
+}
+
+export async function listWorkspaceTools(input: { workspaceId: string; toolkit: string; search?: string }) {
+  const toolkit = normalizeComposioToolkit(input.toolkit);
+  const search = input.search?.trim().slice(0, 120);
+  const limit = 500;
+  const result = await client().tools.getRawComposioTools({
+    toolkits: [toolkit],
+    limit,
+    ...(search ? { search } : {}),
+  });
+
+  return {
+    items: result.map((tool) => ({
+      slug: tool.slug,
+      name: tool.name,
+      description: tool.description?.trim().slice(0, 500) ?? null,
+      toolkitSlug: tool.toolkit?.slug ?? toolkit,
+      toolkitName: tool.toolkit?.name ?? toolkit,
+      ...(tool.toolkit?.logo ? { logo: tool.toolkit.logo } : {}),
+      isNoAuth: Boolean(tool.isNoAuth),
+    })),
+    total: result.length,
+    truncated: result.length >= limit,
   };
 }
 

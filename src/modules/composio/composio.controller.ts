@@ -18,7 +18,17 @@ export async function listToolkits(req: WorkspaceRequest, res: Response, next: N
   try {
     const workspaceId = String(req.params.workspaceId ?? '');
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
-    return successResponse(res, 'Composio toolkits loaded', await service.listWorkspaceToolkits({ workspaceId, userId: req.user!.id, ...(search ? { search } : {}) }));
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : undefined;
+    return successResponse(res, 'Composio toolkits loaded', await service.listWorkspaceToolkits({ workspaceId, userId: req.user!.id, ...(search ? { search } : {}), ...(cursor ? { cursor } : {}) }));
+  } catch (error) { next(error); }
+}
+
+export async function listTools(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const workspaceId = String(req.params.workspaceId ?? '');
+    const toolkit = typeof req.query.toolkit === 'string' ? req.query.toolkit : '';
+    const search = typeof req.query.search === 'string' ? req.query.search : undefined;
+    return successResponse(res, 'Composio tools loaded', await service.listWorkspaceTools({ workspaceId, toolkit, ...(search ? { search } : {}) }));
   } catch (error) { next(error); }
 }
 
