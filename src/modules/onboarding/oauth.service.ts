@@ -79,7 +79,7 @@ const providerScopes: Record<OAuthProvider, string[]> = {
 };
 
 function callbackUrl(provider: OAuthProvider) {
-  if (!env.OAUTH_CALLBACK_BASE_URL) throw oauthError(provider, 'OAUTH_CALLBACK_NOT_CONFIGURED', 'OAuth callback URL is not configured on the server', { requiredEnv: 'OAUTH_CALLBACK_BASE_URL' }, 500);
+  if (!env.OAUTH_CALLBACK_BASE_URL) throw oauthError(provider, 'OAUTH_CALLBACK_NOT_CONFIGURED', 'OAuth callback URL is not configured on the server', { requiredEnv: 'OAUTH_CALLBACK_BASE_URL' }, 503);
   return `${env.OAUTH_CALLBACK_BASE_URL.replace(/\/$/, '')}/onboarding/oauth/${provider}/callback`;
 }
 
@@ -87,34 +87,34 @@ function providerConfig(provider: OAuthProvider): ProviderConfig {
   const common = { scopes: providerScopes[provider], category: providerCategories[provider], name: providerNames[provider] };
   switch (provider) {
     case 'salesforce':
-      if (!env.SALESFORCE_CLIENT_ID || !env.SALESFORCE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Salesforce OAuth credentials are missing on the server', { requiredEnv: ['SALESFORCE_CLIENT_ID', 'SALESFORCE_CLIENT_SECRET'] }, 500);
+      if (!env.SALESFORCE_CLIENT_ID || !env.SALESFORCE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Salesforce OAuth credentials are missing on the server', { requiredEnv: ['SALESFORCE_CLIENT_ID', 'SALESFORCE_CLIENT_SECRET'] }, 503);
       return { ...common, clientId: env.SALESFORCE_CLIENT_ID, clientSecret: env.SALESFORCE_CLIENT_SECRET, authorizationUrl: env.SALESFORCE_AUTH_URL, tokenUrl: env.SALESFORCE_TOKEN_URL };
     case 'pipedrive':
-      if (!env.PIPEDRIVE_CLIENT_ID || !env.PIPEDRIVE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Pipedrive OAuth credentials are missing on the server', { requiredEnv: ['PIPEDRIVE_CLIENT_ID', 'PIPEDRIVE_CLIENT_SECRET'] }, 500);
+      if (!env.PIPEDRIVE_CLIENT_ID || !env.PIPEDRIVE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Pipedrive OAuth credentials are missing on the server', { requiredEnv: ['PIPEDRIVE_CLIENT_ID', 'PIPEDRIVE_CLIENT_SECRET'] }, 503);
       return { ...common, clientId: env.PIPEDRIVE_CLIENT_ID, clientSecret: env.PIPEDRIVE_CLIENT_SECRET, authorizationUrl: 'https://oauth.pipedrive.com/oauth/authorize', tokenUrl: 'https://oauth.pipedrive.com/oauth/token' };
     case 'hubspot':
-      if (!env.HUBSPOT_CLIENT_ID || !env.HUBSPOT_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'HubSpot OAuth credentials are missing on the server', { requiredEnv: ['HUBSPOT_CLIENT_ID', 'HUBSPOT_CLIENT_SECRET'] }, 500);
+      if (!env.HUBSPOT_CLIENT_ID || !env.HUBSPOT_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'HubSpot OAuth credentials are missing on the server', { requiredEnv: ['HUBSPOT_CLIENT_ID', 'HUBSPOT_CLIENT_SECRET'] }, 503);
       return { ...common, clientId: env.HUBSPOT_CLIENT_ID, clientSecret: env.HUBSPOT_CLIENT_SECRET, authorizationUrl: 'https://app.hubspot.com/oauth/authorize', tokenUrl: 'https://api.hubapi.com/oauth/v1/token' };
     case 'google-ads':
-      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_ADS_DEVELOPER_TOKEN) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Ads OAuth credentials or developer token are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN'] }, 500);
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.GOOGLE_ADS_DEVELOPER_TOKEN) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Ads OAuth credentials or developer token are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_ADS_DEVELOPER_TOKEN'] }, 503);
       return { ...common, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' };
     case 'google-analytics':
-      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Analytics OAuth credentials are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] }, 500);
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Analytics OAuth credentials are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'] }, 503);
       return { ...common, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' };
     case 'google-business':
-      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Business OAuth credentials are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'], requiredScope: 'https://www.googleapis.com/auth/business.manage' }, 500);
+      if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Google Business OAuth credentials are missing on the server', { requiredEnv: ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'], requiredScope: 'https://www.googleapis.com/auth/business.manage' }, 503);
       return { ...common, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET, authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token' };
     case 'meta':
     case 'facebook':
     case 'instagram':
     case 'whatsapp':
-      if (!env.META_CLIENT_ID || !env.META_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Meta OAuth credentials are missing on the server', { requiredEnv: ['META_CLIENT_ID', 'META_CLIENT_SECRET'] }, 500);
+      if (!env.META_CLIENT_ID || !env.META_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'Meta OAuth credentials are missing on the server', { requiredEnv: ['META_CLIENT_ID', 'META_CLIENT_SECRET'] }, 503);
       return { ...common, clientId: env.META_CLIENT_ID, clientSecret: env.META_CLIENT_SECRET, authorizationUrl: `https://www.facebook.com/${env.META_GRAPH_VERSION}/dialog/oauth`, tokenUrl: `https://graph.facebook.com/${env.META_GRAPH_VERSION}/oauth/access_token` };
     case 'linkedin':
-      if (!env.LINKEDIN_CLIENT_ID || !env.LINKEDIN_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'LinkedIn OAuth credentials are missing on the server', { requiredEnv: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET'] }, 500);
+      if (!env.LINKEDIN_CLIENT_ID || !env.LINKEDIN_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'LinkedIn OAuth credentials are missing on the server', { requiredEnv: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET'] }, 503);
       return { ...common, clientId: env.LINKEDIN_CLIENT_ID, clientSecret: env.LINKEDIN_CLIENT_SECRET, authorizationUrl: 'https://www.linkedin.com/oauth/v2/authorization', tokenUrl: 'https://www.linkedin.com/oauth/v2/accessToken' };
     case 'tiktok-ads':
-      if (!env.TIKTOK_ADS_CLIENT_ID || !env.TIKTOK_ADS_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'TikTok Ads OAuth credentials are missing on the server', { requiredEnv: ['TIKTOK_ADS_CLIENT_ID', 'TIKTOK_ADS_CLIENT_SECRET'] }, 500);
+      if (!env.TIKTOK_ADS_CLIENT_ID || !env.TIKTOK_ADS_CLIENT_SECRET) throw oauthError(provider, 'OAUTH_PROVIDER_CREDENTIALS_MISSING', 'TikTok Ads OAuth credentials are missing on the server', { requiredEnv: ['TIKTOK_ADS_CLIENT_ID', 'TIKTOK_ADS_CLIENT_SECRET'] }, 503);
       return { ...common, scopes: env.TIKTOK_ADS_SCOPES.split(',').map((scope) => scope.trim()).filter(Boolean), clientId: env.TIKTOK_ADS_CLIENT_ID, clientSecret: env.TIKTOK_ADS_CLIENT_SECRET, authorizationUrl: env.TIKTOK_ADS_AUTH_URL, tokenUrl: env.TIKTOK_ADS_TOKEN_URL };
   }
 }
