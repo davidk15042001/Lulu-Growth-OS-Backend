@@ -1,6 +1,7 @@
 import { Composio } from '@composio/core';
 import { env, hasComposio } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
+import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
 import { findMembership } from '../workspaces/workspace.repo.js';
 import {
   chargeComposioUsage,
@@ -144,16 +145,19 @@ export async function executeWorkspaceTool(input: {
     toolkits: { enable: [toolkit] },
     manageConnections: { enable: true },
   });
+  const billingExempt = await isBillingAdminUser(input.userId);
   const charge = await chargeComposioUsage({
     workspaceId: input.workspaceId,
     userId: input.userId,
+    billingExempt,
     usageType: 'TOOL_CALL',
     toolkitSlug: toolkit,
     toolSlug,
     idempotencyKey,
     metadata: { source: 'workspace_composio_execute' },
   });
-  if (!charge.charged) {
+  if (charge.idempotent) {
+    if (!charge.usage) throw new Error('Composio usage idempotency row was not returned');
     throw new AppError(409, 'COMPOSIO_REQUEST_ALREADY_PROCESSED', 'This Composio idempotency key was already processed. Retry with a new key only for a new tool call.', {
       status: charge.usage.status,
       usageId: charge.usage.id,
@@ -162,34 +166,38 @@ export async function executeWorkspaceTool(input: {
 
   try {
     const result = await session.execute(toolSlug, input.arguments);
-    try {
-      await finalizeComposioUsage({
-        workspaceId: input.workspaceId,
-        usageId: charge.usage.id,
-        status: result.error ? 'FAILED' : 'SUCCEEDED',
-        providerLogId: result.logId || null,
-        ...(result.error ? { errorCode: 'COMPOSIO_TOOL_ERROR' } : {}),
-      });
-    } catch {
-      throw new AppError(503, 'COMPOSIO_BILLING_AMBIGUOUS', 'The Composio tool result was received, but billing finalization is pending reconciliation.');
+    if (!charge.idempotent && charge.usage) {
+      try {
+        await finalizeComposioUsage({
+          workspaceId: input.workspaceId,
+          usageId: charge.usage.id,
+          status: result.error ? 'FAILED' : 'SUCCEEDED',
+          providerLogId: result.logId || null,
+          ...(result.error ? { errorCode: 'COMPOSIO_TOOL_ERROR' } : {}),
+        });
+      } catch {
+        throw new AppError(503, 'COMPOSIO_BILLING_AMBIGUOUS', 'The Composio tool result was received, but billing finalization is pending reconciliation.');
+      }
     }
     return {
       data: result.data,
       error: result.error,
       logId: result.logId,
-      billing: { charged: true, amountCny: charge.amountCny, currency: 'CNY' as const, usageType: 'TOOL_CALL' as const },
+      billing: { charged: charge.charged, waived: charge.waived, amountCny: charge.amountCny, currency: 'CNY' as const, usageType: 'TOOL_CALL' as const },
     };
   } catch (error) {
     if (error instanceof AppError && error.code === 'COMPOSIO_BILLING_AMBIGUOUS') throw error;
-    try {
-      await finalizeComposioUsage({
-        workspaceId: input.workspaceId,
-        usageId: charge.usage.id,
-        status: 'FAILED',
-        errorCode: error instanceof AppError ? error.code : 'COMPOSIO_TOOL_EXECUTION_FAILED',
-      });
-    } catch {
-      throw new AppError(503, 'COMPOSIO_BILLING_AMBIGUOUS', 'The Composio tool call outcome is ambiguous and requires reconciliation.');
+    if (!charge.idempotent && charge.usage) {
+      try {
+        await finalizeComposioUsage({
+          workspaceId: input.workspaceId,
+          usageId: charge.usage.id,
+          status: 'FAILED',
+          errorCode: error instanceof AppError ? error.code : 'COMPOSIO_TOOL_EXECUTION_FAILED',
+        });
+      } catch {
+        throw new AppError(503, 'COMPOSIO_BILLING_AMBIGUOUS', 'The Composio tool call outcome is ambiguous and requires reconciliation.');
+      }
     }
     throw error;
   }
@@ -239,6 +247,7 @@ export async function handleComposioWebhook(input: { rawBody: string; headers: R
   const charge = await chargeComposioUsage({
     workspaceId: identity.workspaceId,
     userId: identity.userId,
+    billingExempt: await isBillingAdminUser(identity.userId),
     usageType: 'TRIGGER',
     toolkitSlug,
     triggerSlug,
@@ -246,7 +255,7 @@ export async function handleComposioWebhook(input: { rawBody: string; headers: R
     idempotencyKey: eventId,
     metadata: { source: 'composio_webhook', eventUuid: event.uuid },
   });
-  if (charge.charged) {
+  if (!charge.idempotent && charge.usage) {
     await finalizeComposioUsage({
       workspaceId: identity.workspaceId,
       usageId: charge.usage.id,
@@ -256,10 +265,10 @@ export async function handleComposioWebhook(input: { rawBody: string; headers: R
   }
   return {
     accepted: true,
-    duplicate: !charge.charged,
+    duplicate: charge.idempotent,
     eventId,
     workspaceId: identity.workspaceId,
-    billing: { charged: charge.charged, amountCny: charge.amountCny, currency: 'CNY' as const, usageType: 'TRIGGER' as const },
+    billing: { charged: charge.charged, waived: charge.waived, amountCny: charge.amountCny, currency: 'CNY' as const, usageType: 'TRIGGER' as const },
   };
 }
 

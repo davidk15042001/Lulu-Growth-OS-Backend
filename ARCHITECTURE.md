@@ -100,4 +100,7 @@ actual metric evidence. It does not publish, message customers or spend funds.
 6. Failed or blocked work must stop or enter a bounded retry/dead-letter path;
    it must not silently repeat expensive AI/provider calls.
 7. Composio execution is only accepted through the server-side metered route;
+   Lulu platform admins with `billing.bypass` are explicitly exempt from the
+   customer charge and billable wallet debit, while ordinary workspace admins
+   are still metered;
    the workspace session endpoint never exposes an unmetered MCP transport.

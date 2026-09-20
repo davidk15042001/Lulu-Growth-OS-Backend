@@ -5,7 +5,11 @@ CREATE TABLE IF NOT EXISTS workspace_composio_usage_ledger (
   workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
   user_id UUID REFERENCES users(id) ON DELETE SET NULL,
   usage_type VARCHAR(24) NOT NULL CHECK (usage_type IN ('TOOL_CALL','TRIGGER')),
-  amount_cny NUMERIC(20,6) NOT NULL CHECK (amount_cny = 0.500000),
+  billing_exempt BOOLEAN NOT NULL DEFAULT FALSE,
+  amount_cny NUMERIC(20,6) NOT NULL CHECK (
+    (billing_exempt AND amount_cny = 0.000000)
+    OR (NOT billing_exempt AND amount_cny = 0.500000)
+  ),
   toolkit_slug VARCHAR(80) NOT NULL,
   tool_slug VARCHAR(200),
   trigger_slug VARCHAR(200),

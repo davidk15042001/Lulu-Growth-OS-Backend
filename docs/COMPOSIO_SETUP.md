@@ -40,3 +40,9 @@ accepted.
 
 Usage appears in the AI wallet overview and workspace billing response under
 `composioUsage`.
+
+Lulu platform admins with the `billing.bypass` capability are fully exempt
+from Composio charges. Their tool calls and trigger events are executed without
+debiting the workspace wallet. They are retained as zero-cost audit entries so
+idempotency remains enforced, but excluded from customer usage totals. The
+ordinary Workspace Admin role does not bypass billing.

@@ -13,6 +13,7 @@ type ComposioUsageRow = {
   workspaceId: string;
   userId: string | null;
   usageType: ComposioUsageType;
+  billingExempt: boolean;
   amountCny: string;
   toolkitSlug: string;
   toolSlug: string | null;
@@ -40,6 +41,7 @@ const usageSelect = `
   workspace_id AS "workspaceId",
   user_id AS "userId",
   usage_type AS "usageType",
+  billing_exempt AS "billingExempt",
   amount_cny AS "amountCny",
   toolkit_slug AS "toolkitSlug",
   tool_slug AS "toolSlug",
@@ -70,6 +72,7 @@ function usagePrice(type: ComposioUsageType) {
 
 function assertSameRequest(existing: ComposioUsageRow, input: ChargeComposioUsageInput) {
   const same = existing.usageType === input.usageType
+    && existing.billingExempt === Boolean(input.billingExempt)
     && existing.toolkitSlug === input.toolkitSlug
     && existing.toolSlug === (input.toolSlug ?? null)
     && existing.triggerSlug === (input.triggerSlug ?? null)
@@ -82,6 +85,7 @@ function assertSameRequest(existing: ComposioUsageRow, input: ChargeComposioUsag
 export type ChargeComposioUsageInput = {
   workspaceId: string;
   userId?: string | null;
+  billingExempt?: boolean;
   usageType: ComposioUsageType;
   toolkitSlug: string;
   toolSlug?: string;
@@ -93,12 +97,12 @@ export type ChargeComposioUsageInput = {
 
 export async function chargeComposioUsage(input: ChargeComposioUsageInput) {
   return withTransaction(async (client) => {
-    const amount = usagePrice(input.usageType);
+    const amount = input.billingExempt ? '0.000000' : usagePrice(input.usageType);
     const inserted = (await query<ComposioUsageRow>(
       `INSERT INTO workspace_composio_usage_ledger(
          workspace_id,user_id,usage_type,amount_cny,toolkit_slug,tool_slug,
-         trigger_slug,provider_event_id,idempotency_key,metadata
-       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+         trigger_slug,provider_event_id,idempotency_key,billing_exempt,metadata
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
        ON CONFLICT (workspace_id,idempotency_key) DO NOTHING
        RETURNING ${usageSelect}`,
       [
@@ -111,6 +115,7 @@ export async function chargeComposioUsage(input: ChargeComposioUsageInput) {
         input.triggerSlug ?? null,
         input.providerEventId ?? null,
         input.idempotencyKey,
+        Boolean(input.billingExempt),
         JSON.stringify(input.metadata ?? {}),
       ],
       client,
@@ -125,7 +130,11 @@ export async function chargeComposioUsage(input: ChargeComposioUsageInput) {
       )).rows[0];
       if (!existing) throw new Error('Composio usage idempotency row disappeared');
       assertSameRequest(existing, input);
-      return { charged: false, idempotent: true, usage: existing, amountCny: amount };
+      return { charged: false, idempotent: true, waived: existing.billingExempt, usage: existing, amountCny: existing.amountCny };
+    }
+
+    if (input.billingExempt) {
+      return { charged: false, idempotent: false, waived: true, usage: inserted, amountCny: amount };
     }
 
     await ensureWallet(input.workspaceId, client);
@@ -191,7 +200,7 @@ export async function chargeComposioUsage(input: ChargeComposioUsageInput) {
       client,
     );
 
-    return { charged: true, idempotent: false, usage: inserted, amountCny: amount };
+    return { charged: true, idempotent: false, waived: false, usage: inserted, amountCny: amount };
   });
 }
 
@@ -236,7 +245,7 @@ export async function getComposioUsageSummary(workspaceId: string, filters?: { f
             COUNT(*) FILTER (WHERE usage_type='TRIGGER')::bigint AS triggers,
             COALESCE(SUM(amount_cny),0)::numeric AS "chargedAmountCny"
      FROM workspace_composio_usage_ledger
-     WHERE ${conditions.join(' AND ')}`,
+     WHERE ${conditions.join(' AND ')} AND billing_exempt=FALSE`,
     values,
   )).rows[0];
   return {
