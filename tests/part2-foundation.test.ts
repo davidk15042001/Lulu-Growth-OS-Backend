@@ -102,6 +102,7 @@ describe('Part 2 tenant and authorization foundation', () => {
       bankOpeningBank: 'Example Bank',
       bankBranch: 'Shanghai Branch',
       bankCode: 'EXAMPLECN',
+      branch: 'Manufacturing',
     });
     assert.equal(saved?.companyName, 'Workspace A International');
     assert.equal(saved?.bankCode, 'EXAMPLECN');
@@ -111,12 +112,13 @@ describe('Part 2 tenant and authorization foundation', () => {
     assert.deepEqual(persisted, { name: 'Workspace A International', taxId: 'CN-TAX-1', bankCode: 'EXAMPLECN' });
   });
 
-  it('completes the profile gate with company name and industry only', async () => {
+  it('keeps profile incomplete until every required profile field is present', async () => {
     const f = await fixture();
     await db.query(
       `UPDATE workspaces SET onboarding_step='profile_completion',profile_completed_at=NULL,
         country_region=NULL,tax_id=NULL,address=NULL,legal_form=NULL,legal_representative=NULL,
-        phone_number=NULL,bank_account_number=NULL,bank_opening_bank=NULL,bank_branch=NULL,bank_code=NULL
+        phone_number=NULL,bank_account_number=NULL,bank_opening_bank=NULL,bank_branch=NULL,bank_code=NULL,
+        branch=NULL,logo_storage_reference=NULL,logo_mime_type=NULL,logo_file_name=NULL,logo_updated_at=NULL
        WHERE id=$1`,
       [f.a],
     );
@@ -124,6 +126,36 @@ describe('Part 2 tenant and authorization foundation', () => {
     const saved = await workspaceRepo.updateWorkspaceProfile(f.a, f.owner, {
       companyName: 'Minimum Identity Company',
       industry: 'Software',
+    });
+
+    assert.equal(saved?.onboardingStep, 'profile_completion');
+    assert.equal(saved?.profileCompletedAt, null);
+    assert.ok(saved?.missingRequiredFields.includes('companyLogo'));
+    assert.ok(saved?.missingRequiredFields.includes('bankAccountNumber'));
+  });
+
+  it('completes the profile gate only with all required fields and a logo', async () => {
+    const f = await fixture();
+    await db.query(`UPDATE users SET first_name='Ada',last_name='Owner' WHERE id=$1`, [f.owner]);
+    await db.query(
+      `UPDATE workspaces SET onboarding_step='profile_completion',profile_completed_at=NULL,
+        logo_storage_reference='logos/test.png',logo_mime_type='image/png',logo_file_name='test.png',logo_updated_at=NOW()
+       WHERE id=$1`,
+      [f.a],
+    );
+
+    const saved = await workspaceRepo.updateWorkspaceProfile(f.a, f.owner, {
+      companyName: 'Complete Identity Company',
+      industry: 'Software',
+      countryRegion: 'China',
+      taxId: '91310000123456789X',
+      address: 'Shanghai',
+      legalForm: 'Limited liability company',
+      legalRepresentative: 'Ada Owner',
+      bankAccountNumber: '123456789012',
+      bankOpeningBank: 'Example Bank',
+      bankCode: '123456789012',
+      branch: 'Software',
     });
 
     assert.equal(saved?.onboardingStep, 'knowledge_base');

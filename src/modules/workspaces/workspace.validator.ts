@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 const optionalText = (maximum: number) => z.string().trim().max(maximum).nullable().optional();
+const optionalRequiredText = (maximum: number) => z.string().trim().min(1).max(maximum).nullable().optional();
 const optionalStringList = (maximumItems: number, maximumLength = 120) =>
   z.array(z.string().trim().min(1).max(maximumLength)).max(maximumItems).optional();
 
@@ -54,17 +55,18 @@ export const updateWorkspaceSchema = z
 export const workspaceProfileUpdateSchema = z
   .object({
     companyName: z.string().trim().min(1).max(200).optional(),
-    industry: optionalText(200),
-    countryRegion: optionalText(200),
-    taxId: optionalText(100),
-    address: optionalText(500),
-    legalForm: optionalText(120),
-    legalRepresentative: optionalText(200),
+    industry: optionalRequiredText(200),
+    countryRegion: optionalRequiredText(200),
+    taxId: optionalRequiredText(100),
+    address: optionalRequiredText(500),
+    legalForm: optionalRequiredText(120),
+    legalRepresentative: optionalRequiredText(200),
     phoneNumber: optionalText(60),
-    bankAccountNumber: optionalText(100),
-    bankOpeningBank: optionalText(200),
+    bankAccountNumber: optionalRequiredText(100),
+    bankOpeningBank: optionalRequiredText(200),
     bankBranch: optionalText(200),
-    bankCode: optionalText(100),
+    bankCode: optionalRequiredText(100),
+    branch: optionalRequiredText(200),
   })
   .refine((value) => Object.keys(value).length > 0, 'At least one field must be provided');
 

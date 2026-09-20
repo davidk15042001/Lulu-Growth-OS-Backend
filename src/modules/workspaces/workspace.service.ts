@@ -6,6 +6,70 @@ import { conflictError, notFoundError } from '../../utils/app-error.js';
 import * as repo from './workspace.repo.js';
 import type { CreateWorkspaceInput, UpdateWorkspaceInput, WorkspaceProfileUpdateInput } from './workspace.validator.js';
 
+const countries = [
+  'China', 'Germany', 'United States', 'United Kingdom', 'France', 'Netherlands',
+  'Austria', 'Switzerland', 'Singapore', 'Hong Kong', 'Other',
+] as const;
+
+const legalFormsByCountry: Record<string, readonly string[]> = {
+  China: ['Limited liability company', 'Joint stock company', 'Partnership', 'Sole proprietorship', 'Foreign-invested enterprise', 'Other'],
+  Germany: ['GmbH', 'UG', 'AG', 'e.K.', 'GbR', 'OHG', 'KG', 'Other'],
+  'United States': ['LLC', 'Corporation', 'S Corporation', 'Partnership', 'Sole proprietorship', 'Nonprofit', 'Other'],
+  'United Kingdom': ['Limited company', 'PLC', 'LLP', 'Partnership', 'Sole trader', 'Other'],
+  France: ['SARL', 'SAS', 'SA', 'EURL', 'Entreprise individuelle', 'Other'],
+  Netherlands: ['BV', 'NV', 'VOF', 'Eenmanszaak', 'Stichting', 'Other'],
+  Austria: ['GmbH', 'AG', 'OG', 'KG', 'Einzelunternehmen', 'Other'],
+  Switzerland: ['GmbH', 'AG', 'Kollektivgesellschaft', 'Einzelunternehmen', 'Other'],
+  Singapore: ['Private limited company', 'Public company', 'LLP', 'Sole proprietorship', 'Other'],
+  'Hong Kong': ['Private company limited by shares', 'Public company', 'Partnership', 'Sole proprietorship', 'Other'],
+  Other: ['Limited company', 'Corporation', 'Partnership', 'Sole proprietorship', 'Nonprofit', 'Other'],
+};
+
+function normalizedCountry(value: string | null | undefined) {
+  const text = value?.trim();
+  return countries.find((country) => country.toLowerCase() === text?.toLowerCase()) ?? null;
+}
+
+function validateWorkspaceProfileInput(input: WorkspaceProfileUpdateInput) {
+  const fieldErrors: Record<string, string> = {};
+  const country = normalizedCountry(input.countryRegion ?? undefined);
+  if (input.countryRegion !== undefined && input.countryRegion !== null && !country) {
+    fieldErrors.countryRegion = 'Select a supported country or region.';
+  }
+  const legalForms = legalFormsByCountry[country ?? 'Other'] ?? legalFormsByCountry.Other!;
+  if (input.legalForm !== undefined && input.legalForm !== null && !legalForms.some((item) => item.toLowerCase() === input.legalForm!.toLowerCase())) {
+    fieldErrors.legalForm = 'Select a legal form supported for the selected country.';
+  }
+  if (input.taxId !== undefined && input.taxId !== null && country) {
+    const tax = input.taxId.trim();
+    const valid = country === 'United States' ? /^\d{2}-?\d{7}$/.test(tax)
+      : country === 'Germany' ? /^(?:DE)?\d{9,13}$/.test(tax)
+      : country === 'China' ? /^[0-9A-Z]{15,20}$/.test(tax)
+      : country === 'United Kingdom' ? /^[0-9A-Z]{8,12}$/.test(tax)
+      : tax.length >= 4 && tax.length <= 40;
+    if (!valid) fieldErrors.taxId = 'Enter a tax ID that matches the selected country.';
+  }
+  if (input.bankAccountNumber !== undefined && input.bankAccountNumber !== null && country) {
+    const account = input.bankAccountNumber.replace(/\s+/g, '');
+    const valid = country === 'Germany' ? /^DE\d{20}$/i.test(account) || /^\d{6,18}$/.test(account)
+      : country === 'United States' ? /^\d{4,17}$/.test(account)
+      : country === 'China' ? /^\d{8,30}$/.test(account)
+      : /^[A-Z0-9-]{4,34}$/i.test(account);
+    if (!valid) fieldErrors.bankAccountNumber = 'Enter a valid bank account number for the selected country.';
+  }
+  if (input.bankCode !== undefined && input.bankCode !== null && country) {
+    const code = input.bankCode.replace(/\s+/g, '');
+    const valid = country === 'United States' ? /^\d{9}$/.test(code)
+      : country === 'Germany' ? /^\d{8}$/.test(code) || /^[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}([A-Z0-9]{3})?$/i.test(code)
+      : country === 'China' ? /^\d{12}$/.test(code) || /^[A-Z]{4}CN[A-Z0-9]{2}([A-Z0-9]{3})?$/i.test(code)
+      : /^[A-Z0-9]{4,12}$/i.test(code);
+    if (!valid) fieldErrors.bankCode = 'Enter a valid bank code for the selected country.';
+  }
+  if (Object.keys(fieldErrors).length > 0) {
+    throw new AppError(422, 'WORKSPACE_PROFILE_INVALID', 'Please correct the highlighted profile fields.', { fields: fieldErrors });
+  }
+}
+
 function slugify(value: string) {
   return value
     .normalize('NFKD')
@@ -68,6 +132,7 @@ export async function updateWorkspaceProfile(
   userId: string,
   input: WorkspaceProfileUpdateInput,
 ) {
+  validateWorkspaceProfileInput(input);
   const profile = await repo.updateWorkspaceProfile(workspaceId, userId, input);
   if (!profile) throw notFoundError('Workspace profile not found');
   return profile;

@@ -56,6 +56,8 @@ export type Workspace = {
 
 export type WorkspaceProfile = {
   workspaceId: string;
+  firstName: string | null;
+  lastName: string | null;
   companyName: string;
   industry: string | null;
   countryRegion: string | null;
@@ -68,6 +70,7 @@ export type WorkspaceProfile = {
   bankOpeningBank: string | null;
   bankBranch: string | null;
   bankCode: string | null;
+  branch: string | null;
   onboardingStep: string;
   profileCompletedAt: string | null;
   missingRequiredFields: string[];
@@ -124,6 +127,8 @@ const workspaceSelect = `
 
 const workspaceProfileSelect = `
   w.id AS "workspaceId",
+  u.first_name AS "firstName",
+  u.last_name AS "lastName",
   w.name AS "companyName",
   w.industry,
   w.country_region AS "countryRegion",
@@ -136,6 +141,7 @@ const workspaceProfileSelect = `
   w.bank_opening_bank AS "bankOpeningBank",
   w.bank_branch AS "bankBranch",
   w.bank_code AS "bankCode",
+  w.branch,
   w.onboarding_step AS "onboardingStep",
   w.profile_completed_at AS "profileCompletedAt",
   w.logo_storage_reference AS "logoStorageReference",
@@ -143,8 +149,20 @@ const workspaceProfileSelect = `
   w.logo_file_name AS "logoFileName",
   w.logo_updated_at AS "logoUpdatedAt",
   ARRAY_REMOVE(ARRAY[
+    CASE WHEN NULLIF(trim(u.first_name),'') IS NULL THEN 'firstName' END,
+    CASE WHEN NULLIF(trim(u.last_name),'') IS NULL THEN 'lastName' END,
     CASE WHEN NULLIF(trim(w.name),'') IS NULL THEN 'companyName' END,
-    CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END
+    CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END,
+    CASE WHEN NULLIF(trim(w.country_region),'') IS NULL THEN 'countryRegion' END,
+    CASE WHEN NULLIF(trim(w.tax_id),'') IS NULL THEN 'taxId' END,
+    CASE WHEN NULLIF(trim(w.legal_form),'') IS NULL THEN 'legalForm' END,
+    CASE WHEN NULLIF(trim(w.legal_representative),'') IS NULL THEN 'legalRepresentative' END,
+    CASE WHEN NULLIF(trim(w.address),'') IS NULL THEN 'address' END,
+    CASE WHEN NULLIF(trim(w.logo_storage_reference),'') IS NULL OR w.logo_mime_type IS NULL THEN 'companyLogo' END,
+    CASE WHEN NULLIF(trim(w.bank_account_number),'') IS NULL THEN 'bankAccountNumber' END,
+    CASE WHEN NULLIF(trim(w.bank_code),'') IS NULL THEN 'bankCode' END,
+    CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankName' END,
+    CASE WHEN NULLIF(trim(w.branch),'') IS NULL THEN 'branch' END
   ],NULL) AS "missingRequiredFields"
 `;
 
@@ -366,6 +384,7 @@ export async function findWorkspaceProfileForAdmin(workspaceId: string, userId: 
     `SELECT ${workspaceProfileSelect}
        FROM workspaces w
        JOIN workspace_members wm ON wm.workspace_id = w.id
+       JOIN users u ON u.id = wm.user_id
       WHERE w.id = $1
         AND wm.user_id = $2
         AND wm.role IN ('owner', 'admin')
@@ -432,6 +451,7 @@ const profileColumnMap: Record<keyof WorkspaceProfileUpdateInput, string> = {
   bankOpeningBank: 'bank_opening_bank',
   bankBranch: 'bank_branch',
   bankCode: 'bank_code',
+  branch: 'branch',
 };
 
 export async function updateWorkspaceProfile(
@@ -468,12 +488,38 @@ export async function updateWorkspaceProfile(
     // The database, not the browser, decides when the mandatory profile gate
     // is complete. Partial PATCH calls can never unlock the workspace.
     await query(
-      `UPDATE workspaces SET profile_completed_at=COALESCE(profile_completed_at,NOW()),
-          onboarding_step=CASE WHEN onboarding_step='profile_completion' THEN 'knowledge_base' ELSE onboarding_step END
-       WHERE id=$1 AND onboarding_completed_at IS NULL
-         AND NULLIF(trim(name),'') IS NOT NULL
-         AND NULLIF(trim(industry),'') IS NOT NULL`,
-      [workspaceId], client,
+      `WITH profile_state AS (
+         SELECT ARRAY_REMOVE(ARRAY[
+           CASE WHEN NULLIF(trim(u.first_name),'') IS NULL THEN 'firstName' END,
+           CASE WHEN NULLIF(trim(u.last_name),'') IS NULL THEN 'lastName' END,
+           CASE WHEN NULLIF(trim(w.name),'') IS NULL THEN 'companyName' END,
+           CASE WHEN NULLIF(trim(w.industry),'') IS NULL THEN 'industry' END,
+           CASE WHEN NULLIF(trim(w.country_region),'') IS NULL THEN 'countryRegion' END,
+           CASE WHEN NULLIF(trim(w.tax_id),'') IS NULL THEN 'taxId' END,
+           CASE WHEN NULLIF(trim(w.legal_form),'') IS NULL THEN 'legalForm' END,
+           CASE WHEN NULLIF(trim(w.legal_representative),'') IS NULL THEN 'legalRepresentative' END,
+           CASE WHEN NULLIF(trim(w.address),'') IS NULL THEN 'address' END,
+           CASE WHEN NULLIF(trim(w.logo_storage_reference),'') IS NULL OR w.logo_mime_type IS NULL THEN 'companyLogo' END,
+           CASE WHEN NULLIF(trim(w.bank_account_number),'') IS NULL THEN 'bankAccountNumber' END,
+           CASE WHEN NULLIF(trim(w.bank_code),'') IS NULL THEN 'bankCode' END,
+           CASE WHEN NULLIF(trim(w.bank_opening_bank),'') IS NULL THEN 'bankName' END,
+           CASE WHEN NULLIF(trim(w.branch),'') IS NULL THEN 'branch' END
+         ],NULL) AS missing
+         FROM workspaces w
+         JOIN users u ON u.id = $2
+         WHERE w.id = $1 AND w.deleted_at IS NULL
+       )
+       UPDATE workspaces w SET
+         profile_completed_at = CASE WHEN cardinality(profile_state.missing) = 0 THEN COALESCE(w.profile_completed_at,NOW()) ELSE NULL END,
+         onboarding_step = CASE
+           WHEN w.onboarding_completed_at IS NOT NULL THEN w.onboarding_step
+           WHEN cardinality(profile_state.missing) = 0 AND w.onboarding_step='profile_completion' THEN 'knowledge_base'
+           WHEN cardinality(profile_state.missing) > 0 AND w.onboarding_step='knowledge_base' THEN 'profile_completion'
+           ELSE w.onboarding_step
+         END
+       FROM profile_state
+       WHERE w.id=$1 AND w.onboarding_completed_at IS NULL`,
+      [workspaceId, userId], client,
     );
 
     const current = (await query<{ name: string; country: string | null; taxId: string | null; legalForm: string | null; address: string | null }>(
@@ -514,8 +560,13 @@ export async function updateWorkspaceProfile(
       logger.error({ error, workspaceId, userId }, 'Workspace profile secondary synchronization failed');
     }
     return (await query<WorkspaceProfile>(
-      `SELECT ${workspaceProfileSelect} FROM workspaces w WHERE w.id = $1 AND w.deleted_at IS NULL`,
-      [workspaceId],
+      `SELECT ${workspaceProfileSelect}
+         FROM workspaces w
+         JOIN workspace_members wm ON wm.workspace_id = w.id
+         JOIN users u ON u.id = wm.user_id
+        WHERE w.id = $1 AND wm.user_id = $2 AND w.deleted_at IS NULL
+        LIMIT 1`,
+      [workspaceId, userId],
       client,
     )).rows[0];
   });
