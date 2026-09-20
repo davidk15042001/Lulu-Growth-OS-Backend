@@ -12,6 +12,15 @@ reset_marker="$backend_dir/.run-test-data-reset"
 # unsupported text provider after a deploy. KIE remains a separate premium-
 # media integration and is intentionally not added to the text fallback chain.
 if [ -f "$environment_file" ]; then
+  # The API can stay online with background workers disabled, but that would
+  # silently stop autonomous execution and make production readiness false.
+  # Per-workspace pause/resume is enforced in the application layer; the
+  # process-level worker runtime must remain enabled in production.
+  if /usr/bin/grep -q '^BACKGROUND_WORKERS_ENABLED=' "$environment_file"; then
+    /usr/bin/sed -i 's/^BACKGROUND_WORKERS_ENABLED=.*/BACKGROUND_WORKERS_ENABLED=true/' "$environment_file"
+  else
+    printf '\nBACKGROUND_WORKERS_ENABLED=true\n' >> "$environment_file"
+  fi
   legacy_ai_prefix=DEEP
   legacy_ai_name=SEEK
   /usr/bin/sed -i \
