@@ -26,7 +26,8 @@ jobs:
       - name: Prüfe Betriebs-Gates
         run: node --check scripts/verify-backup-policy.mjs scripts/verify-release-gate.mjs
       - run: npm run typecheck
-      - run: npm run audit:architecture
+      # The isolated backend checkout has no sibling frontend repository.
+      - run: node scripts/architecture-audit.mjs
       - run: npm run test:migrations
       - run: npm run test:schema-contracts
       - run: npm test
