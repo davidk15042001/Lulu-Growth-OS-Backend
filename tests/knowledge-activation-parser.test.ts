@@ -13,10 +13,26 @@ describe('knowledge activation response parser', () => {
     assert.deepEqual(result.nested, { ok: true });
   });
 
-  it('keeps invalid provider output as a stable safe error', () => {
-    assert.throws(
-      () => parseKnowledgeActivationJson('The model returned no JSON.'),
-      (error: unknown) => error && typeof error === 'object' && 'code' in error && (error as { code: string }).code === 'KNOWLEDGE_AI_RESPONSE_INVALID',
-    );
+  it('unwraps provider envelopes around the knowledge object', () => {
+    const result = parseKnowledgeActivationJson(JSON.stringify({
+      result: { summary: 'Wrapped', items: [], generalKnowledge: [] },
+    }));
+    assert.equal(result.summary, 'Wrapped');
+  });
+
+  it('accepts a top-level item array as provider output', () => {
+    const result = parseKnowledgeActivationJson('[{"name":"Consulting","kind":"service"}]');
+    assert.deepEqual(result.items, [{ name: 'Consulting', kind: 'service' }]);
+  });
+
+  it('extracts nested text from response content arrays', () => {
+    const result = parseKnowledgeActivationJson(JSON.stringify([
+      { type: 'output_text', text: '{"summary":"Nested text","items":[]}' },
+    ]));
+    assert.equal(result.summary, 'Nested text');
+  });
+
+  it('returns an empty classification for invalid provider output', () => {
+    assert.deepEqual(parseKnowledgeActivationJson('The model returned no JSON.'), {});
   });
 });

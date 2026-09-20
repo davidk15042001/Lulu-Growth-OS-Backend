@@ -505,6 +505,29 @@ export async function completeOnboarding(workspaceId: string) {
 
 function activationText(value:unknown,max:number){return typeof value==='string'&&value.trim()?value.trim().slice(0,max):null;}
 
+function fallbackKnowledgeClassification(workspace:{companyName:string},source:string,documentIds:string[]) {
+  const companyName=workspace.companyName?.trim()||'this company';
+  const excerpt=source.trim().slice(0,20_000);
+  return {
+    summary:`Knowledge for ${companyName} was stored from the submitted onboarding information.`,
+    businessDescription:null,
+    contentTypes:[
+      'submitted_company_knowledge',
+      ...(documentIds.length>0?['onboarding_documents']:[]),
+    ],
+    items:[],
+    generalKnowledge:excerpt?[{title:'Submitted company knowledge',content:excerpt}]:[],
+  } satisfies Record<string,unknown>;
+}
+
+function hasKnowledgeClassificationShape(classification:Record<string,unknown>) {
+  return typeof classification.summary==='string'
+    || typeof classification.businessDescription==='string'
+    || Array.isArray(classification.contentTypes)
+    || Array.isArray(classification.items)
+    || Array.isArray(classification.generalKnowledge);
+}
+
 const knowledgeActivationJsonSchema = {
   type: 'object',
   additionalProperties: false,
@@ -568,7 +591,10 @@ export async function activateKnowledgeBase(workspaceId:string,userId:string,inp
       'Separate physical/digital products, services and general company knowledge.',
       'Return only the requested object. Use null for unknown scalar values and empty arrays when no grounded entries exist.'
     ].join(' '),text:{format:{type:'json_schema',name:'company_knowledge_activation',strict:true,schema:knowledgeActivationJsonSchema}},input:[{role:'user',content:`Company: ${workspace.companyName}\nIndustry: ${workspace.industry??''}\n\n${source}`}],max_output_tokens:8000,store:false});
-    const classification=parseKnowledgeActivationJson(response.output_text??'');
+    const parsedClassification=parseKnowledgeActivationJson(response.output_text??'');
+    const classification=hasKnowledgeClassificationShape(parsedClassification)
+      ? parsedClassification
+      : fallbackKnowledgeClassification(workspace,source,input.documentIds);
     const rawItems=Array.isArray(classification.items)?classification.items:[];
     const seen=new Set<string>();
     const items=rawItems.slice(0,100).map(entry=>{
