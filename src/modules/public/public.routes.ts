@@ -3,6 +3,7 @@ import { dbRateLimit } from '../../middlewares/rateLimit.middleware.js';
 import { methodNotAllowed } from '../../middlewares/methodNotAllowed.middleware.js';
 import * as controller from './landing-kpis.controller.js';
 import * as premiumMediaController from '../premium-media/premium-media.controller.js';
+import * as websiteController from '../websites/website.controller.js';
 
 const router = Router();
 const databaseRateLimiter = dbRateLimit({
@@ -31,6 +32,10 @@ router.route('/landing-kpis')
 
 router.route('/kie/media-callback/:token')
   .post(premiumMediaController.callback)
+  .all(methodNotAllowed);
+
+router.route('/kie/website-asset-callback/:token')
+  .post(websiteController.assetEditCallback)
   .all(methodNotAllowed);
 
 export default router;

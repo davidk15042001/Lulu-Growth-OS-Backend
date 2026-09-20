@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { z } from 'zod';
 import { AppError } from '../../utils/app-error.js';
 import { createdResponse, successResponse } from '../../utils/response.js';
 import * as repo from './website.repo.js';
@@ -8,6 +9,7 @@ import { publishWebsiteJob } from './website.publish.service.js';
 import { getActiveWebsiteGenerationJob } from './website.automation.service.js';
 import { requestWebsiteGenerationWorkerRun } from './website.worker.js';
 import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automation.service.js';
+import * as assetEditService from './website-asset-edit.service.js';
 
 type WorkspaceRequest = Request & { user?: { id: string } };
 function workspaceId(req: Request) { return String(req.params.workspaceId); }
@@ -16,6 +18,37 @@ export async function list(req: Request, res: Response, next: NextFunction) { tr
 export async function create(req: WorkspaceRequest, res: Response, next: NextFunction) { try { const input = createSiteSchema.parse(req.body); return createdResponse(res, 'Lulu managed website created', await repo.createSite({ workspaceId: workspaceId(req), ...input })); } catch (error) { next(error); } }
 export async function addDomain(req: Request, res: Response, next: NextFunction) { try { const params = siteIdParams.parse(req.params); const site = await repo.getSite(params.workspaceId, params.siteId); if (!site) throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Website site was not found'); return createdResponse(res, 'Domain verification created', await repo.createDomain(params.siteId, createDomainSchema.parse(req.body).hostname)); } catch (error) { next(error); } }
 export async function listAssets(req: Request, res: Response, next: NextFunction) { try { const params = siteIdParams.parse(req.params); const site = await repo.getSite(params.workspaceId, params.siteId); if (!site || site.provider !== 'managed') throw new AppError(404, 'WEBSITE_SITE_NOT_FOUND', 'Managed website site was not found'); return successResponse(res, 'Website assets loaded', { items: await repo.listManagedWebsiteAssets(params.workspaceId, params.siteId) }); } catch (error) { next(error); } }
+export async function asset(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.extend({ assetId: z.string().uuid() }).parse(req.params);
+    const value = await repo.getManagedWebsiteAsset(params.workspaceId, params.siteId, params.assetId);
+    if (!value) throw new AppError(404, 'WEBSITE_ASSET_NOT_FOUND', 'The website asset was not found');
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.setHeader('Content-Type', value.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${String(value.fileName).replace(/["\\\r\n]/g, '')}"`);
+    return res.status(200).send(value.content);
+  } catch (error) { next(error); }
+}
+export async function startAssetEdit(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.extend({ assetId: z.string().uuid() }).parse(req.params);
+    const prompt = z.object({ prompt: z.string() }).parse(req.body).prompt;
+    if (!req.user?.id) throw new AppError(401, 'UNAUTHORIZED', 'Authentication is required');
+    return createdResponse(res, 'Website image edit started', await assetEditService.startEdit({ workspaceId: params.workspaceId, siteId: params.siteId, assetId: params.assetId, userId: req.user.id, prompt }));
+  } catch (error) { next(error); }
+}
+export async function getAssetEdit(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.extend({ editId: z.string().uuid() }).parse(req.params);
+    return successResponse(res, 'Website image edit loaded', await assetEditService.getEdit(params.workspaceId, params.siteId, params.editId));
+  } catch (error) { next(error); }
+}
+export async function assetEditCallback(req: Request, res: Response, next: NextFunction) {
+  try {
+    const token = z.string().regex(/^[a-f0-9]{64}$/).parse(req.params.token);
+    return successResponse(res, 'Website image edit callback accepted', await assetEditService.handleCallback(token, req.body));
+  } catch (error) { next(error); }
+}
 export async function uploadAsset(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = siteIdParams.parse(req.params);

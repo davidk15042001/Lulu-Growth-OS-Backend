@@ -151,12 +151,15 @@ function mapAsset(row: any): ManagedWebsiteAsset {
     altText: row.altText ?? '',
     placement: row.placement,
     crop: row.crop ?? {},
-    publicUrl: `/api/v1/public/storefront/assets/${encodeURIComponent(row.id)}`,
+    // Workspace media is also visible before the site is published. The
+    // public storefront endpoint intentionally serves only published assets,
+    // so the editor uses the authenticated, tenant-scoped asset endpoint.
+    publicUrl: `/api/v1/workspaces/${encodeURIComponent(row.workspaceId ?? '')}/websites/${encodeURIComponent(row.siteId)}/assets/${encodeURIComponent(row.id)}`,
     createdAt: row.createdAt,
   };
 }
 
-const assetSelect = `SELECT id, site_id AS "siteId", file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", alt_text AS "altText", placement, crop, created_at AS "createdAt" FROM managed_website_assets`;
+const assetSelect = `SELECT id, workspace_id AS "workspaceId", site_id AS "siteId", file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", alt_text AS "altText", placement, crop, created_at AS "createdAt" FROM managed_website_assets`;
 
 export async function listManagedWebsiteAssets(workspaceId: string, siteId: string) {
   const result = await query<any>(`${assetSelect} WHERE workspace_id=$1 AND site_id=$2 ORDER BY created_at DESC`, [workspaceId, siteId]);
@@ -179,10 +182,45 @@ export async function createManagedWebsiteAsset(input: {
   if (!site.rows[0]) return null;
   const result = await query<any>(
     `INSERT INTO managed_website_assets(workspace_id,site_id,uploaded_by,file_name,mime_type,size_bytes,alt_text,placement,crop,content)
-     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING id,site_id AS "siteId",file_name AS "fileName",mime_type AS "mimeType",size_bytes AS "sizeBytes",alt_text AS "altText",placement,crop,created_at AS "createdAt"`,
+     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10) RETURNING id,workspace_id AS "workspaceId",site_id AS "siteId",file_name AS "fileName",mime_type AS "mimeType",size_bytes AS "sizeBytes",alt_text AS "altText",placement,crop,created_at AS "createdAt"`,
     [input.workspaceId, input.siteId, input.uploadedBy, input.fileName, input.mimeType, input.sizeBytes, input.altText, input.placement, JSON.stringify(input.crop), input.content],
   );
   return result.rows[0] ? mapAsset(result.rows[0]) : null;
+}
+
+export async function getManagedWebsiteAsset(workspaceId: string, siteId: string, assetId: string) {
+  const result = await query<{ mimeType: string; fileName: string; content: Buffer }>(
+    `SELECT a.mime_type AS "mimeType", a.file_name AS "fileName", a.content
+       FROM managed_website_assets a
+       JOIN workspace_sites s ON s.id=a.site_id AND s.workspace_id=$1 AND s.id=$2 AND s.provider='managed'
+      WHERE a.workspace_id=$1 AND a.site_id=$2 AND a.id=$3 LIMIT 1`,
+    [workspaceId, siteId, assetId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function getManagedWebsiteAssetForEdit(workspaceId: string, siteId: string, assetId: string) {
+  const result = await query<{
+    id: string;
+    workspaceId: string;
+    siteId: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    altText: string;
+    placement: ManagedWebsiteAsset['placement'];
+    crop: Record<string, unknown>;
+    content: Buffer;
+  }>(
+    `SELECT a.id, a.workspace_id AS "workspaceId", a.site_id AS "siteId",
+            a.file_name AS "fileName", a.mime_type AS "mimeType", a.size_bytes AS "sizeBytes",
+            a.alt_text AS "altText", a.placement, a.crop, a.content
+       FROM managed_website_assets a
+       JOIN workspace_sites s ON s.id=a.site_id AND s.workspace_id=$1 AND s.id=$2 AND s.provider='managed'
+      WHERE a.workspace_id=$1 AND a.site_id=$2 AND a.id=$3 LIMIT 1`,
+    [workspaceId, siteId, assetId],
+  );
+  return result.rows[0] ?? null;
 }
 
 export async function getPublicManagedWebsiteAsset(assetId: string) {
