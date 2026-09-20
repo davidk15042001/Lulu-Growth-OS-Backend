@@ -382,11 +382,14 @@ export function normaliseAiBusinessProfilePayload(
     valuePropositions: normaliseSuggestionList(suggestionsValue.valuePropositions, 1, 1),
     visions: normaliseSuggestionList(suggestionsValue.visions, 1, 1),
     targetMarkets: normaliseSuggestionList(suggestionsValue.targetMarkets, 5, 5),
-    primaryIcps: normaliseSuggestionList(suggestionsValue.primaryIcps, 5, 10),
-    usps: normaliseSuggestionList(suggestionsValue.usps, 5, 10),
-    shortBrandDescriptions: normaliseSuggestionList(suggestionsValue.shortBrandDescriptions, 5, 10),
-    primaryChallenges: normaliseSuggestionList(suggestionsValue.primaryChallenges, 5, 10),
-    languages: normaliseSuggestionList(suggestionsValue.languages, 5, 10),
+    // Five to ten is requested from the provider, but a grounded response
+    // may contain fewer options when the workspace has limited evidence. Do
+    // not turn that honest limitation into a generic 502 or pad with fiction.
+    primaryIcps: normaliseSuggestionList(suggestionsValue.primaryIcps, 3, 10),
+    usps: normaliseSuggestionList(suggestionsValue.usps, 3, 10),
+    shortBrandDescriptions: normaliseSuggestionList(suggestionsValue.shortBrandDescriptions, 3, 10),
+    primaryChallenges: normaliseSuggestionList(suggestionsValue.primaryChallenges, 3, 10),
+    languages: normaliseSuggestionList(suggestionsValue.languages, 3, 10),
   } satisfies repo.AiBusinessProfilePayload['suggestions'];
 
   if (
@@ -399,7 +402,7 @@ export function normaliseAiBusinessProfilePayload(
       suggestions.shortBrandDescriptions,
       suggestions.primaryChallenges,
       suggestions.languages,
-    ].some((group) => group.length < 5)
+    ].some((group) => group.length < 3)
   ) {
     throw new AppError(502, 'AI_EMPTY_RESPONSE', 'The AI provider did not return enough usable profile suggestions');
   }
