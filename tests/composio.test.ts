@@ -8,6 +8,7 @@ import {
   parseComposioUserId,
 } from '../src/modules/composio/composio.service.js';
 import { COMPOSIO_TOOL_CALL_PRICE_CNY, COMPOSIO_TRIGGER_PRICE_CNY } from '../src/modules/composio/composio-usage.repo.js';
+import { isCustomerRestrictedComposioToolkit, isCustomerRestrictedWorkspaceProvider } from '../src/modules/integrations/integration-access.policy.js';
 
 test('Composio identities remain stable and workspace-scoped', () => {
   assert.equal(getComposioUserId('workspace-a', 'user-1'), 'lulu:workspace-a:user-1');
@@ -34,4 +35,15 @@ test('Composio execution identities and keys are validated', () => {
   });
   assert.throws(() => normalizeComposioToolSlug('github/get'), { code: 'COMPOSIO_TOOL_INVALID' });
   assert.throws(() => parseComposioUserId('external-user'), { code: 'COMPOSIO_USER_INVALID' });
+});
+
+test('customer Composio access excludes centrally managed advertising and messaging toolkits', () => {
+  assert.equal(isCustomerRestrictedComposioToolkit('whatsapp'), true);
+  assert.equal(isCustomerRestrictedComposioToolkit('google-ads'), true);
+  assert.equal(isCustomerRestrictedComposioToolkit('linkedin_ads'), true);
+  assert.equal(isCustomerRestrictedComposioToolkit('gmail'), false);
+  assert.equal(isCustomerRestrictedWorkspaceProvider('google-ads'), true);
+  assert.equal(isCustomerRestrictedWorkspaceProvider('meta'), true);
+  assert.equal(isCustomerRestrictedWorkspaceProvider('whatsapp'), true);
+  assert.equal(isCustomerRestrictedWorkspaceProvider('salesforce'), false);
 });

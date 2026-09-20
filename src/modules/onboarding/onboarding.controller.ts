@@ -25,6 +25,7 @@ import {
   whatsappUnifyPortConnectSchema,
 } from './onboarding.validator.js';
 import * as twilioWorkspace from '../provider-control/twilio-workspace.service.js';
+import { isCustomerRestrictedWorkspaceProvider } from '../integrations/integration-access.policy.js';
 
 function workspaceId(req: WorkspaceRequest) {
   return onboardingRecordParamsSchema.parse(req.params).workspaceId;
@@ -429,6 +430,9 @@ export async function whatsappConnection(req: WorkspaceRequest, res: Response, n
 
 export async function connectWhatsApp(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
+    if (isCustomerRestrictedWorkspaceProvider('whatsapp')) {
+      throw new AppError(403, 'OAUTH_PROVIDER_ADMIN_ONLY', 'WhatsApp is managed centrally by Lulu and cannot be connected by workspace users.');
+    }
     const input = whatsappUnifyPortConnectSchema.parse(req.body);
     return createdResponse(res, 'UnifyPort WhatsApp pairing started', await twilioWorkspace.startWorkspaceUnifyPortConnection({
       workspaceId: workspaceId(req),

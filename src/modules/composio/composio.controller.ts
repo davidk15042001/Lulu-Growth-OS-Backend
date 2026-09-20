@@ -28,7 +28,7 @@ export async function listTools(req: WorkspaceRequest, res: Response, next: Next
     const workspaceId = String(req.params.workspaceId ?? '');
     const toolkit = typeof req.query.toolkit === 'string' ? req.query.toolkit : '';
     const search = typeof req.query.search === 'string' ? req.query.search : undefined;
-    return successResponse(res, 'Composio tools loaded', await service.listWorkspaceTools({ workspaceId, toolkit, ...(search ? { search } : {}) }));
+    return successResponse(res, 'Composio tools loaded', await service.listWorkspaceTools({ workspaceId, userId: req.user!.id, toolkit, ...(search ? { search } : {}) }));
   } catch (error) { next(error); }
 }
 
@@ -68,6 +68,7 @@ export async function createTrigger(req: WorkspaceRequest, res: Response, next: 
     const workspaceId = String(req.params.workspaceId ?? '');
     const body = z.object({
       triggerSlug: z.string().min(1).max(200),
+      toolkit: z.string().min(1).max(80).optional(),
       triggerConfig: z.record(z.string(), z.unknown()).optional(),
       connectedAccountId: z.string().min(1).max(240).optional(),
     }).parse(req.body ?? {});
@@ -75,6 +76,7 @@ export async function createTrigger(req: WorkspaceRequest, res: Response, next: 
       workspaceId,
       userId: req.user!.id,
       triggerSlug: body.triggerSlug,
+      ...(body.toolkit ? { toolkit: body.toolkit } : {}),
       ...(body.triggerConfig ? { triggerConfig: body.triggerConfig } : {}),
       ...(body.connectedAccountId ? { connectedAccountId: body.connectedAccountId } : {}),
     }));

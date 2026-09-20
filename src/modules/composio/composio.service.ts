@@ -1,7 +1,9 @@
 import { Composio } from '@composio/core';
 import { env, hasComposio } from '../../config/env.js';
 import { AppError } from '../../utils/app-error.js';
+import { hasAdminCapability } from '../admin/admin.authorization.js';
 import { isBillingAdminUser } from '../billing/payg-billing.repo.js';
+import { isCustomerRestrictedComposioToolkit } from '../integrations/integration-access.policy.js';
 import { findMembership } from '../workspaces/workspace.repo.js';
 import {
   chargeComposioUsage,
@@ -73,8 +75,27 @@ export function isComposioConfigured() {
   return hasComposio;
 }
 
+async function canViewRestrictedToolkits(userId: string) {
+  return hasAdminCapability(userId, 'providers.read');
+}
+
+async function canUseRestrictedToolkits(userId: string) {
+  return hasAdminCapability(userId, 'providers.manage');
+}
+
+async function assertToolkitAllowed(toolkit: string, userId: string, action: 'view' | 'use') {
+  if (!isCustomerRestrictedComposioToolkit(toolkit)) return;
+  const allowed = action === 'view'
+    ? await canViewRestrictedToolkits(userId)
+    : await canUseRestrictedToolkits(userId);
+  if (!allowed) {
+    throw new AppError(403, 'COMPOSIO_TOOLKIT_ADMIN_ONLY', 'This Composio toolkit is managed by Lulu and is not available to workspace users.', { toolkit });
+  }
+}
+
 export async function createWorkspaceSession(input: { workspaceId: string; userId: string; toolkits?: string[] }) {
   const toolkits = (input.toolkits ?? []).map((toolkit) => toolkit.trim().toLowerCase()).filter(Boolean).slice(0, 50);
+  for (const toolkit of toolkits) await assertToolkitAllowed(toolkit, input.userId, 'use');
   const session = await client().sessions.create(scopedUserId(input.workspaceId, input.userId), {
     ...(toolkits.length ? { toolkits: { enable: toolkits } } : {}),
     manageConnections: { enable: true },
@@ -87,6 +108,7 @@ export async function createWorkspaceSession(input: { workspaceId: string; userI
 }
 
 export async function listWorkspaceToolkits(input: { workspaceId: string; userId: string; search?: string; cursor?: string }) {
+  const canViewRestricted = await canViewRestrictedToolkits(input.userId);
   const session = await client().sessions.create(scopedUserId(input.workspaceId, input.userId), {
     manageConnections: { enable: true },
   });
@@ -96,7 +118,7 @@ export async function listWorkspaceToolkits(input: { workspaceId: string; userId
     ...(input.search ? { search: input.search.trim().slice(0, 80) } : {}),
   });
   return {
-    items: result.items.map((toolkit) => ({
+    items: result.items.filter((toolkit) => canViewRestricted || !isCustomerRestrictedComposioToolkit(toolkit.slug)).map((toolkit) => ({
       slug: toolkit.slug,
       name: toolkit.name,
       isNoAuth: toolkit.isNoAuth,
@@ -110,8 +132,9 @@ export async function listWorkspaceToolkits(input: { workspaceId: string; userId
   };
 }
 
-export async function listWorkspaceTools(input: { workspaceId: string; toolkit: string; search?: string }) {
+export async function listWorkspaceTools(input: { workspaceId: string; userId: string; toolkit: string; search?: string }) {
   const toolkit = normalizeComposioToolkit(input.toolkit);
+  await assertToolkitAllowed(toolkit, input.userId, 'view');
   const search = input.search?.trim().slice(0, 120);
   const limit = 500;
   const result = await client().tools.getRawComposioTools({
@@ -137,6 +160,7 @@ export async function listWorkspaceTools(input: { workspaceId: string; toolkit: 
 
 export async function authorizeWorkspaceToolkit(input: { workspaceId: string; userId: string; toolkit: string }) {
   const toolkit = normalizeComposioToolkit(input.toolkit);
+  await assertToolkitAllowed(toolkit, input.userId, 'use');
   const session = await client().sessions.create(scopedUserId(input.workspaceId, input.userId), {
     toolkits: { enable: [toolkit] },
     manageConnections: { enable: true },
@@ -164,6 +188,7 @@ export async function executeWorkspaceTool(input: {
   const toolkit = normalizeComposioToolkit(input.toolkit);
   const toolSlug = normalizeComposioToolSlug(input.toolSlug);
   const idempotencyKey = normalizeComposioIdempotencyKey(input.idempotencyKey);
+  await assertToolkitAllowed(toolkit, input.userId, 'use');
 
   // Creating a session is not billable. The charge is committed immediately
   // before the remote tool call, so an accepted call can never run unfunded.
@@ -233,10 +258,13 @@ export async function createWorkspaceTrigger(input: {
   workspaceId: string;
   userId: string;
   triggerSlug: string;
+  toolkit?: string;
   triggerConfig?: Record<string, unknown>;
   connectedAccountId?: string;
 }) {
   const triggerSlug = normalizeComposioTriggerSlug(input.triggerSlug);
+  const triggerToolkit = input.toolkit?.trim() || input.triggerSlug.split(/[_./-]/)[0] || '';
+  await assertToolkitAllowed(triggerToolkit, input.userId, 'use');
   const webhookUrl = env.COMPOSIO_WEBHOOK_URL
     ?? (env.OAUTH_CALLBACK_BASE_URL ? `${env.OAUTH_CALLBACK_BASE_URL.replace(/\/$/, '')}/composio/webhook` : undefined);
   if (!env.COMPOSIO_WEBHOOK_SECRET || !webhookUrl) {

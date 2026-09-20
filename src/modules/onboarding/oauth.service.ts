@@ -4,6 +4,7 @@ import { decryptSecret, encryptSecret } from '../../utils/secret-box.js';
 import { AppError } from '../../utils/app-error.js';
 import * as repo from './onboarding.repo.js';
 import * as adminOAuthRepo from '../admin/admin-oauth.repo.js';
+import { isCustomerRestrictedWorkspaceProvider } from '../integrations/integration-access.policy.js';
 
 export type OAuthProvider = 'salesforce' | 'pipedrive' | 'hubspot' | 'google-ads' | 'google-analytics' | 'google-business' | 'meta' | 'facebook' | 'instagram' | 'whatsapp' | 'linkedin' | 'tiktok-ads';
 
@@ -346,6 +347,9 @@ export function assertAdminOAuthProvider(provider: OAuthProvider) {
 }
 
 export async function assertWorkspaceOAuthProviderAllowed(provider: OAuthProvider, workspaceId: string) {
+  if (isCustomerRestrictedWorkspaceProvider(provider)) {
+    throw oauthError(provider, 'OAUTH_PROVIDER_ADMIN_ONLY', 'This provider is managed centrally by Lulu and cannot be connected by workspace users.', { management: 'lulu_managed', selfServiceAllowed: false }, 403);
+  }
   if (!isLuluManagedOAuthProvider(provider)) return;
   if (await adminOAuthRepo.isWorkspaceOAuthSelfServiceAllowed(workspaceId, provider)) return;
   throw oauthError(provider, 'OAUTH_PROVIDER_ADMIN_MANAGED', 'This provider is managed centrally by Lulu. An administrator must allow this workspace to connect its own account.', { management: 'lulu_managed', selfServiceAllowed: false }, 403);
