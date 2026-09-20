@@ -89,7 +89,7 @@ export async function getPublicStorefront(slug: string, options: PublicSiteLooku
     query<any>(`SELECT ${productSelect} WHERE p.workspace_id=$1 AND p.status='ACTIVE' AND p.visibility='PUBLIC' AND p.deleted_at IS NULL ORDER BY p.updated_at DESC`, [site.workspaceId]),
     query<{ hostname: string; status: string }>(`SELECT hostname,status FROM workspace_site_domains WHERE site_id=$1 AND status <> 'removed' ORDER BY created_at`, [site.id]),
   ]);
-  const assets = await query<{ id: string; altText: string; placement: string }>(`SELECT id,alt_text AS "altText",placement FROM managed_website_assets WHERE site_id=$1 ORDER BY created_at DESC`, [site.id]);
+  const assets = await query<{ id: string; altText: string; placement: string }>(`SELECT id,alt_text AS "altText",placement FROM managed_website_assets WHERE site_id=$1 AND deleted_at IS NULL ORDER BY created_at DESC`, [site.id]);
   const managedWebsite = site.settings?.managedWebsite && typeof site.settings.managedWebsite === 'object' ? site.settings.managedWebsite : {};
   const plan = managedWebsite.plan && typeof managedWebsite.plan === 'object' ? managedWebsite.plan : {};
   return {

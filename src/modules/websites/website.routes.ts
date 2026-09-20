@@ -12,7 +12,7 @@ router.route('/:siteId/domains').post(requireWorkspaceEditor, controller.addDoma
 router.route('/:siteId/domains/:domainId/verify').post(requireWorkspaceEditor, controller.verifyDomain).all(methodNotAllowed);
 router.route('/:siteId/domains/:domainId/renew').post(requireWorkspaceEditor, controller.renewDomain).all(methodNotAllowed);
 router.route('/:siteId/assets').get(controller.listAssets).post(requireWorkspaceEditor, assetUpload.single('file'), controller.uploadAsset).all(methodNotAllowed);
-router.route('/:siteId/assets/:assetId').get(controller.asset).all(methodNotAllowed);
+router.route('/:siteId/assets/:assetId').get(controller.asset).delete(requireWorkspaceEditor, controller.deleteAsset).all(methodNotAllowed);
 router.route('/:siteId/assets/:assetId/edit').post(requireWorkspaceEditor, controller.startAssetEdit).all(methodNotAllowed);
 router.route('/:siteId/asset-edits/:editId').get(controller.getAssetEdit).all(methodNotAllowed);
 router.route('/:siteId/generation-jobs').post(requireWorkspaceEditor, controller.createJob).all(methodNotAllowed);

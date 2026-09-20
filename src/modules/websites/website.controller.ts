@@ -29,6 +29,14 @@ export async function asset(req: Request, res: Response, next: NextFunction) {
     return res.status(200).send(value.content);
   } catch (error) { next(error); }
 }
+export async function deleteAsset(req: Request, res: Response, next: NextFunction) {
+  try {
+    const params = siteIdParams.extend({ assetId: z.string().uuid() }).parse(req.params);
+    const deleted = await repo.deleteManagedWebsiteAsset(params.workspaceId, params.siteId, params.assetId);
+    if (!deleted) throw new AppError(404, 'WEBSITE_ASSET_NOT_FOUND', 'The website asset was not found');
+    return successResponse(res, 'Website asset deleted', { id: deleted.id });
+  } catch (error) { next(error); }
+}
 export async function startAssetEdit(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = siteIdParams.extend({ assetId: z.string().uuid() }).parse(req.params);

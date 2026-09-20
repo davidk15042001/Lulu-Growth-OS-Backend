@@ -162,7 +162,7 @@ function mapAsset(row: any): ManagedWebsiteAsset {
 const assetSelect = `SELECT id, workspace_id AS "workspaceId", site_id AS "siteId", file_name AS "fileName", mime_type AS "mimeType", size_bytes AS "sizeBytes", alt_text AS "altText", placement, crop, created_at AS "createdAt" FROM managed_website_assets`;
 
 export async function listManagedWebsiteAssets(workspaceId: string, siteId: string) {
-  const result = await query<any>(`${assetSelect} WHERE workspace_id=$1 AND site_id=$2 ORDER BY created_at DESC`, [workspaceId, siteId]);
+  const result = await query<any>(`${assetSelect} WHERE workspace_id=$1 AND site_id=$2 AND deleted_at IS NULL ORDER BY created_at DESC`, [workspaceId, siteId]);
   return result.rows.map(mapAsset);
 }
 
@@ -193,7 +193,25 @@ export async function getManagedWebsiteAsset(workspaceId: string, siteId: string
     `SELECT a.mime_type AS "mimeType", a.file_name AS "fileName", a.content
        FROM managed_website_assets a
        JOIN workspace_sites s ON s.id=a.site_id AND s.workspace_id=$1 AND s.id=$2 AND s.provider='managed'
-      WHERE a.workspace_id=$1 AND a.site_id=$2 AND a.id=$3 LIMIT 1`,
+      WHERE a.workspace_id=$1 AND a.site_id=$2 AND a.id=$3 AND a.deleted_at IS NULL LIMIT 1`,
+    [workspaceId, siteId, assetId],
+  );
+  return result.rows[0] ?? null;
+}
+
+export async function deleteManagedWebsiteAsset(workspaceId: string, siteId: string, assetId: string) {
+  const result = await query<{ id: string }>(
+    `UPDATE managed_website_assets AS a
+        SET deleted_at=NOW()
+       FROM workspace_sites AS s
+      WHERE a.id=$3
+        AND a.workspace_id=$1
+        AND a.site_id=$2
+        AND a.deleted_at IS NULL
+        AND s.id=a.site_id
+        AND s.workspace_id=$1
+        AND s.provider='managed'
+      RETURNING a.id`,
     [workspaceId, siteId, assetId],
   );
   return result.rows[0] ?? null;
@@ -217,7 +235,7 @@ export async function getManagedWebsiteAssetForEdit(workspaceId: string, siteId:
             a.alt_text AS "altText", a.placement, a.crop, a.content
        FROM managed_website_assets a
        JOIN workspace_sites s ON s.id=a.site_id AND s.workspace_id=$1 AND s.id=$2 AND s.provider='managed'
-      WHERE a.workspace_id=$1 AND a.site_id=$2 AND a.id=$3 LIMIT 1`,
+      WHERE a.workspace_id=$1 AND a.site_id=$2 AND a.id=$3 AND a.deleted_at IS NULL LIMIT 1`,
     [workspaceId, siteId, assetId],
   );
   return result.rows[0] ?? null;
@@ -228,7 +246,7 @@ export async function getPublicManagedWebsiteAsset(assetId: string) {
     `SELECT a.mime_type AS "mimeType", a.file_name AS "fileName", a.content
        FROM managed_website_assets a
        JOIN workspace_sites s ON s.id=a.site_id AND s.provider='managed' AND s.status='published'
-      WHERE a.id=$1 LIMIT 1`,
+      WHERE a.id=$1 AND a.deleted_at IS NULL LIMIT 1`,
     [assetId],
   );
   return result.rows[0] ?? null;
