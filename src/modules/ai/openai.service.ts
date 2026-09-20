@@ -246,6 +246,24 @@ function responsesInputToMessages(params: Record<string, unknown>) {
   return messages;
 }
 
+function chatResponseFormat(params: Record<string, unknown>) {
+  const text = params.text;
+  if (!text || typeof text !== 'object' || Array.isArray(text)) return undefined;
+  const format = (text as Record<string, unknown>).format;
+  if (!format || typeof format !== 'object' || Array.isArray(format)) return undefined;
+  const value = format as Record<string, unknown>;
+  if (value.type === 'json_object') return { type: 'json_object' };
+  if (value.type !== 'json_schema' || !value.schema || typeof value.schema !== 'object') return undefined;
+  return {
+    type: 'json_schema',
+    json_schema: {
+      name: typeof value.name === 'string' && value.name.trim() ? value.name.trim() : 'structured_output',
+      strict: value.strict !== false,
+      schema: value.schema,
+    },
+  };
+}
+
 function chatParamsForProvider(params:Record<string,unknown>,provider:AiProviderName,model:string){
   const next:Record<string,unknown>={...params,model};
   if(provider==='openai'){
@@ -436,10 +454,12 @@ export function getOpenAIResponsesClient(): ResponsesClient {
         if (provider === 'openai') {
           return client.responses.create(providerParams as never, providerOptions(options, prepaid) as never) as Promise<ResponseResult>;
         }
+        const responseFormat = chatResponseFormat(providerParams);
         const chat = await client.chat.completions.create({
           model,
           messages: responsesInputToMessages(providerParams),
           max_tokens: bounded.maximumOutputTokens,
+          ...(responseFormat ? { response_format: responseFormat } : {}),
         } as never, providerOptions(options, prepaid) as never) as any;
         return {
           id: String(chat.id ?? ''),

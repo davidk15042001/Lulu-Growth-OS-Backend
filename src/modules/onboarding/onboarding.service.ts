@@ -8,6 +8,7 @@ import * as workspaceService from '../workspaces/workspace.service.js';
 import * as authRepo from '../auth/auth.repo.js';
 import { extractTextFromFile } from '../records/record.service.js';
 import { startPremiumMediaFromProductBrief } from '../premium-media/premium-media.service.js';
+import { parseKnowledgeActivationJson } from './knowledge-activation.parser.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import * as repo from './onboarding.repo.js';
 import * as oauthService from './oauth.service.js';
@@ -502,12 +503,44 @@ export async function completeOnboarding(workspaceId: string) {
   };
 }
 
-function activationJson(text:string){
-  const clean=text.trim().replace(/<think>[\s\S]*?<\/think>/gi,'').replace(/^```json\s*/i,'').replace(/\s*```$/,'');
-  const start=clean.indexOf('{');const end=clean.lastIndexOf('}');
-  try{return JSON.parse(start>=0&&end>start?clean.slice(start,end+1):clean) as Record<string,unknown>;}catch{throw new AppError(502,'KNOWLEDGE_AI_RESPONSE_INVALID','AI could not return a valid company knowledge structure.');}
-}
 function activationText(value:unknown,max:number){return typeof value==='string'&&value.trim()?value.trim().slice(0,max):null;}
+
+const knowledgeActivationJsonSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    summary: { type: 'string' },
+    businessDescription: { type: ['string', 'null'] },
+    contentTypes: { type: 'array', items: { type: 'string' } },
+    items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          name: { type: 'string' },
+          kind: { type: 'string', enum: ['product', 'service', 'other'] },
+          productType: { type: ['string', 'null'], enum: ['PHYSICAL_PRODUCT', 'DIGITAL_PRODUCT', 'OTHER', null] },
+          description: { type: ['string', 'null'] },
+          category: { type: ['string', 'null'] },
+          price: { type: ['number', 'null'] },
+          currency: { type: ['string', 'null'] },
+        },
+        required: ['name', 'kind', 'productType', 'description', 'category', 'price', 'currency'],
+      },
+    },
+    generalKnowledge: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { title: { type: 'string' }, content: { type: 'string' } },
+        required: ['title', 'content'],
+      },
+    },
+  },
+  required: ['summary', 'businessDescription', 'contentTypes', 'items', 'generalKnowledge'],
+} as const;
 
 export async function activateKnowledgeBase(workspaceId:string,userId:string,input:KnowledgeActivationInput){
   const workspace=await findWorkspaceById(workspaceId);
@@ -533,9 +566,9 @@ export async function activateKnowledgeBase(workspaceId:string,userId:string,inp
       'You are Lulu company knowledge activation intelligence.',
       'Classify only facts supported by the supplied information. Never invent products, prices, claims or credentials.',
       'Separate physical/digital products, services and general company knowledge.',
-      'Return JSON only: {"summary":string,"businessDescription":string,"contentTypes":string[],"items":[{"name":string,"kind":"product"|"service"|"other","productType":"PHYSICAL_PRODUCT"|"DIGITAL_PRODUCT"|"OTHER"|null,"description":string|null,"category":string|null,"price":number|null,"currency":string|null}],"generalKnowledge":[{"title":string,"content":string}]}.'
-    ].join(' '),input:[{role:'user',content:`Company: ${workspace.companyName}\nIndustry: ${workspace.industry??''}\n\n${source}`}],max_output_tokens:8000,store:false});
-    const classification=activationJson(response.output_text??'');
+      'Return only the requested object. Use null for unknown scalar values and empty arrays when no grounded entries exist.'
+    ].join(' '),text:{format:{type:'json_schema',name:'company_knowledge_activation',strict:true,schema:knowledgeActivationJsonSchema}},input:[{role:'user',content:`Company: ${workspace.companyName}\nIndustry: ${workspace.industry??''}\n\n${source}`}],max_output_tokens:8000,store:false});
+    const classification=parseKnowledgeActivationJson(response.output_text??'');
     const rawItems=Array.isArray(classification.items)?classification.items:[];
     const seen=new Set<string>();
     const items=rawItems.slice(0,100).map(entry=>{
