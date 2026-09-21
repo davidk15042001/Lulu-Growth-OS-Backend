@@ -148,7 +148,7 @@ export function buildAssistantTools(conversationId: string): AssistantTool[] {
     {
       name: ACTION_TOOL_NAME,
       description:
-        'Execute a real workspace action autonomously. The backend validates and stores the exact payload. Paid advertising requires both funded ad spend and an active customer authorization scoped to the exact provider account, campaign, currency, period and amount; no other routine action requires human approval.',
+        'Execute a real workspace action through the canonical workspace service. Use this only when the user explicitly asks to create, send, publish, update, or otherwise operate something. For invoices, first use list_records to resolve the exact customer when possible, then request finance.invoice.create_and_send. That action always returns a confirmation package before an invoice is issued or emailed. Paid advertising requires both funded ad spend and an active customer authorization scoped to the exact provider account, campaign, currency, period and amount.',
       parameters: {
         type: 'object',
         properties: {
@@ -159,6 +159,7 @@ export function buildAssistantTools(conversationId: string): AssistantTool[] {
               'sales.create_followup_task',
               'advertising.create_optimization',
               'finance.create_automation',
+              'finance.invoice.create_and_send',
               'google_reviews.reply',
               'email.create_draft',
               'email.create_ai_draft',

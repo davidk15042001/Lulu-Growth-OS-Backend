@@ -5,6 +5,7 @@ export const assistantActionTypeSchema = z.enum([
   'sales.create_followup_task',
   'advertising.create_optimization',
   'finance.create_automation',
+  'finance.invoice.create_and_send',
   'google_reviews.reply',
   'email.create_draft',
   'email.create_ai_draft',

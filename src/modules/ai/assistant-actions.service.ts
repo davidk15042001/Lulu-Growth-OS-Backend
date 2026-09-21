@@ -15,6 +15,9 @@ import { recordSecurityEvent } from '../security/security-event.service.js';
 import { executeAdvertisingProviderOperation } from '../adspend/advertising.provider.service.js';
 import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
 import { assertWorkspaceProviderLaunchReady } from '../provider-control/provider.service.js';
+import * as commercialDocuments from '../commercial-documents/commercial-documents.service.js';
+import { createInvoiceSchema, sendDocumentSchema } from '../commercial-documents/commercial-documents.validator.js';
+import { getWorkspaceBusinessIdentity } from '../business-identity/identity.service.js';
 import {
   assistantActionInputSchema,
   type AssistantActionInput,
@@ -56,7 +59,12 @@ function digestAction(action: AssistantActionInput) {
   return createHash('sha256').update(JSON.stringify(canonical(action))).digest('hex');
 }
 
+function requiresAssistantConfirmation(type: AssistantActionInput['type']) {
+  return type === 'finance.invoice.create_and_send';
+}
+
 function publicAction(row: AssistantActionRow): AssistantPendingAction {
+  const requiresApproval = requiresAssistantConfirmation(row.type);
   return {
     id: row.id,
     conversationId: row.conversationId,
@@ -64,8 +72,8 @@ function publicAction(row: AssistantActionRow): AssistantPendingAction {
     summary: row.summary,
     payload: row.payload,
     status: row.status,
-    approvalId: null,
-    requiresApproval: false,
+    approvalId: row.approvalId,
+    requiresApproval,
     result: row.result,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
@@ -75,7 +83,7 @@ function publicAction(row: AssistantActionRow): AssistantPendingAction {
 
 function actionPolicy(type: AssistantActionInput['type'], autonomous: boolean) {
   return evaluateAgentActionPolicy(type, autonomous, {
-    highRisk: type === 'google_reviews.reply' || type === 'website.publish_job',
+    highRisk: type === 'google_reviews.reply' || type === 'website.publish_job' || type === 'finance.invoice.create_and_send',
   });
 }
 
@@ -96,6 +104,141 @@ function emailAddresses(value: unknown) {
     const name = textValue(next.name) || null;
     return [{ address, ...(name ? { name } : {}) }];
   });
+}
+
+function normalizeSearch(value: string) {
+  return value.toLocaleLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9@.]+/g, ' ').trim();
+}
+
+function recordEmails(record: { data: Record<string, unknown> }) {
+  const emails = new Set<string>();
+  const visit = (value: unknown, depth: number) => {
+    if (depth > 2 || value == null) return;
+    if (typeof value === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim())) {
+      emails.add(value.trim().toLowerCase());
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 20).forEach((item) => visit(item, depth + 1));
+      return;
+    }
+    if (typeof value === 'object') Object.values(value as Record<string, unknown>).slice(0, 40).forEach((item) => visit(item, depth + 1));
+  };
+  visit(record.data, 0);
+  return [...emails];
+}
+
+const invoiceCustomerResourceTypes = ['customers', 'ecommerce_customers', 'finance_customers'] as const;
+
+async function resolveInvoiceRecipient(workspaceId: string, payload: Record<string, unknown>) {
+  const requestedId = textValue(payload.customerRecordId, 120);
+  const search = textValue(payload.recipientSearch || payload.recipient || payload.customerName || payload.recipientEmail, 200);
+  const records = requestedId
+    ? (await Promise.all(invoiceCustomerResourceTypes.map((resourceType) => recordRepo.findRecord(workspaceId, resourceType, requestedId)))).filter((record): record is NonNullable<typeof record> => Boolean(record))
+    : (await Promise.all(invoiceCustomerResourceTypes.map(async (resourceType) => (await recordRepo.listRecords(workspaceId, resourceType, {
+      page: 1,
+      limit: 20,
+      search: search || undefined,
+      sort: 'updatedAt',
+      order: 'desc',
+    })).items))).flat();
+
+  if (records.length === 0) {
+    throw new AppError(409, requestedId ? 'INVOICE_CUSTOMER_NOT_FOUND' : 'INVOICE_CUSTOMER_REQUIRED', requestedId
+      ? 'The requested customer record was not found in this workspace.'
+      : 'Specify the customer name, email address, or customer record before creating the invoice.');
+  }
+
+  const normalizedQuery = normalizeSearch(search);
+  const exactMatches = normalizedQuery
+    ? records.filter((record) => [record.name, record.description ?? '', ...recordEmails(record)].map((value) => normalizeSearch(value)).some((value) => value === normalizedQuery))
+    : records;
+  const candidates = (exactMatches.length > 0 ? exactMatches : records).slice(0, 10);
+  const uniqueCandidates = [...new Map(candidates.map((record) => [record.id, record])).values()];
+  if (uniqueCandidates.length !== 1) {
+    throw new AppError(409, 'INVOICE_CUSTOMER_AMBIGUOUS', 'More than one customer matches the requested recipient. Choose the exact customer before creating the invoice.', {
+      candidates: uniqueCandidates.map((record) => ({ id: record.id, name: record.name, resourceType: record.resourceType, emails: recordEmails(record) })),
+    });
+  }
+  const record = uniqueCandidates[0]!;
+  const explicitEmail = textValue(payload.recipientEmail, 320).toLowerCase();
+  const email = explicitEmail || recordEmails(record)[0] || '';
+  if (!email) throw new AppError(409, 'INVOICE_RECIPIENT_EMAIL_REQUIRED', 'The customer is identified, but no recipient email is stored. Add an email address before sending the invoice.');
+  return { record, email };
+}
+
+function numberValue(value: unknown) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value.trim().replace(',', '.'));
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function invoiceLines(payload: Record<string, unknown>, amount: number) {
+  const supplied = Array.isArray(payload.lines) ? payload.lines : Array.isArray(payload.items) ? payload.items : [];
+  if (supplied.length === 0) {
+    return [{
+      productName: textValue(payload.description || payload.productName, 300) || 'Professional services',
+      description: textValue(payload.description, 5_000) || null,
+      quantity: 1,
+      unitPrice: amount,
+      discount: 0,
+      tax: 0,
+      sortOrder: 0,
+    }];
+  }
+  return supplied.slice(0, 500).map((item, index) => {
+    const line = objectValue(item);
+    const quantity = numberValue(line.quantity) ?? 1;
+    const unitPrice = numberValue(line.unitPrice ?? line.price);
+    if (quantity <= 0 || unitPrice == null || unitPrice < 0) throw new AppError(422, 'INVOICE_LINE_INVALID', 'Each invoice line needs a positive quantity and a valid unit price.');
+    return {
+      productName: textValue(line.productName || line.name, 300) || `Invoice item ${index + 1}`,
+      description: textValue(line.description, 5_000) || null,
+      quantity,
+      unitPrice,
+      discount: numberValue(line.discount) ?? 0,
+      tax: numberValue(line.tax) ?? 0,
+      sortOrder: index,
+    };
+  });
+}
+
+async function prepareInvoiceAction(workspaceId: string, action: AssistantActionInput): Promise<AssistantActionInput> {
+  if (action.type !== 'finance.invoice.create_and_send') return action;
+  const payload = objectValue(action.payload);
+  const recipient = await resolveInvoiceRecipient(workspaceId, payload);
+  const identity = await getWorkspaceBusinessIdentity(workspaceId);
+  const currency = textValue(payload.currency, 3).toUpperCase() || identity.factory?.defaultCurrency?.toUpperCase() || '';
+  if (!currency) throw new AppError(422, 'INVOICE_CURRENCY_REQUIRED', 'Specify the invoice currency or configure a workspace default currency before creating the invoice.');
+  const suppliedLines = Array.isArray(payload.lines) ? payload.lines : Array.isArray(payload.items) ? payload.items : [];
+  const explicitAmount = numberValue(payload.amount ?? payload.total ?? payload.value);
+  const derivedAmount = suppliedLines.length > 0
+    ? suppliedLines.reduce((sum, item) => {
+      const line = objectValue(item);
+      const quantity = numberValue(line.quantity) ?? 1;
+      const unitPrice = numberValue(line.unitPrice ?? line.price) ?? 0;
+      return sum + (quantity * unitPrice) - (numberValue(line.discount) ?? 0) + (numberValue(line.tax) ?? 0);
+    }, 0)
+    : null;
+  if (explicitAmount != null && derivedAmount != null && Math.abs(explicitAmount - derivedAmount) > 0.005) {
+    throw new AppError(422, 'INVOICE_AMOUNT_MISMATCH', 'The requested invoice amount does not match the supplied invoice lines.');
+  }
+  const amount = explicitAmount ?? derivedAmount;
+  if (amount == null || amount <= 0) throw new AppError(422, 'INVOICE_AMOUNT_REQUIRED', 'Specify a positive invoice amount or at least one invoice line.');
+  invoiceLines(payload, amount);
+  return {
+    ...action,
+    payload: {
+      ...payload,
+      customerRecordId: recipient.record.id,
+      recipientEmail: recipient.email,
+      currency,
+      amount,
+    },
+  };
 }
 
 async function assertAssistantProviderReadiness(workspaceId: string, action: AssistantPendingAction) {
@@ -247,6 +390,65 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
     };
   }
 
+  if (action.type === 'finance.invoice.create_and_send') {
+    const recipient = await resolveInvoiceRecipient(workspaceId, payload);
+    const identity = await getWorkspaceBusinessIdentity(workspaceId);
+    const currency = textValue(payload.currency, 3).toUpperCase() || identity.factory?.defaultCurrency?.toUpperCase() || '';
+    if (!currency) throw new AppError(422, 'INVOICE_CURRENCY_REQUIRED', 'Specify the invoice currency or configure a workspace default currency before creating the invoice.');
+
+    const suppliedLines = Array.isArray(payload.lines) ? payload.lines : Array.isArray(payload.items) ? payload.items : [];
+    const explicitAmount = numberValue(payload.amount ?? payload.total ?? payload.value);
+    const derivedAmount = suppliedLines.length > 0
+      ? suppliedLines.reduce((sum, item) => {
+        const line = objectValue(item);
+        const quantity = numberValue(line.quantity) ?? 1;
+        const unitPrice = numberValue(line.unitPrice ?? line.price) ?? 0;
+        return sum + (quantity * unitPrice) - (numberValue(line.discount) ?? 0) + (numberValue(line.tax) ?? 0);
+      }, 0)
+      : null;
+    const amount = explicitAmount ?? derivedAmount;
+    if (amount == null || amount <= 0) throw new AppError(422, 'INVOICE_AMOUNT_REQUIRED', 'Specify a positive invoice amount or at least one invoice line.');
+    const lines = invoiceLines(payload, amount);
+    const invoiceInput = createInvoiceSchema.parse({
+      operationKey: `assistant:${action.id}:invoice-create`,
+      customerRecordId: recipient.record.id,
+      companyRecordId: textValue(payload.companyRecordId, 120) || null,
+      currency,
+      invoiceType: ['PROFORMA', 'COMMERCIAL', 'STANDARD', 'DEPOSIT', 'FINAL'].includes(textValue(payload.invoiceType, 20)) ? textValue(payload.invoiceType, 20) : 'STANDARD',
+      dueDate: textValue(payload.dueDate, 10) || null,
+      language: textValue(payload.language, 12) || 'en',
+      source: 'conversation',
+      creationMode: 'AI_ASSISTED',
+      conversationId: null,
+      lines,
+    });
+    const created = await commercialDocuments.createInvoice(workspaceId, userId, invoiceInput, {
+      actorType: 'AI_AGENT',
+      actorRef: action.id,
+      correlationId: action.id,
+    });
+    if (!created?.invoice?.id) throw new Error('Canonical invoice creation did not return an invoice');
+    const issued = await commercialDocuments.issueInvoice(workspaceId, userId, created.invoice.id);
+    const channel = payload.channel === 'secure_link' ? 'secure_link' : 'email';
+    const sent = await commercialDocuments.sendInvoice(workspaceId, userId, created.invoice.id, sendDocumentSchema.parse({
+      conversationId: null,
+      channel,
+      recipient: recipient.email,
+      operationKey: `assistant:${action.id}:invoice-send`,
+    }));
+    return {
+      status: 'sent',
+      invoiceId: created.invoice.id,
+      invoiceNumber: issued?.invoice?.invoiceNumber ?? created.invoice.invoiceNumber,
+      amount: issued?.invoice?.grandTotal ?? created.invoice.grandTotal,
+      currency,
+      recipient: { recordId: recipient.record.id, name: recipient.record.name, email: recipient.email },
+      deliveryId: sent.deliveryId ?? null,
+      documentPath: sent.documentPath ?? null,
+      message: 'Invoice created, issued, and queued for delivery.',
+    };
+  }
+
   if (action.type === 'finance.create_automation') {
     const result = await createTaskRecord(workspaceId, userId, 'finance_automations', action);
     return {
@@ -321,7 +523,8 @@ async function executeStoredAction(row: AssistantActionRow) {
 }
 
 export async function requestAssistantAction(workspaceId: string, userId: string, conversationId: string, rawAction: unknown) {
-  const action = assistantActionInputSchema.parse(rawAction);
+  const parsedAction = assistantActionInputSchema.parse(rawAction);
+  const action = await prepareInvoiceAction(workspaceId, parsedAction);
   await assertWorkspaceCapability({workspaceId,userId,capability:'agents.execute',actorType:'USER'});
   const entitlements = await resolveWorkspaceEntitlements(workspaceId);
   if (!entitlements['ai.enabled'].enabled) throw new AppError(403, 'AI_ENTITLEMENT_DISABLED', 'AI access is not enabled for this workspace');
@@ -351,6 +554,7 @@ export async function requestAssistantAction(workspaceId: string, userId: string
     return stored;
   });
   if (policy.decision === 'require_budget') throw new AppError(409, 'CUSTOMER_BUDGET_REQUIRED', 'Fund the prepaid ad-spend wallet before this action can run.');
+  if (requiresAssistantConfirmation(action.type)) return publicAction(row);
   return executeStoredAction(row);
 }
 

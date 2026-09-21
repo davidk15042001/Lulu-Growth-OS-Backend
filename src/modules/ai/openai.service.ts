@@ -746,7 +746,7 @@ export async function generateAssistantResponseWithTools(
   const model = configuredModel(input.model);
   const instructions = [
     buildAssistantInstructions(input.context, memoryContextFrom(input)),
-    'Act within the backend policy: request write actions only when the user explicitly asks. Agent actions do not wait for routine human approval; paid media can execute only against funded budget and a campaign-specific customer authorization. Draft actions create drafts and never imply that a message was sent. Never claim success before the tool result confirms it.',
+    'Act within the backend policy: request write actions only when the user explicitly asks. Use the shared action gateway for every supported workspace operation so typed and spoken requests follow the same path. Financial mutations and external delivery must show an exact confirmation package before execution. Paid media can execute only against funded budget and a campaign-specific customer authorization. Draft actions create drafts and never imply that a message was sent. Never claim success before the tool result confirms it.',
     'After analysis or actions, always give a clear structured report. Use these German sections where relevant: "Was ist passiert", "Gut / Schlecht", "Erledigt", "In Umsetzung", "Nächstes Ziel".',
     'Use markdown tables for tabular data. When numeric data benefits from a chart, add a fenced code block with the language "chart" containing JSON of the form {"type":"bar","title":"...","labels":["..."],"values":[numbers]}.',
   ].join('\n');

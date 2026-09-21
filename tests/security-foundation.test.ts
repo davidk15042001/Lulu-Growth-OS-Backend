@@ -599,6 +599,22 @@ describe('assistant action gateway',()=>{
     await assert.rejects(assistantActions.executeAssistantActionRequest(f.ws.id,f.user.id,f.conversation.id,crypto.randomUUID()),{code:'NOT_FOUND'});
   });
 
+  it('prepares invoice commands with an exact customer and waits before issuing or sending',async()=>{
+    const f=await assistantFixture();
+    const customer=(await db.query<{id:string}>(`INSERT INTO workspace_records(workspace_id,resource_type,name,data,created_by) VALUES($1,'finance_customers','Acme GmbH',$2::jsonb,$3) RETURNING id`,[f.ws.id,JSON.stringify({email:'billing@acme.example'}),f.user.id])).rows[0]!;
+    const action=await assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,{
+      type:'finance.invoice.create_and_send',
+      summary:'Create and send the EUR 100 invoice to Acme GmbH',
+      payload:{amount:'100',currency:'EUR',recipientSearch:'Acme GmbH',description:'Consulting services'},
+    });
+    assert.equal(action.status,'ready');
+    assert.equal(action.requiresApproval,true);
+    assert.equal(action.payload.customerRecordId,customer.id);
+    assert.equal(action.payload.recipientEmail,'billing@acme.example');
+    assert.equal((await db.query(`SELECT id FROM invoices WHERE workspace_id=$1`,[f.ws.id])).rows.length,0);
+    assert.equal((await db.query(`SELECT status FROM assistant_action_requests WHERE id=$1`,[action.id])).rows[0]?.status,'ready');
+  });
+
   it('creates email drafts without silently sending them',async()=>{
     const f=await assistantFixture();
     const account=(await db.query<{id:string}>(`INSERT INTO email_accounts(workspace_id,connected_by,provider,email_address,status) VALUES($1,$2,'imap',$3,'connected') RETURNING id`,[f.ws.id,f.user.id,`${crypto.randomUUID()}@test.local`])).rows[0]!;
