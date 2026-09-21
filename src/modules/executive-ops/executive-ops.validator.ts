@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { executiveCycleTypes, executiveProposalStatuses, executiveProposalTypes } from './executive-ops.types.js';
 
 const jsonObject = z.record(z.string(), z.unknown());
+const nonEmptyJsonObject = jsonObject.refine((value) => Object.keys(value).length > 0, 'Outcome evidence is required');
 
 function validTimeZone(value: string) {
   try {
@@ -66,4 +67,12 @@ export const decideExecutiveProposalSchema = z.object({
   expectedVersion: z.coerce.number().int().min(1),
   decision: z.enum(['approve', 'reject']),
   reason: z.string().trim().max(2000).nullable().optional(),
+});
+
+export const verifyExecutiveProposalOutcomeSchema = z.object({
+  expectedVersion: z.coerce.number().int().min(1),
+  outcome: z.string().trim().min(1).max(4000),
+  evidence: nonEmptyJsonObject,
+  confidence: z.coerce.number().finite().min(0).max(1),
+  idempotencyKey: z.string().trim().min(1).max(300).nullable().optional(),
 });

@@ -20,5 +20,6 @@ router.route('/scenarios/:scenarioId').get(read, controller.scenarioDetail).all(
 router.route('/proposals').get(read, controller.proposals).post(manage, controller.createProposal).all(methodNotAllowed);
 router.route('/proposals/:proposalId').get(read, controller.proposalDetail).all(methodNotAllowed);
 router.route('/proposals/:proposalId/decision').post(manage, controller.decideProposal).all(methodNotAllowed);
+router.route('/proposals/:proposalId/outcome').post(manage, controller.verifyProposalOutcome).all(methodNotAllowed);
 
 export default router;

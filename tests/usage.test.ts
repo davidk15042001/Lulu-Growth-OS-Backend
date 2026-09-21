@@ -16,12 +16,12 @@ describe('AI usage pricing', () => {
 
     assert.deepEqual(usage.rate, { inputPerMillionUsd: 0.4, outputPerMillionUsd: 1.6 });
     assert.equal(usage.providerCostUsd, 2);
-    assert.equal(usage.customerCostUsd, 15);
-    assert.deepEqual(usage.customerRate, { inputPerMillionUsd: 5, outputPerMillionUsd: 10 });
+    assert.equal(usage.customerCostUsd, 30);
+    assert.deepEqual(usage.customerRate, { inputPerMillionUsd: 10, outputPerMillionUsd: 20 });
     assert.equal(usage.credits, 2_000);
   });
 
-  it('charges customers exactly $5 per million input tokens and $10 per million output tokens', () => {
+  it('charges customers exactly $10 per million input tokens and $20 per million output tokens', () => {
     const usage = calculateUsageCost({
       provider: 'unknown',
       model: 'unknown',
@@ -30,7 +30,7 @@ describe('AI usage pricing', () => {
     });
 
     assert.equal(usage.providerCostUsd, 0);
-    assert.equal(usage.customerCostUsd, 40);
+    assert.equal(usage.customerCostUsd, 80);
     assert.equal(AWS_USAGE_CUSTOMER_MULTIPLIER, 2);
   });
 });

@@ -69,6 +69,14 @@ router.route('/knowledge-activation')
   .post(requireWorkspaceEditor, controller.activateKnowledge)
   .all(methodNotAllowed);
 
+router.route('/knowledge-activation/:activationId')
+  .get(requireWorkspaceMember, controller.knowledgeActivationPreview)
+  .all(methodNotAllowed);
+
+router.route('/knowledge-activation/:activationId/confirm')
+  .post(requireWorkspaceEditor, controller.confirmKnowledgeActivation)
+  .all(methodNotAllowed);
+
 router.route('/products-services/continue')
   .post(requireWorkspaceEditor, controller.continueProductsServices)
   .all(methodNotAllowed);

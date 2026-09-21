@@ -21,8 +21,8 @@ admin-only; customer pages do not expose provider tool IDs or schemas.
 
 The customer AI wallet is charged in CNY:
 
-- `0.500000 CNY` for every accepted tool-call attempt
-- `0.500000 CNY` for every accepted trigger event
+- `1.000000 CNY` for every accepted tool-call attempt
+- `1.000000 CNY` for every accepted trigger event
 
 Tool calls require an idempotency key. A repeated key never calls Composio a
 second time and never creates a second debit. Trigger events use Composio's

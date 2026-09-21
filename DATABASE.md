@@ -2,8 +2,8 @@
 
 ## Current inventory
 
-The migration directory currently contains 137 ordered migrations, about 236
-table definitions and 342 declared indexes (counts from the read-only
+The migration directory currently contains 149 ordered migrations, about 249
+table definitions and 369 declared indexes (counts from the read-only
 architecture audit; generated/provider-specific SQL may change the exact live
 catalog). The schema is PostgreSQL-first and migrations are serialized with an
 advisory deployment lock.
@@ -22,7 +22,7 @@ advisory deployment lock.
   tables are append-only/idempotent evidence, not display-only counters.
 - `workspace_composio_usage_ledger` owns the fixed-price Composio meter. Each
   row is tenant-scoped, idempotent and linked to one negative entry in the AI
-  wallet ledger; `TOOL_CALL` and `TRIGGER` both cost `0.500000 CNY`.
+  wallet ledger; new `TOOL_CALL` and `TRIGGER` rows cost `1.000000 CNY`.
 - `domain_events`, receipts, jobs, agent runs/steps/action packets and audit
   tables own operational history and recovery state.
 - `executive_operating_schedules`, `executive_operating_cycles`, findings,
@@ -30,6 +30,11 @@ advisory deployment lock.
   Operating System's tenant-scoped evidence. Cycles retain their data cutoff and
   gaps; forecasts/scenarios use `NUMERIC` values; proposals are plan-only and
   their append-only events record human decisions and Company Brain hand-off.
+  Measured product/campaign metric declines and bounded canonical CRM/Sales
+  follow-up and opportunity aging scans become workspace-scoped findings;
+  outcome reviews append a verified learning record only after the linked
+  Company Brain mission completes, with optimistic proposal versioning and an
+  idempotency key.
 - Provider tables store external references, capability/readiness evidence and
   redacted payload snapshots. They do not replace canonical Lulu entities.
 

@@ -138,6 +138,8 @@ const EnvSchema = z
     WEBSITE_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(90),
     WEBSITE_JOB_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(3),
     ONBOARDING_FILE_CLEANUP_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(60),
+    CATALOG_IMPORT_WORKER_INTERVAL_MS: z.coerce.number().int().min(500).max(60_000).default(2_000),
+    CATALOG_IMPORT_JOB_LEASE_SECONDS: z.coerce.number().int().min(30).max(900).default(180),
     PAYG_BILLING_WORKER_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(1440).default(15),
     PAYG_SERVER_COST_USD_PER_DAY: z.coerce.number().min(0).max(100_000).default(0),
     PAYG_INVOICE_DAYS_UNTIL_DUE: z.coerce.number().int().min(1).max(30).default(7),

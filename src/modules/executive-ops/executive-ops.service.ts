@@ -48,14 +48,38 @@ function canReadProposal(proposal: ExecutiveProposal, access: ExecutiveActorAcce
 }
 
 function redactCycle(cycle: ExecutiveOperatingCycle, access: ExecutiveActorAccess) {
-  if (access.capabilities.has('finance.read')) return cycle;
   const summary = { ...cycle.summary };
   const evidence = { ...cycle.evidence };
-  delete summary.findingCount;
-  delete summary.findingCounts;
-  delete summary.financialRiskCount;
-  delete summary.overdueInvoiceCurrencyCount;
-  delete evidence.finance;
+  const findingCounts = summary.findingCounts;
+  if (findingCounts && typeof findingCounts === 'object' && !Array.isArray(findingCounts)) {
+    const visibleCounts = Object.fromEntries(
+      Object.entries(findingCounts as Record<string, unknown>).filter(([findingType]) => (
+        access.capabilities.has(capabilityForFinding({ findingType } as ExecutiveFinding))
+      )),
+    );
+    summary.findingCounts = visibleCounts;
+    summary.findingCount = Object.values(visibleCounts).reduce<number>((total, value) => (
+      total + (typeof value === 'number' ? value : 0)
+    ), 0);
+  }
+  if (!access.capabilities.has('finance.read')) {
+    delete summary.financialRiskCount;
+    delete summary.overdueInvoiceCurrencyCount;
+    delete evidence.finance;
+  }
+  if (!access.capabilities.has('crm.read')) {
+    delete summary.crmRiskCount;
+    delete evidence.crm;
+  }
+  if (!access.capabilities.has('products.read')) delete summary.productRiskCount;
+  if (!access.capabilities.has('advertising.read')) delete summary.campaignRiskCount;
+  if (evidence.planning && typeof evidence.planning === 'object' && !Array.isArray(evidence.planning)) {
+    const planning = { ...(evidence.planning as Record<string, unknown>) };
+    if (!access.capabilities.has('products.read')) delete planning.productMetricRisks;
+    if (!access.capabilities.has('advertising.read')) delete planning.campaignMetricRisks;
+    if (Object.keys(planning).length === 0) delete evidence.planning;
+    else evidence.planning = planning;
+  }
   return { ...cycle, summary, evidence };
 }
 
@@ -112,6 +136,45 @@ function automaticProposalForFinding(finding: ExecutiveFinding): Omit<repo.Creat
         idempotencyKey: `executive-cycle:${finding.cycleId}:finding:${finding.id}:employee-plan:v1`,
         actorType: 'system',
       };
+    case 'crm_risk':
+      return {
+        proposalType: 'crm',
+        title: `Prepare a CRM recovery plan: ${finding.title}`,
+        objective: 'Prepare a plan-only CRM recovery brief from the canonical follow-up or opportunity evidence. Identify ownership, the next safe customer-contact approval, record-quality checks, success criteria, and any later escalation. Do not change a CRM record, send a message, create a task, or sync a provider.',
+        priority: Math.min(100, finding.severity * 20),
+        confidence: finding.materiality,
+        expectedImpact: { objective: 'recover_verified_crm_pipeline_risk', sourceFindingId: finding.id },
+        riskNotes: [planOnlyRiskNote],
+        evidence: { sourceFindingId: finding.id, sourceFindingType: finding.findingType },
+        idempotencyKey: `executive-cycle:${finding.cycleId}:finding:${finding.id}:crm-plan:v1`,
+        actorType: 'system',
+      };
+    case 'product_risk':
+      return {
+        proposalType: 'product',
+        title: `Prepare a product improvement plan: ${finding.title}`,
+        objective: 'Prepare a plan-only product improvement brief from the measured product metric decline. Identify the canonical product owner, missing customer or quality evidence, proposed validation work, success criteria, and any later approval packet. Do not alter a product, price, catalog, inventory record, or external commerce provider.',
+        priority: Math.min(100, finding.severity * 20),
+        confidence: finding.materiality,
+        expectedImpact: { objective: 'validate_and_reverse_product_metric_decline', sourceFindingId: finding.id },
+        riskNotes: [planOnlyRiskNote],
+        evidence: { sourceFindingId: finding.id, sourceFindingType: finding.findingType },
+        idempotencyKey: `executive-cycle:${finding.cycleId}:finding:${finding.id}:product-plan:v1`,
+        actorType: 'system',
+      };
+    case 'campaign_risk':
+      return {
+        proposalType: 'campaign',
+        title: `Prepare a campaign recovery plan: ${finding.title}`,
+        objective: 'Prepare a plan-only campaign recovery brief from the measured marketing or acquisition metric decline. Name the audience, channel, attribution evidence, budget and compliance prerequisites, success criteria, and approval packet required before any later launch. Do not create, edit, publish, pause, or spend on a campaign.',
+        priority: Math.min(100, finding.severity * 20),
+        confidence: finding.materiality,
+        expectedImpact: { objective: 'validate_and_reverse_campaign_metric_decline', sourceFindingId: finding.id },
+        riskNotes: [planOnlyRiskNote],
+        evidence: { sourceFindingId: finding.id, sourceFindingType: finding.findingType },
+        idempotencyKey: `executive-cycle:${finding.cycleId}:finding:${finding.id}:campaign-plan:v1`,
+        actorType: 'system',
+      };
     case 'open_signal':
       return {
         proposalType: 'strategy',
@@ -128,6 +191,83 @@ function automaticProposalForFinding(finding: ExecutiveFinding): Omit<repo.Creat
     default:
       return null;
   }
+}
+
+function planningMetricFinding(input: {
+  workspaceId: string;
+  cycleId: string;
+  fact: repo.PlanningMetricRiskFact;
+}): repo.CreateFindingInput {
+  const domain = input.fact.metricDomain.toLowerCase();
+  const isProduct = domain === 'product';
+  const ratio = Math.abs(Number(input.fact.changeRatio));
+  const materiality = Number.isFinite(ratio) ? boundMateriality(Math.max(0.35, ratio)) : 0.35;
+  const severity = Number.isFinite(ratio) && ratio >= 0.5 ? 4 : 3;
+  const type = isProduct ? 'product_risk' : 'campaign_risk';
+  const subject = isProduct ? 'product_metric' : 'campaign_metric';
+  const scope = isProduct ? 'product' : 'marketing or acquisition';
+  return {
+    workspaceId: input.workspaceId,
+    cycleId: input.cycleId,
+    sourceKey: `metric-decline:${input.fact.metricId}:${input.fact.sourceMetricPointId}`,
+    findingType: type,
+    subjectType: subject,
+    subjectId: input.fact.metricId,
+    severity,
+    materiality,
+    title: `Measured ${scope} metric decline: ${input.fact.metricName}`,
+    description: `${input.fact.metricName} declined from ${input.fact.previousValue} to ${input.fact.baselineValue} ${input.fact.metricUnit} between its two most recent measured points. This is a measured trend signal, not a causal diagnosis.`,
+    evidence: {
+      metricId: input.fact.metricId,
+      metricKey: input.fact.metricKey,
+      metricDomain: input.fact.metricDomain,
+      metricUnit: input.fact.metricUnit,
+      sourceMetricPointId: input.fact.sourceMetricPointId,
+      previousValue: input.fact.previousValue,
+      baselineValue: input.fact.baselineValue,
+      previousRecordedAt: input.fact.previousRecordedAt,
+      baselineRecordedAt: input.fact.baselineRecordedAt,
+      changeRatio: input.fact.changeRatio,
+      source: 'canonical_metrics',
+    },
+  };
+}
+
+function crmPipelineRiskFinding(input: {
+  workspaceId: string;
+  cycleId: string;
+  fact: repo.CrmPipelineRiskFact;
+}): repo.CreateFindingInput {
+  const overdueFollowUp = input.fact.riskType === 'overdue_follow_up';
+  const severity = input.fact.ageDays >= (overdueFollowUp ? 14 : 30) ? 4 : 3;
+  const materiality = boundMateriality(0.4 + Math.min(0.4, input.fact.ageDays / 100));
+  const riskLabel = overdueFollowUp ? 'Overdue CRM follow-up' : 'Stalled CRM opportunity';
+  const description = overdueFollowUp
+    ? `${input.fact.name} is a canonical ${input.fact.resourceType} follow-up that was due ${input.fact.ageDays} day${input.fact.ageDays === 1 ? '' : 's'} before the cycle data cutoff. This is a workflow-age signal, not a recommendation to contact a customer automatically.`
+    : `${input.fact.name} is a canonical ${input.fact.resourceType} opportunity with no recorded update for ${input.fact.ageDays} days before the cycle data cutoff. This is a workflow-age signal, not a probability-of-close prediction.`;
+  return {
+    workspaceId: input.workspaceId,
+    cycleId: input.cycleId,
+    sourceKey: `crm-pipeline:${input.fact.riskType}:${input.fact.recordId}:${input.fact.updatedAt}`,
+    findingType: 'crm_risk',
+    subjectType: input.fact.resourceType,
+    subjectId: input.fact.recordId,
+    severity,
+    materiality,
+    title: `${riskLabel}: ${input.fact.name}`,
+    description,
+    evidence: {
+      riskType: input.fact.riskType,
+      recordId: input.fact.recordId,
+      resourceType: input.fact.resourceType,
+      stage: input.fact.stage,
+      status: input.fact.status,
+      dueAt: input.fact.dueAt,
+      updatedAt: input.fact.updatedAt,
+      ageDays: input.fact.ageDays,
+      source: 'canonical_workspace_records',
+    },
+  };
 }
 
 function cycleDataGaps(input: { metricCoverage: { defined: number; withTwoPoints: number }; forecastCandidateCount: number }) {
@@ -217,13 +357,16 @@ export async function runCycle(input: {
   }
 
   try {
-    const [signals, bottlenecks, failedRuns, overdueExposure, metricCoverage, forecastCandidates, calibrated] = await Promise.all([
-      repo.listOpenSignals(input.workspaceId, 24),
-      repo.listOperationalBottlenecks(input.workspaceId, 24),
-      repo.listRecentFailedAgentRuns(input.workspaceId, 24),
-      repo.listOverdueInvoiceExposure(input.workspaceId),
-      repo.getMetricCoverage(input.workspaceId),
-      repo.listForecastCandidates(input.workspaceId, 32),
+    const dataCutoffAt = claimed.cycle.dataCutoffAt;
+    const [signals, bottlenecks, failedRuns, overdueExposure, crmPipelineRisks, metricCoverage, forecastCandidates, planningMetricRisks, calibrated] = await Promise.all([
+      repo.listOpenSignals(input.workspaceId, 24, dataCutoffAt),
+      repo.listOperationalBottlenecks(input.workspaceId, 24, dataCutoffAt),
+      repo.listRecentFailedAgentRuns(input.workspaceId, 24, dataCutoffAt),
+      repo.listOverdueInvoiceExposure(input.workspaceId, dataCutoffAt),
+      repo.listCrmPipelineRisks(input.workspaceId, 24, dataCutoffAt),
+      repo.getMetricCoverage(input.workspaceId, dataCutoffAt),
+      repo.listForecastCandidates(input.workspaceId, 32, dataCutoffAt),
+      repo.listDecliningPlanningMetrics(input.workspaceId, 24, dataCutoffAt),
       repo.calibrateDueForecasts(input.workspaceId, 50),
     ]);
 
@@ -285,6 +428,16 @@ export async function runCycle(input: {
           oldestDueDate: exposure.oldestDueDate, source: 'canonical_invoices',
         },
       })),
+      ...crmPipelineRisks.map((fact) => crmPipelineRiskFinding({
+        workspaceId: input.workspaceId,
+        cycleId: claimed.cycle.id,
+        fact,
+      })),
+      ...planningMetricRisks.map((fact) => planningMetricFinding({
+        workspaceId: input.workspaceId,
+        cycleId: claimed.cycle.id,
+        fact,
+      })),
     ];
 
     const [findings, forecastIds] = await Promise.all([
@@ -329,6 +482,9 @@ export async function runCycle(input: {
         findingCount: findings.length,
         findingCounts: groupedCount(findings),
         financialRiskCount: findings.filter((finding) => finding.findingType === 'financial_risk').length,
+        crmRiskCount: findings.filter((finding) => finding.findingType === 'crm_risk').length,
+        productRiskCount: findings.filter((finding) => finding.findingType === 'product_risk').length,
+        campaignRiskCount: findings.filter((finding) => finding.findingType === 'campaign_risk').length,
         forecastCount: forecastIds.length,
         calibratedForecastCount: calibrated.length,
         proposedPlanCount: automaticProposals.length,
@@ -341,6 +497,14 @@ export async function runCycle(input: {
         agentRuns: { recentFailures: failedRuns.length },
         metrics: { definitions: metricCoverage.defined, withTwoPoints: metricCoverage.withTwoPoints, forecastCandidates: forecastCandidates.length },
         finance: { overdueExposureByCurrency: overdueExposure },
+        crm: {
+          overdueFollowUps: crmPipelineRisks.filter((fact) => fact.riskType === 'overdue_follow_up').length,
+          stalledOpportunities: crmPipelineRisks.filter((fact) => fact.riskType === 'stalled_opportunity').length,
+        },
+        planning: {
+          productMetricRisks: planningMetricRisks.filter((fact) => fact.metricDomain.toLowerCase() === 'product').length,
+          campaignMetricRisks: planningMetricRisks.filter((fact) => fact.metricDomain.toLowerCase() !== 'product').length,
+        },
       },
       dataGaps,
     });
@@ -529,11 +693,11 @@ export async function dispatchApprovedProposal(workspaceId: string, proposalId: 
   const signal = await companyBrainRepo.upsertSignal({
     workspaceId,
     observationId: observation.id,
-    signalType: 'executive_proposal',
+    signalType: `executive_${proposal.proposalType}_proposal`,
     severity: Math.max(1, Math.min(5, Math.ceil(proposal.priority / 20))),
     materiality: proposal.confidence,
     explanation: proposal.objective,
-    evidence: { proposalId: proposal.id, executionMode: 'plan_only', source: 'executive_ops' },
+    evidence: { proposalId: proposal.id, proposalType: proposal.proposalType, executionMode: 'plan_only', source: 'executive_ops' },
   });
   const mission = await companyBrainRepo.createMissionFromSignal({
     workspaceId,
@@ -601,6 +765,58 @@ export async function decideProposal(input: {
     logger.error({ error, workspaceId: input.workspaceId, proposalId: result.proposal.id }, 'Approved executive proposal is awaiting dispatch retry');
     return result.proposal;
   }
+}
+
+export async function verifyProposalOutcome(input: {
+  workspaceId: string;
+  proposalId: string;
+  expectedVersion: number;
+  outcome: string;
+  evidence: Record<string, unknown>;
+  confidence: number;
+  idempotencyKey?: string | null;
+  actorId: string;
+}) {
+  const proposal = await repo.getProposal(input.workspaceId, input.proposalId);
+  if (!proposal) throw notFoundError('Executive proposal not found');
+  await assertProposalWriteCapability(input.workspaceId, input.actorId, proposal);
+  await assertWorkspaceCapability({ workspaceId: input.workspaceId, userId: input.actorId, capability: 'quality.review' });
+  const result = await repo.verifyProposalOutcome({
+    workspaceId: input.workspaceId,
+    proposalId: input.proposalId,
+    expectedVersion: input.expectedVersion,
+    outcome: input.outcome,
+    evidence: input.evidence,
+    confidence: input.confidence,
+    sourceKey: input.idempotencyKey ?? `executive-proposal:${input.proposalId}:outcome:${randomUUID()}`,
+    actorId: input.actorId,
+  });
+  if (!result) throw notFoundError('Executive proposal not found');
+  if (!result.changed) {
+    if (!result.reason && result.learning) return { ...result, replayed: true };
+    if (result.reason === 'version_conflict') {
+      throw new AppError(409, 'EXECUTIVE_PROPOSAL_VERSION_CONFLICT', 'The proposal changed before this outcome could be recorded.', { currentVersion: result.proposal.version });
+    }
+    if (result.reason === 'mission_incomplete') {
+      throw new AppError(409, 'EXECUTIVE_PROPOSAL_MISSION_INCOMPLETE', 'The plan outcome cannot be verified until its Company Brain mission is completed.');
+    }
+    if (result.reason === 'mission_missing') {
+      throw new AppError(409, 'EXECUTIVE_PROPOSAL_MISSION_REQUIRED', 'The plan outcome cannot be verified without its Company Brain mission.');
+    }
+    if (result.reason === 'source_key_conflict') {
+      throw new AppError(409, 'EXECUTIVE_PROPOSAL_OUTCOME_KEY_CONFLICT', 'The supplied outcome idempotency key belongs to a different proposal.');
+    }
+    throw new AppError(409, 'EXECUTIVE_PROPOSAL_NOT_OUTCOME_READY', 'The proposal is not in a state where an outcome can be verified.', { status: result.proposal.status });
+  }
+  await appendExecutiveEvent({
+    workspaceId: input.workspaceId,
+    type: 'executive.proposal.outcome_verified',
+    aggregateType: 'executive_proposal',
+    aggregateId: result.proposal.id,
+    payload: { learningId: result.learning?.id ?? null, proposalType: result.proposal.proposalType, confidence: input.confidence },
+    idempotencyKey: `executive-proposal:${result.proposal.id}:outcome:${result.learning?.id ?? 'unknown'}:v1`,
+  });
+  return { ...result, replayed: false };
 }
 
 export async function dispatchApprovedProposals(limit: number) {

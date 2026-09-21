@@ -89,6 +89,22 @@ export function productReferenceKey(
   return `workspaces/${workspaceId}/products/${productId}/references/${referenceId}.${safeExtension}`;
 }
 
+/**
+ * Retains a raster image extracted from an uploaded catalog. Product media is
+ * copied from this immutable evidence only after the customer confirms the
+ * proposed product/variant mapping.
+ */
+export function catalogImportEvidenceKey(
+  workspaceId: string,
+  activationId: string,
+  assetId: string,
+  extension: string,
+) {
+  const safeAssetId = assetId.toLowerCase().replace(/[^a-z0-9_-]/g, '-').slice(0, 180) || 'asset';
+  const safeExtension = extension.toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 8) || 'bin';
+  return `workspaces/${workspaceId}/catalog-imports/${activationId}/evidence/${safeAssetId}.${safeExtension}`;
+}
+
 export async function putObject(input: {
   key: string;
   content: Buffer;

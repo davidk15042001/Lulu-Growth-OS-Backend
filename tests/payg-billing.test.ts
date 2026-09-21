@@ -355,6 +355,74 @@ describe('prepaid API and transparent usage reporting', () => {
     assert.ok(state.completedAt);
   });
 
+  it('creates a catalog product family with durable color and length variants', async () => {
+    const user = (await db.query<{ id: string }>(
+      `INSERT INTO users(email, password_hash) VALUES($1, 'hash') RETURNING id`,
+      [`${crypto.randomUUID()}@test.local`],
+    )).rows[0]!;
+    const workspace = (await db.query<{ id: string }>(
+      `INSERT INTO workspaces(name, created_by, onboarding_step, profile_completed_at)
+       VALUES('Catalog Variant Workspace', $1, 'knowledge_base', NOW()) RETURNING id`,
+      [user.id],
+    )).rows[0]!;
+    const activationId = await createKnowledgeActivation({
+      workspaceId: workspace.id, userId: user.id, text: 'Catalog', documentIds: [], model: 'test-model',
+    });
+
+    const catalogRows: Array<[string, string, string, string]> = [
+      ['Green 5 cm', 'SC-GREEN-5', 'Green', '5'],
+      ['Green 10 cm', 'SC-GREEN-10', 'Green', '10'],
+      ['Blue 5 cm', 'SC-BLUE-5', 'Blue', '5'],
+      ['Blue 10 cm', 'SC-BLUE-10', 'Blue', '10'],
+    ];
+    const variants = catalogRows.map(([name, sku, color, length], index) => ({
+      name, sku, description: null, price: 2.5, currency: 'CNY',
+      barcode: `69300000000${index}`,
+      weight: 4.2,
+      weightUnit: 'g',
+      dimensionLength: Number(length),
+      dimensionWidth: 2,
+      dimensionHeight: 1,
+      dimensionUnit: 'cm',
+      moqQuantity: 100,
+      moqUnit: 'pcs',
+      leadTimeMinDays: 3,
+      leadTimeMaxDays: 7,
+      imageEvidenceIds: ['document:catalog:page:1:image:1'],
+      attributes: [
+        { name: 'Color', value: color, unit: null },
+        { name: 'Length', value: length, unit: 'cm' },
+      ],
+    }));
+    const result = await applyKnowledgeClassification({
+      activationId, workspaceId: workspace.id, userId: user.id,
+      classification: { summary: 'Screws', items: [] }, summary: 'Screws', businessDescription: 'Screws',
+      sourceDocumentIds: ['00000000-0000-4000-8000-000000000001'],
+      items: [{
+        name: 'Precision Screw', kind: 'product', productType: 'PHYSICAL_PRODUCT',
+        description: 'Precision screw family.', category: 'Fasteners', price: 2.5, currency: 'CNY', variants,
+      }],
+    });
+
+    assert.equal(result.productIds.length, 1);
+    assert.equal(result.variantMediaTargets.length, 4);
+    const saved = (await db.query<{ name: string; sku: string; length: string; unit: string; barcode: string; weight: string; width: string; height: string; moq: string; leadMin: number; leadMax: number; metadata: { source?: string; sourceDocumentIds?: string[]; sourceEvidenceIds?: string[] } }>(
+      `SELECT name,sku,dimension_length::text AS length,dimension_unit AS unit,barcode,weight::text AS weight,
+              dimension_width::text AS width,dimension_height::text AS height,moq_quantity::text AS moq,
+              lead_time_min_days AS "leadMin",lead_time_max_days AS "leadMax",metadata
+         FROM product_variants WHERE workspace_id=$1 ORDER BY sku`,
+      [workspace.id],
+    )).rows;
+    assert.equal(saved.length, 4);
+    assert.deepEqual(saved.map((variant) => variant.sku), ['SC-BLUE-10', 'SC-BLUE-5', 'SC-GREEN-10', 'SC-GREEN-5']);
+    assert.ok(saved.every((variant) => variant.unit === 'cm' && [5, 10].includes(Number(variant.length))));
+    assert.ok(saved.every((variant) => variant.barcode.startsWith('693') && Number(variant.weight) === 4.2 && Number(variant.width) === 2 && Number(variant.height) === 1));
+    assert.ok(saved.every((variant) => Number(variant.moq) === 100 && variant.leadMin === 3 && variant.leadMax === 7));
+    assert.ok(saved.every((variant) => variant.metadata.source === 'knowledge_activation_catalog'));
+    assert.ok(saved.every((variant) => variant.metadata.sourceDocumentIds?.[0] === '00000000-0000-4000-8000-000000000001'));
+    assert.ok(saved.every((variant) => variant.metadata.sourceEvidenceIds?.[0] === 'document:catalog:page:1:image:1'));
+  });
+
   it('meters R2 storage without a free-tier deduction and records operation classes', async () => {
     const user = (await db.query<{ id: string }>(
       `INSERT INTO users(email, password_hash) VALUES($1, 'hash') RETURNING id`,

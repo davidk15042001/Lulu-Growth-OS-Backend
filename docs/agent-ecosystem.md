@@ -65,6 +65,19 @@ workspace automation state, then hands a plan-only mission to Company Brain.
 The normal Company Brain, command, funding, provider, and quality gates still
 own any subsequent execution.
 
+Measured product and marketing/acquisition declines are classified as product
+or campaign findings from bounded metric history, not inferred causes. CRM risk
+findings are limited to canonical overdue CRM/Sales follow-up tasks and stalled
+canonical opportunities; they are workflow-age facts, not probability-of-close
+predictions. Their
+approved plans receive deterministic Digital Employee teams: product plans use
+Product Manager, Commerce Analytics, and Quality; campaign plans use Marketing,
+Paid Acquisition, Policy, and Quality; CRM recovery plans use CRM Manager,
+Customer Manager, and Quality. Completion means only that the plan
+mission and a quality-gated, evidence-bearing outcome review are complete. It
+never means a product, CRM, provider, campaign, or financial side effect was
+performed.
+
 ## Autonomy boundary
 
 Routine execution does not create a human approval request. Paid media has two independent customer-controlled boundaries: settled prepaid funds and a time-bounded authorization for the exact provider account, campaign, currency and amount.

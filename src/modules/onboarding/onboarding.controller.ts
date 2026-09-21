@@ -12,6 +12,7 @@ import {
   businessDescriptionSchema,
   companyInformationSchema,
   knowledgeActivationSchema,
+  knowledgeActivationParamsSchema,
   createCompetitorSchema,
   createCustomerSegmentSchema,
   createOfferingSchema,
@@ -402,6 +403,20 @@ export async function startOAuth(req: WorkspaceRequest, res: Response, next: Nex
 export async function activateKnowledge(req: WorkspaceRequest,res: Response,next: NextFunction){
   try{const input=knowledgeActivationSchema.parse(req.body);return successResponse(res,'Knowledge Base processed',await service.activateKnowledgeBase(workspaceId(req),req.user!.id,input));}
   catch(error){next(error);}
+}
+
+export async function knowledgeActivationPreview(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = knowledgeActivationParamsSchema.parse(req.params);
+    return successResponse(res, 'Catalog import loaded', await service.getKnowledgeActivationPreview(params.workspaceId, req.user!.id, params.activationId));
+  } catch (error) { next(error); }
+}
+
+export async function confirmKnowledgeActivation(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = knowledgeActivationParamsSchema.parse(req.params);
+    return successResponse(res, 'Catalog import confirmed', await service.confirmKnowledgeActivation(params.workspaceId, req.user!.id, params.activationId));
+  } catch (error) { next(error); }
 }
 
 export async function continueProductsServices(req: WorkspaceRequest, res: Response, next: NextFunction) {

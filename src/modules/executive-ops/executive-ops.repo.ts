@@ -99,6 +99,39 @@ export type FailedAgentRunFact = {
   updatedAt: string;
 };
 
+export type ProposalOutcomeResult = {
+  proposal: ExecutiveProposal;
+  learning: ExecutiveLearningRecord | null;
+  changed: boolean;
+  reason?: 'version_conflict' | 'not_dispatched' | 'mission_missing' | 'mission_incomplete' | 'source_key_conflict';
+};
+
+export type PlanningMetricRiskFact = {
+  metricId: string;
+  metricKey: string;
+  metricName: string;
+  metricDomain: string;
+  metricUnit: string;
+  sourceMetricPointId: string;
+  baselineValue: string;
+  previousValue: string;
+  baselineRecordedAt: string;
+  previousRecordedAt: string;
+  changeRatio: string;
+};
+
+export type CrmPipelineRiskFact = {
+  riskType: 'overdue_follow_up' | 'stalled_opportunity';
+  recordId: string;
+  resourceType: string;
+  name: string;
+  stage: string | null;
+  status: string;
+  dueAt: string | null;
+  updatedAt: string;
+  ageDays: number;
+};
+
 export type OpenSignalFact = {
   signalId: string;
   signalType: string;
@@ -449,60 +482,107 @@ export async function getLatestCycle(workspaceId: string, cycleType: ExecutiveCy
   return rows[0] ?? null;
 }
 
-export async function listOpenSignals(workspaceId: string, limit: number) {
+export async function listOpenSignals(workspaceId: string, limit: number, dataCutoffAt: string) {
   const { rows } = await query<OpenSignalFact>(
     `SELECT id AS "signalId",signal_type AS "signalType",severity,materiality::float AS materiality,
             explanation,detected_at AS "detectedAt"
        FROM company_brain_signals
-      WHERE workspace_id=$1 AND status='OPEN'
+      WHERE workspace_id=$1 AND status='OPEN' AND detected_at <= $3::timestamptz
       ORDER BY materiality DESC,severity DESC,detected_at DESC
       LIMIT $2`,
-    [workspaceId, boundedLimit(limit)],
+    [workspaceId, boundedLimit(limit), dataCutoffAt],
   );
   return rows;
 }
 
-export async function listOperationalBottlenecks(workspaceId: string, limit: number) {
+export async function listOperationalBottlenecks(workspaceId: string, limit: number, dataCutoffAt: string) {
   const { rows } = await query<OperationalBottleneckFact>(
     `SELECT id AS "taskId",mission_id AS "missionId",title,priority,status,blocked_reason AS "blockedReason",
             error_code AS "errorCode",updated_at AS "updatedAt"
        FROM company_brain_tasks
-      WHERE workspace_id=$1 AND status IN ('BLOCKED','FAILED')
+      WHERE workspace_id=$1 AND status IN ('BLOCKED','FAILED') AND updated_at <= $3::timestamptz
       ORDER BY priority DESC,updated_at DESC
       LIMIT $2`,
-    [workspaceId, boundedLimit(limit)],
+    [workspaceId, boundedLimit(limit), dataCutoffAt],
   );
   return rows;
 }
 
-export async function listRecentFailedAgentRuns(workspaceId: string, limit: number) {
+export async function listRecentFailedAgentRuns(workspaceId: string, limit: number, dataCutoffAt: string) {
   const { rows } = await query<FailedAgentRunFact>(
     `SELECT id AS "runId",NULLIF(plan->>'module','') AS module,error_code AS "errorCode",updated_at AS "updatedAt"
        FROM agent_runs
-      WHERE workspace_id=$1 AND status='failed' AND updated_at >= NOW() - INTERVAL '7 days'
+      WHERE workspace_id=$1 AND status='failed'
+        AND updated_at >= $3::timestamptz - INTERVAL '7 days'
+        AND updated_at <= $3::timestamptz
       ORDER BY updated_at DESC
       LIMIT $2`,
-    [workspaceId, boundedLimit(limit)],
+    [workspaceId, boundedLimit(limit), dataCutoffAt],
   );
   return rows;
 }
 
-export async function listOverdueInvoiceExposure(workspaceId: string) {
+export async function listOverdueInvoiceExposure(workspaceId: string, dataCutoffAt: string) {
   const { rows } = await query<FinancialRiskFact>(
     `SELECT currency,COUNT(*)::integer AS "invoiceCount",SUM(amount_due) AS "amountDue",MIN(due_date)::text AS "oldestDueDate"
        FROM invoices
       WHERE workspace_id=$1
         AND amount_due > 0
         AND status NOT IN ('PAID','VOID','CANCELLED','REFUNDED')
-        AND (status='OVERDUE' OR due_date < CURRENT_DATE)
+        AND updated_at <= $2::timestamptz
+        AND (status='OVERDUE' OR due_date < ($2::timestamptz AT TIME ZONE 'UTC')::date)
       GROUP BY currency
       ORDER BY currency ASC`,
-    [workspaceId],
+    [workspaceId, dataCutoffAt],
   );
   return rows;
 }
 
-export async function getMetricCoverage(workspaceId: string) {
+export async function listCrmPipelineRisks(workspaceId: string, limit: number, dataCutoffAt: string) {
+  const { rows } = await query<CrmPipelineRiskFact>(
+    `WITH overdue_followups AS (
+       SELECT 'overdue_follow_up'::text AS "riskType",id::text AS "recordId",resource_type AS "resourceType",name,stage,status,
+              due_at AS "dueAt",updated_at AS "updatedAt",
+              GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($3::timestamptz-due_at))/86400))::integer AS "ageDays"
+         FROM workspace_records
+        WHERE workspace_id=$1
+          AND resource_type IN ('crm_tasks','sales_tasks')
+          AND deleted_at IS NULL
+          AND updated_at <= $3::timestamptz
+          AND due_at IS NOT NULL AND due_at < $3::timestamptz
+          AND lower(status) NOT IN ('completed','cancelled')
+          AND COALESCE(NULLIF(lower(data->'pipeline'->>'state'),''),lower(COALESCE(stage,status,'')))
+              NOT IN ('completed','cancelled')
+        ORDER BY due_at ASC,updated_at ASC
+        LIMIT $2
+     ),
+     stalled_opportunities AS (
+       SELECT 'stalled_opportunity'::text AS "riskType",id::text AS "recordId",resource_type AS "resourceType",name,stage,status,
+              NULL::timestamptz AS "dueAt",updated_at AS "updatedAt",
+              GREATEST(0,FLOOR(EXTRACT(EPOCH FROM ($3::timestamptz-updated_at))/86400))::integer AS "ageDays"
+         FROM workspace_records
+        WHERE workspace_id=$1
+          AND resource_type IN ('crm_deals','opportunities','sales_deals','sales_opportunities','growth_opportunities')
+          AND deleted_at IS NULL
+          AND updated_at <= $3::timestamptz - INTERVAL '14 days'
+          AND lower(status) NOT IN ('closed','completed','cancelled','won','lost')
+          AND COALESCE(NULLIF(lower(data->'pipeline'->>'state'),''),lower(COALESCE(stage,status,'')))
+              NOT IN ('won','lost','converted','disqualified','completed','cancelled')
+        ORDER BY updated_at ASC
+        LIMIT $2
+     )
+     SELECT "riskType","recordId","resourceType",name,stage,status,"dueAt","updatedAt","ageDays"
+       FROM overdue_followups
+     UNION ALL
+     SELECT "riskType","recordId","resourceType",name,stage,status,"dueAt","updatedAt","ageDays"
+       FROM stalled_opportunities
+     ORDER BY "riskType" ASC,"dueAt" ASC NULLS LAST,"updatedAt" ASC`,
+    [workspaceId, boundedLimit(limit, 24), dataCutoffAt],
+  );
+  return rows;
+}
+
+export async function getMetricCoverage(workspaceId: string, dataCutoffAt: string) {
   const { rows } = await query<{ defined: string; withTwoPoints: string }>(
     `SELECT COUNT(*)::text AS defined,
             COUNT(*) FILTER (WHERE points.point_count >= 2)::text AS "withTwoPoints"
@@ -510,10 +590,10 @@ export async function getMetricCoverage(workspaceId: string) {
        LEFT JOIN LATERAL (
          SELECT COUNT(*)::integer AS point_count
            FROM metric_points mp
-          WHERE mp.metric_id=md.id
+          WHERE mp.metric_id=md.id AND mp.recorded_at <= $2::timestamptz
        ) points ON TRUE
       WHERE md.workspace_id=$1 AND md.deleted_at IS NULL`,
-    [workspaceId],
+    [workspaceId, dataCutoffAt],
   );
   return {
     defined: Number(rows[0]?.defined ?? 0),
@@ -521,7 +601,7 @@ export async function getMetricCoverage(workspaceId: string) {
   };
 }
 
-export async function listForecastCandidates(workspaceId: string, limit: number) {
+export async function listForecastCandidates(workspaceId: string, limit: number, dataCutoffAt: string) {
   const { rows } = await query<ForecastCandidate>(
     `WITH ranked AS (
        SELECT md.id AS "metricId",md.key AS "metricKey",md.name AS "metricName",md.domain AS "metricDomain",md.unit AS "metricUnit",
@@ -529,23 +609,56 @@ export async function listForecastCandidates(workspaceId: string, limit: number)
               ROW_NUMBER() OVER (PARTITION BY md.id ORDER BY mp.recorded_at DESC,mp.id DESC) AS position
          FROM metric_definitions md
          JOIN metric_points mp ON mp.metric_id=md.id
-        WHERE md.workspace_id=$1 AND md.deleted_at IS NULL
+        WHERE md.workspace_id=$1 AND md.deleted_at IS NULL AND mp.recorded_at <= $3::timestamptz
      )
      SELECT latest."metricId",latest."metricKey",latest."metricName",latest."metricDomain",latest."metricUnit",
             latest."sourceMetricPointId",latest.value AS "baselineValue",latest."recordedAt" AS "baselineRecordedAt",
             latest."recordedAt" + (latest."recordedAt" - previous."recordedAt") AS "forecastedFor",
             EXTRACT(EPOCH FROM (latest."recordedAt" - previous."recordedAt"))::integer AS "horizonSeconds",
-            latest.value + ((latest.value - previous.value) * 0.5::numeric) AS "projectedLow",
+            LEAST(
+              latest.value + ((latest.value - previous.value) * 0.5::numeric),
+              latest.value + ((latest.value - previous.value) * 1.5::numeric)
+            ) AS "projectedLow",
             latest.value + (latest.value - previous.value) AS "projectedBase",
-            latest.value + ((latest.value - previous.value) * 1.5::numeric) AS "projectedHigh"
+            GREATEST(
+              latest.value + ((latest.value - previous.value) * 0.5::numeric),
+              latest.value + ((latest.value - previous.value) * 1.5::numeric)
+            ) AS "projectedHigh"
        FROM ranked latest
        JOIN ranked previous ON previous."metricId"=latest."metricId" AND previous.position=2
       WHERE latest.position=1 AND latest."recordedAt" > previous."recordedAt"
       ORDER BY latest."metricDomain" ASC,latest."metricName" ASC
       LIMIT $2`,
-    [workspaceId, boundedLimit(limit, 50)],
+    [workspaceId, boundedLimit(limit, 50), dataCutoffAt],
   );
   return rows.filter((row) => Number.isFinite(Number(row.horizonSeconds)) && row.horizonSeconds > 0);
+}
+
+export async function listDecliningPlanningMetrics(workspaceId: string, limit: number, dataCutoffAt: string) {
+  const { rows } = await query<PlanningMetricRiskFact>(
+    `WITH ranked AS (
+       SELECT md.id AS "metricId",md.key AS "metricKey",md.name AS "metricName",md.domain AS "metricDomain",md.unit AS "metricUnit",
+              mp.id::text AS "sourceMetricPointId",mp.value,mp.recorded_at AS "recordedAt",
+              ROW_NUMBER() OVER (PARTITION BY md.id ORDER BY mp.recorded_at DESC,mp.id DESC) AS position
+         FROM metric_definitions md
+         JOIN metric_points mp ON mp.metric_id=md.id
+        WHERE md.workspace_id=$1 AND md.deleted_at IS NULL AND mp.recorded_at <= $3::timestamptz
+     )
+     SELECT latest."metricId",latest."metricKey",latest."metricName",latest."metricDomain",latest."metricUnit",
+            latest."sourceMetricPointId",latest.value AS "baselineValue",previous.value AS "previousValue",
+            latest."recordedAt" AS "baselineRecordedAt",previous."recordedAt" AS "previousRecordedAt",
+            (latest.value-previous.value)/ABS(previous.value) AS "changeRatio"
+       FROM ranked latest
+       JOIN ranked previous ON previous."metricId"=latest."metricId" AND previous.position=2
+      WHERE latest.position=1
+        AND latest.value < previous.value
+        AND previous.value <> 0
+        AND lower(latest."metricDomain") = ANY(ARRAY['product','marketing','ads','advertising','growth'])
+      ORDER BY ABS((latest.value-previous.value)/ABS(previous.value)) DESC,latest."metricName" ASC
+      LIMIT $2`,
+    [workspaceId, boundedLimit(limit, 50), dataCutoffAt],
+  );
+  return rows;
 }
 
 export async function upsertFindings(inputs: CreateFindingInput[]) {
@@ -899,6 +1012,100 @@ export async function attachProposalMission(input: {
       }, client);
     }
     return attached;
+  });
+}
+
+export async function verifyProposalOutcome(input: {
+  workspaceId: string;
+  proposalId: string;
+  expectedVersion: number;
+  outcome: string;
+  evidence: Record<string, unknown>;
+  confidence: number;
+  sourceKey: string;
+  actorId: string;
+}): Promise<ProposalOutcomeResult | null> {
+  return withTransaction(async (client) => {
+    const proposal = (await query<ExecutiveProposal>(
+      `SELECT ${proposalSelect} FROM executive_proposals
+        WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+      [input.workspaceId, input.proposalId],
+      client,
+    )).rows[0];
+    if (!proposal) return null;
+
+    const existingLearning = (await query<ExecutiveLearningRecord>(
+      `SELECT ${learningSelect} FROM executive_learning_records
+        WHERE workspace_id=$1 AND source_key=$2 FOR UPDATE`,
+      [input.workspaceId, input.sourceKey],
+      client,
+    )).rows[0] ?? null;
+    if (existingLearning) {
+      if (existingLearning.proposalId !== proposal.id) {
+        return { proposal, learning: null, changed: false, reason: 'source_key_conflict' };
+      }
+      if (proposal.status === 'completed') return { proposal, learning: existingLearning, changed: false };
+      return { proposal, learning: existingLearning, changed: false, reason: 'version_conflict' };
+    }
+    if (proposal.version !== input.expectedVersion) {
+      return { proposal, learning: null, changed: false, reason: 'version_conflict' };
+    }
+    if (proposal.status !== 'dispatched') {
+      return { proposal, learning: null, changed: false, reason: 'not_dispatched' };
+    }
+    if (!proposal.companyBrainMissionId) {
+      return { proposal, learning: null, changed: false, reason: 'mission_missing' };
+    }
+    const mission = (await query<{ status: string }>(
+      `SELECT status FROM company_brain_missions WHERE workspace_id=$1 AND id=$2`,
+      [input.workspaceId, proposal.companyBrainMissionId],
+      client,
+    )).rows[0];
+    if (!mission) return { proposal, learning: null, changed: false, reason: 'mission_missing' };
+    if (mission.status !== 'COMPLETED') {
+      return { proposal, learning: null, changed: false, reason: 'mission_incomplete' };
+    }
+
+    const learning = (await query<ExecutiveLearningRecord>(
+      `INSERT INTO executive_learning_records(
+         workspace_id,cycle_id,proposal_id,source_key,learning_type,outcome,evidence,confidence,verified
+       ) VALUES($1,$2,$3,$4,'proposal_outcome_review',$5,$6::jsonb,$7,TRUE)
+       RETURNING ${learningSelect}`,
+      [
+        input.workspaceId, proposal.cycleId, proposal.id, input.sourceKey, input.outcome,
+        JSON.stringify({
+          ...input.evidence,
+          companyBrainMissionId: proposal.companyBrainMissionId,
+          executionMode: proposal.executionMode,
+          reviewActorId: input.actorId,
+        }),
+        input.confidence,
+      ],
+      client,
+    )).rows[0];
+    if (!learning) throw new Error('Executive proposal outcome insert did not return a row');
+
+    const completed = (await query<ExecutiveProposal>(
+      `UPDATE executive_proposals
+          SET status='completed',version=version+1
+        WHERE workspace_id=$1 AND id=$2 AND status='dispatched' AND version=$3
+        RETURNING ${proposalSelect}`,
+      [input.workspaceId, proposal.id, input.expectedVersion],
+      client,
+    )).rows[0];
+    if (!completed) {
+      const latest = await getProposal(input.workspaceId, proposal.id, client);
+      return { proposal: latest ?? proposal, learning: null, changed: false, reason: 'version_conflict' };
+    }
+    await appendProposalEvent({
+      workspaceId: input.workspaceId,
+      proposalId: completed.id,
+      eventType: 'OUTCOME_VERIFIED',
+      actorType: 'human',
+      actorId: input.actorId,
+      payload: { learningId: learning.id, confidence: input.confidence, companyBrainMissionId: completed.companyBrainMissionId },
+    }, client);
+    return { proposal: completed, learning, changed: true };
   });
 }
 

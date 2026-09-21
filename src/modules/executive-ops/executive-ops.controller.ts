@@ -15,6 +15,7 @@ import {
   executiveWorkspaceParamsSchema,
   runExecutiveCycleSchema,
   saveExecutiveScheduleSchema,
+  verifyExecutiveProposalOutcomeSchema,
 } from './executive-ops.validator.js';
 
 async function actorAccess(req: WorkspaceRequest, workspaceId: string) {
@@ -176,5 +177,25 @@ export async function decideProposal(req: WorkspaceRequest, res: Response, next:
       actorId: req.user!.id,
       ...(input.reason !== undefined ? { reason: input.reason } : {}),
     }));
+  } catch (error) { next(error); }
+}
+
+export async function verifyProposalOutcome(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const { workspaceId, proposalId } = executiveProposalParamsSchema.parse(req.params);
+    const input = verifyExecutiveProposalOutcomeSchema.parse(req.body);
+    const result = await service.verifyProposalOutcome({
+      workspaceId,
+      proposalId,
+      expectedVersion: input.expectedVersion,
+      outcome: input.outcome,
+      evidence: input.evidence,
+      confidence: input.confidence,
+      actorId: req.user!.id,
+      ...(input.idempotencyKey !== undefined ? { idempotencyKey: input.idempotencyKey } : {}),
+    });
+    return result.replayed
+      ? successResponse(res, 'Executive proposal outcome already verified', result)
+      : createdResponse(res, 'Executive proposal outcome verified', result);
   } catch (error) { next(error); }
 }

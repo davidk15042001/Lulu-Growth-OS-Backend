@@ -137,7 +137,7 @@ describe('agent memory Zep adapter', () => {
       userId: 'user-1',
       source: 'orders',
       sourceId: 'order-1',
-      data: { status: 'paid' },
+      data: { status: 'paid', api_key: 'must-not-leave-lulu', nested: { secret: 'hidden', quantity: 2 } },
     });
     await addOrganizationKnowledgeToMemory({
       source: 'policy',
@@ -148,6 +148,7 @@ describe('agent memory Zep adapter', () => {
     const graphCalls = calls.filter((call) => call.name === 'graph.add');
     assert.equal((graphCalls[0]!.args[0] as any).userId, 'workspace:workspace-1:user:user-1');
     assert.equal((graphCalls[0]!.args[0] as any).graphId, undefined);
+    assert.deepEqual(JSON.parse((graphCalls[0]!.args[0] as any).data), { status: 'paid', nested: { quantity: 2 } });
     assert.equal((graphCalls[1]!.args[0] as any).graphId, ZEP_ORG_KNOWLEDGE_GRAPH_ID);
     assert.equal((graphCalls[1]!.args[0] as any).userId, undefined);
   });

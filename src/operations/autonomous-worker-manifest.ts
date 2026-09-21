@@ -31,4 +31,5 @@ export const autonomousWorkerManifest = [
   { name: 'integration-sync', required: true, staleAfterMs: Math.max(60_000, env.INTEGRATION_SYNC_WORKER_INTERVAL_MS * 4) },
   { name: 'rate-limit-cleanup', required: false },
   { name: 'onboarding-cleanup', required: false },
+  { name: 'catalog-import', required: true, staleAfterMs: Math.max(60_000, env.CATALOG_IMPORT_WORKER_INTERVAL_MS * 4) },
 ] as const satisfies readonly RuntimeWorkerDefinition[];

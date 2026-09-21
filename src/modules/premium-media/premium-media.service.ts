@@ -86,23 +86,38 @@ function mimeFromStorageReference(reference: string) {
 }
 
 function productDescription(product: repo.ProductMediaContext) {
-  return product.longDescription?.trim() || product.shortDescription?.trim() || product.name;
+  const base=product.longDescription?.trim() || product.shortDescription?.trim() || product.name;
+  if (!product.variant) return base;
+  const rawAttributes=product.variant.metadata?.attributes;
+  const attributes=Array.isArray(rawAttributes)
+    ? rawAttributes.map((attribute) => {
+      if (!attribute || typeof attribute!=='object') return '';
+      const value=attribute as {name?:unknown;value?:unknown;unit?:unknown};
+      const name=typeof value.name==='string'?value.name.trim():'';
+      const attributeValue=typeof value.value==='string'?value.value.trim():'';
+      const unit=typeof value.unit==='string'&&value.unit.trim()?` ${value.unit.trim()}`:'';
+      return name&&attributeValue?`${name}: ${attributeValue}${unit}`:'';
+    }).filter(Boolean)
+    : [];
+  return [base,`Sellable variant: ${product.variant.name}${product.variant.sku?` (SKU ${product.variant.sku})`:''}.`,attributes.length?`Variant attributes: ${attributes.join(', ')}.`:''].filter(Boolean).join('\n');
 }
 
 export function buildPremiumImagePrompt(
-  product: Pick<repo.ProductMediaContext, 'name' | 'shortDescription' | 'longDescription'>,
+  product: Pick<repo.ProductMediaContext, 'name' | 'shortDescription' | 'longDescription'> & { variant?: repo.ProductMediaContext['variant'] },
   creativeDirection?: string | null,
   retryFeedback?: string | null,
   hasReferences = true,
 ) {
   return [
     `Create an ultra-premium, globally campaign-ready commercial product photograph for ${product.name}.`,
-    `Product context: ${product.longDescription?.trim() || product.shortDescription?.trim() || product.name}.`,
+    `Product context: ${productDescription(product as repo.ProductMediaContext)}.`,
     hasReferences
       ? 'Use the supplied product photographs as the absolute source of truth.'
       : 'Establish one definitive, physically plausible product identity from the brief and keep it suitable for consistent reuse across a global campaign.',
     hasReferences
-      ? 'Preserve the exact product silhouette, proportions, materials, colors, components, packaging, logo, label text, typography and brand marks.'
+      ? product.variant
+        ? 'Treat supplied images as the source of truth for every invariant: product identity, silhouette, construction, material, components, packaging, logo, label text, typography and brand marks. Change only the explicitly stated variant attributes; do not copy a reference color, size or length when the catalog variant explicitly differs.'
+        : 'Preserve the exact product silhouette, proportions, materials, colors, components, packaging, logo, label text, typography and brand marks.'
       : 'Do not invent logos, brand marks, label copy, unsupported product claims or incoherent components.',
     'Do not invent, remove, rewrite or distort any product feature or readable text.',
     creativeDirection?.trim() || 'Create sophisticated art direction, realistic materials, controlled premium lighting, natural shadows and a high-end advertising composition.',
@@ -112,14 +127,16 @@ export function buildPremiumImagePrompt(
 }
 
 export function buildPremiumVideoPrompt(
-  product: Pick<repo.ProductMediaContext, 'name' | 'shortDescription' | 'longDescription'>,
+  product: Pick<repo.ProductMediaContext, 'name' | 'shortDescription' | 'longDescription'> & { variant?: repo.ProductMediaContext['variant'] },
   creativeDirection?: string | null,
   retryFeedback?: string | null,
 ) {
   return [
     `Create a cinematic premium product advertisement for ${product.name}.`,
-    `Product context: ${product.longDescription?.trim() || product.shortDescription?.trim() || product.name}.`,
-    'The supplied image is the exact product and must remain visually identical in every frame.',
+    `Product context: ${productDescription(product as repo.ProductMediaContext)}.`,
+    product.variant
+      ? 'The supplied image establishes the exact product identity. The documented variant attributes must remain stable and visually correct in every frame.'
+      : 'The supplied image is the exact product and must remain visually identical in every frame.',
     'Use restrained, physically realistic product motion and sophisticated camera movement with stable geometry, consistent packaging, exact logos and unchanged label text.',
     creativeDirection?.trim() || 'Use luxury commercial lighting, deliberate pacing, realistic reflections, shallow depth of field and a confident global-brand aesthetic.',
     'No morphing, flicker, warped text, duplicate parts, invented features, watermarks, jump cuts or unstable backgrounds.',
@@ -559,13 +576,14 @@ async function createAndLaunch(input: {
   request: CreatePremiumMediaInput;
   references: PremiumMediaReference[];
 }) {
-  const existing = await repo.getActiveJob(input.workspaceId, input.product.id);
+  const existing = await repo.getActiveJob(input.workspaceId, input.product.id, input.product.variant?.id);
   if (existing) return { job: await jobView(existing), reused: true };
   let job: PremiumMediaJob;
   try {
     job = await repo.createJob({
       workspaceId: input.workspaceId,
       productId: input.product.id,
+      variantId: input.product.variant?.id ?? null,
       requestedBy: input.requestedBy ?? null,
       aspectRatio: input.request.aspectRatio,
       creativeDirection: input.request.creativeDirection ?? null,
@@ -578,7 +596,7 @@ async function createAndLaunch(input: {
     });
   } catch (error) {
     if ((error as { code?: string }).code === '23505') {
-      const active = await repo.getActiveJob(input.workspaceId, input.product.id);
+      const active = await repo.getActiveJob(input.workspaceId, input.product.id, input.product.variant?.id);
       if (active) return { job: await jobView(active), reused: true };
     }
     throw error;
@@ -623,19 +641,24 @@ export async function startPremiumMediaFromProductBrief(
   userId: string,
   runtimeAlreadyVerified = false,
   deliverVideo = true,
+  options: { variantId?: string; requireReference?: boolean } = {},
 ) {
   await assertAiBillingAccess(workspaceId, userId);
-  const product = await repo.getProductMediaContext(workspaceId, productId);
+  const product = await repo.getProductMediaContext(workspaceId, productId, options.variantId);
   if (!product) throw notFoundError('Product not found');
-  const active = await repo.getActiveJob(workspaceId, productId);
+  const active = await repo.getActiveJob(workspaceId, productId, options.variantId);
   if (active) return { job: await jobView(active), reused: true };
   if (!runtimeAlreadyVerified) await assertRuntimeReady();
+  const references=await prepareReferences({workspaceId,product,files:[],externalUrls:[]});
+  if (options.requireReference&&!references.length) {
+    throw new AppError(409,'PREMIUM_MEDIA_REFERENCE_REQUIRED','Add at least one authoritative product image before premium production can start.');
+  }
   return createAndLaunch({
     workspaceId,
     product,
     requestedBy: userId,
     request: { aspectRatio: '1:1', deliverImage: true, deliverVideo, referenceImageUrls: [] },
-    references: [],
+    references,
   });
 }
 
@@ -645,6 +668,7 @@ export async function maybeStartAutonomousPremiumMedia(workspaceId: string, prod
   if (active) return active;
   const product = await repo.getProductMediaContext(workspaceId, productId);
   if (!product || !product.media.length) return null;
+  if (await repo.hasActiveVariants(workspaceId, productId)) return null;
   try {
     await assertAiBillingAccess(workspaceId, userId ?? null);
     await assertRuntimeReady();
@@ -1014,7 +1038,7 @@ export async function processCandidate(candidate: PremiumMediaCandidate, workerI
     await repo.failClaimedCandidate(candidate.id, workerId, 'PREMIUM_MEDIA_JOB_INACTIVE', 'The owning premium media job is no longer active');
     return;
   }
-  const product = await repo.getProductMediaContext(job.workspaceId, job.productId);
+  const product = await repo.getProductMediaContext(job.workspaceId, job.productId, job.variantId);
   if (!product) throw notFoundError('Product not found');
   const resultUrl = candidate.resultUrls[0];
   if (!resultUrl) {
@@ -1180,7 +1204,7 @@ function statusMatches(status: PremiumMediaJobStatus, values: PremiumMediaJobSta
 }
 
 export async function advancePremiumMediaJob(job: PremiumMediaJob) {
-  const product = await repo.getProductMediaContext(job.workspaceId, job.productId);
+  const product = await repo.getProductMediaContext(job.workspaceId, job.productId, job.variantId);
   if (!product) {
     await repo.failJob(job, 'PRODUCT_NOT_FOUND', 'The product was removed before premium media production completed');
     return;

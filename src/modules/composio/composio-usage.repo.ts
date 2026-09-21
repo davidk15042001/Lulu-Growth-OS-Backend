@@ -2,8 +2,9 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../../db/pool.js';
 import { AppError } from '../../utils/app-error.js';
 
-export const COMPOSIO_TOOL_CALL_PRICE_CNY = '0.500000';
-export const COMPOSIO_TRIGGER_PRICE_CNY = '0.500000';
+// Customer metering rates, doubled from the former 0.50 CNY price.
+export const COMPOSIO_TOOL_CALL_PRICE_CNY = '1.000000';
+export const COMPOSIO_TRIGGER_PRICE_CNY = '1.000000';
 
 export type ComposioUsageType = 'TOOL_CALL' | 'TRIGGER';
 export type ComposioUsageStatus = 'CHARGED' | 'SUCCEEDED' | 'FAILED' | 'AMBIGUOUS';
@@ -155,7 +156,7 @@ export async function chargeComposioUsage(input: ChargeComposioUsageInput) {
       throw new AppError(409, 'AI_REVERSAL_DEBT', 'Composio execution is paused until the outstanding refund or chargeback balance is covered.');
     }
     if (wallet.insufficientForCharge) {
-      throw new AppError(402, 'COMPOSIO_FUNDS_REQUIRED', 'Composio usage requires at least 0.50 CNY of available AI balance.');
+      throw new AppError(402, 'COMPOSIO_FUNDS_REQUIRED', 'Composio usage requires at least 1.00 CNY of available AI balance.');
     }
 
     const updatedWallet = (await query<WalletRow>(

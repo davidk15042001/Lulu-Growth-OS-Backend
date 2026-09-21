@@ -136,6 +136,21 @@ function asJsonData(data: Record<string, unknown> | string) {
   return typeof data === 'string' ? data : JSON.stringify(data);
 }
 
+function safeBusinessData(value: unknown, depth = 0): unknown {
+  if (depth > 4) return '[truncated]';
+  if (typeof value === 'string') return boundedText(value, 5_000);
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null) return value;
+  if (Array.isArray(value)) return value.slice(0, 40).map((item) => safeBusinessData(item, depth + 1));
+  if (!value || typeof value !== 'object') return undefined;
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
+    if (sensitiveMetadataKey.test(key)) continue;
+    const normalized = safeBusinessData(item, depth + 1);
+    if (normalized !== undefined) output[key.slice(0, 120)] = normalized;
+  }
+  return output;
+}
+
 function zepCreatedAt(value: unknown) {
   if (typeof value === 'string') {
     const parsed = Date.parse(value);
@@ -369,7 +384,7 @@ export async function addUserBusinessDataToMemory(input: AgentMemoryBusinessData
     await client.graph.add({
       userId: zepUserId,
       type: typeof input.data === 'string' ? 'text' : 'json',
-      data: asJsonData(input.data),
+      data: asJsonData(safeBusinessData(input.data) as Record<string, unknown> | string),
       sourceDescription: input.source,
       ...(createdAt ? { createdAt } : {}),
       metadata: metadata(input.metadata, {

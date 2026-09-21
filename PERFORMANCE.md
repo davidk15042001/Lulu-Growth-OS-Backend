@@ -46,8 +46,12 @@ cache or rewrite SQL before locating the slow layer.
   audit, agent-run, webhook and invoice lists.
 - Batch related counts and records; eliminate per-row repository calls.
 - Executive operating cycles retrieve bounded cross-domain facts, group financial
-  evidence by currency, and never wait for AI or providers while a cycle or
-  schedule lease transaction is open.
+  evidence by currency, apply the cycle data cutoff to timestamped facts, and
+  never wait for AI or providers while a cycle or schedule lease transaction is
+  open. Declining product/campaign metric scans are bounded by workspace and
+  metric count; CRM/Sales risk scans are limited to indexed canonical follow-up
+  and opportunity resource types, then delegate plan-only work through Company
+  Brain.
 - Do not return provider payloads, AI output blobs or audit metadata in list
   responses unless explicitly requested.
 - Avoid repeated frontend requests: use one bootstrap query, cache only with a

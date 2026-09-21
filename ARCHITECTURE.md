@@ -97,15 +97,24 @@ same canonical services. A leased worker initializes schedules only for
 automation-eligible workspaces, claims a workspace-scoped lease, and records a
 time-bounded data cutoff for every cycle. Each cycle reads bounded canonical
 facts such as open Company Brain signals, blocked tasks, failed agent runs,
-overdue invoices grouped by currency, and usable metric history. Missing inputs
+overdue invoices grouped by currency, overdue canonical CRM/Sales follow-ups,
+stalled canonical opportunities, and usable metric history. Missing inputs
 are persisted as data gaps rather than being filled with invented conclusions.
+Timestamped fact queries receive that stored cutoff and exclude later input, so
+the persisted report cannot silently absorb a concurrent metric point or run
+state that arrived after the review began.
 
 Forecasts use an explicitly labelled, transparent two-point trend model until a
 stronger model earns its own evidence and calibration contract. Low/base/high
 values and scenario sensitivity calculations are stored as PostgreSQL `NUMERIC`;
 scenarios never overwrite a canonical metric or financial record. When the
 first later metric point becomes available, forecast calibration is appended as
-verified learning evidence.
+verified learning evidence. The forecast range stays ordered for both rising
+and falling trends. Material measured declines in product and marketing/
+acquisition metrics create product or campaign risk findings, never a causal
+claim or direct business mutation. CRM risk findings derive only from overdue
+canonical follow-ups or opportunities without a canonical update for the
+documented aging window; they are workflow-age evidence, not close predictions.
 
 Executive proposals are always `plan_only` and require an explicit human
 decision. Approval rechecks the proposal's domain capability and automation
@@ -113,12 +122,19 @@ state, then creates a Company Brain observation, signal, and plan-only mission.
 It does not directly publish, send, spend, alter a CRM record, or bypass the
 existing provider, funding, attribution, settlement, or compliance gates. The
 Company Brain worker remains the only canonical route from an approved plan to
-Digital Employee work.
+Digital Employee work. The proposal type selects a deterministic, persisted
+specialist team, such as Product Manager plus Commerce Analytics for product
+work, Marketing Manager, Paid Acquisition, Policy, and Quality for campaigns,
+or CRM Manager, Customer Manager, and Quality for CRM recovery plans.
+Each specialist receives only plan-only objectives and bounded untrusted
+evidence. A dispatched proposal becomes `completed` only after its Company
+Brain mission is completed and a user with both the proposal-domain capability
+and `quality.review` appends an evidence-bearing, idempotent outcome review.
 
 ## Known boundaries and target improvements
 
-- The current application has 144 migrations and approximately 247 relational
-  tables. The existing `docs/autonomous-company-os-audit.md` is the source-led
+- The current application has 149 migrations and approximately 249 relational
+  table definitions. The existing `docs/autonomous-company-os-audit.md` is the source-led
   capability matrix and production release evidence.
 - PostgreSQL row-level security is not currently the tenant boundary; service
   authorization and workspace-scoped queries are. RLS is a separate,

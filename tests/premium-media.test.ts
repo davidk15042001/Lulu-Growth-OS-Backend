@@ -91,6 +91,22 @@ describe('premium media production', () => {
     assert.match(video, /No morphing, flicker, warped text/i);
   });
 
+  it('permits only documented variant differences from an authoritative catalog reference', () => {
+    const variantProduct = {
+      ...product,
+      variant: {
+        id: 'variant-1', name: 'Blue 10 cm', sku: 'SC-BLUE-10', dimensionLength: '10', dimensionUnit: 'cm',
+        metadata: { attributes: [{ name: 'Color', value: 'Blue', unit: null }, { name: 'Length', value: '10', unit: 'cm' }] },
+      },
+    };
+    const image = buildPremiumImagePrompt(variantProduct);
+    const video = buildPremiumVideoPrompt(variantProduct);
+    assert.match(image, /Sellable variant: Blue 10 cm/i);
+    assert.match(image, /Color: Blue/i);
+    assert.match(image, /Change only the explicitly stated variant attributes/i);
+    assert.match(video, /documented variant attributes must remain stable/i);
+  });
+
   it('creates a strict premium identity brief for new text-only product concepts', () => {
     const image = buildPremiumImagePrompt(product, null, null, false);
     assert.match(image, /one definitive, physically plausible product identity/i);

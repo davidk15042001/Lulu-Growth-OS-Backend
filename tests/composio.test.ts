@@ -22,8 +22,8 @@ test('Composio toolkit slugs are normalized and invalid values fail closed', () 
 });
 
 test('Composio billing uses the fixed CNY price for both meter types', () => {
-  assert.equal(COMPOSIO_TOOL_CALL_PRICE_CNY, '0.500000');
-  assert.equal(COMPOSIO_TRIGGER_PRICE_CNY, '0.500000');
+  assert.equal(COMPOSIO_TOOL_CALL_PRICE_CNY, '1.000000');
+  assert.equal(COMPOSIO_TRIGGER_PRICE_CNY, '1.000000');
 });
 
 test('Composio execution identities and keys are validated', () => {

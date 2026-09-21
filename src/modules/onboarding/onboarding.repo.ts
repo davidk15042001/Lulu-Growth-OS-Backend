@@ -1490,15 +1490,68 @@ export async function markPlatformConnectionError(workspaceId: string, integrati
   for (const row of rows) await syncLegacyControlStatus({ sourceType: 'workspace_platform', sourceId: row.id, status: 'error', lastError: message });
 }
 
-export async function createKnowledgeActivation(input:{workspaceId:string;userId:string;text:string;documentIds:string[];model:string|null}) {
+export type CatalogImportJob = {
+  id: string;
+  workspaceId: string;
+  activationId: string;
+  attempts: number;
+  maxAttempts: number;
+  referenceDocumentIds: string[];
+};
+
+export type KnowledgeActivationImport = {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  sourceText: string | null;
+  sourceDocumentIds: string[];
+  model: string | null;
+  status: 'PROCESSING' | 'REVIEW_REQUIRED' | 'COMPLETED' | 'FAILED';
+  classification: Record<string, unknown>;
+  errorCode: string | null;
+  errorMessage: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type CatalogImportEvidenceInput = {
+  assetId: string;
+  sourceDocumentId: string;
+  kind: 'DOCUMENT_TEXT' | 'PDF_PAGE_TEXT' | 'PDF_IMAGE' | 'UPLOADED_IMAGE';
+  pageNumber: number | null;
+  mimeType: string | null;
+  storageReference: string | null;
+  extractedText: string;
+  metadata: Record<string, unknown>;
+};
+
+export type CatalogImportEvidence = CatalogImportEvidenceInput & { id: string };
+
+export async function createKnowledgeActivation(input:{workspaceId:string;userId:string;text:string;documentIds:string[];referenceDocumentIds?:string[];model:string|null}) {
   return withTransaction(async client=>{
     const workspace=(await query<{step:string;profileCompletedAt:string|null}>(`SELECT onboarding_step AS step,profile_completed_at AS "profileCompletedAt" FROM workspaces WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`,[input.workspaceId],client)).rows[0];
     if(!workspace||workspace.step!=='knowledge_base'||!workspace.profileCompletedAt)throw new AppError(409,'PROFILE_COMPLETION_REQUIRED','Complete the company profile before building the Knowledge Base.');
     await query(`UPDATE workspace_knowledge_activations SET status='FAILED',error_code='PROCESSING_TIMEOUT',error_message='A stale activation was safely released.' WHERE workspace_id=$1 AND status='PROCESSING' AND updated_at<NOW()-INTERVAL '15 minutes'`,[input.workspaceId],client);
-    const active=(await query<{id:string}>(`SELECT id FROM workspace_knowledge_activations WHERE workspace_id=$1 AND status='PROCESSING' LIMIT 1`,[input.workspaceId],client)).rows[0];
+    const active=(await query<{id:string}>(`SELECT id FROM workspace_knowledge_activations WHERE workspace_id=$1 AND status IN ('PROCESSING','REVIEW_REQUIRED') LIMIT 1`,[input.workspaceId],client)).rows[0];
     if(active)throw new AppError(409,'KNOWLEDGE_PROCESSING_IN_PROGRESS','The Knowledge Base is already being processed.');
     const {rows}=await query<{id:string}>(`INSERT INTO workspace_knowledge_activations(workspace_id,created_by,source_text,source_document_ids,model) VALUES($1,$2,$3,$4,$5) RETURNING id`,[input.workspaceId,input.userId,input.text||null,input.documentIds,input.model],client);
-    return rows[0]!.id;
+    const activationId=rows[0]!.id;
+    await query(
+      `INSERT INTO background_jobs(workspace_id,job_type,payload,max_attempts)
+       VALUES($1,'catalog.import',jsonb_build_object('activationId',$2::text,'referenceDocumentIds',$3::jsonb),3)`,
+      [input.workspaceId,activationId,JSON.stringify(input.referenceDocumentIds ?? [])],client,
+    );
+    await appendDomainEvent({
+      workspaceId: input.workspaceId,
+      type: DOMAIN_EVENT_TYPES.CATALOG_IMPORT_REQUESTED,
+      aggregateType: 'workspace_knowledge_activation',
+      aggregateId: activationId,
+      payload: { activationId, documentCount: input.documentIds.length },
+      metadata: { actorId: input.userId, source: 'onboarding.catalog-import' },
+      idempotencyKey: `catalog-import:${activationId}:requested`,
+    }, client);
+    return activationId;
   });
 }
 
@@ -1508,13 +1561,213 @@ export async function failKnowledgeActivation(id:string,error:unknown) {
   await query(`UPDATE workspace_knowledge_activations SET status='FAILED',error_code=$2,error_message=$3 WHERE id=$1`,[id,code.slice(0,120),message.slice(0,2000)]);
 }
 
-export async function applyKnowledgeClassification(input:{activationId:string;workspaceId:string;userId:string;classification:Record<string,unknown>;summary:string;businessDescription:string|null;items:Array<{name:string;kind:'product'|'service'|'other';productType:'PHYSICAL_PRODUCT'|'DIGITAL_PRODUCT'|'OTHER'|null;description:string|null;category:string|null;price:number|null;currency:string|null}>}) {
+export async function claimNextCatalogImportJob(workerId: string, leaseSeconds: number) {
+  return withTransaction(async (client) => {
+    const { rows } = await query<CatalogImportJob>(
+      `WITH candidate AS (
+         SELECT id
+           FROM background_jobs
+          WHERE job_type='catalog.import'
+            AND attempts < max_attempts
+            AND (
+              (status='queued' AND scheduled_at <= NOW())
+              OR (status='running' AND COALESCE(heartbeat_at,started_at,updated_at) < NOW() - ($1::int * INTERVAL '1 second'))
+            )
+          ORDER BY scheduled_at,created_at,id
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+       )
+       UPDATE background_jobs job
+          SET status='running',attempts=job.attempts+1,started_at=NOW(),heartbeat_at=NOW(),worker_id=$2,
+              completed_at=NULL,error_message=NULL,updated_at=NOW()
+         FROM candidate
+        WHERE job.id=candidate.id
+      RETURNING job.id,job.workspace_id AS "workspaceId",job.payload->>'activationId' AS "activationId",job.attempts,job.max_attempts AS "maxAttempts",
+                COALESCE(job.payload->'referenceDocumentIds','[]'::jsonb) AS "referenceDocumentIds"`,
+      [leaseSeconds, workerId], client,
+    );
+    return rows[0] ?? null;
+  });
+}
+
+export async function heartbeatCatalogImportJob(jobId: string, workerId: string) {
+  await query(
+    `UPDATE background_jobs SET heartbeat_at=NOW(),updated_at=NOW()
+      WHERE id=$1 AND job_type='catalog.import' AND status='running' AND worker_id=$2`,
+    [jobId, workerId],
+  );
+}
+
+export async function getKnowledgeActivationImport(workspaceId: string, activationId: string) {
+  const { rows } = await query<KnowledgeActivationImport>(
+    `SELECT id,workspace_id AS "workspaceId",created_by AS "userId",source_text AS "sourceText",source_document_ids AS "sourceDocumentIds",
+            model,status,classification,error_code AS "errorCode",error_message AS "errorMessage",completed_at AS "completedAt",created_at AS "createdAt",updated_at AS "updatedAt"
+       FROM workspace_knowledge_activations
+      WHERE workspace_id=$1 AND id=$2`,
+    [workspaceId, activationId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function saveCatalogImportEvidence(input: { workspaceId: string; activationId: string; evidence: CatalogImportEvidenceInput[] }) {
+  if (!input.evidence.length) return;
+  await withTransaction(async (client) => {
+    for (const evidence of input.evidence.slice(0, 240)) {
+      await query(
+        `INSERT INTO catalog_import_evidence(
+           workspace_id,activation_id,source_document_id,asset_id,evidence_kind,page_number,mime_type,storage_reference,extracted_text,metadata
+         ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb)
+         ON CONFLICT(activation_id,asset_id) DO UPDATE SET
+           source_document_id=EXCLUDED.source_document_id,evidence_kind=EXCLUDED.evidence_kind,page_number=EXCLUDED.page_number,
+           mime_type=EXCLUDED.mime_type,storage_reference=COALESCE(EXCLUDED.storage_reference,catalog_import_evidence.storage_reference),
+           extracted_text=EXCLUDED.extracted_text,metadata=EXCLUDED.metadata`,
+        [input.workspaceId,input.activationId,evidence.sourceDocumentId,evidence.assetId,evidence.kind,evidence.pageNumber,evidence.mimeType,
+          evidence.storageReference,evidence.extractedText.slice(0,12_000),JSON.stringify(evidence.metadata)], client,
+      );
+    }
+  });
+}
+
+export async function listCatalogImportEvidence(workspaceId: string, activationId: string, assetIds?: string[]) {
+  const values: unknown[] = [workspaceId, activationId];
+  const filter = assetIds?.length ? (values.push(assetIds), ` AND asset_id = ANY($3::text[])`) : '';
+  const { rows } = await query<CatalogImportEvidence>(
+    `SELECT id,source_document_id AS "sourceDocumentId",asset_id AS "assetId",evidence_kind AS kind,page_number AS "pageNumber",mime_type AS "mimeType",
+            storage_reference AS "storageReference",extracted_text AS "extractedText",metadata
+       FROM catalog_import_evidence
+      WHERE workspace_id=$1 AND activation_id=$2${filter}
+      ORDER BY page_number NULLS LAST,asset_id`, values,
+  );
+  return rows;
+}
+
+export async function markKnowledgeActivationReviewRequired(input: { workspaceId: string; activationId: string; classification: Record<string, unknown> }) {
+  const { rows } = await query<KnowledgeActivationImport>(
+    `UPDATE workspace_knowledge_activations
+        SET status='REVIEW_REQUIRED',classification=$3::jsonb,error_code=NULL,error_message=NULL
+      WHERE workspace_id=$1 AND id=$2 AND status='PROCESSING'
+      RETURNING id,workspace_id AS "workspaceId",created_by AS "userId",source_text AS "sourceText",source_document_ids AS "sourceDocumentIds",
+                model,status,classification,error_code AS "errorCode",error_message AS "errorMessage",completed_at AS "completedAt",created_at AS "createdAt",updated_at AS "updatedAt"`,
+    [input.workspaceId,input.activationId,JSON.stringify(input.classification)],
+  );
+  return rows[0] ?? null;
+}
+
+export async function finishCatalogImportJob(input: { job: CatalogImportJob; workerId: string; error?: { code: string; message: string; retryable: boolean } }) {
+  if (!input.error) {
+    await query(
+      `UPDATE background_jobs SET status='succeeded',result=jsonb_build_object('activationId',$3::text,'status','REVIEW_REQUIRED'),completed_at=NOW(),worker_id=NULL,heartbeat_at=NULL,updated_at=NOW()
+        WHERE id=$1 AND job_type='catalog.import' AND status='running' AND worker_id=$2`,
+      [input.job.id,input.workerId,input.job.activationId],
+    );
+    return;
+  }
+  const retry = input.error.retryable && input.job.attempts < input.job.maxAttempts;
+  await query(
+    `UPDATE background_jobs
+        SET status=CASE WHEN $4 THEN 'queued' ELSE 'failed' END,
+            scheduled_at=CASE WHEN $4 THEN NOW() + (LEAST(300,5 * (2 ^ GREATEST(0,attempts-1)))::text || ' seconds')::interval ELSE scheduled_at END,
+            error_message=$3,completed_at=CASE WHEN $4 THEN NULL ELSE NOW() END,worker_id=NULL,heartbeat_at=NULL,
+            result=CASE WHEN $4 THEN NULL ELSE jsonb_build_object('code',$5::text) END,updated_at=NOW()
+      WHERE id=$1 AND job_type='catalog.import' AND status='running' AND worker_id=$2`,
+    [input.job.id,input.workerId,input.error.message.slice(0,2_000),retry,input.error.code.slice(0,120)],
+  );
+  if (!retry) await failKnowledgeActivation(input.job.activationId, Object.assign(new Error(input.error.message), { code: input.error.code }));
+}
+
+export type CatalogVariantAttribute = { name: string; value: string; unit: string | null };
+export type CatalogVariant = {
+  name: string;
+  sku: string | null;
+  description: string | null;
+  price: number | null;
+  currency: string | null;
+  attributes: CatalogVariantAttribute[];
+  barcode?: string | null;
+  weight?: number | null;
+  weightUnit?: string | null;
+  dimensionLength?: number | null;
+  dimensionWidth?: number | null;
+  dimensionHeight?: number | null;
+  dimensionUnit?: string | null;
+  moqQuantity?: number | null;
+  moqUnit?: string | null;
+  leadTimeMinDays?: number | null;
+  leadTimeMaxDays?: number | null;
+  imageEvidenceIds?: string[];
+};
+export type KnowledgeClassificationItem = {
+  name: string;
+  kind: 'product'|'service'|'other';
+  productType: 'PHYSICAL_PRODUCT'|'DIGITAL_PRODUCT'|'OTHER'|null;
+  description: string|null;
+  category: string|null;
+  price: number|null;
+  currency: string|null;
+  sku?: string | null;
+  moqQuantity?: number | null;
+  moqUnit?: string | null;
+  leadTimeMinDays?: number | null;
+  leadTimeMaxDays?: number | null;
+  countryOfOrigin?: string | null;
+  hsCode?: string | null;
+  imageEvidenceIds?: string[];
+  variants?: CatalogVariant[];
+};
+
+function catalogAttributeNumber(attributes: CatalogVariantAttribute[], expression: RegExp) {
+  const attribute = attributes.find((candidate) => expression.test(candidate.name.trim()));
+  if (!attribute) return null;
+  const value = Number(attribute.value.replace(',', '.'));
+  return Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function catalogAttributeUnit(attributes: CatalogVariantAttribute[], expression: RegExp, maximum = 40) {
+  const attribute = attributes.find((candidate) => expression.test(candidate.name.trim()));
+  return attribute?.unit?.trim().slice(0, maximum) || null;
+}
+
+function catalogVariantFields(variant: CatalogVariant) {
+  const lengthExpression = /^(length|laenge|lange|länge)$/i;
+  const widthExpression = /^(width|breite)$/i;
+  const heightExpression = /^(height|hoehe|höhe)$/i;
+  const weightExpression = /^(weight|gewicht)$/i;
+  return {
+    barcode: variant.barcode ?? null,
+    weight: variant.weight ?? catalogAttributeNumber(variant.attributes, weightExpression),
+    weightUnit: variant.weightUnit ?? catalogAttributeUnit(variant.attributes, weightExpression),
+    dimensionLength: variant.dimensionLength ?? catalogAttributeNumber(variant.attributes, lengthExpression),
+    dimensionWidth: variant.dimensionWidth ?? catalogAttributeNumber(variant.attributes, widthExpression),
+    dimensionHeight: variant.dimensionHeight ?? catalogAttributeNumber(variant.attributes, heightExpression),
+    dimensionUnit: variant.dimensionUnit
+      ?? catalogAttributeUnit(variant.attributes, lengthExpression)
+      ?? catalogAttributeUnit(variant.attributes, widthExpression)
+      ?? catalogAttributeUnit(variant.attributes, heightExpression),
+    moqQuantity: variant.moqQuantity ?? null,
+    moqUnit: variant.moqUnit ?? null,
+    leadTimeMinDays: variant.leadTimeMinDays ?? null,
+    leadTimeMaxDays: variant.leadTimeMaxDays ?? null,
+  };
+}
+
+export async function applyKnowledgeClassification(input:{
+  activationId:string;
+  workspaceId:string;
+  userId:string;
+  classification:Record<string,unknown>;
+  summary:string;
+  businessDescription:string|null;
+  sourceDocumentIds?: string[];
+  items:KnowledgeClassificationItem[];
+}) {
   return withTransaction(async client=>{
     const productIds:string[]=[];
     const missingImageProductIds:string[]=[];
+    const variantMediaTargets:Array<{productId:string;variantId:string}>=[];
+    const catalogMediaTargets:Array<{productId:string;variantId:string|null;evidenceIds:string[]}>=[];
     const activation=(await query<{id:string}>(
       `SELECT id FROM workspace_knowledge_activations
-       WHERE id=$1 AND workspace_id=$2 AND created_by=$3 AND status='PROCESSING'
+       WHERE id=$1 AND workspace_id=$2 AND created_by=$3 AND status IN ('REVIEW_REQUIRED','PROCESSING')
        FOR UPDATE`,
       [input.activationId,input.workspaceId,input.userId],client,
     )).rows[0];
@@ -1524,16 +1777,81 @@ export async function applyKnowledgeClassification(input:{activationId:string;wo
       await query(`INSERT INTO workspace_offerings(workspace_id,name,offering_type,category,description,price_amount,price_currency,status) SELECT $1,$2,$3,$4,$5,$6,$7,'active' WHERE NOT EXISTS(SELECT 1 FROM workspace_offerings WHERE workspace_id=$1 AND deleted_at IS NULL AND lower(name)=lower($2) AND offering_type=$3)`,[input.workspaceId,item.name,item.kind,item.category,item.description,item.price,item.currency],client);
       if(item.kind==='service')continue;
       const existing=(await query<{id:string;needsImage:boolean}>(`SELECT p.id,NOT EXISTS(SELECT 1 FROM product_media m WHERE m.workspace_id=p.workspace_id AND m.product_id=p.id AND m.media_type='IMAGE') AS "needsImage" FROM products p WHERE p.workspace_id=$1 AND p.deleted_at IS NULL AND lower(p.name)=lower($2) LIMIT 1`,[input.workspaceId,item.name],client)).rows[0];
-      if(existing){productIds.push(existing.id);if(existing.needsImage)missingImageProductIds.push(existing.id);continue;}
-      const created=(await query<{id:string}>(`INSERT INTO products(workspace_id,status,product_type,name,short_description,long_description,default_currency,default_price,pricing_type,visibility,source_language,created_by,updated_by) VALUES($1,'DRAFT',$2,$3,$4,$4,$5,$6,$7,'PRIVATE','en',$8,$8) RETURNING id`,[input.workspaceId,item.productType??'OTHER',item.name,item.description,item.currency,item.price,item.price===null?'QUOTE_REQUIRED':'FIXED',input.userId],client)).rows[0];
-      if(created){productIds.push(created.id);missingImageProductIds.push(created.id);await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.PRODUCT_CREATED,aggregateType:'product',aggregateId:created.id,payload:{productId:created.id,name:item.name,source:'knowledge_activation'},metadata:{actorId:input.userId,source:'knowledge_activation'},idempotencyKey:`product:${created.id}:created:v1`},client);}
+      let productId=existing?.id;
+      if (!productId) {
+        const created=(await query<{id:string}>(`INSERT INTO products(
+          workspace_id,status,product_type,sku,name,short_description,long_description,default_currency,default_price,pricing_type,
+          moq_quantity,moq_unit,lead_time_min_days,lead_time_max_days,country_of_origin,hs_code,visibility,source_language,created_by,updated_by
+        ) VALUES($1,'DRAFT',$2,$3,$4,$5,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'PRIVATE','en',$15,$15) RETURNING id`,[
+          input.workspaceId,item.productType??'OTHER',item.sku??null,item.name,item.description,item.currency,item.price,item.price===null?'QUOTE_REQUIRED':'FIXED',
+          item.moqQuantity??null,item.moqUnit??null,item.leadTimeMinDays??null,item.leadTimeMaxDays??null,item.countryOfOrigin??null,item.hsCode??null,input.userId,
+        ],client)).rows[0];
+        if (!created) throw new Error('Product creation did not return an id');
+        productId=created.id;
+        await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.PRODUCT_CREATED,aggregateType:'product',aggregateId:productId,payload:{productId,name:item.name,source:'knowledge_activation'},metadata:{actorId:input.userId,source:'knowledge_activation'},idempotencyKey:`product:${productId}:created:v1`},client);
+      }
+      productIds.push(productId);
+      const variants=item.variants??[];
+      if (!variants.length) {
+        if (existing?.needsImage ?? true) missingImageProductIds.push(productId);
+        if (item.imageEvidenceIds?.length) catalogMediaTargets.push({productId,variantId:null,evidenceIds:item.imageEvidenceIds});
+        continue;
+      }
+      for (const variant of variants) {
+        const existingVariant=(await query<{id:string;hasImage:boolean}>(
+          `SELECT v.id,EXISTS(SELECT 1 FROM product_media m WHERE m.workspace_id=v.workspace_id AND m.product_id=v.product_id AND m.variant_id=v.id AND m.media_type='IMAGE') AS "hasImage"
+             FROM product_variants v
+            WHERE v.workspace_id=$1 AND v.product_id=$2 AND v.status<>'ARCHIVED'
+              AND (($3::text IS NOT NULL AND lower(v.sku)=lower($3)) OR lower(v.name)=lower($4))
+            ORDER BY v.created_at LIMIT 1`,
+          [input.workspaceId,productId,variant.sku,variant.name],client,
+        )).rows[0];
+        let variantId=existingVariant?.id;
+        if (!variantId) {
+          const fields=catalogVariantFields(variant);
+          const metadata={
+            source:'knowledge_activation_catalog',
+            sourceDocumentIds:input.sourceDocumentIds??[],
+            attributes:variant.attributes,
+            sourceEvidenceIds:variant.imageEvidenceIds??item.imageEvidenceIds??[],
+          };
+          const createdVariant=(await query<{id:string}>(
+            `INSERT INTO product_variants(
+               workspace_id,product_id,sku,name,status,barcode,weight,weight_unit,dimension_length,dimension_width,dimension_height,dimension_unit,
+               default_price,default_currency,moq_quantity,moq_unit,lead_time_min_days,lead_time_max_days,metadata
+             ) VALUES($1,$2,$3,$4,'DRAFT',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb) RETURNING id`,
+            [
+              input.workspaceId,productId,variant.sku,variant.name,fields.barcode,fields.weight,fields.weightUnit,
+              fields.dimensionLength,fields.dimensionWidth,fields.dimensionHeight,fields.dimensionUnit,
+              variant.price??item.price,variant.currency??item.currency,fields.moqQuantity,fields.moqUnit,fields.leadTimeMinDays,fields.leadTimeMaxDays,JSON.stringify(metadata),
+            ],client,
+          )).rows[0];
+          if (!createdVariant) throw new Error('Product variant creation did not return an id');
+          variantId=createdVariant.id;
+          await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.PRODUCT_VARIANT_CREATED,aggregateType:'product',aggregateId:productId,payload:{productId,variantId,name:variant.name,source:'knowledge_activation_catalog'},metadata:{actorId:input.userId,source:'knowledge_activation'},idempotencyKey:`product-variant:${variantId}:created:v1`},client);
+        }
+        for (const attribute of variant.attributes) {
+          await query(
+            `INSERT INTO product_specifications(workspace_id,product_id,variant_id,name,value,unit,group_name,key)
+             SELECT $1,$2,$3,$4,$5,$6,'Catalog import',$7
+              WHERE NOT EXISTS(
+                SELECT 1 FROM product_specifications
+                 WHERE workspace_id=$1 AND product_id=$2 AND variant_id=$3 AND lower(name)=lower($4) AND value=$5
+              )`,
+            [input.workspaceId,productId,variantId,attribute.name,attribute.value,attribute.unit,attribute.name.toLowerCase().replace(/[^a-z0-9]+/g,'_').slice(0,100)],client,
+          );
+        }
+        const evidenceIds = variant.imageEvidenceIds?.length ? variant.imageEvidenceIds : item.imageEvidenceIds ?? [];
+        if (evidenceIds.length) catalogMediaTargets.push({productId,variantId,evidenceIds});
+        if (!(existingVariant?.hasImage ?? false)) variantMediaTargets.push({productId,variantId});
+      }
     }
     await query(`UPDATE workspace_knowledge_activations SET status='COMPLETED',classification=$2::jsonb,completed_at=NOW() WHERE id=$1`,[input.activationId,JSON.stringify({...input.classification,canonicalProductIds:productIds})],client);
     const activated=(await query<{id:string}>(`UPDATE workspaces SET business_description=COALESCE(NULLIF(trim(business_description),''),$2),knowledge_base_completed_at=COALESCE(knowledge_base_completed_at,NOW()),onboarding_step='setup_complete',onboarding_completed_at=COALESCE(onboarding_completed_at,NOW()),onboarding_file_reupload_required=FALSE WHERE id=$1 AND profile_completed_at IS NOT NULL AND onboarding_step='knowledge_base' RETURNING id`,[input.workspaceId,input.businessDescription??input.summary],client)).rows[0];
     if(!activated)throw new AppError(409,'KNOWLEDGE_ACTIVATION_STALE','The workspace activation state changed before processing completed.');
     await appendDomainEvent({workspaceId:input.workspaceId,type:DOMAIN_EVENT_TYPES.WORKSPACE_ACTIVATED,aggregateType:'workspace',aggregateId:input.workspaceId,payload:{activationId:input.activationId,trigger:'knowledge_base_completed'},metadata:{actorId:input.userId,source:'knowledge_activation'},idempotencyKey:`workspace-activated:${input.activationId}`},client);
-    await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,after_data) VALUES($1,$2,'onboarding.knowledge_activated','workspace_knowledge_activation',$3,$4::jsonb)`,[input.workspaceId,input.userId,input.activationId,JSON.stringify({productIds,itemCount:input.items.length,completed:true})],client);
-    return {activationId:input.activationId,productIds,missingImageProductIds,completed:true};
+    await query(`INSERT INTO audit_log(workspace_id,actor_id,action,entity_type,entity_id,after_data) VALUES($1,$2,'onboarding.knowledge_activated','workspace_knowledge_activation',$3,$4::jsonb)`,[input.workspaceId,input.userId,input.activationId,JSON.stringify({productIds,variantMediaTargets,itemCount:input.items.length,completed:true})],client);
+    return {activationId:input.activationId,productIds:[...new Set(productIds)],missingImageProductIds:[...new Set(missingImageProductIds)],variantMediaTargets,catalogMediaTargets,completed:true};
   });
 }
 

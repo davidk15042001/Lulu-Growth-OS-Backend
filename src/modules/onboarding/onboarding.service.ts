@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { deleteObject, getObject, onboardingDocumentKey, putObject } from '../../storage/s3.service.js';
+import { catalogImportEvidenceKey, deleteObject, getObject, onboardingDocumentKey, productReferenceKey, putObject } from '../../storage/s3.service.js';
 import { AppError, badRequest, notFoundError } from '../../utils/app-error.js';
 import { configuredModel, getOpenAIResponsesClient, isAiGenerationConfigured } from '../ai/openai.service.js';
 import { sanitizeUploadedFileName } from '../../utils/file-name.js';
@@ -8,7 +8,9 @@ import * as workspaceService from '../workspaces/workspace.service.js';
 import * as authRepo from '../auth/auth.repo.js';
 import { extractTextFromFile } from '../records/record.service.js';
 import { startPremiumMediaFromProductBrief } from '../premium-media/premium-media.service.js';
+import { createChild as createProductChild } from '../products/product.service.js';
 import { parseKnowledgeActivationJson } from './knowledge-activation.parser.js';
+import { collectCatalogEvidence, type CatalogEvidenceDraft } from './catalog-document.service.js';
 import { findWorkspaceById } from '../workspaces/workspace.repo.js';
 import * as repo from './onboarding.repo.js';
 import * as oauthService from './oauth.service.js';
@@ -548,8 +550,56 @@ const knowledgeActivationJsonSchema = {
           category: { type: ['string', 'null'] },
           price: { type: ['number', 'null'] },
           currency: { type: ['string', 'null'] },
+          sku: { type: ['string', 'null'] },
+          moqQuantity: { type: ['number', 'null'] },
+          moqUnit: { type: ['string', 'null'] },
+          leadTimeMinDays: { type: ['integer', 'null'] },
+          leadTimeMaxDays: { type: ['integer', 'null'] },
+          countryOfOrigin: { type: ['string', 'null'] },
+          hsCode: { type: ['string', 'null'] },
+          imageEvidenceIds: { type: 'array', items: { type: 'string' } },
+          variants: {
+            type: 'array',
+            items: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                name: { type: 'string' },
+                sku: { type: ['string', 'null'] },
+                description: { type: ['string', 'null'] },
+                price: { type: ['number', 'null'] },
+                currency: { type: ['string', 'null'] },
+                barcode: { type: ['string', 'null'] },
+                weight: { type: ['number', 'null'] },
+                weightUnit: { type: ['string', 'null'] },
+                dimensionLength: { type: ['number', 'null'] },
+                dimensionWidth: { type: ['number', 'null'] },
+                dimensionHeight: { type: ['number', 'null'] },
+                dimensionUnit: { type: ['string', 'null'] },
+                moqQuantity: { type: ['number', 'null'] },
+                moqUnit: { type: ['string', 'null'] },
+                leadTimeMinDays: { type: ['integer', 'null'] },
+                leadTimeMaxDays: { type: ['integer', 'null'] },
+                imageEvidenceIds: { type: 'array', items: { type: 'string' } },
+                attributes: {
+                  type: 'array',
+                  items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      name: { type: 'string' },
+                      value: { type: 'string' },
+                      unit: { type: ['string', 'null'] },
+                    },
+                    required: ['name', 'value', 'unit'],
+                  },
+                },
+              },
+              required: ['name', 'sku', 'description', 'price', 'currency', 'barcode', 'weight', 'weightUnit', 'dimensionLength', 'dimensionWidth', 'dimensionHeight', 'dimensionUnit', 'moqQuantity', 'moqUnit', 'leadTimeMinDays', 'leadTimeMaxDays', 'imageEvidenceIds', 'attributes'],
+            },
+          },
         },
-        required: ['name', 'kind', 'productType', 'description', 'category', 'price', 'currency'],
+        required: ['name', 'kind', 'productType', 'description', 'category', 'price', 'currency', 'sku', 'moqQuantity', 'moqUnit', 'leadTimeMinDays', 'leadTimeMaxDays', 'countryOfOrigin', 'hsCode', 'imageEvidenceIds', 'variants'],
       },
     },
     generalKnowledge: {
@@ -565,66 +615,285 @@ const knowledgeActivationJsonSchema = {
   required: ['summary', 'businessDescription', 'contentTypes', 'items', 'generalKnowledge'],
 } as const;
 
-export async function activateKnowledgeBase(workspaceId:string,userId:string,input:KnowledgeActivationInput){
-  const workspace=await findWorkspaceById(workspaceId);
-  if(!workspace)throw notFoundError('Workspace not found');
-  if(workspace.onboardingCompletedAt)return {completed:true,alreadyCompleted:true,productIds:[]};
-  if(workspace.onboardingStep!=='knowledge_base'||!workspace.profileCompletedAt)throw new AppError(409,'PROFILE_COMPLETION_REQUIRED','Complete the company profile before building the Knowledge Base.');
-  if(!isAiGenerationConfigured())throw new AppError(503,'AI_NOT_CONFIGURED','AI knowledge processing is not configured on the server.');
-  const documents:string[]=[];
-  for(const id of input.documentIds){
-    const document=await getOnboardingDocumentContent(workspaceId,id);
-    const text=await extractTextFromFile({name:document.fileName,type:document.mimeType,buffer:document.content},workspaceId,userId,{platformFunded:true});
-    documents.push(`Document: ${document.fileName}\n${text}`);
-    if(documents.join('\n\n').length>=100_000)break;
-  }
-  const source=[input.text,...documents].filter(Boolean).join('\n\n').slice(0,100_000);
-  if(!source.trim())throw new AppError(422,'KNOWLEDGE_CONTENT_EMPTY','No readable company information was found.');
-  const model=configuredModel();
-  const activationId=await repo.createKnowledgeActivation({workspaceId,userId,text:input.text,documentIds:input.documentIds,model});
-  try{
-    // This single activation analysis is platform-funded. Normal agent and
-    // premium-media execution remains strictly protected by the AI wallet.
-    const response=await getOpenAIResponsesClient().create({model,instructions:[
-      'You are Lulu company knowledge activation intelligence.',
-      'Classify only facts supported by the supplied information. Never invent products, prices, claims or credentials.',
-      'Separate physical/digital products, services and general company knowledge.',
-      'Return only the requested object. Use null for unknown scalar values and empty arrays when no grounded entries exist.'
-    ].join(' '),text:{format:{type:'json_schema',name:'company_knowledge_activation',strict:true,schema:knowledgeActivationJsonSchema}},input:[{role:'user',content:`Company: ${workspace.companyName}\nIndustry: ${workspace.industry??''}\n\n${source}`}],max_output_tokens:8000,store:false});
-    const parsedClassification=parseKnowledgeActivationJson(response.output_text??'');
-    const classification=hasKnowledgeClassificationShape(parsedClassification)
-      ? parsedClassification
-      : fallbackKnowledgeClassification(workspace,source,input.documentIds);
-    const rawItems=Array.isArray(classification.items)?classification.items:[];
-    const seen=new Set<string>();
-    const items=rawItems.slice(0,100).map(entry=>{
-      const value=entry&&typeof entry==='object'?entry as Record<string,unknown>:{};
-      const name=activationText(value.name,300);if(!name)return null;
-      const kind=['product','service','other'].includes(String(value.kind))?String(value.kind) as 'product'|'service'|'other':'other';
-      const productType=['PHYSICAL_PRODUCT','DIGITAL_PRODUCT','OTHER'].includes(String(value.productType))?String(value.productType) as 'PHYSICAL_PRODUCT'|'DIGITAL_PRODUCT'|'OTHER':null;
-      const key=`${kind}:${name.toLowerCase()}`;if(seen.has(key))return null;seen.add(key);
-      const price=typeof value.price==='number'&&Number.isFinite(value.price)&&value.price>=0?value.price:null;
-      const currency=activationText(value.currency,3)?.toUpperCase()??null;
-      return{name,kind,productType,description:activationText(value.description,20_000),category:activationText(value.category,200),price,currency};
-    }).filter((item):item is NonNullable<typeof item>=>Boolean(item));
-    const summary=activationText(classification.summary,5000)??`Knowledge for ${workspace.companyName}`;
-    const generalKnowledge=(Array.isArray(classification.generalKnowledge)?classification.generalKnowledge:[]).slice(0,100).map(entry=>{
-      const value=entry&&typeof entry==='object'?entry as Record<string,unknown>:{};
-      const title=activationText(value.title,300);const content=activationText(value.content,20_000);
-      return title&&content?{title,content}:null;
-    }).filter((entry):entry is NonNullable<typeof entry>=>Boolean(entry));
-    const contentTypes=(Array.isArray(classification.contentTypes)?classification.contentTypes:[]).map(value=>activationText(value,100)).filter((value):value is string=>Boolean(value)).slice(0,30);
-    const normalizedClassification={summary,businessDescription:activationText(classification.businessDescription,10_000),contentTypes,items,generalKnowledge};
-    const result=await repo.applyKnowledgeClassification({activationId,workspaceId,userId,classification:normalizedClassification,summary,businessDescription:normalizedClassification.businessDescription,items});
-    const premiumJobs:Array<{productId:string;status:string}>=[];
-    for(const productId of result.missingImageProductIds){
-      try{const production=await startPremiumMediaFromProductBrief(workspaceId,productId,userId,false,false);premiumJobs.push({productId,status:production.job.status});}
-      catch(error){premiumJobs.push({productId,status:error instanceof AppError&&['AI_FUNDS_REQUIRED','AI_FUNDS_EXHAUSTED','AI_REVERSAL_DEBT'].includes(error.code)?'WAITING_FOR_AI_FUNDS':'WAITING_FOR_PREMIUM_RUNTIME'});}
-    }
-    return {...result,classification:normalizedClassification,premiumJobs};
-  }catch(error){await repo.failKnowledgeActivation(activationId,error);throw error;}
+function activationNumber(value: unknown, integer = false) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || (integer && !Number.isInteger(value))) return null;
+  return value;
 }
 
+function activationEvidenceIds(value: unknown, allowed: Set<string>) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((assetId): assetId is string => typeof assetId === 'string' && allowed.has(assetId)))].slice(0, 12);
+}
+
+function normaliseCatalogClassification(
+  classification: Record<string, unknown>,
+  companyName: string,
+  validImageEvidenceIds: Set<string>,
+) {
+  const rawItems = Array.isArray(classification.items) ? classification.items : [];
+  const seen = new Set<string>();
+  const items: repo.KnowledgeClassificationItem[] = [];
+  for (const entry of rawItems.slice(0, 100)) {
+    const value = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+    const name = activationText(value.name, 300);
+    if (!name) continue;
+    const kind = ['product', 'service', 'other'].includes(String(value.kind)) ? String(value.kind) as 'product' | 'service' | 'other' : 'other';
+    const key = `${kind}:${name.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const productType = ['PHYSICAL_PRODUCT', 'DIGITAL_PRODUCT', 'OTHER'].includes(String(value.productType))
+      ? String(value.productType) as 'PHYSICAL_PRODUCT' | 'DIGITAL_PRODUCT' | 'OTHER'
+      : null;
+    const variantSeen = new Set<string>();
+    const variants: repo.CatalogVariant[] = [];
+    for (const rawVariant of (Array.isArray(value.variants) ? value.variants : []).slice(0, 60)) {
+      const variant = rawVariant && typeof rawVariant === 'object' ? rawVariant as Record<string, unknown> : {};
+      const variantName = activationText(variant.name, 200);
+      if (!variantName) continue;
+      const sku = activationText(variant.sku, 120);
+      const variantKey = `${sku ?? ''}:${variantName.toLowerCase()}`;
+      if (variantSeen.has(variantKey)) continue;
+      variantSeen.add(variantKey);
+      const attributes: repo.CatalogVariantAttribute[] = [];
+      for (const rawAttribute of (Array.isArray(variant.attributes) ? variant.attributes : []).slice(0, 20)) {
+        const attribute = rawAttribute && typeof rawAttribute === 'object' ? rawAttribute as Record<string, unknown> : {};
+        const attributeName = activationText(attribute.name, 80);
+        const attributeValue = activationText(attribute.value, 200);
+        if (attributeName && attributeValue) attributes.push({ name: attributeName, value: attributeValue, unit: activationText(attribute.unit, 40) });
+      }
+      const leadTimeMinDays = activationNumber(variant.leadTimeMinDays, true);
+      const leadTimeMaxDays = activationNumber(variant.leadTimeMaxDays, true);
+      variants.push({
+        name: variantName, sku, description: activationText(variant.description, 5_000),
+        price: activationNumber(variant.price), currency: activationText(variant.currency, 3)?.toUpperCase() ?? null, attributes,
+        barcode: activationText(variant.barcode, 100), weight: activationNumber(variant.weight), weightUnit: activationText(variant.weightUnit, 20),
+        dimensionLength: activationNumber(variant.dimensionLength), dimensionWidth: activationNumber(variant.dimensionWidth),
+        dimensionHeight: activationNumber(variant.dimensionHeight), dimensionUnit: activationText(variant.dimensionUnit, 20),
+        moqQuantity: activationNumber(variant.moqQuantity), moqUnit: activationText(variant.moqUnit, 50),
+        leadTimeMinDays, leadTimeMaxDays: leadTimeMaxDays === null || leadTimeMinDays === null || leadTimeMaxDays >= leadTimeMinDays ? leadTimeMaxDays : null,
+        imageEvidenceIds: activationEvidenceIds(variant.imageEvidenceIds, validImageEvidenceIds),
+      });
+    }
+    const leadTimeMinDays = activationNumber(value.leadTimeMinDays, true);
+    const leadTimeMaxDays = activationNumber(value.leadTimeMaxDays, true);
+    items.push({
+      name, kind, productType, description: activationText(value.description, 20_000), category: activationText(value.category, 200),
+      price: activationNumber(value.price), currency: activationText(value.currency, 3)?.toUpperCase() ?? null,
+      sku: activationText(value.sku, 120), moqQuantity: activationNumber(value.moqQuantity), moqUnit: activationText(value.moqUnit, 50),
+      leadTimeMinDays, leadTimeMaxDays: leadTimeMaxDays === null || leadTimeMinDays === null || leadTimeMaxDays >= leadTimeMinDays ? leadTimeMaxDays : null,
+      countryOfOrigin: activationText(value.countryOfOrigin, 100), hsCode: activationText(value.hsCode, 30),
+      imageEvidenceIds: activationEvidenceIds(value.imageEvidenceIds, validImageEvidenceIds), variants,
+    });
+  }
+  const generalKnowledge = (Array.isArray(classification.generalKnowledge) ? classification.generalKnowledge : []).slice(0, 100)
+    .map((entry) => {
+      const value = entry && typeof entry === 'object' ? entry as Record<string, unknown> : {};
+      const title = activationText(value.title, 300);
+      const content = activationText(value.content, 20_000);
+      return title && content ? { title, content } : null;
+    }).filter((entry): entry is { title: string; content: string } => Boolean(entry));
+  const contentTypes = (Array.isArray(classification.contentTypes) ? classification.contentTypes : [])
+    .map((value) => activationText(value, 100)).filter((value): value is string => Boolean(value)).slice(0, 30);
+  return {
+    summary: activationText(classification.summary, 5_000) ?? `Knowledge for ${companyName}`,
+    businessDescription: activationText(classification.businessDescription, 10_000),
+    contentTypes, items, generalKnowledge,
+  };
+}
+
+async function loadCatalogSourceDocuments(workspaceId: string, documentIds: string[]) {
+  const documents: Array<{ id: string; fileName: string; mimeType: string; content: Buffer; storageKey: string | null }> = [];
+  for (const documentId of documentIds) {
+    const document = await getOnboardingDocumentContent(workspaceId, documentId);
+    documents.push({ id: documentId, fileName: document.fileName, mimeType: document.mimeType, content: document.content, storageKey: document.storageKey ?? null });
+  }
+  return documents;
+}
+
+async function persistCatalogEvidence(
+  workspaceId: string,
+  activationId: string,
+  evidence: CatalogEvidenceDraft[],
+) {
+  const persisted: repo.CatalogImportEvidenceInput[] = [];
+  for (const item of evidence) {
+    let storageReference = item.sourceStorageReference;
+    if (item.content && item.mimeType) {
+      storageReference = catalogImportEvidenceKey(workspaceId, activationId, item.assetId, 'png');
+      await putObject({ key: storageReference, content: item.content, mimeType: item.mimeType, fileName: `${item.assetId}.png` });
+    }
+    persisted.push({
+      assetId: item.assetId, sourceDocumentId: item.sourceDocumentId, kind: item.kind, pageNumber: item.pageNumber,
+      mimeType: item.mimeType, storageReference, extractedText: item.extractedText, metadata: item.metadata,
+    });
+  }
+  await repo.saveCatalogImportEvidence({ workspaceId, activationId, evidence: persisted });
+  return persisted;
+}
+
+export async function processCatalogImport(job: repo.CatalogImportJob) {
+  const activation = await repo.getKnowledgeActivationImport(job.workspaceId, job.activationId);
+  if (!activation || activation.status !== 'PROCESSING') return { skipped: true };
+  const workspace = await findWorkspaceById(job.workspaceId);
+  if (!workspace) throw notFoundError('Workspace not found');
+  if (!isAiGenerationConfigured()) throw new AppError(503, 'AI_NOT_CONFIGURED', 'AI knowledge processing is not configured on the server.');
+
+  const loadedDocuments = await loadCatalogSourceDocuments(job.workspaceId, activation.sourceDocumentIds);
+  const documentText: string[] = [];
+  const documentEvidence: CatalogEvidenceDraft[] = [];
+  for (const document of loadedDocuments) {
+    const text = await extractTextFromFile({ name: document.fileName, type: document.mimeType, buffer: document.content }, job.workspaceId, activation.userId, { platformFunded: true });
+    if (text.trim()) {
+      documentText.push(`Document: ${document.fileName}\n${text}`);
+      documentEvidence.push({
+        assetId: `document:${document.id}:text`, sourceDocumentId: document.id, kind: 'DOCUMENT_TEXT', pageNumber: null,
+        mimeType: document.mimeType, content: null, sourceStorageReference: document.storageKey, extractedText: text,
+        metadata: { fileName: document.fileName, origin: 'document-text' },
+      });
+    }
+  }
+  const evidence = [...documentEvidence, ...await collectCatalogEvidence(loadedDocuments)];
+  const persistedEvidence = await persistCatalogEvidence(job.workspaceId, activation.id, evidence);
+  const selectedReferenceDocuments = new Set(Array.isArray(job.referenceDocumentIds) ? job.referenceDocumentIds : []);
+  const validImageEvidenceIds = new Set(persistedEvidence
+    .filter((item) => item.kind === 'PDF_IMAGE' || (item.kind === 'UPLOADED_IMAGE' && selectedReferenceDocuments.has(item.sourceDocumentId)))
+    .map((item) => item.assetId));
+  const visualContext = persistedEvidence
+    .filter((item) => item.kind === 'PDF_PAGE_TEXT' || validImageEvidenceIds.has(item.assetId))
+    .map((item) => `${item.kind === 'PDF_IMAGE' || item.kind === 'UPLOADED_IMAGE' ? 'Catalog image' : 'Catalog page text'} [${item.assetId}]${item.pageNumber ? ` page ${item.pageNumber}` : ''}: ${item.extractedText}`);
+  const source = [activation.sourceText, ...documentText, ...visualContext].filter(Boolean).join('\n\n').slice(0, 120_000);
+  if (!source.trim()) throw new AppError(422, 'KNOWLEDGE_CONTENT_EMPTY', 'No readable company information was found.');
+  const response = await getOpenAIResponsesClient().create({
+    model: activation.model ?? configuredModel(),
+    instructions: [
+      'You are Lulu catalog and company knowledge import intelligence.',
+      'Classify only facts supported by the supplied source. Never invent products, prices, SKUs, availability, claims or credentials.',
+      'Separate products, services and general company knowledge. Extract every explicitly purchasable product variant with typed SKU, barcode, price, dimensions, weight, MOQ and lead-time fields when given.',
+      'For a product family, expand a color-by-size matrix only when the source explicitly establishes every combination. Otherwise preserve only listed configurations.',
+      'Catalog image IDs are source evidence. Attach imageEvidenceIds only when the image visibly belongs to that exact product or variant. Do not use an image ID for a page-text record.',
+      'Return only the requested object. Use null for unknown scalar values and empty arrays when no grounded entries exist.',
+    ].join(' '),
+    text: { format: { type: 'json_schema', name: 'catalog_knowledge_import', strict: true, schema: knowledgeActivationJsonSchema } },
+    input: [{ role: 'user', content: `Company: ${workspace.companyName}\nIndustry: ${workspace.industry ?? ''}\n\n${source}` }],
+    max_output_tokens: 12_000,
+    store: false,
+  });
+  const parsed = parseKnowledgeActivationJson(response.output_text ?? '');
+  const classification = hasKnowledgeClassificationShape(parsed)
+    ? parsed
+    : fallbackKnowledgeClassification(workspace, source, activation.sourceDocumentIds);
+  const normalized = normaliseCatalogClassification(classification, workspace.companyName, validImageEvidenceIds);
+  const preview = {
+    ...normalized,
+    catalogImport: {
+      sourceDocumentIds: activation.sourceDocumentIds,
+      evidence: persistedEvidence.slice(0, 120).map((item) => ({ assetId: item.assetId, kind: item.kind, pageNumber: item.pageNumber, sourceDocumentId: item.sourceDocumentId, eligibleImageReference: validImageEvidenceIds.has(item.assetId) })),
+    },
+  };
+  const saved = await repo.markKnowledgeActivationReviewRequired({ workspaceId: job.workspaceId, activationId: activation.id, classification: preview });
+  if (!saved) throw new AppError(409, 'KNOWLEDGE_ACTIVATION_STALE', 'The catalog import is no longer active.');
+  return { activationId: activation.id, productCount: normalized.items.filter((item) => item.kind === 'product').length, evidenceCount: persistedEvidence.length };
+}
+
+export async function activateKnowledgeBase(workspaceId: string, userId: string, input: KnowledgeActivationInput) {
+  const workspace = await findWorkspaceById(workspaceId);
+  if (!workspace) throw notFoundError('Workspace not found');
+  if (workspace.onboardingCompletedAt) return { completed: true, alreadyCompleted: true, productIds: [] };
+  if (workspace.onboardingStep !== 'knowledge_base' || !workspace.profileCompletedAt) throw new AppError(409, 'PROFILE_COMPLETION_REQUIRED', 'Complete the company profile before building the Knowledge Base.');
+  if (!isAiGenerationConfigured()) throw new AppError(503, 'AI_NOT_CONFIGURED', 'AI knowledge processing is not configured on the server.');
+  const documents = await loadCatalogSourceDocuments(workspaceId, input.documentIds);
+  for (const documentId of input.referenceDocumentIds) {
+    const document = documents.find((item) => item.id === documentId);
+    if (!document || !['image/jpeg', 'image/png', 'image/webp'].includes(document.mimeType.toLowerCase())) {
+      throw new AppError(422, 'PRODUCT_REFERENCE_IMAGE_REQUIRED', 'Product reference uploads must be JPEG, PNG or WebP images.');
+    }
+  }
+  const activationId = await repo.createKnowledgeActivation({
+    workspaceId, userId, text: input.text, documentIds: input.documentIds, referenceDocumentIds: input.referenceDocumentIds, model: configuredModel(),
+  });
+  return { activationId, completed: false, status: 'PROCESSING' as const };
+}
+
+export async function getKnowledgeActivationPreview(workspaceId: string, userId: string, activationId: string) {
+  const activation = await repo.getKnowledgeActivationImport(workspaceId, activationId);
+  if (!activation || activation.userId !== userId) throw notFoundError('Knowledge import not found');
+  return activation;
+}
+
+async function attachCatalogEvidenceMedia(input: {
+  workspaceId: string;
+  userId: string;
+  activationId: string;
+  targets: Array<{ productId: string; variantId: string | null; evidenceIds: string[] }>;
+}) {
+  const evidenceIds = [...new Set(input.targets.flatMap((target) => target.evidenceIds))];
+  const evidence = await repo.listCatalogImportEvidence(input.workspaceId, input.activationId, evidenceIds);
+  const evidenceById = new Map(evidence.map((item) => [item.assetId, item]));
+  const failures: Array<{ productId: string; evidenceId: string; status: string }> = [];
+  const productsWithReference = new Set<string>();
+  for (const target of input.targets) {
+    for (const evidenceId of target.evidenceIds) {
+      const item = evidenceById.get(evidenceId);
+      if (!item?.storageReference || !item.mimeType?.startsWith('image/')) continue;
+      try {
+        const content = await getObject(item.storageReference);
+        const referenceId = randomUUID();
+        const extension = item.mimeType === 'image/jpeg' ? 'jpg' : item.mimeType === 'image/webp' ? 'webp' : 'png';
+        const storageReference = productReferenceKey(input.workspaceId, target.productId, referenceId, extension);
+        await putObject({ key: storageReference, content, mimeType: item.mimeType, fileName: `catalog-${item.assetId}.${extension}` });
+        try {
+          await createProductChild(input.workspaceId, target.productId, input.userId, 'media', {
+            variantId: target.variantId, mediaType: 'IMAGE', storageReference,
+            title: `Catalog reference${item.pageNumber ? ` · page ${item.pageNumber}` : ''}`,
+            altText: `Source catalog image ${item.assetId}`, sortOrder: 0, isPrimary: false, language: 'en',
+          });
+          productsWithReference.add(target.productId);
+        } catch (error) {
+          await deleteObject(storageReference).catch(() => undefined);
+          throw error;
+        }
+      } catch (error) {
+        failures.push({ productId: target.productId, evidenceId, status: error instanceof AppError ? error.code : 'CATALOG_REFERENCE_COPY_FAILED' });
+      }
+    }
+  }
+  return { failures, productsWithReference };
+}
+
+export async function confirmKnowledgeActivation(workspaceId: string, userId: string, activationId: string) {
+  const activation = await getKnowledgeActivationPreview(workspaceId, userId, activationId);
+  if (activation.status !== 'REVIEW_REQUIRED') throw new AppError(409, 'CATALOG_REVIEW_REQUIRED', 'Wait for catalog import analysis before confirming it.');
+  const evidence = await repo.listCatalogImportEvidence(workspaceId, activationId);
+  const validImageEvidenceIds = new Set(evidence.filter((item) => item.kind === 'PDF_IMAGE' || item.kind === 'UPLOADED_IMAGE').map((item) => item.assetId));
+  const normalized = normaliseCatalogClassification(activation.classification, 'your company', validImageEvidenceIds);
+  const result = await repo.applyKnowledgeClassification({
+    activationId, workspaceId, userId, classification: activation.classification, summary: normalized.summary,
+    businessDescription: normalized.businessDescription, sourceDocumentIds: activation.sourceDocumentIds, items: normalized.items,
+  });
+  const media = await attachCatalogEvidenceMedia({ workspaceId, userId, activationId, targets: result.catalogMediaTargets });
+  const premiumJobs: Array<{ productId: string; variantId?: string; status: string }> = [];
+  for (const target of result.variantMediaTargets) {
+    if (!media.productsWithReference.has(target.productId)) {
+      premiumJobs.push({ productId: target.productId, variantId: target.variantId, status: 'WAITING_FOR_REFERENCE_IMAGE' });
+      continue;
+    }
+    try {
+      const production = await startPremiumMediaFromProductBrief(workspaceId, target.productId, userId, false, false, { variantId: target.variantId, requireReference: true });
+      premiumJobs.push({ productId: target.productId, variantId: target.variantId, status: production.job.status });
+    } catch (error) {
+      premiumJobs.push({ productId: target.productId, variantId: target.variantId, status: error instanceof AppError && ['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED', 'AI_REVERSAL_DEBT'].includes(error.code) ? 'WAITING_FOR_AI_FUNDS' : 'WAITING_FOR_PREMIUM_RUNTIME' });
+    }
+  }
+  for (const productId of result.missingImageProductIds) {
+    try {
+      const production = await startPremiumMediaFromProductBrief(workspaceId, productId, userId, false, false);
+      premiumJobs.push({ productId, status: production.job.status });
+    } catch (error) {
+      premiumJobs.push({ productId, status: error instanceof AppError && ['AI_FUNDS_REQUIRED', 'AI_FUNDS_EXHAUSTED', 'AI_REVERSAL_DEBT'].includes(error.code) ? 'WAITING_FOR_AI_FUNDS' : 'WAITING_FOR_PREMIUM_RUNTIME' });
+    }
+  }
+  return { ...result, classification: activation.classification, premiumJobs, referenceFailures: media.failures };
+}
 
 export async function listOnboardingDocuments(workspaceId: string) {
   const documents = await repo.listOnboardingDocuments(workspaceId);

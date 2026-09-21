@@ -10,6 +10,7 @@ import { startAgentExecutionWorker, stopAgentExecutionWorker } from './modules/a
 import { startAgentRunWorker, stopAgentRunWorker } from './modules/agents/agent-run.worker.js';
 import { startEmailSyncWorker, stopEmailSyncWorker } from './modules/email/email.service.js';
 import { startOnboardingFileCleanupWorker, stopOnboardingFileCleanupWorker } from './modules/onboarding/onboarding-cleanup.worker.js';
+import { startCatalogImportWorker, stopCatalogImportWorker } from './modules/onboarding/onboarding-catalog-import.worker.js';
 import { startPaygBillingWorker, stopPaygBillingWorker } from './modules/billing/payg-billing.worker.js';
 import { startWebsiteGenerationWorker, stopWebsiteGenerationWorker } from './modules/websites/website.worker.js';
 import { startCalendarSyncWorker, stopCalendarSyncWorker } from './modules/calendar/calendar.worker.js';
@@ -28,6 +29,7 @@ import { startSocialPublishingWorker, stopSocialPublishingWorker } from './modul
 import { startGoogleAdsSpendReconciliationWorker, stopGoogleAdsSpendReconciliationWorker } from './modules/adspend/google-ads-spend.worker.js';
 import { startQualityIntelligenceWorker, stopQualityIntelligenceWorker } from './modules/quality/quality.worker.js';
 import { registerCompanyBrainEventHandler } from './modules/company-brain/company-brain.event-handler.js';
+import { registerAgentMemoryEventHandler } from './modules/agent-memory/agent-memory.event-handler.js';
 import { startCompanyBrainTaskWorker, stopCompanyBrainTaskWorker } from './modules/company-brain/company-brain.worker.js';
 import { startIntegrationSyncWorker, stopIntegrationSyncWorker } from './modules/workspace-app/integration-sync.worker.js';
 import { startExecutiveOperatingWorker, stopExecutiveOperatingWorker } from './modules/executive-ops/executive-ops.worker.js';
@@ -56,6 +58,7 @@ async function stopBackgroundWorkers() {
       stopRateLimitCleanupWorker(),
       stopWebsiteGenerationWorker(),
       stopOnboardingFileCleanupWorker(),
+      stopCatalogImportWorker(),
       stopPaygBillingWorker(),
       stopAdminUserDeletionWorker(),
       stopProviderControlWorkers(),
@@ -79,6 +82,7 @@ async function stopBackgroundWorkers() {
 
 async function bootstrap() {
   registerCompanyBrainEventHandler();
+  registerAgentMemoryEventHandler();
   if (env.RUN_MIGRATIONS_ON_STARTUP) {
     await ensureMigrations();
   }
@@ -99,6 +103,7 @@ async function bootstrap() {
       startRateLimitCleanupWorker();
       startWebsiteGenerationWorker();
       startOnboardingFileCleanupWorker();
+      startCatalogImportWorker();
       startPaygBillingWorker();
       startAdminUserDeletionWorker();
       startProviderControlWorkers();

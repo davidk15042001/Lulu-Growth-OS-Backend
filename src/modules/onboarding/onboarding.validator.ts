@@ -24,7 +24,12 @@ export const companyInformationSchema = z.object({
 export const knowledgeActivationSchema = z.object({
   text: z.string().trim().max(50_000).optional().default(''),
   documentIds: z.array(z.string().uuid()).max(10).optional().default([]),
-}).refine((value) => value.text.length > 0 || value.documentIds.length > 0, 'Add company information or at least one document.');
+  referenceDocumentIds: z.array(z.string().uuid()).max(4).optional().default([]),
+}).refine((value) => value.text.length > 0 || value.documentIds.length > 0, 'Add company information or at least one document.')
+  .refine(
+    (value) => value.referenceDocumentIds.every((documentId) => value.documentIds.includes(documentId)),
+    'Product reference images must be included in the selected onboarding documents.',
+  );
 
 export const businessDescriptionSchema = z.object({
   businessDescription: nullableText(10_000),
@@ -238,6 +243,11 @@ export const onboardingRecordParamsSchema = z.object({
 export const onboardingDocumentParamsSchema = z.object({
   workspaceId: z.string().uuid(),
   documentId: z.string().uuid().optional(),
+});
+
+export const knowledgeActivationParamsSchema = z.object({
+  workspaceId: z.string().uuid(),
+  activationId: z.string().uuid(),
 });
 
 export const whatsappEmbeddedSignupCompleteSchema = z.object({

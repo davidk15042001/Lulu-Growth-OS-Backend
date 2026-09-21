@@ -7,8 +7,10 @@ import { AppError } from '../../utils/app-error.js';
 
 export const TOKENS_PER_CREDIT = 1_000;
 export const CUSTOMER_API_RATE: Rate = {
-  inputPerMillionUsd: 5,
-  outputPerMillionUsd: 10,
+  // Lulu customer rates are intentionally 2x the former public rates.
+  // Provider costs remain separate and are never rewritten in the ledger.
+  inputPerMillionUsd: 10,
+  outputPerMillionUsd: 20,
 };
 
 type UsageInput = {

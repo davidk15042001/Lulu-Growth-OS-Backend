@@ -47,6 +47,7 @@ export type PremiumMediaJob = {
   id: string;
   workspaceId: string;
   productId: string;
+  variantId: string | null;
   requestedBy: string | null;
   status: PremiumMediaJobStatus;
   aspectRatio: '1:1' | '16:9' | '9:16';
@@ -76,6 +77,7 @@ export type PremiumMediaCandidate = {
   jobId: string;
   workspaceId: string;
   productId: string;
+  variantId: string | null;
   purpose: PremiumMediaPurpose;
   mediaType: PremiumMediaType;
   model: string;

@@ -8,6 +8,7 @@ const currentBerlinMondaySql = `date_trunc('week', NOW() AT TIME ZONE 'Europe/Be
 import { hasAdminCapability } from '../admin/admin.authorization.js';
 import { resolveAiFundingMode } from '../api-wallet/ai-funding-policy.js';
 
+// Customer PAYG server rate remains 2x the provider allocation.
 export const AWS_USAGE_CUSTOMER_MULTIPLIER = 2;
 
 export async function isBillingAdminUser(userId?: string | null) {

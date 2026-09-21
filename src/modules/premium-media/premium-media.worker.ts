@@ -120,6 +120,8 @@ export async function listKnowledgeProductsAwaitingImages(workspaceId: string) {
   return (await query<{id:string}>(`SELECT p.id FROM products p WHERE p.workspace_id=$1 AND p.deleted_at IS NULL AND EXISTS(SELECT 1 FROM workspace_knowledge_activations ka WHERE ka.workspace_id=p.workspace_id AND ka.status='COMPLETED' AND ka.classification->'canonicalProductIds' ? p.id::text) AND NOT EXISTS(SELECT 1 FROM product_media m WHERE m.workspace_id=p.workspace_id AND m.product_id=p.id AND m.media_type='IMAGE') AND NOT EXISTS(SELECT 1 FROM premium_media_jobs j WHERE j.workspace_id=p.workspace_id AND j.product_id=p.id AND j.status NOT IN ('FAILED','CANCELLED')) ORDER BY p.created_at LIMIT 20`,[workspaceId])).rows;
 }
 
+export const listKnowledgeVariantsAwaitingImages = repo.listVariantsAwaitingFirstProduction;
+
 export function startPremiumMediaWorker() {
   if (timer) return;
   registerDomainEventHandler({
@@ -145,10 +147,16 @@ export function startPremiumMediaWorker() {
       if (!event.workspaceId || typeof event.metadata.actorId !== 'string') return { skipped: true };
       const task = trackPremiumMediaTask(async () => {
         const products = await listKnowledgeProductsAwaitingImages(event.workspaceId!);
+        const variants = await listKnowledgeVariantsAwaitingImages(event.workspaceId!);
         let started=0;
         for(const product of products){
           if(stopping)break;
           await startPremiumMediaFromProductBrief(event.workspaceId!,product.id,event.metadata.actorId as string,false,false);
+          started+=1;
+        }
+        for(const variant of variants){
+          if(stopping)break;
+          await startPremiumMediaFromProductBrief(event.workspaceId!,variant.productId,event.metadata.actorId as string,false,false,{variantId:variant.variantId,requireReference:true});
           started+=1;
         }
         requestPremiumMediaWorkerRun();

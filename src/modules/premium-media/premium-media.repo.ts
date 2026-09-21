@@ -14,7 +14,7 @@ import type {
 import type { KieCostVariant } from './premium-media-cost-catalog.js';
 
 const jobSelect = `
-  id, workspace_id AS "workspaceId", product_id AS "productId", requested_by AS "requestedBy",
+  id, workspace_id AS "workspaceId", product_id AS "productId", variant_id AS "variantId", requested_by AS "requestedBy",
   status, aspect_ratio AS "aspectRatio", creative_direction AS "creativeDirection",
   reference_assets AS "referenceAssets", deliver_image AS "deliverImage", deliver_video AS "deliverVideo",
   image_round AS "imageRound", video_round AS "videoRound", max_rounds AS "maxRounds",
@@ -25,7 +25,7 @@ const jobSelect = `
   completed_at AS "completedAt", created_at AS "createdAt", updated_at AS "updatedAt"`;
 
 const candidateSelect = `
-  id, job_id AS "jobId", workspace_id AS "workspaceId", product_id AS "productId", purpose,
+  id, job_id AS "jobId", workspace_id AS "workspaceId", product_id AS "productId", variant_id AS "variantId", purpose,
   media_type AS "mediaType", model, provider_api AS "providerApi", provider_task_id AS "providerTaskId",
   reservation_id AS "reservationId",funding_mode AS "fundingMode",
   provider_submission_state AS "providerSubmissionState",billing_resolution AS "billingResolution",
@@ -48,6 +48,14 @@ export type ProductMediaContext = {
   name: string;
   shortDescription: string | null;
   longDescription: string | null;
+  variant: {
+    id: string;
+    name: string;
+    sku: string | null;
+    dimensionLength: string | null;
+    dimensionUnit: string | null;
+    metadata: Record<string, unknown>;
+  } | null;
   media: Array<{
     id: string;
     storageReference: string;
@@ -57,31 +65,51 @@ export type ProductMediaContext = {
   }>;
 };
 
-export async function getProductMediaContext(workspaceId: string, productId: string): Promise<ProductMediaContext | null> {
-  const product = await query<Omit<ProductMediaContext, 'media'>>(
+export async function getProductMediaContext(workspaceId: string, productId: string, variantId?: string | null): Promise<ProductMediaContext | null> {
+  const product = await query<Omit<ProductMediaContext, 'media' | 'variant'>>(
     `SELECT id, name, short_description AS "shortDescription", long_description AS "longDescription"
        FROM products WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL`,
     [workspaceId, productId],
   );
   if (!product.rows[0]) return null;
+  let variant: ProductMediaContext['variant']=null;
+  if (variantId) {
+    const row=await query<{
+      id: string;
+      name: string;
+      sku: string | null;
+      dimensionLength: string | null;
+      dimensionUnit: string | null;
+      metadata: Record<string, unknown>;
+    }>(
+      `SELECT id,name,sku,dimension_length::text AS "dimensionLength",dimension_unit AS "dimensionUnit",metadata
+         FROM product_variants
+        WHERE workspace_id=$1 AND product_id=$2 AND id=$3 AND status<>'ARCHIVED'`,
+      [workspaceId,productId,variantId],
+    );
+    if (!row.rows[0]) return null;
+    variant=row.rows[0];
+  }
   const media = await query<ProductMediaContext['media'][number]>(
     `SELECT id, storage_reference AS "storageReference", external_url AS "externalUrl",
             NULL::text AS "mimeType", title
        FROM product_media
       WHERE workspace_id=$1 AND product_id=$2 AND media_type='IMAGE'
+        AND ($4::uuid IS NULL OR variant_id IS NULL OR variant_id=$4)
         AND storage_reference NOT LIKE $3
       ORDER BY is_primary DESC, sort_order, created_at`,
-    [workspaceId, productId, `%/premium-media/%`],
+    [workspaceId, productId, `%/premium-media/%`, variantId ?? null],
   );
-  return { ...product.rows[0], media: media.rows };
+  return { ...product.rows[0], variant, media: media.rows };
 }
 
-export async function getActiveJob(workspaceId: string, productId: string) {
+export async function getActiveJob(workspaceId: string, productId: string, variantId?: string | null) {
   const { rows } = await query<PremiumMediaJob>(
     `SELECT ${jobSelect} FROM premium_media_jobs
-      WHERE workspace_id=$1 AND product_id=$2 AND status NOT IN ('COMPLETED','FAILED','CANCELLED')
+      WHERE workspace_id=$1 AND product_id=$2 AND variant_id IS NOT DISTINCT FROM $3::uuid
+        AND status NOT IN ('COMPLETED','FAILED','CANCELLED')
       ORDER BY created_at DESC LIMIT 1`,
-    [workspaceId, productId],
+    [workspaceId, productId, variantId ?? null],
   );
   return rows[0] ?? null;
 }
@@ -89,6 +117,7 @@ export async function getActiveJob(workspaceId: string, productId: string) {
 export async function createJob(input: {
   workspaceId: string;
   productId: string;
+  variantId?: string | null;
   requestedBy?: string | null;
   aspectRatio: '1:1' | '16:9' | '9:16';
   creativeDirection?: string | null;
@@ -102,13 +131,14 @@ export async function createJob(input: {
   return withTransaction(async (client) => {
     const { rows } = await query<PremiumMediaJob>(
       `INSERT INTO premium_media_jobs (
-         workspace_id,product_id,requested_by,status,aspect_ratio,creative_direction,reference_assets,
+         workspace_id,product_id,variant_id,requested_by,status,aspect_ratio,creative_direction,reference_assets,
          deliver_image,deliver_video,image_round,video_round,max_rounds,image_quality_threshold,video_quality_threshold
-       ) VALUES ($1,$2,$3,'SUBMITTING_IMAGES',$4,$5,$6::jsonb,$7,$8,1,0,$9,$10,$11)
+       ) VALUES ($1,$2,$3,$4,'SUBMITTING_IMAGES',$5,$6,$7::jsonb,$8,$9,1,0,$10,$11,$12)
        RETURNING ${jobSelect}`,
       [
         input.workspaceId,
         input.productId,
+        input.variantId ?? null,
         input.requestedBy ?? null,
         input.aspectRatio,
         input.creativeDirection ?? null,
@@ -128,7 +158,7 @@ export async function createJob(input: {
       type: DOMAIN_EVENT_TYPES.PREMIUM_MEDIA_REQUESTED,
       aggregateType: 'premium_media_job',
       aggregateId: job.id,
-      payload: { jobId: job.id, productId: input.productId, deliverImage: input.deliverImage, deliverVideo: input.deliverVideo },
+      payload: { jobId: job.id, productId: input.productId, variantId: input.variantId ?? null, deliverImage: input.deliverImage, deliverVideo: input.deliverVideo },
       metadata: { actorId: input.requestedBy ?? null, source: 'premium-media' },
       idempotencyKey: `premium-media:${job.id}:requested:v1`,
     }, client);
@@ -157,6 +187,17 @@ export async function getLatestJob(workspaceId: string, productId: string) {
   return rows[0] ?? null;
 }
 
+export async function hasActiveVariants(workspaceId: string, productId: string) {
+  const { rows } = await query<{ exists: boolean }>(
+    `SELECT EXISTS(
+       SELECT 1 FROM product_variants
+        WHERE workspace_id=$1 AND product_id=$2 AND status<>'ARCHIVED'
+     ) AS "exists"`,
+    [workspaceId, productId],
+  );
+  return rows[0]?.exists ?? false;
+}
+
 export async function listProductsAwaitingFirstProduction(limit = 10) {
   const { rows } = await query<{ workspaceId: string; productId: string }>(
     `SELECT p.workspace_id AS "workspaceId",p.id AS "productId"
@@ -166,6 +207,7 @@ export async function listProductsAwaitingFirstProduction(limit = 10) {
           SELECT 1 FROM product_media media
            WHERE media.workspace_id=p.workspace_id AND media.product_id=p.id AND media.media_type='IMAGE'
         )
+        AND NOT EXISTS (SELECT 1 FROM product_variants variant WHERE variant.workspace_id=p.workspace_id AND variant.product_id=p.id AND variant.status<>'ARCHIVED')
         AND NOT EXISTS (
           SELECT 1 FROM premium_media_jobs job
            WHERE job.workspace_id=p.workspace_id AND job.product_id=p.id
@@ -173,6 +215,39 @@ export async function listProductsAwaitingFirstProduction(limit = 10) {
       ORDER BY p.created_at
       LIMIT $1`,
     [limit],
+  );
+  return rows;
+}
+
+export async function listVariantsAwaitingFirstProduction(workspaceId: string, limit = 25) {
+  const { rows } = await query<{ workspaceId: string; productId: string; variantId: string }>(
+    `SELECT variant.workspace_id AS "workspaceId",variant.product_id AS "productId",variant.id AS "variantId"
+       FROM product_variants variant
+      WHERE variant.workspace_id=$1
+        AND variant.status<>'ARCHIVED'
+        AND EXISTS (
+          SELECT 1 FROM product_media reference
+           WHERE reference.workspace_id=variant.workspace_id
+             AND reference.product_id=variant.product_id
+             AND reference.media_type='IMAGE'
+             AND reference.storage_reference NOT LIKE '%/premium-media/%'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM product_media media
+           WHERE media.workspace_id=variant.workspace_id
+             AND media.product_id=variant.product_id
+             AND media.variant_id=variant.id
+             AND media.media_type='IMAGE'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM premium_media_jobs job
+           WHERE job.workspace_id=variant.workspace_id
+             AND job.product_id=variant.product_id
+             AND job.variant_id=variant.id
+        )
+      ORDER BY variant.created_at,variant.id
+      LIMIT $2`,
+    [workspaceId, limit],
   );
   return rows;
 }
@@ -211,14 +286,15 @@ export async function createCandidate(input: {
     const callbackToken = randomBytes(32).toString('hex');
     const { rows } = await query<PremiumMediaCandidate>(
       `INSERT INTO premium_media_candidates (
-         job_id,workspace_id,product_id,purpose,media_type,model,provider_api,callback_token,
+         job_id,workspace_id,product_id,variant_id,purpose,media_type,model,provider_api,callback_token,
          status,generation_round,prompt,reference_urls
-       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'SUBMITTING',$9,$10,$11::jsonb)
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'SUBMITTING',$10,$11,$12::jsonb)
        RETURNING ${candidateSelect}`,
       [
         input.job.id,
         input.job.workspaceId,
         input.job.productId,
+        input.job.variantId,
         input.purpose,
         input.mediaType,
         input.model,
@@ -713,13 +789,13 @@ export async function attachAcceptedCandidate(input: {
     }
     const primaryType = candidate.mediaType;
     if (primaryType === 'IMAGE') {
-      await query(`UPDATE product_media SET is_primary=FALSE WHERE workspace_id=$1 AND product_id=$2 AND media_type='IMAGE'`, [candidate.workspaceId, candidate.productId], client);
+      await query(`UPDATE product_media SET is_primary=FALSE WHERE workspace_id=$1 AND product_id=$2 AND media_type='IMAGE' AND variant_id IS NOT DISTINCT FROM $3::uuid`, [candidate.workspaceId, candidate.productId, candidate.variantId], client);
     }
     const inserted = await query<{ id: string }>(
       `INSERT INTO product_media (
-         workspace_id,product_id,media_type,storage_reference,title,alt_text,sort_order,is_primary,language
-       ) VALUES ($1,$2,$3,$4,$5,$6,0,$7,'en') RETURNING id`,
-      [candidate.workspaceId, candidate.productId, primaryType, input.storageReference, input.title, input.altText, primaryType === 'IMAGE'],
+         workspace_id,product_id,variant_id,media_type,storage_reference,title,alt_text,sort_order,is_primary,language
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,0,$8,'en') RETURNING id`,
+      [candidate.workspaceId, candidate.productId, candidate.variantId, primaryType, input.storageReference, input.title, input.altText, primaryType === 'IMAGE'],
       client,
     );
     const mediaId = inserted.rows[0]?.id;
@@ -735,7 +811,7 @@ export async function attachAcceptedCandidate(input: {
       type: DOMAIN_EVENT_TYPES.PRODUCT_MEDIA_ADDED,
       aggregateType: 'product',
       aggregateId: candidate.productId,
-      payload: { productId: candidate.productId, childType: 'media', childId: mediaId, premiumMediaJobId: candidate.jobId },
+      payload: { productId: candidate.productId, variantId: candidate.variantId, childType: 'media', childId: mediaId, premiumMediaJobId: candidate.jobId },
       metadata: { source: 'premium-media' },
       idempotencyKey: `premium-media:${candidate.id}:product-media:v1`,
     }, client);

@@ -297,8 +297,8 @@ describe('durable prepaid AI spend reservations', () => {
     });
     const customerWallet = await walletState(customer.workspaceId);
     assert.equal(Number(customerWallet.reserved), 0);
-    assert.equal(Number(customerWallet.available), 15);
-    assert.equal(Number(customerWallet.spent), 5);
+    assert.equal(Number(customerWallet.available), 10);
+    assert.equal(Number(customerWallet.spent), 10);
 
     const platform = await seedWorkspace({ available: 20, provider: 'internal', planKey: 'ai' });
     const decision = await resolveAiFundingMode(platform.workspaceId, platform.userId);
