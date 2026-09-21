@@ -24,7 +24,7 @@ export async function getWorkspaceBusinessIdentity(workspaceId: string): Promise
       [workspaceId],
     ),
     query<WorkspaceBusinessIdentity['brands'][number]>(`SELECT id,name,domain,logo_url AS "logoUrl",status FROM brands WHERE workspace_id=$1 ORDER BY created_at`, [workspaceId]),
-    query<WorkspaceBusinessIdentity['locations'][number]>(`SELECT id,type,country,region,city,timezone,status FROM locations l JOIN factories f ON f.id=l.factory_id WHERE f.source_workspace_id=$1 ORDER BY l.created_at`, [workspaceId]),
+    query<WorkspaceBusinessIdentity['locations'][number]>(`SELECT l.id,l.type,l.country,l.region,l.city,l.timezone,l.status FROM locations l JOIN factories f ON f.id=l.factory_id WHERE f.source_workspace_id=$1 ORDER BY l.created_at`, [workspaceId]),
   ]);
   const row = identity.rows[0] as (Record<string, unknown> & { workspaceId: string }) | undefined;
   return {

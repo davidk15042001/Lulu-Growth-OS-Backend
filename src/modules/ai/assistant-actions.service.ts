@@ -436,6 +436,7 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       recipient: recipient.email,
       operationKey: `assistant:${action.id}:invoice-send`,
     }));
+    const sentDocument = 'deliveryId' in sent && 'documentPath' in sent ? sent : null;
     return {
       status: 'sent',
       invoiceId: created.invoice.id,
@@ -443,8 +444,8 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       amount: issued?.invoice?.grandTotal ?? created.invoice.grandTotal,
       currency,
       recipient: { recordId: recipient.record.id, name: recipient.record.name, email: recipient.email },
-      deliveryId: sent.deliveryId ?? null,
-      documentPath: sent.documentPath ?? null,
+      deliveryId: sentDocument?.deliveryId ?? null,
+      documentPath: sentDocument?.documentPath ?? null,
       message: 'Invoice created, issued, and queued for delivery.',
     };
   }

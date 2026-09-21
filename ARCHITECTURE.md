@@ -131,6 +131,20 @@ evidence. A dispatched proposal becomes `completed` only after its Company
 Brain mission is completed and a user with both the proposal-domain capability
 and `quality.review` appends an evidence-bearing, idempotent outcome review.
 
+Voice sessions use the same tenant and action boundaries as text work. A
+workspace-scoped voice session may use the OpenAI Realtime WebRTC transport
+when configured, with a browser speech-recognition fallback when it is
+unavailable. The backend stores bounded, timestamped voice session and
+transcript evidence but never stores raw audio bytes. Voice transcripts are
+routed through the existing authenticated assistant/action gateway; voice is
+only an input and output transport and cannot bypass capability checks,
+approval packets, wallet controls, or provider operation records. Critical
+actions such as invoices, messages, payments, and other external side effects
+require an explicit spoken confirmation before the canonical action service
+executes them. Realtime and text-to-speech usage can be recorded in the
+existing metered AI usage ledger when the deployment provides non-zero
+provider rates; unset rates do not invent financial data.
+
 ## Known boundaries and target improvements
 
 - The current application has 149 migrations and approximately 249 relational

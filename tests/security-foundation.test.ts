@@ -612,7 +612,7 @@ describe('assistant action gateway',()=>{
     assert.equal(action.payload.customerRecordId,customer.id);
     assert.equal(action.payload.recipientEmail,'billing@acme.example');
     assert.equal((await db.query(`SELECT id FROM invoices WHERE workspace_id=$1`,[f.ws.id])).rows.length,0);
-    assert.equal((await db.query(`SELECT status FROM assistant_action_requests WHERE id=$1`,[action.id])).rows[0]?.status,'ready');
+    assert.equal((await db.query<{status:string}>(`SELECT status FROM assistant_action_requests WHERE id=$1`,[action.id])).rows[0]?.status,'ready');
   });
 
   it('creates email drafts without silently sending them',async()=>{
@@ -620,8 +620,9 @@ describe('assistant action gateway',()=>{
     const account=(await db.query<{id:string}>(`INSERT INTO email_accounts(workspace_id,connected_by,provider,email_address,status) VALUES($1,$2,'imap',$3,'connected') RETURNING id`,[f.ws.id,f.user.id,`${crypto.randomUUID()}@test.local`])).rows[0]!;
     const action=await assistantActions.requestAssistantAction(f.ws.id,f.user.id,f.conversation.id,{type:'email.create_draft',summary:'Prepare a customer reply draft',payload:{accountId:account.id,to:[{address:'customer@example.com'}],subject:'Draft only',bodyText:'Review before an explicit send action.'}});
     assert.equal(action.status,'succeeded');
-    assert.equal(action.result?.status,'drafted');
-    const draft=(await db.query<{status:string;sentAt:string|null}>(`SELECT status,sent_at AS "sentAt" FROM email_drafts WHERE id=$1`,[action.result?.recordId])).rows[0]!;
+    const actionResult = action.result as { status?: string; recordId?: string } | null | undefined;
+    assert.equal(actionResult?.status,'drafted');
+    const draft=(await db.query<{status:string;sentAt:string|null}>(`SELECT status,sent_at AS "sentAt" FROM email_drafts WHERE id=$1`,[actionResult?.recordId])).rows[0]!;
     assert.equal(draft.status,'draft');
     assert.equal(draft.sentAt,null);
     assert.equal((await db.query(`SELECT id FROM email_messages WHERE account_id=$1 AND direction='outbound'`,[account.id])).rows.length,0);
