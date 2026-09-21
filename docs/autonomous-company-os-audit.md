@@ -1,6 +1,6 @@
 # Lulu Autonomous Company OS — architecture and capability audit
 
-Status date: 2026-09-21
+Status date: 2026-09-22
 
 ## Latest verified production release
 
@@ -11,7 +11,7 @@ The following evidence was checked after the latest combined deployment:
 - `https://lulu-ai.cn/api/v1/health`: HTTP 200 (`status: ok`)
 - `https://lulu-ai.cn/api/v1/ready`: HTTP 200 (`status: ready`)
 - Frontend production root: HTTP 200
-- Backend automated validation: typecheck, migration verification, 386 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path and historical paid-top-up invoice reconciliation are covered by idempotency tests
+- Backend automated validation: typecheck, migration verification, 387 tests, build and smoke checks passed; the canonical UnifyPort outbound WhatsApp path and historical paid-top-up invoice reconciliation are covered by idempotency tests
 - Office route parity: all 45 persisted Digital Employee roles from the canonical roster resolve to a registered Workspace route; the frontend audit also passes with no routing, API-contract, branding, i18n, feedback, error, or agentic-UI issues
 - Read-only UnifyPort adapter check: the configured workspace and account endpoint returned `CONNECTED`/`HEALTHY`; workspace/account capabilities and WhatsApp send/receive capability were reported `AVAILABLE`. No message was sent by this check; outbound/inbound sender and webhook acceptance still require a dedicated provider E2E test.
 - A repeatable opt-in `provider:live-readiness` gate now performs the same read-only verification, health, capability, and account-discovery checks and exits non-zero on any unavailable result; the configured UnifyPort check returned `READY` with one discovered account.
@@ -29,6 +29,7 @@ The following evidence was checked after the latest combined deployment:
 - Composio customer access now has a canonical `composio_integration_catalog` registry: the full catalog is exposed only to platform administrators, customer availability is enforced server-side, and the four Lulu-managed providers (WhatsApp, Meta Ads, Google Ads, LinkedIn Ads) cannot be published to customer workspaces. New customer tool calls and triggers are metered at 1.00 CNY; historical 0.50 CNY ledger rows remain valid, with platform-admin bypass retained.
 - Catalog onboarding now runs as a durable, lease-based import job. It extracts text and bounded image evidence from PDFs and reference uploads, proposes product families and typed variants, persists evidence IDs, pauses at `REVIEW_REQUIRED`, and only creates DRAFT products, variants and canonical media after customer confirmation. Failed imports can be restarted without losing the onboarding session; full scanned-page OCR/table geometry and evidence thumbnails remain launch-gate improvements.
 - Zep memory now receives sanitized, idempotent business-event summaries for records, metrics, product/variant, order, inventory, fulfillment, quote, and invoice changes, in addition to conversation and agent-collaboration memory. The organization knowledge graph remains separate from user memory; unavailable Zep never blocks core local workflows, while configured Zep ingestion is retried through the domain-event receipt path.
+- Office voice now has workspace-scoped sessions and timestamped transcript evidence, governed spoken confirmations for critical actions, server-side TTS/realtime usage metering hooks, local VAD interruption handling, and browser fallback. The deployed server currently reports no `OPENAI_API_KEY`, so the browser fallback is active; WebRTC Realtime and server TTS become available after the server-side key and current provider rates are configured.
 
 This release evidence proves that the deployed application is healthy; it does not replace live third-party provider acceptance tests listed in the launch gates below.
 
