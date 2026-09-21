@@ -7,6 +7,23 @@ migration_unit="lulu-growth-backend-migration-$$"
 reset_unit="lulu-growth-backend-test-reset-$$"
 reset_marker="$backend_dir/.run-test-data-reset"
 
+# The application tree may contain files from an older root-owned deployment.
+# GitHub Actions uploads as the restricted deploy user, so repair only the
+# code tree before the regular deployment path. Secrets and dependencies keep
+# their existing ownership and are never made writable by the deploy user.
+if [ "${1:-}" = "--repair-permissions" ]; then
+  if [ "$(id -u)" -ne 0 ] || [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = "root" ]; then
+    echo "Permission repair must run through the restricted root wrapper." >&2
+    exit 1
+  fi
+  /usr/bin/find "$backend_dir" \
+    -path "$backend_dir/.env" -prune -o \
+    -path "$backend_dir/.runtime-secrets" -prune -o \
+    -path "$backend_dir/node_modules" -prune -o \
+    -exec /usr/bin/chown -h "$SUDO_USER" {} +
+  exit 0
+fi
+
 # Text/agent execution is owned by OpenAI/ChatGPT. Keep the production
 # environment self-healing so a retired provider setting can never select an
 # unsupported text provider after a deploy. KIE remains a separate premium-
