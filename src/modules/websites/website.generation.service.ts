@@ -6,6 +6,7 @@ import { getOpenAIResponsesClient } from '../ai/openai.service.js';
 import { listOfferings, listPlatforms } from '../onboarding/onboarding.repo.js';
 import { findWorkspaceForUser } from '../workspaces/workspace.repo.js';
 import { listCanonicalProductsForWebsite } from '../products/product.repo.js';
+import type { WebsiteTemplateChoice, WebsiteTemplateKey } from './website.types.js';
 import type { WebsiteGenerationActivity } from './website.activity.js';
 
 export type GeneratedSection = {
@@ -47,6 +48,7 @@ type WebsiteContentProfile = {
   tagline: string;
   brandVoice: string;
   primaryLanguage: string;
+  primaryProduct: { name: string; description: string; category: string } | null;
   hasServices: boolean;
   hasProducts: boolean;
   globalSeo: { title: string; description: string; keywords: string[] };
@@ -114,8 +116,8 @@ type WebsiteContentProfile = {
 };
 
 export type WebsitePlan = {
-  templateKey: 'lulu-standard-v1';
-  designSource: 'custom-bolt-forge';
+  templateKey: WebsiteTemplateKey;
+  designSource: 'custom-bolt-forge' | 'custom-bolt-forge-one-product';
   siteTitle: string;
   brandVoice: string;
   primaryLanguage: string;
@@ -169,6 +171,9 @@ type WebsiteContext = {
 const TEMPLATE_KEY = 'lulu-standard-v1' as const;
 const TEMPLATE_DESIGN_SOURCE = 'custom-bolt-forge' as const;
 const TEMPLATE_DESIGN_VERSION = '2026-08-23.2';
+const ONE_PRODUCT_TEMPLATE_KEY = 'lulu-one-product-v1' as const;
+const ONE_PRODUCT_TEMPLATE_SOURCE = 'custom-bolt-forge-one-product' as const;
+const ONE_PRODUCT_TEMPLATE_VERSION = '2026-09-22.1';
 const TEMPLATE_FONT_LINKS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">`;
 const PAGE_COUNT = 4;
 const forbiddenContent = /hello world|under construction|website is being built|no verified information|example\.com|123 example street|hi@example\.com|\(123\) 456-7890|\bTODO\b|xiangjinxin/i;
@@ -438,11 +443,13 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
   const aboutSections = sectionsFrom(about.sections, [{ heading: 'What we do', body: context.workspace.businessDescription ?? fallbackIntro }, { heading: 'Our focus', body: context.workspace.valueProposition ?? fallbackIntro }, { heading: 'Who we support', body: `Our work is focused on ${fallbackTarget}.` }], 3);
   const aboutCards = aboutSections.map((section) => ({ title: section.heading, description: section.body, cta: 'Learn more' }));
   const trustFallback = [context.workspace.industry ?? '', context.workspace.countryRegion ?? '', ...context.workspace.positioningTags, ...serviceCards.map((card) => card.title), company].filter(Boolean);
+  const primaryProduct = context.offerings.find((offering) => offering.type.trim().toLowerCase() === 'product' && ['active', 'draft'].includes(offering.status.trim().toLowerCase()));
   return {
     siteTitle: company,
     tagline: stringValue(value.tagline, fallbackIntro, 220),
     brandVoice: stringValue(value.brandVoice, 'Clear, confident and helpful', 120),
     primaryLanguage: stringValue(value.primaryLanguage, language, 20),
+    primaryProduct: primaryProduct ? { name: primaryProduct.name, description: primaryProduct.description ?? primaryProduct.valueProposition ?? fallbackIntro, category: primaryProduct.category ?? 'Product' } : null,
     hasServices: context.offerings.some((offering) => offering.type.trim().toLowerCase() === 'service' && ['active', 'draft'].includes(offering.status.trim().toLowerCase())),
     hasProducts: context.offerings.some((offering) => offering.type.trim().toLowerCase() === 'product' && ['active', 'draft'].includes(offering.status.trim().toLowerCase())),
     globalSeo: { title: stringValue(seo.title, `${company} | ${context.workspace.industry ?? 'Business solutions'}`, 70), description: stringValue(seo.description, fallbackIntro, 170), keywords: stringArray(seo.keywords, context.workspace.positioningTags, 15) },
@@ -510,7 +517,7 @@ function profileFrom(value: Record<string, unknown>, language: string, context: 
   };
 }
 
-async function generateContentProfile(input: { workspaceId: string; userId: string; provider: string; language: string; prompt: string; context: WebsiteContext; cleanRetry?: boolean }) {
+async function generateContentProfile(input: { workspaceId: string; userId: string; provider: string; language: string; prompt: string; context: WebsiteContext; templateChoice: 'standard' | 'one-product'; cleanRetry?: boolean }) {
   const system = [
     'You are Lulu Website Copywriter.',
     'Create only factual website copy from the verified business context.',
@@ -518,6 +525,9 @@ async function generateContentProfile(input: { workspaceId: string; userId: stri
     `Write all customer-facing copy in ${input.language}.`,
     'Do not invent contacts, locations, prices, customers, testimonials, certifications, statistics, guarantees, integrations or capabilities.',
     'Use concise, professional language. Avoid generic filler and repeated sentences.',
+    input.templateChoice === 'one-product'
+      ? 'This is a one-product commerce brief. Write copy for one hero product, its concrete benefits, objections, usage, delivery expectations and a clear request/order action. Never introduce a second product or unrelated service catalogue.'
+      : 'This is a broader company website brief. Keep the copy suitable for a company with multiple offers or services.',
     'Required JSON keys: tagline, brandVoice, primaryLanguage, globalSeo, home, about, services, contact.',
     'globalSeo: {title,description,keywords}.',
     'home: {eyebrow,headline,introduction,primaryCta,secondaryCta,trustItems:[exactly 5],audienceHeading,audienceIntroduction,audienceCards:[exactly 4 {title,description,cta}],servicesHeading,servicesIntroduction,featureEyebrow,featureHeading,featureIntroduction,featureCards:[exactly 3 {title,description,cta}],highlightEyebrow,highlightTitle,highlightText,splitEyebrow,splitTitle,splitText,splitItems:[exactly 6],processHeading,processIntroduction,processSteps:[exactly 3 {title,description}],capabilityHeading,capabilityIntroduction,capabilityCards:[exactly 2 {title,description,cta}],faqHeading,faqs:[exactly 3 {question,answer}],finalCtaTitle,finalCtaText,finalCtaLabel}.',
@@ -526,7 +536,7 @@ async function generateContentProfile(input: { workspaceId: string; userId: stri
     'contact: {title,introduction,preparationHeading,preparationItems:[exactly 4],nextStepTitle,nextStepText}.',
     input.cleanRetry ? 'The previous response was invalid. Return a complete, parseable JSON object with every required key.' : '',
   ].filter(Boolean).join(' ');
-  const response = await createJsonCompletion({ workspaceId: input.workspaceId, userId: input.userId, maxTokens: 3_400, system, user: [`Provider: ${input.provider}`, `Language: ${input.language}`, `Website goal: ${input.prompt}`, 'Verified business context:', JSON.stringify(input.context)].join('\n\n') });
+  const response = await createJsonCompletion({ workspaceId: input.workspaceId, userId: input.userId, maxTokens: 3_400, system, user: [`Provider: ${input.provider}`, `Language: ${input.language}`, `Template: ${input.templateChoice}`, `Website goal: ${input.prompt}`, 'Verified business context:', JSON.stringify(input.context)].join('\n\n') });
   try {
     return profileFrom(parseJsonObject(response), input.language, input.context);
   } catch (error) {
@@ -551,13 +561,72 @@ function imageMarkup(asset: WebsiteImageAsset | undefined, minHeight = 330) {
   return `<img src="${escapeHtml(url)}" alt="${escapeHtml(asset?.altText || '')}" loading="lazy" style="display:block;width:100%;min-height:${minHeight}px;max-height:520px;border:1px solid #dce2e8;object-fit:cover">`;
 }
 
-function templatePageOpening(palette: ThemePalette) {
-  return `<main data-lulu-template="${TEMPLATE_KEY}" data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}" data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}" style="width:100%;max-width:none;margin:0;padding:0;overflow:hidden;background:${palette.surface};color:${palette.ink};font-family:Barlow,'Helvetica Neue',Arial,sans-serif;font-size:16px;line-height:1.55">`;
+function templateMetadata(templateKey: WebsiteTemplateKey) {
+  return templateKey === ONE_PRODUCT_TEMPLATE_KEY
+    ? { source: ONE_PRODUCT_TEMPLATE_SOURCE, version: ONE_PRODUCT_TEMPLATE_VERSION }
+    : { source: TEMPLATE_DESIGN_SOURCE, version: TEMPLATE_DESIGN_VERSION };
+}
+
+function templatePageOpening(palette: ThemePalette, templateKey: WebsiteTemplateKey = TEMPLATE_KEY) {
+  const metadata = templateMetadata(templateKey);
+  return `<main data-lulu-template="${templateKey}" data-lulu-design-source="${metadata.source}" data-lulu-design-version="${metadata.version}" style="width:100%;max-width:none;margin:0;padding:0;overflow:hidden;background:${palette.surface};color:${palette.ink};font-family:Barlow,'Helvetica Neue',Arial,sans-serif;font-size:16px;line-height:1.55">`;
 }
 
 function templatePlaceholderVisual(profile: WebsiteContentProfile, palette: ThemePalette, minHeight = 330) {
   const initial = profile.siteTitle.trim().charAt(0).toUpperCase() || 'L';
   return `<div role="img" aria-label="${escapeHtml(profile.siteTitle)}" style="display:grid;min-height:${minHeight}px;place-items:center;border:1px solid rgba(255,255,255,.18);background:linear-gradient(135deg,${palette.secondary},${palette.primary});color:#fff"><span style="display:grid;width:92px;height:92px;place-items:center;border:1px solid rgba(255,255,255,.38);font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:52px;font-weight:700">${escapeHtml(initial)}</span></div>`;
+}
+
+function productOfferings(context: WebsiteContext) {
+  const unique = new Map<string, WebsiteContext['offerings'][number]>();
+  for (const offering of context.offerings) {
+    if (offering.type.trim().toLowerCase() !== 'product' || !['active', 'draft'].includes(offering.status.trim().toLowerCase())) continue;
+    const key = offering.name.trim().toLowerCase();
+    if (key && !unique.has(key)) unique.set(key, offering);
+  }
+  return [...unique.values()];
+}
+
+export function resolveWebsiteTemplate(choice: WebsiteTemplateChoice, context: WebsiteContext): WebsiteTemplateKey {
+  const products = productOfferings(context);
+  const hasServices = context.offerings.some((offering) => offering.type.trim().toLowerCase() === 'service' && ['active', 'draft'].includes(offering.status.trim().toLowerCase()));
+  if (choice === 'one-product') return ONE_PRODUCT_TEMPLATE_KEY;
+  if (choice === 'auto' && products.length === 1 && !hasServices) return ONE_PRODUCT_TEMPLATE_KEY;
+  return TEMPLATE_KEY;
+}
+
+function oneProductLabels(language: string) {
+  const normalized = language.trim().toLowerCase();
+  if (/^(de|de[-_]|german|deutsch)/.test(normalized)) return { product: 'Das Produkt', benefits: 'Warum dieses Produkt', details: 'Produktdetails', proof: 'Verifiziert für deinen Kauf', process: 'So geht es weiter', faq: 'Häufige Fragen', request: 'Produkt anfragen', requestBody: 'Sende deine Produktanfrage. Lulu verarbeitet hier keine Online-Zahlung.', cta: 'Jetzt Produkt anfragen', fallback: 'Produktbild' };
+  if (/^(zh|zh[-_]|chinese|中文|简体中文|繁體中文)/.test(normalized)) return { product: '产品', benefits: '为什么选择这款产品', details: '产品详情', proof: '基于已验证信息', process: '下一步', faq: '常见问题', request: '咨询产品', requestBody: '发送产品咨询。此处不进行在线支付。', cta: '立即咨询产品', fallback: '产品图片' };
+  return { product: 'The product', benefits: 'Why this product', details: 'Product details', proof: 'Verified for your decision', process: 'What happens next', faq: 'Frequently asked questions', request: 'Request this product', requestBody: 'Send a product enquiry. No online payment is processed here.', cta: 'Request the product', fallback: 'Product image' };
+}
+
+export function renderOneProductLanding(profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[]): RenderedPage {
+  const labels = oneProductLabels(profile.primaryLanguage);
+  const product = profile.primaryProduct ?? { name: profile.siteTitle, description: profile.home.introduction, category: labels.product };
+  const benefits = exactValues(profile.home.featureCards, [{ title: profile.home.highlightTitle, description: profile.home.highlightText, cta: labels.cta }], 3, (card) => `${card.title}|${card.description}`);
+  const trust = exactStrings(profile.home.trustItems, [product.category, profile.siteTitle, profile.brandVoice], 4);
+  const steps = exactValues(profile.home.processSteps, [{ title: 'Review the request', description: profile.contact.nextStepText }, { title: 'Confirm the details', description: profile.home.splitText }, { title: 'Move forward', description: profile.home.finalCtaText }], 3, (step) => `${step.title}|${step.description}`);
+  const faqs = exactValues(profile.home.faqs, [{ question: `What is ${product.name}?`, answer: product.description }, { question: 'How do I request it?', answer: profile.contact.introduction }, { question: 'What happens after my request?', answer: profile.contact.nextStepText }], 3, (faq) => `${faq.question}|${faq.answer}`);
+  const productImage = imageMarkup(images[0], 520) || templatePlaceholderVisual(profile, palette, 520);
+  const benefitCards = benefits.map((card, index) => `<article data-lulu-card="product-benefit" style="border:1px solid #dce2e8;background:${palette.surface};padding:26px"><span aria-hidden="true" style="display:grid;width:34px;height:34px;place-items:center;background:${palette.primary};color:#fff;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:12px;font-weight:700">${String(index + 1).padStart(2, '0')}</span><h3 style="margin:18px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:25px;font-weight:700;line-height:1.15">${escapeHtml(card.title)}</h3><p style="margin:10px 0 0;color:${palette.muted};line-height:1.7">${escapeHtml(card.description)}</p></article>`).join('');
+  const trustItems = trust.map((item) => `<span data-lulu-product-trust style="padding:10px 14px;border:1px solid rgba(255,255,255,.25);color:#fff;font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.12em;text-transform:uppercase">${escapeHtml(item)}</span>`).join('');
+  const stepItems = steps.map((step, index) => `<li data-lulu-card="product-step" style="display:grid;grid-template-columns:42px 1fr;gap:14px;padding:18px 0;border-bottom:1px solid #dce2e8"><strong style="color:${palette.primary};font-family:'IBM Plex Mono',ui-monospace,monospace">${String(index + 1).padStart(2, '0')}</strong><div><h3 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:23px">${escapeHtml(step.title)}</h3><p style="margin:7px 0 0;color:${palette.muted};line-height:1.65">${escapeHtml(step.description)}</p></div></li>`).join('');
+  const faqItems = faqs.map((faq) => `<details data-lulu-product-faq style="padding:17px 0;border-bottom:1px solid #dce2e8"><summary style="cursor:pointer;color:${palette.ink};font-weight:700">${escapeHtml(faq.question)}</summary><p style="margin:10px 0 0;color:${palette.muted};line-height:1.7">${escapeHtml(faq.answer)}</p></details>`).join('');
+  return {
+    openingHtml: templatePageOpening(palette, ONE_PRODUCT_TEMPLATE_KEY),
+    sections: [
+      renderedSection('product-hero', profile.home.eyebrow, `${TEMPLATE_FONT_LINKS}<section data-lulu-section="product-hero" style="width:100%;margin:0;padding:clamp(72px,10vw,120px) 16px;background:linear-gradient(135deg,${palette.secondary},${palette.primary});color:#fff"><div style="display:grid;max-width:1280px;margin:0 auto;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:center;gap:48px"><div><p style="margin:0;color:${palette.accent};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(profile.home.eyebrow)}</p><h1 style="max-width:760px;margin:16px 0 0;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(42px,7vw,78px);font-weight:700;line-height:1.02">${escapeHtml(profile.home.headline || product.name)}</h1><p style="max-width:650px;margin:20px 0 0;color:rgba(255,255,255,.82);font-size:18px;line-height:1.7">${escapeHtml(profile.home.introduction || product.description)}</p><div style="margin-top:30px">${button(labels.cta, '#product-request', { ...palette, primary: palette.accent })}</div></div><div style="border:1px solid rgba(255,255,255,.24);padding:10px;background:rgba(255,255,255,.08)">${productImage}</div></div></section>`),
+      renderedSection('product-benefits', labels.benefits, `<section data-lulu-section="product-benefits" style="width:100%;margin:0;padding:clamp(64px,8vw,86px) 16px;background:${palette.surface}"><div style="max-width:1280px;margin:0 auto"><p style="margin:0;color:${palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(labels.product)}</p><h2 style="margin:10px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(34px,5vw,52px)">${escapeHtml(labels.benefits)}</h2><div style="display:grid;margin-top:30px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:16px">${benefitCards}</div></div></section>`),
+      renderedSection('product-details', labels.details, `<section data-lulu-section="product-details" style="width:100%;margin:0;padding:clamp(64px,8vw,86px) 16px;background:${palette.background}"><div style="display:grid;max-width:1280px;margin:0 auto;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));align-items:start;gap:40px"><div><p style="margin:0;color:${palette.muted};font-family:'IBM Plex Mono',ui-monospace,monospace;font-size:11px;letter-spacing:.18em;text-transform:uppercase">${escapeHtml(product.category)}</p><h2 style="margin:10px 0 0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(34px,5vw,52px)">${escapeHtml(product.name)}</h2><p style="margin:18px 0 0;color:${palette.muted};font-size:17px;line-height:1.75">${escapeHtml(product.description)}</p></div><div style="border-left:3px solid ${palette.accent};background:${palette.surface};padding:26px"><p style="margin:0;color:${palette.muted};line-height:1.7">${escapeHtml(profile.home.splitText)}</p></div></div></section>`),
+      renderedSection('product-proof', labels.proof, `<section data-lulu-section="product-proof" style="width:100%;margin:0;padding:clamp(56px,8vw,72px) 16px;background:${palette.secondary}"><div style="display:flex;max-width:1280px;margin:0 auto;gap:12px 18px;flex-wrap:wrap;align-items:center;justify-content:center">${trustItems}</div></section>`),
+      renderedSection('product-process', labels.process, `<section data-lulu-section="product-process" style="width:100%;margin:0;padding:clamp(64px,8vw,86px) 16px;background:${palette.surface}"><div style="max-width:900px;margin:0 auto"><h2 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(34px,5vw,52px)">${escapeHtml(labels.process)}</h2><ol style="margin:24px 0 0;padding:0;list-style:none">${stepItems}</ol></div></section>`),
+      renderedSection('product-faq', labels.faq, `<section data-lulu-section="product-faq" style="width:100%;margin:0;padding:clamp(64px,8vw,86px) 16px;background:${palette.background}"><div style="max-width:800px;margin:0 auto"><h2 style="margin:0;color:${palette.ink};font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(34px,5vw,52px)">${escapeHtml(labels.faq)}</h2><div style="margin-top:20px">${faqItems}</div></div></section>`),
+      renderedSection('product-request', labels.request, `<section data-lulu-section="product-request" id="product-request" style="width:100%;margin:0;padding:clamp(64px,8vw,86px) 16px;background:${palette.primary};color:#fff"><div style="max-width:800px;margin:0 auto"><h2 style="margin:0;color:#fff;font-family:'Barlow Condensed','Arial Narrow',Arial,sans-serif;font-size:clamp(34px,5vw,52px)">${escapeHtml(labels.request)}</h2><p style="margin:14px 0 0;color:rgba(255,255,255,.82);line-height:1.7">${escapeHtml(labels.requestBody)}</p><div style="margin-top:26px;padding:24px;background:${palette.surface};color:${palette.ink}">${contactFormPreviewMarkup(profile, palette)}</div></div></section>`),
+    ],
+    closingHtml: '</main>',
+  };
 }
 
 function contactFormPreviewMarkup(profile: WebsiteContentProfile, palette: ThemePalette) {
@@ -682,8 +751,11 @@ function renderContact(profile: WebsiteContentProfile, palette: ThemePalette) {
   return renderStandardPage({ eyebrow: profile.siteTitle, title: profile.contact.title, introduction: profile.contact.introduction, sections, palette });
 }
 
-function pageDefinitions(profile: WebsiteContentProfile) {
+function pageDefinitions(profile: WebsiteContentProfile, templateKey: WebsiteTemplateKey = TEMPLATE_KEY) {
   const labels = templateLabels(profile.primaryLanguage);
+  if (templateKey === ONE_PRODUCT_TEMPLATE_KEY) {
+    return [{ title: labels.home, slug: 'home', purpose: 'Present one verified product through a focused conversion landing page with product details, benefits, FAQs and a request path.', sections: ['Product hero', 'Product benefits', 'Product details', 'Proof', 'Process', 'FAQ', 'Product request'], seoTitle: profile.globalSeo.title, seoDescription: profile.globalSeo.description }];
+  }
   return [
     { title: labels.home, slug: 'home', purpose: 'Introduce the company through the fixed Custom Bolt Forge design and guide visitors to the most relevant next step.', sections: ['Hero', 'Trust', 'Buyer routing', labels.services, 'Core strengths', 'Differentiator', 'Split feature', labels.process, 'Capabilities', 'Business call to action', 'Request form', 'FAQ', 'Call to action'], seoTitle: profile.globalSeo.title, seoDescription: profile.globalSeo.description },
     { title: profile.about.title, slug: 'about', purpose: 'Explain the verified company positioning and focus.', sections: profile.about.sections.map((section) => section.heading), seoTitle: `${profile.about.title} | ${profile.siteTitle}`.slice(0, 70), seoDescription: profile.about.introduction.slice(0, 170) },
@@ -692,7 +764,8 @@ function pageDefinitions(profile: WebsiteContentProfile) {
   ];
 }
 
-function renderPage(index: number, profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[]): RenderedPage {
+function renderPage(index: number, profile: WebsiteContentProfile, palette: ThemePalette, images: WebsiteImageAsset[], templateKey: WebsiteTemplateKey = TEMPLATE_KEY): RenderedPage {
+  if (templateKey === ONE_PRODUCT_TEMPLATE_KEY) return renderOneProductLanding(profile, palette, images);
   if (index === 0) return renderHome(profile, palette, images);
   if (index === 1) return renderAbout(profile, palette, images[2] ?? images[1]);
   if (index === 2) return renderServices(profile, palette, images[3] ?? images[2]);
@@ -700,6 +773,7 @@ function renderPage(index: number, profile: WebsiteContentProfile, palette: Them
 }
 
 const HOME_TEMPLATE_SECTIONS = ['hero', 'trust', 'buyer-routing', 'portfolio', 'core-strengths', 'differentiator', 'split-feature', 'process', 'capabilities', 'business-call-to-action', 'request-form', 'faq', 'call-to-action'] as const;
+const ONE_PRODUCT_TEMPLATE_SECTIONS = ['product-hero', 'product-benefits', 'product-details', 'product-proof', 'product-process', 'product-faq', 'product-request'] as const;
 
 function occurrenceCount(content: string, marker: string) {
   return content.split(marker).length - 1;
@@ -721,24 +795,41 @@ function hasExactHomeTemplateContract(content: string) {
     && occurrenceCount(content, 'data-lulu-faq') === 3;
 }
 
-function pageHasPublishableContent(page: GeneratedPage, index: number) {
+function hasExactOneProductTemplateContract(content: string) {
+  return ONE_PRODUCT_TEMPLATE_SECTIONS.every((key) => occurrenceCount(content, `data-lulu-section="${key}"`) === 1)
+    && occurrenceCount(content, 'data-lulu-card="product-benefit"') === 3
+    && occurrenceCount(content, 'data-lulu-card="product-step"') === 3
+    && occurrenceCount(content, 'data-lulu-product-trust') === 4
+    && occurrenceCount(content, 'data-lulu-product-faq') === 3
+    && occurrenceCount(content, 'data-lulu-contact-form-preview') === 1;
+}
+
+function pageHasPublishableContent(page: GeneratedPage, index: number, templateKey: WebsiteTemplateKey = TEMPLATE_KEY) {
   const content = String(page.content ?? '').trim();
-  const minimumLength = index === 0 ? 2_000 : 800;
+  const metadata = templateMetadata(templateKey);
+  const minimumLength = templateKey === ONE_PRODUCT_TEMPLATE_KEY ? 2_000 : index === 0 ? 2_000 : 800;
   return content.length >= minimumLength
     && /<main\b/i.test(content)
     && /<h1\b/i.test(content)
-    && content.includes(`data-lulu-template="${TEMPLATE_KEY}"`)
-    && content.includes(`data-lulu-design-source="${TEMPLATE_DESIGN_SOURCE}"`)
-    && content.includes(`data-lulu-design-version="${TEMPLATE_DESIGN_VERSION}"`)
+    && content.includes(`data-lulu-template="${templateKey}"`)
+    && content.includes(`data-lulu-design-source="${metadata.source}"`)
+    && content.includes(`data-lulu-design-version="${metadata.version}"`)
     && !/<style\b|@import\s+url|@media\s*\(/i.test(content)
-    && (index !== 0 || hasExactHomeTemplateContract(content))
+    && (templateKey === ONE_PRODUCT_TEMPLATE_KEY ? hasExactOneProductTemplateContract(content) : index !== 0 || hasExactHomeTemplateContract(content))
     && !forbiddenContent.test(content);
 }
 
 export function isCompleteWebsitePlan(value: unknown): value is WebsitePlan {
   if (!value || typeof value !== 'object') return false;
   const plan = value as WebsitePlan;
-  return plan.templateKey === TEMPLATE_KEY && plan.designSource === TEMPLATE_DESIGN_SOURCE && typeof plan.siteTitle === 'string' && Array.isArray(plan.pages) && plan.pages.length === PAGE_COUNT && plan.pages.every(pageHasPublishableContent);
+  const pageCount = plan.templateKey === ONE_PRODUCT_TEMPLATE_KEY ? 1 : PAGE_COUNT;
+  const expectedSource = templateMetadata(plan.templateKey).source;
+  return (plan.templateKey === TEMPLATE_KEY || plan.templateKey === ONE_PRODUCT_TEMPLATE_KEY)
+    && plan.designSource === expectedSource
+    && typeof plan.siteTitle === 'string'
+    && Array.isArray(plan.pages)
+    && plan.pages.length === pageCount
+    && plan.pages.every((page, index) => pageHasPublishableContent(page, index, plan.templateKey));
 }
 
 async function loadWebsiteContext(workspaceId: string, userId: string): Promise<WebsiteContext> {
@@ -757,20 +848,21 @@ async function loadWebsiteContext(workspaceId: string, userId: string): Promise<
   };
 }
 
-function existingTemplatePlan(value: Record<string, unknown> | undefined, language: string, context: WebsiteContext, images: WebsiteImageAsset[]) {
-  if (!value || value.templateKey !== TEMPLATE_KEY) return null;
+function existingTemplatePlan(value: Record<string, unknown> | undefined, language: string, context: WebsiteContext, images: WebsiteImageAsset[], requestedTemplateKey: WebsiteTemplateKey) {
+  if (!value || value.templateKey !== requestedTemplateKey) return null;
+  const templateKey = requestedTemplateKey;
   const storedProfile = objectValue(value.contentProfile);
   if (!Object.keys(storedProfile).length) return null;
   const profile = profileFrom(storedProfile, language, context);
   const palette = paletteForContext(context);
-  const definitions = pageDefinitions(profile);
+  const definitions = pageDefinitions(profile, templateKey);
   const storedPages = Array.isArray(value.pages) ? value.pages : [];
   const pages = definitions.map((definition, index) => {
     const existing = storedPages.find((page) => objectValue(page).slug === definition.slug);
     const existingPage = objectValue(existing);
     const content = stringValue(existingPage.content);
-    const rendered = renderPage(index, profile, palette, images);
-    const complete = pageHasPublishableContent({ ...definition, generatedSections: [], content } as GeneratedPage, index);
+    const rendered = renderPage(index, profile, palette, images, templateKey);
+    const complete = pageHasPublishableContent({ ...definition, generatedSections: [], content } as GeneratedPage, index, templateKey);
     const storedSectionKeys = new Set(
       (Array.isArray(existingPage.generatedSections) ? existingPage.generatedSections : [])
         .map((section) => stringValue(objectValue(section).key))
@@ -786,7 +878,7 @@ function existingTemplatePlan(value: Record<string, unknown> | undefined, langua
       content: complete ? content : composePage(rendered, generatedSections),
     };
   });
-  return { templateKey: TEMPLATE_KEY, designSource: TEMPLATE_DESIGN_SOURCE, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette, contentProfile: profile, pages, globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) } satisfies WebsitePlan;
+  return { templateKey, designSource: templateMetadata(templateKey).source, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette, contentProfile: profile, pages, globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) } satisfies WebsitePlan;
 }
 
 export async function generateWebsitePlan(input: {
@@ -795,6 +887,7 @@ export async function generateWebsitePlan(input: {
   prompt: string;
   language?: string;
   provider: string;
+  templateChoice?: WebsiteTemplateChoice;
   existingPlan?: Record<string, unknown>;
   imageAssets?: WebsiteImageAsset[];
   onProgress?: (progress: WebsiteGenerationProgress) => Promise<void>;
@@ -802,18 +895,26 @@ export async function generateWebsitePlan(input: {
   const context = await loadWebsiteContext(input.workspaceId, input.userId);
   const language = input.language?.trim() || 'en';
   const images = (input.imageAssets ?? []).filter((asset) => safeImageUrl(asset.url)).slice(0, 8);
-  let plan = existingTemplatePlan(input.existingPlan, language, context, images);
+  const templateChoice = input.templateChoice ?? 'auto';
+  const products = productOfferings(context);
+  if (templateChoice === 'one-product' && products.length !== 1) {
+    throw new AppError(422, 'WEBSITE_ONE_PRODUCT_REQUIRED', 'The one-product landing page requires exactly one verified active or draft product');
+  }
+  const selectedTemplateKey = resolveWebsiteTemplate(templateChoice, context);
+  let plan = existingTemplatePlan(input.existingPlan, language, context, images, selectedTemplateKey);
   if (!plan) {
     await input.onProgress?.({ phase: 'generating_content', percent: 12, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'company-context-loaded', code: 'company_context_loaded', tone: 'success', params: { offerings: context.offerings.length, platforms: context.connectedPlatforms.length } } });
     await input.onProgress?.({ phase: 'generating_content', percent: 15, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-started', code: 'content_profile_started', tone: 'info', params: {} } });
-    const profile = await generateContentProfile({ workspaceId: input.workspaceId, userId: input.userId, provider: input.provider, language, prompt: input.prompt, context });
-    plan = { templateKey: TEMPLATE_KEY, designSource: TEMPLATE_DESIGN_SOURCE, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile).map((definition) => ({ ...definition, generatedSections: [], content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
-    await input.onProgress?.({ plan, phase: 'applying_template', percent: 20, completedPages: 0, totalPages: PAGE_COUNT, currentPageTitle: plan.pages[0]?.title ?? null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-ready', code: 'content_profile_ready', tone: 'success', params: {} } });
+    const generationTemplateChoice = selectedTemplateKey === ONE_PRODUCT_TEMPLATE_KEY ? 'one-product' : 'standard';
+    const profile = await generateContentProfile({ workspaceId: input.workspaceId, userId: input.userId, provider: input.provider, language, prompt: input.prompt, context, templateChoice: generationTemplateChoice });
+    plan = { templateKey: selectedTemplateKey, designSource: templateMetadata(selectedTemplateKey).source, siteTitle: profile.siteTitle, brandVoice: profile.brandVoice, primaryLanguage: profile.primaryLanguage, palette: paletteForContext(context), contentProfile: profile, pages: pageDefinitions(profile, selectedTemplateKey).map((definition) => ({ ...definition, generatedSections: [], content: '' })), globalSeo: profile.globalSeo, assets: images.map((asset, index) => ({ brief: `Existing WordPress media image ${index + 1}`, altText: asset.altText, url: asset.url })) };
+    await input.onProgress?.({ plan, phase: 'applying_template', percent: 20, completedPages: 0, totalPages: plan.pages.length, currentPageTitle: plan.pages[0]?.title ?? null, completedSections: 0, totalSections: 0, currentSectionTitle: null, activity: { id: 'content-profile-ready', code: 'content_profile_ready', tone: 'success', params: {} } });
   }
   if (!plan) throw new AppError(500, 'WEBSITE_PLAN_MISSING', 'The website plan could not be initialized');
-  const planProfile = plan.contentProfile;
-  const planPalette = plan.palette;
-  const renderedPages = plan.pages.map((_, index) => renderPage(index, planProfile, planPalette, images));
+  const resolvedPlan = plan;
+  const planProfile = resolvedPlan.contentProfile;
+  const planPalette = resolvedPlan.palette;
+  const renderedPages = resolvedPlan.pages.map((_, index) => renderPage(index, planProfile, planPalette, images, resolvedPlan.templateKey));
   plan = {
     ...plan,
     pages: plan.pages.map((page, index) => ({
@@ -824,9 +925,9 @@ export async function generateWebsitePlan(input: {
   };
   const totalSections = renderedPages.reduce((total, page) => total + page.sections.length, 0);
   let completedSections = plan.pages.reduce((total, page) => total + page.generatedSections.length, 0);
-  let completedPages = plan.pages.filter(pageHasPublishableContent).length;
+  let completedPages = plan.pages.filter((page, index) => pageHasPublishableContent(page, index, plan!.templateKey)).length;
   for (let index = 0; index < plan.pages.length; index += 1) {
-    if (pageHasPublishableContent(plan.pages[index]!, index)) continue;
+    if (pageHasPublishableContent(plan.pages[index]!, index, plan.templateKey)) continue;
     const renderedPage = renderedPages[index]!;
     const completedKeys = new Set(plan.pages[index]!.generatedSections.map((section) => section.key));
     for (const section of renderedPage.sections) {
@@ -837,11 +938,11 @@ export async function generateWebsitePlan(input: {
       plan = { ...plan, pages: plan.pages.map((page, pageIndex) => pageIndex === index ? { ...page, generatedSections, content } : page) };
       completedKeys.add(section.key);
       completedSections += 1;
-      if (generatedSections.length === renderedPage.sections.length && pageHasPublishableContent(plan.pages[index]!, index)) completedPages += 1;
+      if (generatedSections.length === renderedPage.sections.length && pageHasPublishableContent(plan.pages[index]!, index, plan.templateKey)) completedPages += 1;
       await input.onProgress?.({ plan, phase: 'applying_template', percent: Math.round(20 + (completedSections / totalSections) * 32), completedPages, totalPages: plan.pages.length, currentPageTitle: plan.pages[index]?.title ?? null, completedSections, totalSections, currentSectionTitle: renderedPage.sections.find((candidate) => !completedKeys.has(candidate.key))?.title ?? null, activity: { id: `section-saved:${plan.pages[index]!.slug}:${section.key}`, code: 'section_saved', tone: 'success', params: { page: plan.pages[index]!.title, section: section.title, completed: completedSections, total: totalSections } } });
     }
   }
-  if (!isCompleteWebsitePlan(plan)) throw new AppError(502, 'WEBSITE_TEMPLATE_RENDER_FAILED', 'The standard website template could not be rendered with the generated content');
+  if (!isCompleteWebsitePlan(plan)) throw new AppError(502, 'WEBSITE_TEMPLATE_RENDER_FAILED', 'The selected website template could not be rendered with the generated content');
   await input.onProgress?.({ plan, phase: 'template_ready', percent: 52, completedPages: plan.pages.length, totalPages: plan.pages.length, currentPageTitle: null, completedSections: totalSections, totalSections, currentSectionTitle: null, activity: { id: 'template-ready', code: 'template_ready', tone: 'success', params: { pages: plan.pages.length, sections: totalSections } } });
   return plan;
 }

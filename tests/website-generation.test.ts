@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { isCompleteWebsitePlan, renderHome, websiteCtaDestination, wordpressContactFormShortcode } from '../src/modules/websites/website.generation.service.js';
+import { isCompleteWebsitePlan, renderHome, renderOneProductLanding, resolveWebsiteTemplate, websiteCtaDestination, wordpressContactFormShortcode } from '../src/modules/websites/website.generation.service.js';
 import { appendGenerationActivity, generationActivities } from '../src/modules/websites/website.activity.js';
 import { automaticGenerationSchema } from '../src/modules/websites/website.validator.js';
 import { completedWordpressPages, findReusableWordpressPage, findWordpressDuplicatePages, isLuluGeneratedWordpressPage, wordpressActiveTheme, wordpressAdminUrl, wordpressDeliveryCapabilities, wordpressGutenbergContent, wordpressHomepageWarning, wordpressOption, wordpressSiteChrome, wordpressTemplatePartForArea } from '../src/modules/websites/website.publish.service.js';
@@ -68,6 +68,7 @@ describe('website generation quality gate', () => {
       about: { title: 'About', introduction: 'About Acme.', sections: [{ heading: 'Focus', body: 'Verified focus.' }], ctaTitle: 'Talk to us', ctaText: 'Contact Acme.', ctaLabel: 'Contact us' },
       services: { title: 'Services', introduction: 'Verified services.', items: cards, processHeading: 'Process', processSteps: [{ title: 'Understand', description: 'Review requirements.' }], ctaTitle: 'Find the right solution', ctaText: 'Share your requirements.', ctaLabel: 'Contact us' },
       contact: { title: 'Contact Acme', introduction: 'Share your requirements.', preparationHeading: 'Helpful information', preparationItems: ['Requirement', 'Timing'], nextStepTitle: 'What happens next', nextStepText: 'The team reviews the request.' },
+      primaryProduct: { name: 'Verified product', description: 'A single verified product for the intended audience.', category: 'Product' },
     } as any;
     const palette = { primary: '#183c65', secondary: '#303740', accent: '#e89110', ink: '#233142', muted: '#657283', surface: '#ffffff', background: '#f4f6f8' };
     const rendered = renderHome(profile, palette, []);
@@ -88,6 +89,15 @@ describe('website generation quality gate', () => {
     assert.equal((html.match(/data-lulu-preparation-item/g) ?? []).length, 4);
     assert.equal((html.match(/data-lulu-faq/g) ?? []).length, 3);
     assert.doesNotMatch(html, /<style\b|@import\s+url|@media\s*\(/i);
+    const productRendered = renderOneProductLanding(profile, palette, []);
+    const productHtml = `${productRendered.openingHtml}${productRendered.sections.map((section) => section.html).join('')}${productRendered.closingHtml}`;
+    assert.match(productHtml, /data-lulu-template="lulu-one-product-v1"/);
+    assert.match(productHtml, /data-lulu-design-source="custom-bolt-forge-one-product"/);
+    assert.deepEqual(productRendered.sections.map((section) => section.key), ['product-hero', 'product-benefits', 'product-details', 'product-proof', 'product-process', 'product-faq', 'product-request']);
+    assert.equal((productHtml.match(/data-lulu-card="product-benefit"/g) ?? []).length, 3);
+    assert.equal((productHtml.match(/data-lulu-card="product-step"/g) ?? []).length, 3);
+    assert.equal((productHtml.match(/data-lulu-product-trust/g) ?? []).length, 4);
+    assert.equal((productHtml.match(/data-lulu-product-faq/g) ?? []).length, 3);
   });
 });
 
@@ -113,6 +123,18 @@ describe('website generation target selection', () => {
 
   it('rejects unsupported target modes', () => {
     assert.equal(automaticGenerationSchema.safeParse({ provider: 'managed', siteId, targetMode: 'overwrite' }).success, false);
+  });
+
+  it('lets AI choose a one-product landing page from a single verified product', () => {
+    const context = {
+      workspace: { companyName: 'Acme', industry: null, companySize: null, countryRegion: null, businessDescription: null, valueProposition: null, targetMarket: null, shortBrandDescription: null, positioningTags: [] },
+      offerings: [{ name: 'Verified product', type: 'product', category: null, description: 'A verified product.', targetCustomer: null, valueProposition: null, status: 'active' }],
+      connectedPlatforms: [],
+      initialAnalysis: null,
+    } as any;
+    assert.equal(resolveWebsiteTemplate('auto', context), 'lulu-one-product-v1');
+    assert.equal(resolveWebsiteTemplate('standard', context), 'lulu-standard-v1');
+    assert.equal(resolveWebsiteTemplate('one-product', context), 'lulu-one-product-v1');
   });
 
   it('reuses canonical WordPress slugs in both modes without overwriting unrelated pages by title', () => {

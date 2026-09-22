@@ -98,7 +98,7 @@ export async function createJob(req: WorkspaceRequest, res: Response, next: Next
       }
     }
     const input = createJobSchema.parse(req.body);
-    const created = await repo.createJob({ siteId: params.siteId, prompt: input.prompt, createdBy: req.user!.id, autoPublish: false });
+    const created = await repo.createJob({ siteId: params.siteId, prompt: input.prompt, createdBy: req.user!.id, autoPublish: false, preview: { templateChoice: input.template } });
     if (!created.job) throw new AppError(500, 'WEBSITE_GENERATION_FAILED', 'Website generation job could not be created');
     requestWebsiteGenerationWorkerRun();
     return createdResponse(res, created.created ? 'Website generation job started' : 'Website generation already running', created.job);

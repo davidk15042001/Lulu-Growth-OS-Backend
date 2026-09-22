@@ -4,10 +4,10 @@ import { assertWorkspaceAutomationActive } from '../workspaces/workspace-automat
 import * as repo from './website.repo.js';
 import { generateWebsitePlan } from './website.generation.service.js';
 import { publishWebsiteJob } from './website.publish.service.js';
-import type { WebsiteGenerationTargetMode, WebsiteGenerationWorkItem } from './website.types.js';
+import type { WebsiteGenerationTargetMode, WebsiteGenerationWorkItem, WebsiteTemplateChoice } from './website.types.js';
 import { appendGenerationActivity } from './website.activity.js';
 
-export const DEFAULT_WEBSITE_PROMPT = `Create factual, conversion-focused website copy from verified Lulu workspace data for the fixed Lulu Standard template. Generate only structured text and SEO content. The application owns the layout, pages, colors and HTML rendering. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
+export const DEFAULT_WEBSITE_PROMPT = `Create factual, conversion-focused website copy from verified Lulu workspace data. Lulu will choose the most suitable approved template from the verified business model, including a focused one-product landing page when the workspace sells one product. Generate only structured text and SEO content. The application owns the layout, pages, colors and HTML rendering. Never invent names, prices, locations, contacts, certifications, statistics, testimonials, customers, integrations or legal claims. Omit unsupported specifics and never publish placeholders, construction notices, fake contact details or example-company content.`;
 
 /** @deprecated External CMS media imports are retired; kept for historical job inspection only. */
 export function wordpressImageAssets(value: unknown) {
@@ -92,6 +92,7 @@ export async function processWebsiteGenerationWorkItem(input: WebsiteGenerationW
       userId: input.createdBy,
       prompt: input.prompt,
       provider: input.provider,
+      templateChoice: input.preview?.templateChoice === 'standard' || input.preview?.templateChoice === 'one-product' ? input.preview.templateChoice as WebsiteTemplateChoice : 'auto',
       existingPlan: input.plan,
       ...(input.requestedLanguage ? { language: input.requestedLanguage } : {}),
       onProgress: async (progress) => {
@@ -209,7 +210,7 @@ export async function startAutomaticWebsiteGeneration(input: { workspaceId: stri
     generationTargetConfirmedAt: new Date().toISOString(),
   }) ?? site;
   const initialPreview = appendGenerationActivity(
-    { targetMode: input.targetMode, provider: 'managed' },
+    { targetMode: input.targetMode, provider: 'managed', templateChoice: 'auto' },
     {
       id: `target-selected:${input.targetMode}`,
       code: input.targetMode === 'new' ? 'target_new_selected' : 'target_existing_selected',

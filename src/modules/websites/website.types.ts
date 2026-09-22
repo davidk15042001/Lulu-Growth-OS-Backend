@@ -6,6 +6,8 @@ export type WebsiteStatus = 'draft' | 'connected' | 'generating' | 'preview' | '
 export type DomainStatus = 'pending' | 'verifying' | 'verified' | 'failed' | 'expired' | 'removed';
 export type WebsiteJobStatus = 'queued' | 'planning' | 'generated' | 'preview' | 'publishing' | 'published' | 'failed' | 'cancelled';
 export type WebsiteGenerationTargetMode = 'existing' | 'new';
+export type WebsiteTemplateChoice = 'auto' | 'standard' | 'one-product';
+export type WebsiteTemplateKey = 'lulu-standard-v1' | 'lulu-one-product-v1';
 
 export type WebsiteSite = {
   id: string;
