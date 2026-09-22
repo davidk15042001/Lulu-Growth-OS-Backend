@@ -73,9 +73,15 @@ export async function createPayoutAccount(input: {
 async function availableBalance(workspaceId: string, currency: string, client?: Parameters<typeof query>[2]) {
   const result = await query<{ available: string }>(
     `WITH collected AS (
-       SELECT COALESCE(SUM(amount),0)::numeric AS total
-       FROM storefront_checkout_sessions
-       WHERE workspace_id=$1 AND currency=$2 AND status='PAID'
+       SELECT COALESCE(SUM(s.amount-LEAST(s.amount,COALESCE(adjustments.reversed,0))),0)::numeric AS total
+       FROM storefront_checkout_sessions s
+       LEFT JOIN (
+         SELECT checkout_id,COALESCE(SUM(amount) FILTER (WHERE status='ACTIVE'),0)::numeric AS reversed
+         FROM storefront_payment_adjustments
+         WHERE workspace_id=$1
+         GROUP BY checkout_id
+       ) adjustments ON adjustments.checkout_id=s.id
+       WHERE s.workspace_id=$1 AND s.currency=$2 AND s.status='PAID'
      ), reserved AS (
        SELECT COALESCE(SUM(amount),0)::numeric AS total
        FROM workspace_payouts
@@ -91,14 +97,23 @@ async function availableBalance(workspaceId: string, currency: string, client?: 
 }
 
 export async function getPayoutSummary(workspaceId: string) {
-  const result = await query<{ currency: string; grossCollected: string; reserved: string; paidOut: string; available: string }>(
+  const result = await query<{ currency: string; grossCollected: string; reversed: string; netCollected: string; reserved: string; paidOut: string; available: string }>(
     `WITH currencies AS (
        SELECT currency FROM storefront_checkout_sessions WHERE workspace_id=$1
        UNION
        SELECT currency FROM workspace_payouts WHERE workspace_id=$1
      ), collected AS (
-       SELECT currency,COALESCE(SUM(amount) FILTER (WHERE status='PAID'),0)::text AS gross
-       FROM storefront_checkout_sessions WHERE workspace_id=$1 GROUP BY currency
+       SELECT s.currency,
+         COALESCE(SUM(s.amount) FILTER (WHERE s.status='PAID'),0)::numeric AS gross,
+         COALESCE(SUM(LEAST(s.amount,COALESCE(adjustments.reversed,0))),0)::numeric AS reversed
+       FROM storefront_checkout_sessions s
+       LEFT JOIN (
+         SELECT checkout_id,COALESCE(SUM(amount) FILTER (WHERE status='ACTIVE'),0)::numeric AS reversed
+         FROM storefront_payment_adjustments
+         WHERE workspace_id=$1
+         GROUP BY checkout_id
+       ) adjustments ON adjustments.checkout_id=s.id
+       WHERE s.workspace_id=$1 GROUP BY s.currency
      ), payouts AS (
        SELECT currency,
          COALESCE(SUM(amount) FILTER (WHERE status IN ('REQUESTED','SUBMITTING','SUBMISSION_UNKNOWN','SUBMITTED','PROCESSING','PAID')),0)::text AS reserved,
@@ -106,10 +121,12 @@ export async function getPayoutSummary(workspaceId: string) {
        FROM workspace_payouts WHERE workspace_id=$1 GROUP BY currency
      )
      SELECT currencies.currency,
-       COALESCE(collected.gross,'0') AS "grossCollected",
+       COALESCE(collected.gross,'0')::text AS "grossCollected",
+       COALESCE(collected.reversed,'0')::text AS reversed,
+       GREATEST(COALESCE(collected.gross,'0')::numeric-COALESCE(collected.reversed,'0')::numeric,0)::text AS "netCollected",
        COALESCE(payouts.reserved,'0') AS reserved,
        COALESCE(payouts.paid,'0') AS "paidOut",
-       (COALESCE(collected.gross,'0')::numeric-COALESCE(payouts.reserved,'0')::numeric)::text AS available
+       GREATEST(COALESCE(collected.gross,'0')::numeric-COALESCE(collected.reversed,'0')::numeric-COALESCE(payouts.reserved,'0')::numeric,0)::text AS available
        FROM currencies
        LEFT JOIN collected USING(currency)
        LEFT JOIN payouts USING(currency)

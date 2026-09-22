@@ -15,6 +15,7 @@ const documents=await import('../src/modules/commercial-documents/commercial-doc
 const projection=await import('../src/modules/finance/invoice-journal.projection.js');
 const payoutRepo=await import('../src/modules/finance/payout.repo.js');
 const storefrontRepo=await import('../src/modules/storefront/storefront.repo.js');
+const {handleWebhook}=await import('../src/modules/billing/airwallex.service.js');
 const {DOMAIN_EVENT_TYPES}=await import('../src/events/domain-event.types.js');
 const {decimalToMinorUnits}=await import('../src/modules/finance/money.js');
 const db=new PGlite();
@@ -96,9 +97,9 @@ describe('storefront payment proceeds and payouts',()=>{
       `INSERT INTO storefront_carts(site_id,workspace_id,token_hash,currency) VALUES($1,$2,$3,'CNY') RETURNING id`,
       [site,workspace,`test-cart-${crypto.randomUUID()}`],
     )).rows[0]!.id;
-    await db.query(
-      `INSERT INTO storefront_checkout_sessions(site_id,workspace_id,cart_id,customer_email,currency,amount,status,paid_at)
-       VALUES($1,$2,$3,'buyer@example.test','CNY',125.5000,'PAID',NOW())`,
+    await db.query<{id:string}>(
+      `INSERT INTO storefront_checkout_sessions(site_id,workspace_id,cart_id,customer_email,currency,amount,status,provider_session_id,provider_payment_intent_id,paid_at)
+       VALUES($1,$2,$3,'buyer@example.test','CNY',125.5000,'PAID','plink_test','pi_test',NOW()) RETURNING id`,
       [site,workspace,cart],
     );
     const pendingCheckout=(await db.query<{id:string}>(
@@ -143,6 +144,27 @@ describe('storefront payment proceeds and payouts',()=>{
     const replay=await payoutRepo.requestPayout(input);
     assert.equal(replay.id,first.id);
     assert.equal((await payoutRepo.getPayoutSummary(workspace))[0]?.available,'25.3750');
+    const refundEvent = {
+      id: `storefront-refund-${crypto.randomUUID()}`,
+      name: 'refund.settled',
+      created_at: '2026-09-13T08:05:00.000Z',
+      data: { object: {
+        id: `refund-${crypto.randomUUID()}`,
+        payment_intent_id: 'pi_test',
+        amount: '20.0000',
+        currency: 'CNY',
+        status: 'SETTLED',
+        updated_at: '2026-09-13T08:05:00.000Z',
+      } },
+    };
+    const adjustment = await handleWebhook(refundEvent);
+    assert.equal(adjustment.status, 'active');
+    const refundReplay = await handleWebhook(refundEvent);
+    assert.equal(refundReplay.duplicate, true);
+    const adjustedSummary = (await payoutRepo.getPayoutSummary(workspace))[0]!;
+    assert.equal(adjustedSummary.reversed, '20.0000');
+    assert.equal(adjustedSummary.netCollected, '105.5000');
+    assert.equal(adjustedSummary.available, '5.3750');
     assert.equal((await payoutRepo.getPayoutSummary(otherWorkspace)).length,0);
 
     const claim=await payoutRepo.claimPayoutForSubmission(workspace,first.id,owner);

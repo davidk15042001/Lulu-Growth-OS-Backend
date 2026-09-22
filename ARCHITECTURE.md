@@ -189,6 +189,7 @@ provider rates; unset rates do not invent financial data.
    signed, idempotently claimed provider webhook must mark the checkout paid
    before the canonical order can move from `DRAFT` to `PLACED`.
 10. Payout requests use PostgreSQL `NUMERIC` amounts, reserve only paid
-    storefront revenue, require workspace capabilities and a configured
-    beneficiary reference, and remain in a provider-confirmed or explicit
-    ambiguous state until reconciliation completes.
+    storefront revenue that remains eligible after capped refund/dispute
+    adjustments, require workspace capabilities and a configured beneficiary
+    reference, and remain in a provider-confirmed or explicit ambiguous state
+    until reconciliation completes.

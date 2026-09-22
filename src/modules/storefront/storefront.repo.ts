@@ -437,6 +437,90 @@ export async function applyStorefrontPaymentWebhook(input: {
   return updated;
 }
 
+export async function applyStorefrontPaymentAdjustment(input: {
+  checkoutId?: string | null;
+  providerPaymentLinkId?: string | null;
+  providerPaymentIntentId?: string | null;
+  provider: string;
+  providerAdjustmentId: string;
+  sourceEventId: string;
+  kind: 'REFUND' | 'DISPUTE';
+  status: 'PENDING' | 'ACTIVE' | 'RELEASED' | 'FAILED';
+  amount: string;
+  currency: string;
+  providerStatus: string;
+  providerPayload: Record<string, unknown>;
+  occurredAt?: string | null;
+}) {
+  return withTransaction(async (client) => {
+    const session = await query<{
+      id: string;
+      workspaceId: string;
+      orderId: string | null;
+    }>(
+      `SELECT id,workspace_id AS "workspaceId",order_id AS "orderId"
+         FROM storefront_checkout_sessions
+        WHERE ($1::uuid IS NOT NULL AND id=$1)
+           OR ($2::text IS NOT NULL AND provider_session_id=$2)
+           OR ($3::text IS NOT NULL AND provider_payment_intent_id=$3)
+        ORDER BY CASE
+          WHEN $1::uuid IS NOT NULL AND id=$1 THEN 0
+          WHEN $3::text IS NOT NULL AND provider_payment_intent_id=$3 THEN 1
+          ELSE 2 END
+        LIMIT 1
+        FOR UPDATE`,
+      [input.checkoutId ?? null, input.providerPaymentLinkId ?? null, input.providerPaymentIntentId ?? null],
+      client,
+    );
+    const checkout = session.rows[0];
+    if (!checkout) return null;
+
+    const result = await query<{ id: string; status: string; amount: string }>(
+      `INSERT INTO storefront_payment_adjustments(
+         workspace_id,checkout_id,provider,provider_adjustment_id,
+         provider_payment_intent_id,kind,status,amount,currency,
+         provider_status,provider_payload,source_event_id,occurred_at
+       ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13::timestamptz)
+       ON CONFLICT (workspace_id,provider,provider_adjustment_id)
+       DO UPDATE SET status=EXCLUDED.status,
+         amount=EXCLUDED.amount,
+         currency=EXCLUDED.currency,
+         provider_status=EXCLUDED.provider_status,
+         provider_payment_intent_id=COALESCE(EXCLUDED.provider_payment_intent_id, storefront_payment_adjustments.provider_payment_intent_id),
+         provider_payload=EXCLUDED.provider_payload,
+         occurred_at=COALESCE(EXCLUDED.occurred_at, storefront_payment_adjustments.occurred_at),
+         updated_at=NOW()
+       RETURNING id,status,amount::text`,
+      [
+        checkout.workspaceId,
+        checkout.id,
+        input.provider,
+        input.providerAdjustmentId,
+        input.providerPaymentIntentId ?? null,
+        input.kind,
+        input.status,
+        input.amount,
+        input.currency.toUpperCase(),
+        input.providerStatus.slice(0, 80),
+        JSON.stringify(input.providerPayload),
+        input.sourceEventId,
+        input.occurredAt ?? null,
+      ],
+      client,
+    );
+    const adjustment = result.rows[0];
+    if (!adjustment) throw new Error('Storefront payment adjustment was not saved');
+    return {
+      checkoutId: checkout.id,
+      workspaceId: checkout.workspaceId,
+      orderId: checkout.orderId,
+      adjustmentId: adjustment.id,
+      status: adjustment.status,
+      amount: adjustment.amount,
+    };
+  });
+}
+
 export async function createContactRequest(slug: string, email: string, requestDetails: StorefrontRequestDetails) {
   const site = await siteBySlug(slug);
   if (!site) return null;

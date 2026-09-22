@@ -51,7 +51,7 @@ import {
   createPaidAiCreditInvoice,
   createPaidStorageInvoice,
 } from './paid-billing-invoice.service.js';
-import { applyStorefrontPaymentWebhook } from '../storefront/storefront.repo.js';
+import { applyStorefrontPaymentAdjustment, applyStorefrontPaymentWebhook } from '../storefront/storefront.repo.js';
 import { applyPayoutProviderStatus } from '../finance/payout.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
@@ -2025,6 +2025,25 @@ export async function handleWebhook(event: AirwallexObject) {
         throw providerError('AIRWALLEX_REVERSAL_RESOURCE_INVALID', 'Airwallex terminal reversal is missing its ID, amount or currency.', {
           eventType, reversalId, currency,
         }, 409);
+      }
+      const storefrontAdjustment = await applyStorefrontPaymentAdjustment({
+        checkoutId: storefrontCheckoutId,
+        providerPaymentLinkId: storefrontPaymentLinkId,
+        providerPaymentIntentId: paymentIntentId,
+        provider: 'airwallex',
+        providerAdjustmentId: reversalId,
+        sourceEventId: eventId,
+        kind: reversal.kind,
+        status: reversal.active ? 'ACTIVE' : reversal.status === 'FAILED' ? 'FAILED' : 'RELEASED',
+        amount: String(amount),
+        currency,
+        providerStatus: reversal.status,
+        providerPayload: data,
+        occurredAt: webhookString(data.updated_at) ?? webhookString(event.created_at),
+      });
+      if (storefrontAdjustment) {
+        await markWebhookProcessed(eventId);
+        return { processed: true, eventId, storefrontCheckoutId: storefrontAdjustment.checkoutId, adjustmentId: storefrontAdjustment.adjustmentId, status: storefrontAdjustment.status.toLowerCase(), idempotent: false };
       }
       const handled = await recordAirwallexWalletReversal({
         eventId,

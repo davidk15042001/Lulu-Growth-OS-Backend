@@ -20,6 +20,11 @@ advisory deployment lock.
   `storefront_checkout_sessions`. `workspace_payout_accounts` stores only
   tenant-scoped provider beneficiary references; `workspace_payouts` stores
   precise payout amounts, approvals, idempotency and provider reconciliation.
+- `storefront_payment_adjustments` records immutable provider refund/dispute
+  evidence against a paid checkout. Payout availability is calculated from
+  paid checkout proceeds less active adjustments, capped per checkout so
+  duplicate or oversized provider reversals cannot create negative available
+  balance.
 - `workspace_api_wallets` and `workspace_ad_spend_wallets` are separate
   financial authorities. Their ledgers, reservations and payment lifecycle
   tables are append-only/idempotent evidence, not display-only counters.
