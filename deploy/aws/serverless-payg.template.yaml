@@ -98,7 +98,6 @@ Resources:
       Role: !GetAtt ApiRole.Arn
       MemorySize: !Ref MemorySize
       Timeout: !Ref TimeoutSeconds
-      ReservedConcurrentExecutions: !Ref ReservedConcurrency
       Environment:
         Variables:
           NODE_ENV: production

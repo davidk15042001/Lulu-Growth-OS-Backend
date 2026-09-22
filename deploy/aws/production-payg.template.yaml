@@ -339,7 +339,6 @@ Resources:
       Role: !GetAtt ApiRole.Arn
       MemorySize: !Ref MemorySize
       Timeout: !Ref TimeoutSeconds
-      ReservedConcurrentExecutions: !Ref ReservedConcurrency
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroup
