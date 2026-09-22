@@ -71,7 +71,7 @@ Parameters:
     MaxValue: 35
   DeletionProtection:
     Type: String
-    Default: 'true'
+    Default: 'false'
     AllowedValues: ['true', 'false']
   AwsS3Bucket:
     Type: String
@@ -364,7 +364,6 @@ Resources:
           KIE_API_KEY: !Ref KieApiKey
           CORS_ORIGIN: !Ref CorsOrigin
           FRONTEND_BASE_URL: !Ref FrontendBaseUrl
-          AWS_REGION: !Ref AWS::Region
           AWS_S3_BUCKET: !Ref AwsS3Bucket
           REFRESH_COOKIE_SAME_SITE: none
           TRUST_PROXY: 'true'

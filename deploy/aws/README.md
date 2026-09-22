@@ -76,7 +76,9 @@ aws cloudformation deploy \
 After the first successful `/health` call applies migrations, update the stack
 with `RunMigrationsOnStartup=false` to keep later cold starts fast. When the AWS
 account is upgraded to a paid plan, the database can be moved to Aurora
-Serverless v2 for scale-to-zero compute.
+Serverless v2 for scale-to-zero compute. Keep `DeletionProtection=false` during
+the first bootstrap so failed stack creation can roll back cleanly; enable it in
+a follow-up stack update once the API is healthy.
 
 ## Alternative Low-Cost Always-On Architecture
 

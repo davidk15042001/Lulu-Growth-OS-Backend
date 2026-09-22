@@ -115,7 +115,6 @@ Resources:
           KIE_API_KEY: !Ref KieApiKey
           CORS_ORIGIN: !Ref CorsOrigin
           FRONTEND_BASE_URL: !Ref FrontendBaseUrl
-          AWS_REGION: !Ref AWS::Region
           AWS_S3_BUCKET: !Ref AwsS3Bucket
           REFRESH_COOKIE_SAME_SITE: none
           TRUST_PROXY: 'true'
