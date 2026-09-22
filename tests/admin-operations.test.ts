@@ -59,6 +59,33 @@ it('lets an admin set exact API/AI and storage costs, including an audited surch
   const audit=await db.query(`SELECT action FROM audit_log WHERE workspace_id=$1 AND action='payg_usage.costs_set'`,[workspaceId]);
   assert.equal(audit.rows.length,1);
 });
+it('lets an admin gift AI credits with the workspace-scoped ledger idempotency key',async()=>{
+  const first=await repo.addWorkspaceManualFundingAdjustment({
+    workspaceId,
+    wallet:'ai',
+    direction:'credit',
+    amount:25,
+    reason:'Admin gift',
+    paymentMethod:'other',
+    adminUserId:userId,
+    idempotencyKey:'admin-ops-ai-credit-gift',
+  });
+  assert.equal(first.idempotent,false);
+  assert.equal(Number(first.funding?.availableAmount),25);
+  const replay=await repo.addWorkspaceManualFundingAdjustment({
+    workspaceId,
+    wallet:'ai',
+    direction:'credit',
+    amount:25,
+    reason:'Admin gift',
+    paymentMethod:'other',
+    adminUserId:userId,
+    idempotencyKey:'admin-ops-ai-credit-gift',
+  });
+  assert.equal(replay.idempotent,true);
+  const ledger=await db.query<{entries:string}>(`SELECT COUNT(*)::text AS entries FROM workspace_api_wallet_ledger WHERE workspace_id=$1 AND idempotency_key='admin-ops-ai-credit-gift'`,[workspaceId]);
+  assert.equal(Number(ledger.rows[0]?.entries),1);
+});
 it('keeps a cancelled workspace refresh cancelled when a worker reports late progress',async()=>{
   const job=await contentRepo.createJob(workspaceId,userId,['seo']);
   assert.ok(job?.id);

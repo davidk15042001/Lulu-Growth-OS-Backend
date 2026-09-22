@@ -521,10 +521,11 @@ export async function addWorkspaceManualFundingAdjustment(input: {
     if (!funding) throw new AppError(500, 'FUNDING_WALLET_UPDATE_FAILED', 'The funding wallet could not be updated.');
     const entryType = 'ADJUSTMENT';
     const amountDelta = input.direction === 'credit' ? input.amount : -input.amount;
+    const ledgerConflictTarget = input.wallet === 'ai' ? '(workspace_id, idempotency_key)' : '(idempotency_key)';
     const inserted = await query(
       `INSERT INTO ${ledger}(workspace_id, entry_type, amount_delta, balance_after, idempotency_key, metadata)
        VALUES($1, $2, $3, $4, $5, $6::jsonb)
-       ON CONFLICT (idempotency_key) DO NOTHING
+       ON CONFLICT ${ledgerConflictTarget} DO NOTHING
        RETURNING id, entry_type AS "entryType", amount_delta AS "amountDelta", balance_after AS "balanceAfter", created_at AS "createdAt"`,
       [input.workspaceId, entryType, amountDelta.toFixed(input.wallet === 'ai' ? 6 : 2), funding.availableAmount, input.idempotencyKey, JSON.stringify({
         source: 'admin_manual_offline', direction: input.direction, reason: input.reason,
