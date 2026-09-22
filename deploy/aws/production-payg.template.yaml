@@ -285,7 +285,7 @@ Resources:
       MasterUsername: !Ref DbUsername
       MasterUserPassword: !Ref DbPassword
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
-      VpcSecurityGroupIds:
+      VPCSecurityGroups:
         - !Ref DatabaseSecurityGroup
       PubliclyAccessible: false
       MultiAZ: false
