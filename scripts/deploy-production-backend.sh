@@ -2,6 +2,7 @@
 set -eu
 
 backend_dir=/var/www/lulu-growth-os/backend
+frontend_dir=/var/www/lulu-ai.cn/html
 environment_file=/etc/lulu-growth-backend.env
 migration_unit="lulu-growth-backend-migration-$$"
 reset_unit="lulu-growth-backend-test-reset-$$"
@@ -21,7 +22,20 @@ if [ "${1:-}" = "--repair-permissions" ]; then
     -path "$backend_dir/.runtime-secrets" -prune -o \
     -path "$backend_dir/node_modules" -prune -o \
     -exec /usr/bin/chown -h "$SUDO_USER" {} +
+  if [ -d "$frontend_dir" ]; then
+    /usr/bin/find "$frontend_dir" -exec /usr/bin/chown -h "$SUDO_USER" {} +
+  fi
   exit 0
+fi
+
+# The combined release uploads the frontend after this privileged backend
+# step. Repair only deploy-owned application trees so stale root-owned static
+# files cannot make the final frontend rsync fail. Runtime secrets and
+# dependencies remain outside this ownership repair.
+if [ "$(id -u)" -eq 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+  if [ -d "$frontend_dir" ]; then
+    /usr/bin/find "$frontend_dir" -exec /usr/bin/chown -h "$SUDO_USER" {} +
+  fi
 fi
 
 # Text/agent execution is owned by OpenAI/ChatGPT. Keep the production
