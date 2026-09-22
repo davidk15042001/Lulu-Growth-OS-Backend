@@ -6,6 +6,16 @@ export const assistantActionTypeSchema = z.enum([
   'advertising.create_optimization',
   'finance.create_automation',
   'finance.invoice.create_and_send',
+  'sales.quote.create',
+  'sales.quote.send',
+  'calendar.event.create',
+  'commerce.order.create',
+  'commerce.order.update',
+  'commerce.order.transition',
+  'commerce.product.create',
+  'commerce.product.update',
+  'website.generate_content',
+  'ecommerce.generate_product_images',
   'google_reviews.reply',
   'email.create_draft',
   'email.create_ai_draft',
@@ -50,5 +60,11 @@ export const assistantActionInputSchema = z.object({
 }).strict();
 
 export const assistantActionExecutionSchema = z.object({
+  actionId: z.string().uuid(),
+}).strict();
+
+export const assistantActionParamsSchema = z.object({
+  workspaceId: z.string().uuid(),
+  conversationId: z.string().uuid(),
   actionId: z.string().uuid(),
 }).strict();

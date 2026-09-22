@@ -8,7 +8,7 @@ import {
   isAiGenerationConfigured,
 } from './openai.service.js';
 import { buildAssistantTools } from './assistant.tools.js';
-import { executeAssistantActionRequest, listAssistantActions } from './assistant-actions.service.js';
+import { cancelAssistantActionRequest, executeAssistantActionRequest, listAssistantActions } from './assistant-actions.service.js';
 import { AppError } from '../../utils/app-error.js';
 import {
   addAgentMemoryMessages,
@@ -109,6 +109,12 @@ export const listMessages = (
   conversationId: string,
   filters: ListMessagesQuery
 ) => repo.listMessages(workspaceId, userId, conversationId, filters);
+
+export async function exportConversation(workspaceId: string, userId: string, conversationId: string) {
+  const exported = await repo.exportConversation(workspaceId, userId, conversationId);
+  if (!exported) throw notFoundError('Conversation not found');
+  return exported;
+}
 
 export async function createUserMessage(
   workspaceId: string,
@@ -316,4 +322,9 @@ export async function executeAction(workspaceId: string, userId: string, convers
   await assertWorkspaceAutomationActive(workspaceId);
   await getConversation(workspaceId, userId, conversationId);
   return executeAssistantActionRequest(workspaceId, userId, conversationId, actionId);
+}
+
+export async function cancelAction(workspaceId: string, userId: string, conversationId: string, actionId: string) {
+  await getConversation(workspaceId, userId, conversationId);
+  return cancelAssistantActionRequest(workspaceId, userId, conversationId, actionId);
 }

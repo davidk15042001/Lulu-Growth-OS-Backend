@@ -4,6 +4,7 @@ import { createdResponse, successResponse } from '../../utils/response.js';
 import * as service from './conversation.service.js';
 import {
   assistantActionExecutionSchema,
+  assistantActionParamsSchema,
 } from './assistant-action.types.js';
 import {
   conversationParamsSchema,
@@ -132,10 +133,32 @@ export async function executeAction(req: WorkspaceRequest, res: Response, next: 
   }
 }
 
+export async function exportConversation(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = conversationParamsSchema.parse(req.params);
+    const result = await service.exportConversation(params.workspaceId, req.user!.id, params.conversationId!);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Disposition', `attachment; filename="lulu-conversation-${params.conversationId}.json"`);
+    return successResponse(res, 'Conversation export created', result);
+  } catch (error) {
+    next(error);
+  }
+}
+
 export async function listActions(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const params = conversationParamsSchema.parse(req.params);
     return successResponse(res, 'Assistant actions loaded', await service.listActions(params.workspaceId, req.user!.id, params.conversationId!));
+  } catch (error) {
+    next(error);
+  }
+}
+
+export async function cancelAction(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    const params = assistantActionParamsSchema.parse(req.params);
+    const result = await service.cancelAction(params.workspaceId, req.user!.id, params.conversationId, params.actionId);
+    return successResponse(res, 'Assistant action cancelled', result);
   } catch (error) {
     next(error);
   }

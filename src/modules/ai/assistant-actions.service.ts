@@ -17,7 +17,17 @@ import { sendAutonomousMessage } from '../omnichannel/omnichannel.service.js';
 import { assertWorkspaceProviderLaunchReady } from '../provider-control/provider.service.js';
 import * as commercialDocuments from '../commercial-documents/commercial-documents.service.js';
 import { createInvoiceSchema, sendDocumentSchema } from '../commercial-documents/commercial-documents.validator.js';
+import { createQuoteSchema } from '../commercial-documents/commercial-documents.validator.js';
 import { getWorkspaceBusinessIdentity } from '../business-identity/identity.service.js';
+import * as calendarService from '../calendar/calendar.service.js';
+import { createNativeEventSchema } from '../calendar/calendar.validator.js';
+import * as commerceService from '../commerce/commerce.service.js';
+import { createOrderSchema, transitionOrderSchema, updateOrderSchema } from '../commerce/commerce.validator.js';
+import * as productService from '../products/product.service.js';
+import { createProductSchema, updateProductSchema } from '../products/product.validator.js';
+import { generateProductImagesFromText } from '../product-images/product-image.service.js';
+import * as websiteRepo from '../websites/website.repo.js';
+import { requestWebsiteGenerationWorkerRun } from '../websites/website.worker.js';
 import {
   assistantActionInputSchema,
   type AssistantActionInput,
@@ -60,7 +70,12 @@ function digestAction(action: AssistantActionInput) {
 }
 
 function requiresAssistantConfirmation(type: AssistantActionInput['type']) {
-  return type === 'finance.invoice.create_and_send';
+  return [
+    'finance.invoice.create_and_send',
+    'sales.quote.send',
+    'omnichannel.send_message',
+    'website.publish_job',
+  ].includes(type);
 }
 
 function publicAction(row: AssistantActionRow): AssistantPendingAction {
@@ -268,6 +283,11 @@ function resultResourceType(type: string): ResourceType | null {
   if (type === 'advertising.create_optimization') return 'ad_optimizations';
   if (type === 'finance.create_automation') return 'finance_automations';
   if (type === 'website.publish_job') return 'marketing_publications';
+  if (type === 'sales.quote.create' || type === 'sales.quote.send') return 'finance_quotes';
+  if (type.startsWith('commerce.order.')) return 'ecommerce_orders';
+  if (type.startsWith('commerce.product.')) return 'ecommerce_products';
+  if (type === 'website.generate_content') return 'marketing_content';
+  if (type === 'ecommerce.generate_product_images') return 'ecommerce_products';
   return null;
 }
 
@@ -352,6 +372,114 @@ async function executeAssistantActionImplementation(workspaceId: string, userId:
       ...(payload.recipientType === 'group' || payload.recipientType === 'channel' ? { recipientType: payload.recipientType } : {}),
     });
     return { status: 'sent', resourceType: null, recordId: message.id, message: 'Social message sent.', providerMessageId: message.providerMessageId };
+  }
+
+  if (action.type === 'sales.quote.create') {
+    const customerRecordId = textValue(payload.customerRecordId);
+    const currency = textValue(payload.currency, 3).toUpperCase();
+    const lines = Array.isArray(payload.lines) ? payload.lines : [];
+    if (!customerRecordId || !currency || lines.length === 0) throw new AppError(422, 'QUOTE_INPUT_REQUIRED', 'A quote requires customerRecordId, currency, and at least one line.');
+    const quote = await commercialDocuments.createQuote(workspaceId, userId, createQuoteSchema.parse({
+      customerRecordId,
+      companyRecordId: textValue(payload.companyRecordId) || null,
+      leadRecordId: textValue(payload.leadRecordId) || null,
+      opportunityRecordId: textValue(payload.opportunityRecordId) || null,
+      factoryId: textValue(payload.factoryId) || null,
+      language: textValue(payload.language, 12) || 'en',
+      marketCode: textValue(payload.marketCode, 20) || null,
+      currency,
+      validUntil: textValue(payload.validUntil, 10) || null,
+      shippingTotal: payload.shippingTotal ?? 0,
+      terms: objectValue(payload.terms),
+      source: 'conversation',
+      creationMode: 'AI_ASSISTED',
+      handlingMode: 'USER_AUTHORIZATION_REQUIRED',
+      conversationId: action.conversationId,
+      lines,
+    }));
+    if (!quote?.quote?.id) throw new AppError(502, 'QUOTE_NOT_CREATED', 'The canonical quote service did not return a quote.');
+    return { status: 'created', resourceType: 'finance_quotes' as ResourceType, recordId: quote.quote.id, message: `Quote ${quote.quote.quoteNumber} created.`, quote };
+  }
+
+  if (action.type === 'sales.quote.send') {
+    const quoteId = textValue(payload.quoteId);
+    if (!quoteId) throw new AppError(422, 'QUOTE_ID_REQUIRED', 'sales.quote.send requires quoteId.');
+    const sent = await commercialDocuments.sendQuoteAutonomously(workspaceId, userId, quoteId, sendDocumentSchema.parse({
+      conversationId: action.conversationId,
+      channel: payload.channel === 'email' ? 'email' : 'secure_link',
+      recipient: textValue(payload.recipient, 320) || null,
+      operationKey: `assistant:${action.id}:quote-send`,
+    }));
+    return { status: 'sent', resourceType: 'finance_quotes' as ResourceType, recordId: quoteId, message: 'Quote queued for delivery.', sent };
+  }
+
+  if (action.type === 'calendar.event.create') {
+    const event = await calendarService.createNativeEvent(workspaceId, userId, createNativeEventSchema.parse({
+      title: textValue(payload.title, 300),
+      description: textValue(payload.description, 4_000) || null,
+      startAt: textValue(payload.startAt),
+      endAt: textValue(payload.endAt),
+      timezone: textValue(payload.timezone, 80) || 'UTC',
+      location: textValue(payload.location, 500) || null,
+      customerId: textValue(payload.customerId) || null,
+    }));
+    return { status: 'created', resourceType: null, recordId: event.id, message: 'Calendar event created.', event };
+  }
+
+  if (action.type === 'commerce.order.create') {
+    const order = await commerceService.createOrder(workspaceId, {
+      actorType: 'AI_AGENT', actorRef: action.id, correlationId: action.id, causationId: action.id,
+    }, createOrderSchema.parse({ ...payload, source: 'conversation', idempotencyKey: `assistant:${action.id}:order-create` }));
+    return { status: 'created', resourceType: 'ecommerce_orders' as ResourceType, recordId: order.order.id, message: `Order ${order.order.orderNumber} created.`, order };
+  }
+
+  if (action.type === 'commerce.order.update') {
+    const orderId = textValue(payload.orderId);
+    if (!orderId) throw new AppError(422, 'ORDER_ID_REQUIRED', 'commerce.order.update requires orderId.');
+    const order = await commerceService.updateOrder(workspaceId, orderId, {
+      actorType: 'AI_AGENT', actorRef: action.id, correlationId: action.id, causationId: action.id,
+    }, updateOrderSchema.parse({ ...payload, idempotencyKey: `assistant:${action.id}:order-update` }));
+    return { status: 'updated', resourceType: 'ecommerce_orders' as ResourceType, recordId: order.order.id, message: 'Order updated.', order };
+  }
+
+  if (action.type === 'commerce.order.transition') {
+    const orderId = textValue(payload.orderId);
+    if (!orderId) throw new AppError(422, 'ORDER_ID_REQUIRED', 'commerce.order.transition requires orderId.');
+    const order = await commerceService.transitionOrder(workspaceId, orderId, {
+      actorType: 'AI_AGENT', actorRef: action.id, correlationId: action.id, causationId: action.id,
+    }, transitionOrderSchema.parse({ ...payload, idempotencyKey: `assistant:${action.id}:order-transition` }));
+    return { status: 'transitioned', resourceType: 'ecommerce_orders' as ResourceType, recordId: order.order.id, message: 'Order status updated.', order };
+  }
+
+  if (action.type === 'commerce.product.create') {
+    const product = await productService.createProduct(workspaceId, userId, createProductSchema.parse(payload));
+    return { status: 'created', resourceType: 'ecommerce_products' as ResourceType, recordId: product.id, message: 'Product created.', product };
+  }
+
+  if (action.type === 'commerce.product.update') {
+    const productId = textValue(payload.productId);
+    if (!productId) throw new AppError(422, 'PRODUCT_ID_REQUIRED', 'commerce.product.update requires productId.');
+    const product = await productService.updateProduct(workspaceId, productId, userId, updateProductSchema.parse(payload));
+    return { status: 'updated', resourceType: 'ecommerce_products' as ResourceType, recordId: product.id, message: 'Product updated.', product };
+  }
+
+  if (action.type === 'website.generate_content') {
+    const siteId = textValue(payload.siteId);
+    const prompt = textValue(payload.prompt || action.summary, 8_000);
+    if (!siteId || !prompt) throw new AppError(422, 'WEBSITE_CONTENT_INPUT_REQUIRED', 'website.generate_content requires siteId and prompt.');
+    const site = await websiteRepo.getSite(workspaceId, siteId);
+    if (!site) throw notFoundError('Website site not found');
+    const created = await websiteRepo.createJob({ siteId, prompt, createdBy: userId, requestedLanguage: textValue(payload.language, 16) || 'en', autoPublish: false });
+    if (!created.job) throw new AppError(502, 'WEBSITE_GENERATION_NOT_CREATED', 'Website content generation could not be queued.');
+    requestWebsiteGenerationWorkerRun();
+    return { status: 'queued', resourceType: 'marketing_content' as ResourceType, recordId: created.job.id, message: 'Website content generation queued.', job: created.job };
+  }
+
+  if (action.type === 'ecommerce.generate_product_images') {
+    const sourceText = textValue(payload.sourceText, 20_000);
+    if (!sourceText) throw new AppError(422, 'PRODUCT_IMAGE_INPUT_REQUIRED', 'ecommerce.generate_product_images requires sourceText.');
+    const result = await generateProductImagesFromText(sourceText, workspaceId, userId);
+    return { status: 'created', resourceType: 'ecommerce_products' as ResourceType, recordId: null, message: `${result.count} product image job(s) created.`, result };
   }
 
   if (action.type === 'advertising.create_optimization') {
@@ -577,6 +705,45 @@ export async function executeAssistantActionRequest(workspaceId: string, userId:
   if (!row) throw notFoundError('Assistant action not found');
   if (row.status === 'succeeded' || row.status === 'failed' || row.status === 'rejected' || row.status === 'cancelled' || row.status === 'expired') return publicAction(row);
   return executeStoredAction(row);
+}
+
+/** Cancel only work that has not crossed an external side-effect boundary. */
+export async function cancelAssistantActionRequest(workspaceId: string, userId: string, conversationId: string, actionId: string) {
+  await assertWorkspaceCapability({ workspaceId, userId, capability: 'agents.execute', actorType: 'USER' });
+  const row = (await query<AssistantActionRow>(
+    `SELECT ${actionSelect} FROM assistant_action_requests
+      WHERE id=$1 AND workspace_id=$2 AND conversation_id=$3 AND requested_by=$4`,
+    [actionId, workspaceId, conversationId, userId],
+  )).rows[0];
+  if (!row) throw notFoundError('Assistant action not found');
+  if (['succeeded', 'failed', 'rejected', 'cancelled', 'expired'].includes(row.status)) return publicAction(row);
+  if (row.status === 'executing') {
+    throw new AppError(409, 'ASSISTANT_ACTION_EXECUTING', 'This action has already started. Its provider outcome must be reconciled before it can be cancelled.');
+  }
+  const cancelled = (await query<AssistantActionRow>(
+    `UPDATE assistant_action_requests
+        SET status='cancelled', error_code='ASSISTANT_ACTION_CANCELLED',
+            error_message='Cancelled by the requesting user.', completed_at=NOW(), updated_at=NOW()
+      WHERE id=$1 AND workspace_id=$2 AND conversation_id=$3 AND requested_by=$4
+        AND status IN ('ready','pending_approval')
+      RETURNING ${actionSelect}`,
+    [actionId, workspaceId, conversationId, userId],
+  )).rows[0];
+  if (!cancelled) {
+    const current = await loadAction(workspaceId, actionId);
+    if (!current) throw notFoundError('Assistant action not found');
+    if (current.status === 'executing') {
+      throw new AppError(409, 'ASSISTANT_ACTION_EXECUTING', 'This action has already started. Its provider outcome must be reconciled before it can be cancelled.');
+    }
+    return publicAction(current);
+  }
+  await recordSecurityEvent({
+    eventType: 'ADMIN_ACTION',
+    workspaceId,
+    userId,
+    metadata: { action: 'assistant_action_cancelled', targetId: actionId, actionType: cancelled.type },
+  });
+  return publicAction(cancelled);
 }
 
 export async function claimAndExecuteNextAssistantAction() {

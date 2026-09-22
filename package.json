@@ -37,11 +37,12 @@
     "release:gate": "node scripts/verify-release-gate.mjs",
     "db:observability": "tsx scripts/database-observability.ts",
     "test:smoke": "node scripts/smoke-built-server.mjs",
+    "eval:ai": "tsx scripts/ai-evaluation.ts",
     "audit:architecture": "node scripts/architecture-audit.mjs ..\\Lulu-Growth-OS-Frontend",
     "provider:live-readiness": "tsx scripts/provider-live-readiness.ts",
     "provider:live-e2e": "tsx scripts/provider-live-e2e.ts",
     "airwallex:live-e2e": "tsx scripts/airwallex-live-e2e.ts",
-    "check": "npm run typecheck && npm run audit:architecture && npm run test:migrations && npm run test:schema-contracts && npm test && npm run build && npm run test:smoke"
+    "check": "npm run typecheck && npm run eval:ai && npm run audit:architecture && npm run test:migrations && npm run test:schema-contracts && npm test && npm run build && npm run test:smoke"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1111.0",

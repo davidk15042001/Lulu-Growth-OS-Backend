@@ -396,8 +396,9 @@ async function assertReference(
   if (!recordId) return;
   const result = await query<{ resourceType: string }>(
     `SELECT resource_type AS "resourceType"
-       FROM workspace_records
-      WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL`,
+      FROM workspace_records
+      WHERE workspace_id=$1 AND id=$2 AND deleted_at IS NULL
+      LIMIT 1`,
     [workspaceId, recordId],
     client,
   );

@@ -34,4 +34,12 @@ router.route('/conversations/:conversationId/actions')
   .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.executeAction)
   .all(methodNotAllowed);
 
+router.route('/conversations/:conversationId/export')
+  .get(controller.exportConversation)
+  .all(methodNotAllowed);
+
+router.route('/conversations/:conversationId/actions/:actionId/cancel')
+  .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.cancelAction)
+  .all(methodNotAllowed);
+
 export default router;

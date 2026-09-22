@@ -304,3 +304,69 @@ export async function conversationTurns(
   );
   return rows;
 }
+
+/** Bounded, workspace-scoped export for user-owned assistant work. */
+export async function exportConversation(
+  workspaceId: string,
+  userId: string,
+  conversationId: string,
+) {
+  const conversation = await findConversation(workspaceId, userId, conversationId, true);
+  if (!conversation) return undefined;
+  const maxItems = 5_000;
+  const [messages, actions, sessions, transcripts] = await Promise.all([
+    query<Record<string, unknown>>(
+      `SELECT ${messageSelect}
+         FROM ai_messages m
+        WHERE m.conversation_id=$1
+        ORDER BY m.created_at ASC, m.id ASC
+        LIMIT $2`,
+      [conversationId, maxItems + 1],
+    ),
+    query<Record<string, unknown>>(
+      `SELECT id, action_type AS "type", summary, payload, status,
+              result, error_code AS "errorCode", error_message AS "errorMessage",
+              created_at AS "createdAt", completed_at AS "completedAt"
+         FROM assistant_action_requests
+        WHERE workspace_id=$1 AND conversation_id=$2 AND requested_by=$3
+        ORDER BY created_at ASC, id ASC
+        LIMIT $4`,
+      [workspaceId, conversationId, userId, maxItems + 1],
+    ),
+    query<Record<string, unknown>>(
+      `SELECT id, transport, provider, status, language, voice, speed::text AS speed,
+              mode, metadata, started_at AS "startedAt", ended_at AS "endedAt"
+         FROM ai_voice_sessions
+        WHERE workspace_id=$1 AND user_id=$2 AND conversation_id=$3
+        ORDER BY started_at ASC, id ASC
+        LIMIT $4`,
+      [workspaceId, userId, conversationId, maxItems + 1],
+    ),
+    query<Record<string, unknown>>(
+      `SELECT t.id, t.session_id AS "sessionId", t.direction, t.content,
+              t.sequence_number AS "sequenceNumber", t.is_final AS "isFinal",
+              t.source, t.started_at AS "startedAt", t.ended_at AS "endedAt",
+              t.metadata, t.created_at AS "createdAt"
+         FROM ai_voice_transcripts t
+         JOIN ai_voice_sessions s ON s.id=t.session_id
+        WHERE t.workspace_id=$1 AND s.workspace_id=$1 AND s.user_id=$2 AND s.conversation_id=$3
+        ORDER BY t.sequence_number ASC, t.created_at ASC, t.id ASC
+        LIMIT $4`,
+      [workspaceId, userId, conversationId, maxItems + 1],
+    ),
+  ]);
+  return {
+    exportedAt: new Date().toISOString(),
+    conversation,
+    messages: messages.rows.slice(0, maxItems),
+    actions: actions.rows.slice(0, maxItems),
+    voiceSessions: sessions.rows.slice(0, maxItems),
+    voiceTranscripts: transcripts.rows.slice(0, maxItems),
+    truncated: {
+      messages: messages.rows.length > maxItems,
+      actions: actions.rows.length > maxItems,
+      voiceSessions: sessions.rows.length > maxItems,
+      voiceTranscripts: transcripts.rows.length > maxItems,
+    },
+  };
+}

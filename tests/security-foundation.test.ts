@@ -25,6 +25,7 @@ const agentAuth=await import('../src/modules/agents/agent.authorization.js');
 const { evaluateAgentActionPolicy, decideAgentToolPolicy }=await import('../src/modules/agents/agent.autonomy-policy.js');
 const records=await import('../src/modules/records/record.repo.js');
 const assistantActions=await import('../src/modules/ai/assistant-actions.service.js');
+const conversationRepo=await import('../src/modules/ai/conversation.repo.js');
 const adSpend=await import('../src/modules/adspend/adspend.repo.js');
 const commercialDelivery=await import('../src/modules/commercial-documents/commercial-document.delivery.service.js');
 const { registerAgentExecutionHandlers }=await import('../src/modules/agents/agent-execution.worker.js');
@@ -613,6 +614,61 @@ describe('assistant action gateway',()=>{
     assert.equal(action.payload.recipientEmail,'billing@acme.example');
     assert.equal((await db.query(`SELECT id FROM invoices WHERE workspace_id=$1`,[f.ws.id])).rows.length,0);
     assert.equal((await db.query<{status:string}>(`SELECT status FROM assistant_action_requests WHERE id=$1`,[action.id])).rows[0]?.status,'ready');
+  });
+
+  it('cancels a prepared action without crossing its external side-effect boundary', async () => {
+    const f = await assistantFixture();
+    const customer = (await db.query<{ id: string }>(
+      `INSERT INTO workspace_records(workspace_id,resource_type,name,data,created_by)
+       VALUES($1,'finance_customers','Cancel customer',$2::jsonb,$3) RETURNING id`,
+      [f.ws.id, JSON.stringify({ email: 'cancel@example.com' }), f.user.id],
+    )).rows[0]!;
+    const action = await assistantActions.requestAssistantAction(f.ws.id, f.user.id, f.conversation.id, {
+      type: 'finance.invoice.create_and_send',
+      summary: 'Prepare an invoice that must be cancelled',
+      payload: { amount: '100', currency: 'EUR', customerRecordId: customer.id, description: 'Cancelled work' },
+    });
+    assert.equal(action.status, 'ready');
+    const cancelled = await assistantActions.cancelAssistantActionRequest(f.ws.id, f.user.id, f.conversation.id, action.id);
+    assert.equal(cancelled.status, 'cancelled');
+    assert.equal((await db.query(`SELECT id FROM invoices WHERE workspace_id=$1`, [f.ws.id])).rows.length, 0);
+    assert.equal((await db.query<{ status: string }>(`SELECT status FROM assistant_action_requests WHERE id=$1`, [action.id])).rows[0]?.status, 'cancelled');
+  });
+
+  it('does not cancel an action after execution has started', async () => {
+    const f = await assistantFixture();
+    const actionId = crypto.randomUUID();
+    await db.query(
+      `INSERT INTO assistant_action_requests(id,workspace_id,conversation_id,requested_by,action_type,summary,payload,payload_digest,status,idempotency_key,started_at)
+       VALUES($1,$2,$3,$4,'google_reviews.reply','Already executing','{}',$5,'executing',$6,NOW())`,
+      [actionId, f.ws.id, f.conversation.id, f.user.id, 'b'.repeat(64), crypto.randomUUID()],
+    );
+    await assert.rejects(
+      assistantActions.cancelAssistantActionRequest(f.ws.id, f.user.id, f.conversation.id, actionId),
+      { code: 'ASSISTANT_ACTION_EXECUTING' },
+    );
+  });
+
+  it('exports only the requesting user conversation, actions and voice evidence', async () => {
+    const f = await assistantFixture();
+    await db.query(`INSERT INTO ai_messages(conversation_id,role,content) VALUES($1,'user','Export me')`, [f.conversation.id]);
+    const session = (await db.query<{ id: string }>(
+      `INSERT INTO ai_voice_sessions(workspace_id,user_id,conversation_id,transport,provider,status,language,voice,speed,mode)
+       VALUES($1,$2,$3,'browser_fallback','browser','completed','en-US','alloy',1,'conversation') RETURNING id`,
+      [f.ws.id, f.user.id, f.conversation.id],
+    )).rows[0]!;
+    await db.query(
+      `INSERT INTO ai_voice_transcripts(workspace_id,session_id,conversation_id,direction,content,sequence_number,is_final,source)
+       VALUES($1,$2,$3,'input','Export me',0,true,'browser_fallback')`,
+      [f.ws.id, session.id, f.conversation.id],
+    );
+    const exported = await conversationRepo.exportConversation(f.ws.id, f.user.id, f.conversation.id);
+    assert.equal(exported?.conversation.id, f.conversation.id);
+    assert.equal(exported?.messages.length, 1);
+    assert.equal(exported?.voiceSessions.length, 1);
+    assert.equal(exported?.voiceTranscripts.length, 1);
+    assert.equal(exported?.truncated.messages, false);
+    assert.equal(await conversationRepo.exportConversation(f.ws.id, crypto.randomUUID(), f.conversation.id), undefined);
   });
 
   it('creates email drafts without silently sending them',async()=>{
