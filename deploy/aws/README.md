@@ -2,7 +2,44 @@
 
 This backend is a Node.js 20 Express API with PostgreSQL, durable database-backed workers, and optional private S3 storage.
 
-## Recommended Low-Cost Architecture
+## Recommended Pay-As-You-Go Architecture
+
+- Compute: AWS Lambda container image using AWS Lambda Web Adapter and a Lambda Function URL.
+- API service: public Function URL, `BACKGROUND_WORKERS_ENABLED=false`, reserved concurrency capped at first.
+- Database: prefer a PostgreSQL-compatible serverless endpoint that can be reached without a private VPC/NAT path. Aurora DSQL is the AWS-native pay-per-use candidate, but this repo's existing PostgreSQL migrations must be validated against DSQL before production data is moved there.
+- Object storage: private S3 bucket for onboarding/document assets.
+- Secrets: CloudFormation NoEcho parameters for the first bootstrap, then SSM Parameter Store `SecureString` standard parameters.
+- Logs/metrics: CloudWatch Logs with short retention at first, plus AWS Budgets before creating runtime resources.
+
+This path avoids an always-on load balancer. It also avoids ECS service minimum task cost. The main remaining cost question is the database.
+
+Build and push the Lambda image:
+
+```bash
+AWS_REGION=eu-central-1 \
+AWS_ACCOUNT_ID=234371409675 \
+IMAGE_TAG=$(git rev-parse --short HEAD) \
+bash deploy/aws/build-and-push-lambda-image.sh
+```
+
+Deploy the pay-as-you-go API stack:
+
+```bash
+aws cloudformation deploy \
+  --region eu-central-1 \
+  --stack-name lulu-growth-os-backend-payg \
+  --template-file deploy/aws/serverless-payg.template.yaml \
+  --capabilities CAPABILITY_NAMED_IAM \
+  --parameter-overrides \
+    ImageUri=234371409675.dkr.ecr.eu-central-1.amazonaws.com/lulu-growth-os-backend-lambda:latest \
+    CorsOrigin=https://<frontend-domain> \
+    FrontendBaseUrl=https://<frontend-domain> \
+    DatabaseUrl='<postgres-url>' \
+    JwtSecret='<32+ random chars>' \
+    KieApiKey='<kie key>'
+```
+
+## Alternative Low-Cost Always-On Architecture
 
 - Compute: Amazon ECS Express Mode on AWS Fargate.
 - API service: public HTTPS service, `BACKGROUND_WORKERS_ENABLED=false`, autoscaled from 1 to 4 tasks to start.

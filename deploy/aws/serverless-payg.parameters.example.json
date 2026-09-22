@@ -1,0 +1,26 @@
+[
+  {
+    "ParameterKey": "ImageUri",
+    "ParameterValue": "234371409675.dkr.ecr.eu-central-1.amazonaws.com/lulu-growth-os-backend-lambda:latest"
+  },
+  {
+    "ParameterKey": "CorsOrigin",
+    "ParameterValue": "https://app.example.com"
+  },
+  {
+    "ParameterKey": "FrontendBaseUrl",
+    "ParameterValue": "https://app.example.com"
+  },
+  {
+    "ParameterKey": "DatabaseUrl",
+    "ParameterValue": "postgres://user:password@host:5432/database"
+  },
+  {
+    "ParameterKey": "JwtSecret",
+    "ParameterValue": "replace-with-at-least-32-random-characters"
+  },
+  {
+    "ParameterKey": "KieApiKey",
+    "ParameterValue": "replace-with-kie-api-key"
+  }
+]

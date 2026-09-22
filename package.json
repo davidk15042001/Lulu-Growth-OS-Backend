@@ -2,13 +2,13 @@
   "name": "lulu-growth-os-backend",
   "version": "1.0.0",
   "description": "Multi-tenant API and PostgreSQL backend for Lulu Growth OS",
-  "homepage": "https://github.com/davidk15042001/Lulu-Growth-OS-Backend#readme",
+  "homepage": "https://github.com/luluaicn/Business-Backend#readme",
   "bugs": {
-    "url": "https://github.com/davidk15042001/Lulu-Growth-OS-Backend/issues"
+    "url": "https://github.com/luluaicn/Business-Backend/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/davidk15042001/Lulu-Growth-OS-Backend.git"
+    "url": "git+https://github.com/luluaicn/Business-Backend.git"
   },
   "license": "ISC",
   "author": "",
