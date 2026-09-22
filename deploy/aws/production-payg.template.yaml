@@ -1,0 +1,442 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Lulu Growth OS production pay-as-you-go backend on Lambda, Aurora Serverless v2, and CloudFront.
+
+Parameters:
+  ServiceName:
+    Type: String
+    Default: lulu-growth-os-backend
+  ImageUri:
+    Type: String
+    Description: ECR image URI built from Dockerfile.lambda.
+  CorsOrigin:
+    Type: String
+    Description: Single allowed browser frontend origin, for example https://app.example.com.
+  FrontendBaseUrl:
+    Type: String
+    Description: Public frontend base URL.
+  KieApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 1
+    Description: Kie.ai API key used by the production AI provider.
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Stable JWT signing secret.
+  ProviderCredentialKey:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '^[a-fA-F0-9]{64}$'
+    Description: Stable 32-byte hex key for encrypting provider credentials.
+  MfaSecretKey:
+    Type: String
+    NoEcho: true
+    AllowedPattern: '^[a-fA-F0-9]{64}$'
+    Description: Stable 32-byte hex key for MFA secrets.
+  DbName:
+    Type: String
+    Default: lulu_growth_os
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
+  DbUsername:
+    Type: String
+    Default: lulu_admin
+    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9_]{0,62}$'
+  DbPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    MaxLength: 64
+    AllowedPattern: '^[a-zA-Z0-9]+$'
+    Description: URL-safe Aurora master password.
+  AuroraEngineVersion:
+    Type: String
+    Default: '16.3'
+    Description: Aurora PostgreSQL version. 16.3+ supports Serverless v2 scale-to-zero.
+  AuroraMaxCapacity:
+    Type: Number
+    Default: 4
+    MinValue: 0.5
+    MaxValue: 256
+  AuroraAutoPauseSeconds:
+    Type: Number
+    Default: 600
+    MinValue: 300
+    MaxValue: 86400
+  DatabaseBackupRetentionDays:
+    Type: Number
+    Default: 7
+    MinValue: 1
+    MaxValue: 35
+  DeletionProtection:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  AwsS3Bucket:
+    Type: String
+    Default: lulu-growth-os-prod-assets-234371409675-euc1
+  ReservedConcurrency:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 100
+  MemorySize:
+    Type: Number
+    Default: 1024
+    AllowedValues: [512, 1024, 1536, 2048, 3008]
+  TimeoutSeconds:
+    Type: Number
+    Default: 900
+    MinValue: 30
+    MaxValue: 900
+  RunMigrationsOnStartup:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+  LogRetentionDays:
+    Type: Number
+    Default: 7
+    AllowedValues: [1, 3, 5, 7, 14, 30]
+  CloudFrontPriceClass:
+    Type: String
+    Default: PriceClass_All
+    AllowedValues: [PriceClass_100, PriceClass_200, PriceClass_All]
+
+Conditions:
+  DeletionProtectionEnabled: !Equals [!Ref DeletionProtection, 'true']
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.40.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ServiceName}-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.40.0.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ServiceName}-public-a
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.40.1.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${ServiceName}-public-b
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.40.10.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ServiceName}-private-a
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs '']
+      CidrBlock: 10.40.11.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${ServiceName}-private-b
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  NatEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub ${ServiceName}-nat
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+
+  PrivateDefaultRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !Ref PrivateRouteTable
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Lambda outbound access
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Aurora access from Lambda only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private Aurora subnets
+      SubnetIds:
+        - !Ref PrivateSubnetA
+        - !Ref PrivateSubnetB
+
+  DatabaseCluster:
+    Type: AWS::RDS::DBCluster
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !Sub ${ServiceName}-db
+      Engine: aurora-postgresql
+      EngineVersion: !Ref AuroraEngineVersion
+      DatabaseName: !Ref DbName
+      MasterUsername: !Ref DbUsername
+      MasterUserPassword: !Ref DbPassword
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref DatabaseSecurityGroup
+      StorageEncrypted: true
+      BackupRetentionPeriod: !Ref DatabaseBackupRetentionDays
+      DeletionProtection: !If [DeletionProtectionEnabled, true, false]
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0
+        MaxCapacity: !Ref AuroraMaxCapacity
+        SecondsUntilAutoPause: !Ref AuroraAutoPauseSeconds
+
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref DatabaseCluster
+      DBInstanceClass: db.serverless
+      Engine: aurora-postgresql
+      PubliclyAccessible: false
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${ServiceName}-api
+      RetentionInDays: !Ref LogRetentionDays
+
+  ApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: private-assets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::${AwsS3Bucket}/*
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - ApiLogGroup
+      - DatabaseInstance
+      - PrivateDefaultRoute
+    Properties:
+      FunctionName: !Sub ${ServiceName}-api
+      PackageType: Image
+      Code:
+        ImageUri: !Ref ImageUri
+      Role: !GetAtt ApiRole.Arn
+      MemorySize: !Ref MemorySize
+      Timeout: !Ref TimeoutSeconds
+      ReservedConcurrentExecutions: !Ref ReservedConcurrency
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroup
+        SubnetIds:
+          - !Ref PrivateSubnetA
+          - !Ref PrivateSubnetB
+      Environment:
+        Variables:
+          NODE_ENV: production
+          PORT: '4000'
+          AWS_LWA_PORT: '4000'
+          AWS_LWA_READINESS_CHECK_PATH: /health
+          AWS_LWA_ASYNC_INIT: 'true'
+          RUN_MIGRATIONS_ON_STARTUP: !Ref RunMigrationsOnStartup
+          BACKGROUND_WORKERS_ENABLED: 'false'
+          DATABASE_URL: !Sub postgresql://${DbUsername}:${DbPassword}@${DatabaseCluster.Endpoint.Address}:5432/${DbName}
+          DATABASE_SSL: 'true'
+          DATABASE_POOL_MAX: '2'
+          JWT_SECRET: !Ref JwtSecret
+          PROVIDER_CREDENTIAL_KEY: !Ref ProviderCredentialKey
+          MFA_SECRET_KEY: !Ref MfaSecretKey
+          KIE_API_KEY: !Ref KieApiKey
+          CORS_ORIGIN: !Ref CorsOrigin
+          FRONTEND_BASE_URL: !Ref FrontendBaseUrl
+          AWS_REGION: !Ref AWS::Region
+          AWS_S3_BUCKET: !Ref AwsS3Bucket
+          REFRESH_COOKIE_SAME_SITE: none
+          TRUST_PROXY: 'true'
+
+  ApiFunctionUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      TargetFunctionArn: !Ref ApiFunction
+      AuthType: NONE
+      Cors:
+        AllowCredentials: true
+        AllowHeaders:
+          - authorization
+          - content-type
+          - x-workspace-id
+        AllowMethods:
+          - GET
+          - POST
+          - PUT
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowOrigins:
+          - !Ref CorsOrigin
+        MaxAge: 300
+
+  ApiFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref ApiFunction
+      Principal: '*'
+      FunctionUrlAuthType: NONE
+
+  ApiDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub ${ServiceName} API
+        PriceClass: !Ref CloudFrontPriceClass
+        HttpVersion: http2and3
+        Origins:
+          - Id: LambdaFunctionUrl
+            DomainName: !Select [2, !Split ['/', !GetAtt ApiFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: LambdaFunctionUrl
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+          CachedMethods: [GET, HEAD, OPTIONS]
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+
+Outputs:
+  ApiUrl:
+    Description: Public Lambda Function URL for direct API access.
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  CloudFrontApiUrl:
+    Description: CloudFront URL for global API access.
+    Value: !Sub https://${ApiDistribution.DomainName}
+  ApiFunctionName:
+    Value: !Ref ApiFunction
+  DatabaseClusterArn:
+    Value: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DatabaseCluster}

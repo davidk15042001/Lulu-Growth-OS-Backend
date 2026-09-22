@@ -13,6 +13,15 @@ This backend is a Node.js 20 Express API with PostgreSQL, durable database-backe
 
 This path avoids an always-on load balancer. It also avoids ECS service minimum task cost. The main remaining cost question is the database.
 
+For a production-level AWS-only deployment, use `production-payg.template.yaml`.
+It creates a private VPC, private Aurora PostgreSQL Serverless v2 database,
+Lambda in private subnets, a NAT gateway for outbound provider/API calls, and
+CloudFront in front of the Lambda Function URL. This is more secure than putting
+the database on the public internet, but the NAT gateway is an always-on cost.
+The template uses Aurora Serverless v2 `MinCapacity=0` on PostgreSQL 16.3 by
+default so database compute can pause when idle; storage, backups, logs,
+CloudFront traffic, and NAT still bill normally.
+
 Build and push the Lambda image:
 
 ```bash
@@ -38,6 +47,33 @@ aws cloudformation deploy \
     JwtSecret='<32+ random chars>' \
     KieApiKey='<kie key>'
 ```
+
+Deploy the production AWS-only stack:
+
+```bash
+JWT_SECRET="$(openssl rand -hex 32)"
+PROVIDER_CREDENTIAL_KEY="$(openssl rand -hex 32)"
+MFA_SECRET_KEY="$(openssl rand -hex 32)"
+DB_PASSWORD="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+
+aws cloudformation deploy \
+  --region eu-central-1 \
+  --stack-name lulu-growth-os-backend-prod \
+  --template-file deploy/aws/production-payg.template.yaml \
+  --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    ImageUri=234371409675.dkr.ecr.eu-central-1.amazonaws.com/lulu-growth-os-backend-lambda:8efa173 \
+    CorsOrigin=https://<frontend-domain> \
+    FrontendBaseUrl=https://<frontend-domain> \
+    KieApiKey='<kie key>' \
+    JwtSecret="$JWT_SECRET" \
+    ProviderCredentialKey="$PROVIDER_CREDENTIAL_KEY" \
+    MfaSecretKey="$MFA_SECRET_KEY" \
+    DbPassword="$DB_PASSWORD"
+```
+
+After the first successful `/health` call applies migrations, update the stack
+with `RunMigrationsOnStartup=false` to keep later cold starts fast.
 
 ## Alternative Low-Cost Always-On Architecture
 
