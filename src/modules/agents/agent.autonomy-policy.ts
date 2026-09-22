@@ -15,6 +15,10 @@ const classes: Readonly<Record<string,AutonomyClass>> = {
   'finance.create_automation':'AUTONOMOUS', 'advertising.create_optimization':'AUTONOMOUS',
   'finance.invoice.create_and_send':'AUTONOMOUS',
   'finance.invoice.create_from_order':'AUTONOMOUS', 'finance.invoice.issue':'AUTONOMOUS', 'finance.invoice.send':'AUTONOMOUS',
+  // The assistant action gateway owns the explicit confirmation boundary for
+  // payouts. Keep these actions executable after confirmation instead of
+  // misclassifying them as prepaid advertising budget requirements.
+  'finance.payout.request':'AUTONOMOUS', 'finance.payout.submit':'AUTONOMOUS',
   'google_reviews.reply':'AUTONOMOUS', 'website.publish_job':'AUTONOMOUS', 'website.generate_content':'AUTONOMOUS',
   'website.domain.verify':'AUTONOMOUS',
   'omnichannel.send_message':'AUTONOMOUS', 'calendar.event.create':'AUTONOMOUS', 'workspace.refresh':'AUTONOMOUS',

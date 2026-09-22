@@ -1,10 +1,11 @@
-import { env, hasAiProvider, isProd, trustProxySetting } from '../config/env.js';
+import { env, hasAiProvider, hasZep, isProd, trustProxySetting } from '../config/env.js';
 import { checkDatabase } from '../db/pool.js';
 import { getAiProviderHealth } from '../modules/ai/openai.service.js';
 import { getAiReservationHealth } from '../modules/api-wallet/ai-spend-reservation.repo.js';
 import { getKieBillingCatalogReadiness } from '../modules/premium-media/premium-media-cost-catalog.js';
 import { getPremiumMediaBillingHealth } from '../modules/premium-media/premium-media.repo.js';
 import { getWorkerSupervisorHealth } from './worker-liveness.js';
+import { ZEP_ORG_KNOWLEDGE_GRAPH_ID } from '../modules/agent-memory/agent-memory.service.js';
 
 function configured(...values: Array<string | undefined>) {
   return values.every((value) => Boolean(value?.trim()));
@@ -92,6 +93,15 @@ export async function getRuntimeReadiness() {
       // remain independent workspace integrations.
       required: false,
       ready: configured(env.MAILCOW_SMTP_HOST, env.MAILCOW_SMTP_USER, env.MAILCOW_SMTP_PASS, env.EMAIL_FROM),
+    },
+    zepMemory: {
+      // Zep is an optional memory enhancement. PostgreSQL conversation and
+      // audit records remain authoritative when it is disabled or unavailable.
+      required: false,
+      ready: hasZep,
+      configured: hasZep,
+      organizationGraphId: ZEP_ORG_KNOWLEDGE_GRAPH_ID,
+      scope: 'workspace_scoped_users_and_shared_organization_graph',
     },
     twilio: {
       required: false,
