@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Lulu Growth OS production pay-as-you-go backend on Lambda, Aurora Serverless v2, and CloudFront.
+Description: Lulu Growth OS production backend on Lambda, private RDS PostgreSQL, and CloudFront.
 
 Parameters:
   ServiceName:
@@ -48,21 +48,22 @@ Parameters:
     MinLength: 16
     MaxLength: 64
     AllowedPattern: '^[a-zA-Z0-9]+$'
-    Description: URL-safe Aurora master password.
-  AuroraEngineVersion:
+    Description: URL-safe PostgreSQL master password.
+  DbEngineVersion:
     Type: String
-    Default: '16.3'
-    Description: Aurora PostgreSQL version. 16.3+ supports Serverless v2 scale-to-zero.
-  AuroraMaxCapacity:
+    Default: '18.3'
+    Description: RDS PostgreSQL engine version.
+  DbInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t3.micro]
+    Description: Free-plan-compatible PostgreSQL instance class.
+  DbAllocatedStorage:
     Type: Number
-    Default: 4
-    MinValue: 0.5
-    MaxValue: 256
-  AuroraAutoPauseSeconds:
-    Type: Number
-    Default: 600
-    MinValue: 300
-    MaxValue: 86400
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: Allocated database storage in GiB.
   DatabaseBackupRetentionDays:
     Type: Number
     Default: 1
@@ -269,35 +270,29 @@ Resources:
         - !Ref PrivateSubnetA
         - !Ref PrivateSubnetB
 
-  DatabaseCluster:
-    Type: AWS::RDS::DBCluster
+  DatabaseInstance:
+    Type: AWS::RDS::DBInstance
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
-      DBClusterIdentifier: !Sub ${ServiceName}-db
-      Engine: aurora-postgresql
-      EngineVersion: !Ref AuroraEngineVersion
-      DatabaseName: !Ref DbName
+      DBInstanceIdentifier: !Sub ${ServiceName}-db
+      Engine: postgres
+      EngineVersion: !Ref DbEngineVersion
+      DBName: !Ref DbName
+      DBInstanceClass: !Ref DbInstanceClass
+      AllocatedStorage: !Ref DbAllocatedStorage
+      StorageType: gp3
       MasterUsername: !Ref DbUsername
       MasterUserPassword: !Ref DbPassword
       DBSubnetGroupName: !Ref DatabaseSubnetGroup
       VpcSecurityGroupIds:
         - !Ref DatabaseSecurityGroup
+      PubliclyAccessible: false
+      MultiAZ: false
       StorageEncrypted: true
       BackupRetentionPeriod: !Ref DatabaseBackupRetentionDays
+      AutoMinorVersionUpgrade: true
       DeletionProtection: !If [DeletionProtectionEnabled, true, false]
-      ServerlessV2ScalingConfiguration:
-        MinCapacity: 0
-        MaxCapacity: !Ref AuroraMaxCapacity
-        SecondsUntilAutoPause: !Ref AuroraAutoPauseSeconds
-
-  DatabaseInstance:
-    Type: AWS::RDS::DBInstance
-    Properties:
-      DBClusterIdentifier: !Ref DatabaseCluster
-      DBInstanceClass: db.serverless
-      Engine: aurora-postgresql
-      PubliclyAccessible: false
 
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
@@ -360,7 +355,7 @@ Resources:
           AWS_LWA_ASYNC_INIT: 'true'
           RUN_MIGRATIONS_ON_STARTUP: !Ref RunMigrationsOnStartup
           BACKGROUND_WORKERS_ENABLED: 'false'
-          DATABASE_URL: !Sub postgresql://${DbUsername}:${DbPassword}@${DatabaseCluster.Endpoint.Address}:5432/${DbName}
+          DATABASE_URL: !Sub postgresql://${DbUsername}:${DbPassword}@${DatabaseInstance.Endpoint.Address}:5432/${DbName}
           DATABASE_SSL: 'true'
           DATABASE_POOL_MAX: '2'
           JWT_SECRET: !Ref JwtSecret
@@ -437,5 +432,5 @@ Outputs:
     Value: !Sub https://${ApiDistribution.DomainName}
   ApiFunctionName:
     Value: !Ref ApiFunction
-  DatabaseClusterArn:
-    Value: !Sub arn:${AWS::Partition}:rds:${AWS::Region}:${AWS::AccountId}:cluster:${DatabaseCluster}
+  DatabaseEndpoint:
+    Value: !GetAtt DatabaseInstance.Endpoint.Address

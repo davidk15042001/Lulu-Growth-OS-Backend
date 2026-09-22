@@ -14,13 +14,14 @@ This backend is a Node.js 20 Express API with PostgreSQL, durable database-backe
 This path avoids an always-on load balancer. It also avoids ECS service minimum task cost. The main remaining cost question is the database.
 
 For a production-level AWS-only deployment, use `production-payg.template.yaml`.
-It creates a private VPC, private Aurora PostgreSQL Serverless v2 database,
-Lambda in private subnets, a NAT gateway for outbound provider/API calls, and
-CloudFront in front of the Lambda Function URL. This is more secure than putting
-the database on the public internet, but the NAT gateway is an always-on cost.
-The template uses Aurora Serverless v2 `MinCapacity=0` on PostgreSQL 16.3 by
-default so database compute can pause when idle; storage, backups, logs,
-CloudFront traffic, and NAT still bill normally.
+It creates a private VPC, private RDS PostgreSQL database, Lambda in private
+subnets, a NAT gateway for outbound provider/API calls, and CloudFront in front
+of the Lambda Function URL. This is more secure than putting the database on the
+public internet, but the NAT gateway is an always-on cost. The template uses a
+Free-plan-compatible `db.t4g.micro` PostgreSQL instance because new AWS Free
+Plan accounts reject full Aurora CloudFormation configuration unless Aurora is
+created with express configuration, which is not available as a CloudFormation
+property at the time this runbook was written.
 
 Build and push the Lambda image:
 
@@ -73,7 +74,9 @@ aws cloudformation deploy \
 ```
 
 After the first successful `/health` call applies migrations, update the stack
-with `RunMigrationsOnStartup=false` to keep later cold starts fast.
+with `RunMigrationsOnStartup=false` to keep later cold starts fast. When the AWS
+account is upgraded to a paid plan, the database can be moved to Aurora
+Serverless v2 for scale-to-zero compute.
 
 ## Alternative Low-Cost Always-On Architecture
 
