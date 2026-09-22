@@ -137,7 +137,6 @@ Resources:
           - PUT
           - PATCH
           - DELETE
-          - OPTIONS
         AllowOrigins:
           - !Ref CorsOrigin
         MaxAge: 300
