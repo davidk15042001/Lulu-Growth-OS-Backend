@@ -83,39 +83,19 @@ export type PaygQrEligiblePeriod = {
   billingMode: 'weekly' | 'api_pay_now';
 };
 
-export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: string | null, client?: PoolClient) {
+export async function ensurePaygProfile(workspaceId: string, _paymentSourceId?: string | null, client?: PoolClient) {
   await query(
     `INSERT INTO workspace_payg_profiles (
        workspace_id, interval_days, current_period_start, current_period_end,
        provider_payment_source_id, collection_method
-     ) VALUES ($1, 7, ${currentBerlinMondaySql}, ${nextBerlinMondaySql}, $2,
-       CASE WHEN $2::text IS NULL THEN 'CHARGE_ON_CHECKOUT' ELSE 'AUTO_CHARGE' END)
+     ) VALUES ($1, 7, ${currentBerlinMondaySql}, ${nextBerlinMondaySql}, NULL,
+       'CHARGE_ON_CHECKOUT')
      ON CONFLICT (workspace_id) DO UPDATE SET
        enabled=TRUE,
        interval_days=7,
-       provider_payment_source_id=COALESCE(EXCLUDED.provider_payment_source_id, workspace_payg_profiles.provider_payment_source_id),
-       collection_method=CASE
-         WHEN COALESCE(EXCLUDED.provider_payment_source_id, workspace_payg_profiles.provider_payment_source_id) IS NULL
-           THEN 'CHARGE_ON_CHECKOUT'
-         ELSE 'AUTO_CHARGE'
-       END,
-       ai_access_blocked=CASE
-         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN FALSE
-         ELSE workspace_payg_profiles.ai_access_blocked
-       END,
-       blocked_at=CASE
-         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN NULL
-         ELSE workspace_payg_profiles.blocked_at
-       END,
-       block_reason=CASE
-         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN NULL
-         ELSE workspace_payg_profiles.block_reason
-       END,
-       blocked_period_id=CASE
-         WHEN $2::text IS NOT NULL AND workspace_payg_profiles.block_reason='PAYMENT_SOURCE_SETUP_REQUIRED' THEN NULL
-         ELSE workspace_payg_profiles.blocked_period_id
-       END`,
-    [workspaceId, paymentSourceId ?? null],
+       provider_payment_source_id=NULL,
+       collection_method='CHARGE_ON_CHECKOUT'`,
+    [workspaceId],
     client,
   );
 }
@@ -123,7 +103,7 @@ export async function ensurePaygProfile(workspaceId: string, paymentSourceId?: s
 export async function configurePaygDirectPaymentMethod(
   workspaceId: string,
   userId: string,
-  paymentMethod: Exclude<PaygDirectPaymentMethod, 'card'>,
+  paymentMethod: PaygDirectPaymentMethod,
 ) {
   return withTransaction(async (client) => {
     const before = await query<{ preferredPaymentMethod: PaygDirectPaymentMethod | null; hasPaymentSource: boolean }>(
@@ -229,7 +209,7 @@ export async function getLatestPaygPaymentMethodSetup(workspaceId: string) {
 export async function completePaygCardPaymentMethodSetup(input: {
   workspaceId: string;
   setupId: string;
-  paymentSourceId: string;
+  paymentSourceId?: string | null;
   userId: string;
 }) {
   return withTransaction(async (client) => {
@@ -243,16 +223,19 @@ export async function completePaygCardPaymentMethodSetup(input: {
                  provider_payment_source_id AS "providerPaymentSourceId", status,
                  checkout_url AS "checkoutUrl", last_error_code AS "lastErrorCode",
                  created_at AS "createdAt", updated_at AS "updatedAt"`,
-      [input.workspaceId, input.setupId, input.paymentSourceId],
+      [input.workspaceId, input.setupId, input.paymentSourceId ?? null],
       client,
     );
     const result = setup.rows[0];
     if (!result) throw new AppError(404, 'PAYG_PAYMENT_SETUP_NOT_FOUND', 'The payment-method setup does not belong to this workspace.');
 
-    await ensurePaygProfile(input.workspaceId, input.paymentSourceId, client);
+    await ensurePaygProfile(input.workspaceId, null, client);
     await query(
       `UPDATE workspace_payg_profiles
-       SET preferred_payment_method='card', payment_method_configured_at=NOW()
+       SET preferred_payment_method='card',
+           provider_payment_source_id=NULL,
+           collection_method='CHARGE_ON_CHECKOUT',
+           payment_method_configured_at=NOW()
        WHERE workspace_id=$1`,
       [input.workspaceId],
       client,
@@ -262,7 +245,7 @@ export async function completePaygCardPaymentMethodSetup(input: {
          workspace_id, actor_id, action, entity_type, entity_id, after_data
        ) VALUES ($1, $2, 'payg_payment_method.configured', 'workspace_payg_profile', $4,
          $3::jsonb)`,
-      [input.workspaceId, input.userId, JSON.stringify({ paymentMethod: 'card', collectionMethod: 'AUTO_CHARGE', automaticCollection: true }), input.workspaceId],
+      [input.workspaceId, input.userId, JSON.stringify({ paymentMethod: 'card', collectionMethod: 'CHARGE_ON_CHECKOUT', automaticCollection: false }), input.workspaceId],
       client,
     );
     return result;
@@ -330,7 +313,7 @@ export async function reservePaygApiCheckout(
       `SELECT p.workspace_id AS "workspaceId", p.current_period_start AS "periodStart",
               p.current_period_end AS "periodEnd", p.currency,
               s.provider_customer_id AS "providerCustomerId",
-              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId",
+              p.provider_payment_source_id AS "paymentSourceId",
               p.preferred_payment_method AS "preferredPaymentMethod"
        FROM workspace_payg_profiles p
        LEFT JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
@@ -729,7 +712,7 @@ export async function claimDuePaygPeriod(): Promise<PaygPeriod | null> {
               p.current_period_end AS "periodEnd",
               p.currency,
               s.provider_customer_id AS "providerCustomerId",
-              COALESCE(p.provider_payment_source_id, s.metadata->>'paymentSourceId') AS "paymentSourceId",
+              p.provider_payment_source_id AS "paymentSourceId",
               p.preferred_payment_method AS "preferredPaymentMethod"
        FROM workspace_payg_profiles p
        JOIN workspace_subscriptions s ON s.workspace_id=p.workspace_id
@@ -957,17 +940,7 @@ export async function applyPaygInvoiceWebhook(input: {
     const updatedPeriod = updated.rows[0];
     if (!updatedPeriod) return false;
     const workspaceId = updatedPeriod.workspaceId;
-    // A one-off Alipay/WeChat payment must not silently become the recurring
-    // weekly auto-charge source. Only the normal weekly flow may save it.
-    if (input.paymentSourceId && updatedPeriod.billingMode === 'weekly') {
-      await query(
-        `UPDATE workspace_payg_profiles
-         SET provider_payment_source_id=$2, collection_method='AUTO_CHARGE'
-         WHERE workspace_id=$1`,
-        [workspaceId, input.paymentSourceId],
-        client,
-      );
-    }
+    void workspaceId;
     return true;
   });
 }

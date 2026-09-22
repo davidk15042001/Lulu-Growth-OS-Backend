@@ -64,11 +64,7 @@ export const configurePaygPaymentMethodSchema = z.object({
   paymentMethod: z.enum(['card', 'wechatpay', 'alipaycn']),
   successUrl: z.string().url().optional(),
   backUrl: z.string().url().optional(),
-}).strict().superRefine((value, context) => {
-  if (value.paymentMethod === 'card' && (!value.successUrl || !value.backUrl)) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Card payment setup requires successUrl and backUrl.' });
-  }
-});
+}).strict();
 
 export const createPaygQrPaymentSchema = z.object({
   paymentMethod: z.enum(['wechatpay', 'alipaycn']),

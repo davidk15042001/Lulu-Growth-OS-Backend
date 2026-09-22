@@ -652,8 +652,8 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
           : latestPaygPaymentSetup?.status === 'FAILED'
             ? 'failed'
             : 'not_configured',
-      automaticCollection: Boolean(current?.paymentSourceConfigured),
-      paymentSourceConfigured: Boolean(current?.paymentSourceConfigured),
+      automaticCollection: false,
+      paymentSourceConfigured: false,
       latestSetup: latestPaygPaymentSetup ? {
         id: latestPaygPaymentSetup.id,
         status: latestPaygPaymentSetup.status,
@@ -667,7 +667,7 @@ export async function getBilling(workspaceId: string, userId: string, filters: L
       periodStart: current.periodStart,
       periodEnd: current.periodEnd,
       nextInvoiceAt: current.periodEnd,
-      collectionMethod: current.collectionMethod,
+      collectionMethod: 'CHARGE_ON_CHECKOUT',
       preferredPaymentMethod: current.preferredPaymentMethod,
       aiAccessBlocked: adminBillingBypass ? false : current.aiAccessBlocked,
       blockedAt: adminBillingBypass ? null : current.blockedAt,

@@ -27,7 +27,6 @@ import {
   savePaygQrPayment,
   completePaygCardPaymentMethodSetup,
   configurePaygDirectPaymentMethod,
-  createPaygPaymentMethodSetup,
   getPaygPaymentMethodSetup,
   updatePaygPaymentMethodSetupStatus,
 } from './payg-billing.repo.js';
@@ -277,28 +276,6 @@ async function airwallexPostWithoutBody(path: string, operation: string) {
   return data;
 }
 
-async function airwallexPostBody(path: string, body: AirwallexObject, operation: string) {
-  const token = await login();
-  const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}${path}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'x-client-id': env.AIRWALLEX_CLIENT_ID!,
-    },
-    body: JSON.stringify(body),
-    signal: airwallexTimeoutSignal(),
-  }, operation);
-  const data = await response.json().catch(() => ({})) as AirwallexObject;
-  if (!response.ok) {
-    const providerCode = data.code ?? data.error_code ?? null;
-    const providerMessage = data.message ?? data.error ?? null;
-    logger.warn({ path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
-    throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
-  }
-  return data;
-}
-
 export function deterministicBillingRequestId(seed: string) {
   const bytes = crypto.createHash('sha256').update(seed).digest().subarray(0, 16);
   bytes[6] = (bytes[6]! & 0x0f) | 0x50;
@@ -313,14 +290,12 @@ export async function createPaygInvoiceDraft(input: {
   periodStart: string;
   periodEnd: string;
   billingCustomerId: string;
-  paymentSourceId?: string | null;
   preferredPaymentMethod?: string | null;
 }) {
-  const autoCharge = Boolean(input.paymentSourceId);
   const paymentMethodTypes = getPaygInvoicePaymentMethods(input.preferredPaymentMethod);
   return airwallexRequest('/api/v1/billing/invoices/create', {
     billing_customer_id: input.billingCustomerId,
-    collection_method: autoCharge ? 'AUTO_CHARGE' : 'CHARGE_ON_CHECKOUT',
+    collection_method: 'CHARGE_ON_CHECKOUT',
     currency: 'USD',
     days_until_due: env.PAYG_INVOICE_DAYS_UNTIL_DUE,
     default_tax_percent: 0,
@@ -333,16 +308,10 @@ export async function createPaygInvoiceDraft(input: {
     },
     ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
     ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
-    ...(autoCharge
-      ? { payment_source_id: input.paymentSourceId }
-      : {
-          payment_options: {
-            ...(paymentMethodTypes.includes('card')
-              ? { payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' } }
-              : {}),
-            payment_method_types: paymentMethodTypes,
-          },
-        }),
+    payment_options: {
+      payment_method_save: { mode: 'DISABLED' },
+      payment_method_types: paymentMethodTypes,
+    },
   }, deterministicBillingRequestId(`payg-invoice:${input.periodId}`), 'PAYG_INVOICE_CREATE');
 }
 
@@ -387,14 +356,6 @@ export function finalizePaygInvoice(invoiceId: string) {
   return airwallexPostWithoutBody(
     `/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/finalize`,
     'PAYG_INVOICE_FINALIZE',
-  );
-}
-
-export function payPaygInvoice(invoiceId: string, paymentSourceId: string) {
-  return airwallexPostBody(
-    `/api/v1/billing/invoices/${encodeURIComponent(invoiceId)}/pay`,
-    { payment_source_id: paymentSourceId },
-    'PAYG_INVOICE_PAYMENT',
   );
 }
 
@@ -488,69 +449,16 @@ export async function configurePaygPaymentMethod(input: {
     throw new AppError(422, 'PAYG_PAYMENT_METHOD_UNAVAILABLE', 'This payment method is not enabled for the Lulu billing account.');
   }
 
-  if (input.paymentMethod !== 'card') {
-    // WeChat Pay and Alipay QR payments are one-time PaymentIntents and do not
-    // save a reusable payment source or require a Billing Customer. Keep the
-    // method selection available even while customer provisioning is pending.
-    await ensurePaygProfile(input.workspaceId);
-    await configurePaygDirectPaymentMethod(input.workspaceId, input.userId, input.paymentMethod);
-    return {
-      mode: 'manual_invoice' as const,
-      paymentMethod: input.paymentMethod,
-      collectionMethod: 'CHARGE_ON_CHECKOUT' as const,
-    };
-  }
-
-  if (!input.successUrl || !input.backUrl) {
-    throw new AppError(422, 'PAYG_PAYMENT_RETURN_URL_REQUIRED', 'Card payment setup requires success and back URLs.');
-  }
-  assertPaygReturnUrl(input.successUrl);
-  assertPaygReturnUrl(input.backUrl);
+  // Card, WeChat Pay and Alipay are explicit customer checkout flows for each
+  // usage invoice. PAYG no longer saves a reusable payment source for merchant
+  // triggered collection.
   await ensurePaygProfile(input.workspaceId);
-  const billingCustomerId = await ensurePaygBillingCustomer(input.workspaceId);
-  const checkout = await airwallexRequest('/api/v1/billing/billing_checkouts/create', {
-    mode: 'SETUP',
-    // Airwallex requires a checkout currency even when SETUP only saves a card.
-    currency: 'USD',
-    billing_customer_id: billingCustomerId,
-    success_url: input.successUrl,
-    back_url: input.backUrl,
-    locale: 'AUTO',
-    metadata: {
-      workspace_id: input.workspaceId,
-      billing_type: 'payg_payment_method_setup',
-    },
-    ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
-    ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
-  }, crypto.randomUUID(), 'PAYG_PAYMENT_METHOD_SETUP_CREATE');
-  const checkoutId = String(checkout.id ?? '');
-  const checkoutUrl = typeof checkout.url === 'string'
-    ? checkout.url
-    : typeof checkout.checkout_url === 'string'
-      ? checkout.checkout_url
-      : typeof checkout.hosted_checkout_url === 'string'
-        ? checkout.hosted_checkout_url
-        : null;
-  if (!checkoutId) throw providerError('AIRWALLEX_PAYG_PAYMENT_SETUP_ID_MISSING', 'Airwallex did not return a payment setup ID.');
-  if (!checkoutUrl) throw providerError('AIRWALLEX_PAYG_PAYMENT_SETUP_URL_MISSING', 'Airwallex did not return a hosted payment setup URL.');
-  const setup = await createPaygPaymentMethodSetup({
-    workspaceId: input.workspaceId,
-    paymentMethod: 'card',
-    providerCheckoutId: checkoutId,
-    providerCustomerId: billingCustomerId,
-    checkoutUrl,
-  });
-  await query(
-    `INSERT INTO audit_log (workspace_id, actor_id, action, entity_type, entity_id, after_data)
-     VALUES ($1, $2, 'payg_payment_method.setup_started', 'workspace_payg_payment_setup', $3,
-       $4::jsonb)`,
-    [input.workspaceId, input.userId, setup.id, JSON.stringify({ paymentMethod: 'card', provider: 'airwallex' })],
-  );
+  await configurePaygDirectPaymentMethod(input.workspaceId, input.userId, input.paymentMethod);
+  if (input.paymentMethod === 'card') await ensurePaygBillingCustomer(input.workspaceId);
   return {
-    mode: 'card_setup' as const,
-    paymentMethod: 'card' as const,
-    setupId: setup.id,
-    checkoutUrl,
+    mode: 'manual_invoice' as const,
+    paymentMethod: input.paymentMethod,
+    collectionMethod: 'CHARGE_ON_CHECKOUT' as const,
   };
 }
 
@@ -573,10 +481,6 @@ export async function syncPaygPaymentMethodSetup(input: { workspaceId: string; u
     : typeof checkout.payment_source?.id === 'string'
       ? checkout.payment_source.id
       : null;
-  if (!paymentSourceId) {
-    await updatePaygPaymentMethodSetupStatus(input.workspaceId, input.setupId, 'FAILED', 'AIRWALLEX_PAYMENT_SOURCE_MISSING');
-    throw providerError('AIRWALLEX_PAYMENT_SOURCE_MISSING', 'Airwallex completed the payment setup without a reusable payment source.');
-  }
   await completePaygCardPaymentMethodSetup({
     workspaceId: input.workspaceId,
     setupId: input.setupId,
@@ -1010,7 +914,7 @@ export async function createAdSpendProviderPayment(topup: AdSpendTopupRow, retur
         billing_type: 'ad_spend_topup',
       },
       payment_options: {
-        payment_method_save: { mode: 'ENABLED', next_triggered_by: 'MERCHANT' },
+        payment_method_save: { mode: 'DISABLED' },
         payment_method_types: ['card'],
       },
       ...(env.AIRWALLEX_LEGAL_ENTITY_ID ? { legal_entity_id: env.AIRWALLEX_LEGAL_ENTITY_ID } : {}),
@@ -1811,7 +1715,7 @@ export async function syncCheckoutStatus(workspaceId: string, checkoutId: string
     [workspaceId, customerId, subscriptionId, localCheckout.plan_key, JSON.stringify({ syncedFromCheckout: checkoutId, invoiceId, paymentSourceId })]
   );
   if (localCheckout.plan_key === 'starter' || localCheckout.plan_key === 'ai') {
-    await ensurePaygProfile(workspaceId, typeof paymentSourceId === 'string' ? paymentSourceId : null);
+    await ensurePaygProfile(workspaceId);
   }
   await withTransaction(async (client) => {
     await advanceOnboardingAfterBilling(workspaceId, client);
@@ -2257,7 +2161,7 @@ export async function handleWebhook(event: AirwallexObject) {
     );
     if (effectiveStatus === 'active') {
       if (metadata.plan_key === 'starter' || metadata.plan_key === 'ai') {
-        await ensurePaygProfile(workspaceId, typeof webhookPaymentSourceId === 'string' ? webhookPaymentSourceId : null);
+        await ensurePaygProfile(workspaceId);
       }
       await withTransaction(async (client) => {
         await advanceOnboardingAfterBilling(workspaceId, client);

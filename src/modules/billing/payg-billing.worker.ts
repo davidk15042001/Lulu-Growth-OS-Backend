@@ -11,7 +11,6 @@ import {
   createPaygInvoiceDraft,
   fetchAirwallexInvoice,
   finalizePaygInvoice,
-  payPaygInvoice,
   reconcilePendingWalletInvoicePayments,
   reconcilePendingWalletPaymentIntents,
 } from './airwallex.service.js';
@@ -58,29 +57,8 @@ async function settleFinalizedInvoice(period: PaygPeriod, invoiceId: string, inv
     });
     return;
   }
-  if (!period.paymentSourceId) {
-    await finalizePaygPeriod(period, invoice);
-    logger.warn({ periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Storage invoice needs a payment source; the hosted payment link remains available');
-    return;
-  }
-  try {
-    const paid = await payPaygInvoice(invoiceId, period.paymentSourceId);
-    await finalizePaygPeriod(period, paid, true);
-    if (String(paid.payment_status ?? '').toUpperCase() === 'PAID') {
-      await createPaidStorageInvoice({
-        periodId: period.id,
-        workspaceId: period.workspaceId,
-        amount: invoiceAmount(period.serverCostUsd),
-        currency: period.currency,
-        paidAt: typeof paid.paid_at === 'string' ? paid.paid_at : null,
-        providerInvoiceId: invoiceId,
-      });
-    }
-  } catch (error) {
-    const latest = await fetchAirwallexInvoice(invoiceId, `payg-payment-failure:${period.id}`).catch(() => null);
-    await finalizePaygPeriod(period, latest ?? invoice, true);
-    logger.warn({ error, periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Automatic storage payment failed; the hosted payment link remains available');
-  }
+  await finalizePaygPeriod(period, invoice);
+  logger.info({ periodId: period.id, workspaceId: period.workspaceId, invoiceId }, 'Storage invoice finalized for manual customer checkout');
 }
 
 async function issuePeriodInvoice(period: PaygPeriod) {
@@ -120,7 +98,6 @@ async function issuePeriodInvoice(period: PaygPeriod) {
       periodStart: period.periodStart,
       periodEnd: period.periodEnd,
       billingCustomerId: period.providerCustomerId,
-      paymentSourceId: period.paymentSourceId,
       preferredPaymentMethod: period.preferredPaymentMethod,
     });
     invoiceId = String(draft.id ?? '');
