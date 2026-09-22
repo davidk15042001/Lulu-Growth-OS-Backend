@@ -16,7 +16,10 @@ advisory deployment lock.
 - `workspace_records` is a bounded, typed flexible-record surface. Canonical
   modules own high-value entities: products/variants, commerce orders and
   inventory, quotes/invoices, finance journals, conversations/messages,
-  websites/domains, provider connections and agent work.
+  websites/domains, provider connections, agent work, and the payment state on
+  `storefront_checkout_sessions`. `workspace_payout_accounts` stores only
+  tenant-scoped provider beneficiary references; `workspace_payouts` stores
+  precise payout amounts, approvals, idempotency and provider reconciliation.
 - `workspace_api_wallets` and `workspace_ad_spend_wallets` are separate
   financial authorities. Their ledgers, reservations and payment lifecycle
   tables are append-only/idempotent evidence, not display-only counters.

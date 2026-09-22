@@ -47,7 +47,7 @@ export class AirwallexAdapter implements ProviderAdapter {
       { capabilityKey: 'airwallex.payment.checkout', status: checkoutStatus, reason: configuredCheckout ? verification.reason : 'A linked payment account is required before hosted checkout is available.' },
       { capabilityKey: 'airwallex.connected_accounts', status: 'UNCONFIRMED' as const, reason: 'Connected-account operations are not exposed by the Lulu billing adapter.' },
       { capabilityKey: 'airwallex.funds_split', status: 'UNCONFIRMED' as const, reason: 'Funds-split operations require a separate verified Airwallex contract.' },
-      { capabilityKey: 'airwallex.payouts', status: 'UNCONFIRMED' as const, reason: 'Payout operations require a separate verified Airwallex contract.' },
+      { capabilityKey: 'airwallex.payouts', status, reason: verification.verified ? 'Direct beneficiary transfers are available through the verified Airwallex Transfers API.' : verification.reason },
     ];
   }
 

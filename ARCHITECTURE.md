@@ -44,6 +44,11 @@ HTTP / webhook / schedule / provider signal
   prepaid AI wallet before external work is accepted.
 - `src/modules/onboarding`, `websites`, `storefront`, `omnichannel`,
   `calendar`, `email`, `notifications`: customer-facing operational domains.
+  Storefront checkout creates the canonical order and a one-time hosted
+  payment link; signed provider webhooks are the only path that marks a
+  checkout paid. Finance owns tenant-scoped payout requests and beneficiary
+  references while the Airwallex adapter owns external transfer calls and
+  webhook reconciliation.
 
 ## Dependency direction
 
@@ -180,3 +185,10 @@ provider rates; unset rates do not invent financial data.
 8. Composio customer availability is enforced by the backend catalog registry;
    the frontend may present the published list but cannot grant provider access.
    The technical raw tool list is restricted to platform administrators.
+9. Storefront customer payments are not fulfilled from a browser redirect. A
+   signed, idempotently claimed provider webhook must mark the checkout paid
+   before the canonical order can move from `DRAFT` to `PLACED`.
+10. Payout requests use PostgreSQL `NUMERIC` amounts, reserve only paid
+    storefront revenue, require workspace capabilities and a configured
+    beneficiary reference, and remain in a provider-confirmed or explicit
+    ambiguous state until reconciliation completes.

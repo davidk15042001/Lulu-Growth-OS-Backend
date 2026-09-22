@@ -13,6 +13,8 @@ const journal=await import('../src/modules/finance/journal.service.js');
 const journalRepo=await import('../src/modules/finance/journal.repo.js');
 const documents=await import('../src/modules/commercial-documents/commercial-documents.repo.js');
 const projection=await import('../src/modules/finance/invoice-journal.projection.js');
+const payoutRepo=await import('../src/modules/finance/payout.repo.js');
+const storefrontRepo=await import('../src/modules/storefront/storefront.repo.js');
 const {DOMAIN_EVENT_TYPES}=await import('../src/events/domain-event.types.js');
 const {decimalToMinorUnits}=await import('../src/modules/finance/money.js');
 const db=new PGlite();
@@ -81,5 +83,92 @@ describe('invoice receivable lifecycle',()=>{
   it('does not recognize proforma invoices as receivables',async()=>{
     const invoice=(await db.query<{id:string}>(`INSERT INTO invoices(workspace_id,invoice_number,invoice_type,status,currency,grand_total,amount_due,issued_at,created_by) VALUES($1,$2,'PROFORMA','ISSUED','CNY',25,25,NOW(),$3) RETURNING id`,[workspace,`PROFORMA-${crypto.randomUUID()}`,owner])).rows[0]!;
     await assert.rejects(()=>documents.recordInvoicePayment(workspace,invoice.id,owner,{amount:'25',paymentMethod:'OTHER',idempotencyKey:`payment:${crypto.randomUUID()}`}),/proforma invoice/i);
+  });
+});
+
+describe('storefront payment proceeds and payouts',()=>{
+  it('uses paid customer proceeds as a precise idempotent payout balance and reconciles provider status',async()=>{
+    const site=(await db.query<{id:string}>(
+      `INSERT INTO workspace_sites(workspace_id,provider,ownership_mode,name,status) VALUES($1,'managed','managed','Finance storefront','published') RETURNING id`,
+      [workspace],
+    )).rows[0]!.id;
+    const cart=(await db.query<{id:string}>(
+      `INSERT INTO storefront_carts(site_id,workspace_id,token_hash,currency) VALUES($1,$2,$3,'CNY') RETURNING id`,
+      [site,workspace,`test-cart-${crypto.randomUUID()}`],
+    )).rows[0]!.id;
+    await db.query(
+      `INSERT INTO storefront_checkout_sessions(site_id,workspace_id,cart_id,customer_email,currency,amount,status,paid_at)
+       VALUES($1,$2,$3,'buyer@example.test','CNY',125.5000,'PAID',NOW())`,
+      [site,workspace,cart],
+    );
+    const pendingCheckout=(await db.query<{id:string}>(
+      `INSERT INTO storefront_checkout_sessions(site_id,workspace_id,cart_id,customer_email,currency,amount,status)
+       VALUES($1,$2,$3,'pending@example.test','CNY',0,'PENDING_PAYMENT') RETURNING id`,
+      [site,workspace,cart],
+    )).rows[0]!.id;
+    const webhookPaid=await storefrontRepo.applyStorefrontPaymentWebhook({
+      checkoutId:pendingCheckout,
+      providerPaymentLinkId:'plink_test',
+      providerPaymentIntentId:'pi_test',
+      providerStatus:'PAID',
+      providerPayload:{id:'plink_test',status:'PAID'},
+    });
+    assert.equal(webhookPaid?.status,'PAID');
+    assert.equal(webhookPaid?.alreadyPaid,false);
+    const paidReplay=await storefrontRepo.applyStorefrontPaymentWebhook({
+      checkoutId:pendingCheckout,
+      providerPaymentLinkId:'plink_test',
+      providerPaymentIntentId:'pi_test',
+      providerStatus:'PAID',
+      providerPayload:{id:'plink_test',status:'PAID'},
+    });
+    assert.equal(paidReplay?.alreadyPaid,true);
+    const account=await payoutRepo.createPayoutAccount({
+      workspaceId:workspace,
+      providerBeneficiaryId:`beneficiary-${crypto.randomUUID()}`,
+      label:'Primary payout account',
+      currency:'CNY',
+      actorId:owner,
+    });
+    const input={
+      workspaceId:workspace,
+      payoutAccountId:account.id,
+      amount:'100.1250',
+      currency:'CNY',
+      reference:'March storefront proceeds',
+      idempotencyKey:`payout:${crypto.randomUUID()}`,
+      actorId:owner,
+    };
+    const first=await payoutRepo.requestPayout(input);
+    const replay=await payoutRepo.requestPayout(input);
+    assert.equal(replay.id,first.id);
+    assert.equal((await payoutRepo.getPayoutSummary(workspace))[0]?.available,'25.3750');
+    assert.equal((await payoutRepo.getPayoutSummary(otherWorkspace)).length,0);
+
+    const claim=await payoutRepo.claimPayoutForSubmission(workspace,first.id,owner);
+    assert.equal(claim.shouldSubmit,true);
+    await payoutRepo.markPayoutSubmitted({
+      workspaceId:workspace,
+      payoutId:first.id,
+      providerTransferId:`transfer-${crypto.randomUUID()}`,
+      providerStatus:'NEW',
+      providerPayload:{status:'NEW'},
+    });
+    const submitted=await payoutRepo.getPayout(workspace,first.id);
+    assert.equal(submitted?.status,'SUBMITTED');
+    const paid=await payoutRepo.applyPayoutProviderStatus({
+      payoutId:first.id,
+      providerTransferId:submitted!.providerTransferId!,
+      providerStatus:'PAID',
+      providerPayload:{status:'PAID'},
+    });
+    assert.equal(paid?.status,'PAID');
+    const paidAgain=await payoutRepo.applyPayoutProviderStatus({
+      payoutId:first.id,
+      providerTransferId:submitted!.providerTransferId!,
+      providerStatus:'PAID',
+      providerPayload:{status:'PAID'},
+    });
+    assert.equal(paidAgain?.status,'PAID');
   });
 });

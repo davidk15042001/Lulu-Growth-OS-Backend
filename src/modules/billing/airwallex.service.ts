@@ -51,6 +51,8 @@ import {
   createPaidAiCreditInvoice,
   createPaidStorageInvoice,
 } from './paid-billing-invoice.service.js';
+import { applyStorefrontPaymentWebhook } from '../storefront/storefront.repo.js';
+import { applyPayoutProviderStatus } from '../finance/payout.repo.js';
 
 export type BillingPlanKey = 'explorer' | 'viewer' | 'starter' | 'ai' | 'test';
 
@@ -82,6 +84,89 @@ export function isAirwallexConfigured() {
 
 export function isAirwallexWebhookConfigured() {
   return Boolean(env.AIRWALLEX_WEBHOOK_SECRET);
+}
+
+export async function createStorefrontPaymentLink(input: {
+  checkoutId: string;
+  orderId: string | null;
+  amount: string;
+  currency: string;
+  customerEmail: string;
+}) {
+  if (!isAirwallexConfigured()) {
+    throw providerError('AIRWALLEX_CREDENTIALS_MISSING', 'Airwallex is not configured for storefront payments.', {
+      requiredEnv: ['AIRWALLEX_CLIENT_ID', 'AIRWALLEX_API_KEY'],
+    }, 503);
+  }
+  const amount = Number(input.amount);
+  if (!Number.isFinite(amount) || amount <= 0 || !Number.isSafeInteger(Math.round(amount * 10_000))) {
+    throw providerError('STOREFRONT_PAYMENT_AMOUNT_INVALID', 'The storefront order amount cannot be sent to the payment provider.', undefined, 422);
+  }
+  const response = await airwallexRequest('/api/v1/pa/payment_links/create', {
+    amount,
+    currency: input.currency.toUpperCase(),
+    title: `Lulu order ${input.orderId ?? input.checkoutId}`,
+    description: 'Secure payment for your Lulu storefront order.',
+    reference: `lulu-storefront-checkout:${input.checkoutId}`,
+    reusable: false,
+    collectable_shopper_info: {
+      billing_address: true,
+      message: true,
+      phone_number: true,
+      reference: true,
+    },
+    metadata: {
+      storefront_checkout_id: input.checkoutId,
+      order_id: input.orderId,
+      customer_email: input.customerEmail,
+      billing_type: 'storefront_order',
+    },
+    ...(env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID ? { linked_payment_account_id: env.AIRWALLEX_LINKED_PAYMENT_ACCOUNT_ID } : {}),
+  }, deterministicBillingRequestId(`storefront-payment-link:${input.checkoutId}`), 'STOREFRONT_PAYMENT_LINK_CREATE', {
+    'x-api-version': '2024-09-27',
+  });
+  const providerPaymentLinkId = typeof response.id === 'string' ? response.id : null;
+  const paymentUrl = typeof response.url === 'string' && /^https:\/\//i.test(response.url) ? response.url : null;
+  if (!providerPaymentLinkId || !paymentUrl) {
+    throw providerError('STOREFRONT_PAYMENT_URL_MISSING', 'Airwallex did not return a secure storefront payment URL.', { providerPaymentLinkId }, 502);
+  }
+  return {
+    providerPaymentLinkId,
+    paymentUrl,
+    providerStatus: typeof response.status === 'string' ? response.status : 'UNPAID',
+  };
+}
+
+export async function createAirwallexTransfer(input: {
+  payoutId: string;
+  beneficiaryId: string;
+  amount: string;
+  currency: string;
+  reference: string;
+}) {
+  if (!isAirwallexConfigured()) {
+    throw providerError('AIRWALLEX_CREDENTIALS_MISSING', 'Airwallex is not configured for payouts.', {
+      requiredEnv: ['AIRWALLEX_CLIENT_ID', 'AIRWALLEX_API_KEY'],
+    }, 503);
+  }
+  const response = await airwallexRequest('/api/v1/transfers/create', {
+    beneficiary_id: input.beneficiaryId,
+    transfer_amount: input.amount,
+    transfer_currency: input.currency.toUpperCase(),
+    source_currency: input.currency.toUpperCase(),
+    transfer_method: 'LOCAL',
+    reason: 'goods_purchased',
+    reference: input.reference,
+  }, deterministicBillingRequestId(`storefront-payout:${input.payoutId}`), 'STOREFRONT_PAYOUT_CREATE', {
+    'x-api-version': '2024-09-27',
+  });
+  const providerTransferId = typeof response.id === 'string' ? response.id : null;
+  if (!providerTransferId) throw providerError('STOREFRONT_PAYOUT_ID_MISSING', 'Airwallex did not return a payout transfer ID.', undefined, 502);
+  return {
+    providerTransferId,
+    providerStatus: typeof response.status === 'string' ? response.status : 'NEW',
+    providerResponse: response,
+  };
 }
 
 export async function verifyAirwallexConnection() {
@@ -131,7 +216,7 @@ async function login(): Promise<string> {
   return token;
 }
 
-async function airwallexRequest(path: string, body: AirwallexObject, requestId: string, operation = 'REQUEST') {
+async function airwallexRequest(path: string, body: AirwallexObject, requestId: string, operation = 'REQUEST', extraHeaders: Record<string, string> = {}) {
   const token = await login();
   const response = await fetchAirwallex(`${env.AIRWALLEX_BASE_URL}${path}`, {
     method: 'POST',
@@ -139,6 +224,7 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       'x-client-id': env.AIRWALLEX_CLIENT_ID!,
+      ...extraHeaders,
     },
     body: JSON.stringify({ ...body, request_id: requestId }),
     signal: airwallexTimeoutSignal(),
@@ -162,7 +248,7 @@ async function airwallexRequest(path: string, body: AirwallexObject, requestId: 
       delete retryBody.legal_entity_id;
       delete retryBody.default_legal_entity_id;
       logger.warn({ requestId, path, operation }, 'Airwallex legal entity override was not found; retrying with the account default');
-      return airwallexRequest(path, retryBody, deterministicBillingRequestId(`${requestId}:account-default-legal-entity`), operation);
+      return airwallexRequest(path, retryBody, deterministicBillingRequestId(`${requestId}:account-default-legal-entity`), operation, extraHeaders);
     }
     logger.warn({ requestId, path, providerHttpStatus: response.status, providerCode, providerMessage }, 'Airwallex billing request rejected');
     throw providerError(`AIRWALLEX_${operation}_FAILED`, `Airwallex rejected the ${operation.toLowerCase().replaceAll('_', ' ')} request`, { providerHttpStatus: response.status, providerCode, providerMessage, path }, 502);
@@ -1885,6 +1971,44 @@ export async function handleWebhook(event: AirwallexObject) {
     const workspaceId = webhookString(metadata.workspace_id);
     const apiWalletTopupId = webhookString(metadata.api_wallet_topup_id);
     const adSpendTopupId = webhookString(metadata.ad_spend_topup_id);
+    const storefrontCheckoutId = webhookString(metadata.storefront_checkout_id)
+      ?? webhookString(data.reference)?.match(/^lulu-storefront-checkout:(.+)$/i)?.[1] ?? null;
+    const storefrontPaymentLinkId = normalizedEventType.startsWith('payment_link.') ? webhookString(data.id) : webhookString(data.payment_link_id);
+    const storefrontPaymentIntentId = webhookString(data.latest_successful_payment_intent_id) ?? paymentIntentId;
+
+    if (storefrontCheckoutId && (normalizedEventType === 'payment_link.paid' || normalizedEventType === 'payment_intent.succeeded')) {
+      const handled = await applyStorefrontPaymentWebhook({
+        checkoutId: storefrontCheckoutId,
+        providerPaymentLinkId: storefrontPaymentLinkId,
+        providerPaymentIntentId: storefrontPaymentIntentId,
+        providerStatus: normalizedEventType === 'payment_link.paid' ? 'PAID' : (paymentIntentStatus ?? 'SUCCEEDED'),
+        providerPayload: data,
+        paidAt: webhookString(paymentIntent.paid_at) ?? webhookString(data.paid_at),
+      });
+      if (!handled) throw providerError('STOREFRONT_CHECKOUT_NOT_FOUND', 'The paid storefront checkout could not be found.', { checkoutId: storefrontCheckoutId }, 409);
+      await markWebhookProcessed(eventId);
+      return { processed: true, eventId, storefrontCheckoutId, status: 'paid', idempotent: handled.alreadyPaid === true };
+    }
+
+    if (storefrontCheckoutId && (normalizedEventType === 'payment_intent.failed' || normalizedEventType === 'payment_intent.cancelled')) {
+      await query(`UPDATE storefront_checkout_sessions SET status='FAILED',provider_status=$2,metadata=metadata||$3::jsonb,updated_at=NOW() WHERE id=$1 AND status='PENDING_PAYMENT'`, [storefrontCheckoutId, paymentIntentStatus ?? normalizedEventType.split('.')[1]!.toUpperCase(), JSON.stringify({ paymentStatus: 'FAILED' })]);
+      await markWebhookProcessed(eventId);
+      return { processed: true, eventId, storefrontCheckoutId, status: 'failed' };
+    }
+
+    const payoutReference = webhookString(data.reference);
+    const payoutId = payoutReference?.match(/^lulu-payout:([0-9a-f-]{36})$/i)?.[1] ?? null;
+    if (payoutId && normalizedEventType.startsWith('payout.transfer.')) {
+      const providerStatus = webhookString(data.status) ?? (
+        normalizedEventType.endsWith('.paid') ? 'PAID'
+          : normalizedEventType.endsWith('.failed') ? 'FAILED'
+            : normalizedEventType.endsWith('.cancelled') ? 'CANCELLED' : 'PROCESSING'
+      );
+      const handled = await applyPayoutProviderStatus({ payoutId, providerTransferId: webhookString(data.id) ?? payoutId, providerStatus, providerPayload: data });
+      if (!handled) throw providerError('PAYOUT_NOT_FOUND', 'The payout webhook did not match a Lulu payout.', { payoutId }, 409);
+      await markWebhookProcessed(eventId);
+      return { processed: true, eventId, payoutId, status: handled.status.toLowerCase() };
+    }
 
     const reversal = classifyWalletReversal(normalizedEventType, data);
     if (reversal) {

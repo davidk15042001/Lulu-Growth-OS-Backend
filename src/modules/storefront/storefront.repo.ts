@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { query, withTransaction } from '../../db/pool.js';
-import { createOrder } from '../commerce/commerce.service.js';
+import { createOrder, transitionOrder } from '../commerce/commerce.service.js';
 import * as recordService from '../records/record.service.js';
 import type { StorefrontCart, StorefrontCartItem, StorefrontProduct, StorefrontSite } from './storefront.types.js';
 import type { StorefrontRequestDetails } from './storefront.validator.js';
@@ -242,10 +242,42 @@ export async function createCheckout(slug: string, token: string, email: string,
   const cart = await getCart(slug, token);
   if (!cart) return undefined;
   if (!cart.items.length) return { empty: true };
-  const existing = await query<{ id: string; orderId: string | null; status: string; amount: string; currency: string }>(`SELECT id,order_id AS "orderId",status,amount::text,currency FROM storefront_checkout_sessions WHERE cart_id=$1 AND status='PENDING_CONFIRMATION' ORDER BY created_at DESC LIMIT 1`, [cart.id]);
+  const existing = await query<{
+    id: string;
+    orderId: string | null;
+    status: string;
+    amount: string;
+    currency: string;
+    paymentProvider: string | null;
+    providerSessionId: string | null;
+    paymentUrl: string | null;
+    providerPaymentIntentId: string | null;
+  }>(`SELECT id,order_id AS "orderId",status,amount::text,currency,
+      payment_provider AS "paymentProvider",provider_session_id AS "providerSessionId",
+      payment_url AS "paymentUrl",provider_payment_intent_id AS "providerPaymentIntentId"
+      FROM storefront_checkout_sessions
+      WHERE cart_id=$1 AND status IN ('PENDING_CONFIRMATION','PENDING_PAYMENT','PAID')
+      ORDER BY created_at DESC LIMIT 1`, [cart.id]);
   if (existing.rows[0]) {
     const previous = existing.rows[0];
-    return { id: previous.id, orderId: previous.orderId, status: previous.status, amount: previous.amount, currency: previous.currency, paymentProvider: null, paymentRequired: false, requestType: 'order_request', message: 'Anfrage bereits erhalten. Das Unternehmen meldet sich zur Bestätigung.' };
+    return {
+      id: previous.id,
+      orderId: previous.orderId,
+      status: previous.status,
+      amount: previous.amount,
+      currency: previous.currency,
+      paymentProvider: previous.paymentProvider,
+      paymentRequired: previous.status === 'PENDING_PAYMENT',
+      paymentUrl: previous.paymentUrl,
+      providerSessionId: previous.providerSessionId,
+      providerPaymentIntentId: previous.providerPaymentIntentId,
+      requestType: previous.status === 'PENDING_CONFIRMATION' ? 'order_request' : 'payment_order',
+      message: previous.status === 'PAID'
+        ? 'Payment received. The company will process your order.'
+        : previous.status === 'PENDING_PAYMENT'
+          ? 'Your secure payment link is ready.'
+          : 'Anfrage bereits erhalten. Das Unternehmen meldet sich zur Bestätigung.',
+    };
   }
   const requestDetails = shippingAddress as StorefrontRequestDetails;
   const persistedDetails = requestDetailsForPersistence(requestDetails);
@@ -271,12 +303,138 @@ export async function createCheckout(slug: string, token: string, email: string,
       lines: cart.items.map((item) => ({ productId: item.id, variantId: item.variantId, inventoryLocationId: null, quantity: item.quantity, quantityUnit: 'unit', unitPrice: item.unitPrice, discount: '0', tax: '0', metadata: { storefront: true } })),
     });
     const orderId = order.order.id;
-    await query(`UPDATE storefront_checkout_sessions SET status='PENDING_CONFIRMATION',order_id=$2,metadata=metadata||$3::jsonb,updated_at=NOW() WHERE id=$1`, [row.id, orderId, JSON.stringify({ orderId })]);
-    return { id: row.id, orderId, status: 'PENDING_CONFIRMATION', amount: cart.subtotal, currency: cart.currency, paymentProvider: null, paymentRequired: false, requestType: 'order_request', message: 'Anfrage erhalten. Das Unternehmen meldet sich zur Bestätigung.' };
+    await query(`UPDATE storefront_checkout_sessions SET status='PENDING_PAYMENT',order_id=$2,metadata=metadata||$3::jsonb,updated_at=NOW() WHERE id=$1`, [row.id, orderId, JSON.stringify({ orderId, requestType: 'payment_order', paymentStatus: 'PENDING' })]);
+    return {
+      id: row.id,
+      orderId,
+      status: 'PENDING_PAYMENT',
+      amount: cart.subtotal,
+      currency: cart.currency,
+      paymentProvider: 'airwallex',
+      paymentRequired: true,
+      paymentUrl: null,
+      providerSessionId: null,
+      providerPaymentIntentId: null,
+      requestType: 'payment_order',
+      message: 'Your secure payment link is being prepared.',
+    };
   } catch (error) {
     await query(`UPDATE storefront_checkout_sessions SET status='FAILED',metadata=metadata||$2::jsonb,updated_at=NOW() WHERE id=$1`, [row.id, JSON.stringify({ orderCreationFailed: true })]).catch(() => undefined);
     throw error;
   }
+}
+
+export async function attachPaymentLink(input: {
+  checkoutId: string;
+  provider: string;
+  providerSessionId: string;
+  paymentUrl: string;
+  providerStatus?: string | null;
+}) {
+  const result = await query<{
+    id: string;
+    orderId: string | null;
+    status: string;
+    amount: string;
+    currency: string;
+    paymentProvider: string | null;
+    providerSessionId: string | null;
+    paymentUrl: string | null;
+    providerPaymentIntentId: string | null;
+  }>(`UPDATE storefront_checkout_sessions
+      SET payment_provider=$2,provider_session_id=$3,payment_url=$4,
+          provider_status=$5,metadata=metadata||$6::jsonb,updated_at=NOW()
+      WHERE id=$1 AND status='PENDING_PAYMENT'
+      RETURNING id,order_id AS "orderId",status,amount::text,currency,
+        payment_provider AS "paymentProvider",provider_session_id AS "providerSessionId",
+        payment_url AS "paymentUrl",provider_payment_intent_id AS "providerPaymentIntentId"`, [
+    input.checkoutId,
+    input.provider,
+    input.providerSessionId,
+    input.paymentUrl,
+    input.providerStatus ?? 'UNPAID',
+    JSON.stringify({ paymentStatus: 'PENDING', paymentLinkCreatedAt: new Date().toISOString() }),
+  ]);
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    id: row.id,
+    orderId: row.orderId,
+    status: row.status,
+    amount: row.amount,
+    currency: row.currency,
+    paymentProvider: row.paymentProvider,
+    paymentRequired: true,
+    paymentUrl: row.paymentUrl,
+    providerSessionId: row.providerSessionId,
+    providerPaymentIntentId: row.providerPaymentIntentId,
+    requestType: 'payment_order' as const,
+    message: 'Your secure payment link is ready.',
+  };
+}
+
+export async function markCheckoutPaymentFailed(checkoutId: string, failureCode: string) {
+  await query(
+    `UPDATE storefront_checkout_sessions
+        SET status='FAILED',failure_code=$2,provider_status='FAILED',
+            metadata=metadata||$3::jsonb,updated_at=NOW()
+      WHERE id=$1 AND status='PENDING_PAYMENT'`,
+    [checkoutId, failureCode.slice(0, 120), JSON.stringify({ paymentStatus: 'FAILED' })],
+  );
+}
+
+export async function applyStorefrontPaymentWebhook(input: {
+  checkoutId: string;
+  providerPaymentLinkId?: string | null;
+  providerPaymentIntentId?: string | null;
+  providerStatus: string;
+  providerPayload: Record<string, unknown>;
+  paidAt?: string | null;
+}) {
+  const updated = await withTransaction(async (client) => {
+    const locked = await query<{ id: string; workspaceId: string; orderId: string | null; status: string }>(
+      `SELECT id,workspace_id AS "workspaceId",order_id AS "orderId",status
+         FROM storefront_checkout_sessions WHERE id=$1 FOR UPDATE`,
+      [input.checkoutId],
+      client,
+    );
+    const session = locked.rows[0];
+    if (!session) return null;
+    if (session.status === 'PAID') return { ...session, alreadyPaid: true };
+    if (session.status !== 'PENDING_PAYMENT') return { ...session, alreadyPaid: false };
+    const changed = await query<{ id: string }>(
+      `UPDATE storefront_checkout_sessions
+          SET status='PAID',provider_status=$2,
+              provider_payment_intent_id=COALESCE($3,provider_payment_intent_id),
+              paid_at=COALESCE($4::timestamptz,NOW()),
+              metadata=metadata||$5::jsonb,updated_at=NOW()
+        WHERE id=$1 AND status='PENDING_PAYMENT' RETURNING id`,
+      [
+        input.checkoutId,
+        input.providerStatus.slice(0, 80),
+        input.providerPaymentIntentId ?? null,
+        input.paidAt ?? null,
+        JSON.stringify({ paymentStatus: 'PAID', providerPayload: input.providerPayload }),
+      ],
+      client,
+    );
+    return changed.rows[0] ? { ...session, status: 'PAID', alreadyPaid: false } : { ...session, alreadyPaid: true };
+  });
+  if (!updated || !updated.orderId || updated.alreadyPaid) return updated;
+  const order = await query<{ status: string; version: number }>(
+    `SELECT status,version FROM commerce_orders WHERE workspace_id=$1 AND id=$2`,
+    [updated.workspaceId, updated.orderId],
+  );
+  const current = order.rows[0];
+  if (current?.status === 'DRAFT') {
+    await transitionOrder(updated.workspaceId, updated.orderId, { actorType: 'SYSTEM', actorRef: `storefront-payment:${updated.id}` }, {
+      idempotencyKey: `storefront-payment-placed:${updated.id}`,
+      expectedVersion: current.version,
+      targetStatus: 'PLACED',
+      reason: 'Hosted storefront payment verified by Airwallex webhook',
+    });
+  }
+  return updated;
 }
 
 export async function createContactRequest(slug: string, email: string, requestDetails: StorefrontRequestDetails) {
