@@ -7,6 +7,7 @@ import { registerDomainEventHandler } from '../../events/domain-event.registry.j
 import { DOMAIN_EVENT_TYPES } from '../../events/domain-event.types.js';
 import { createRuntimeWorkerMonitor } from '../../operations/worker-liveness.js';
 import { AppError } from '../../utils/app-error.js';
+import { canRunAutomaticallyWithFunding } from './agent-funding-policy.js';
 
 const intervalMs = 15 * 60 * 1000;
 const defaultCadenceMinutes = 6 * 60;
@@ -55,7 +56,7 @@ export function runAutomaticAnalysisCycle(): Promise<void> {
         const selectedAgentIds = prepared.selection.allAgents.map((entry) => entry.definition.id);
         for (const selected of prepared.selection.specialists) {
           if (stopping) break;
-          if (selected.definition.module === 'ads' && !target.ad_spend_funded) continue;
+          if (!canRunAutomaticallyWithFunding(selected.definition.module, target.ad_spend_funded)) continue;
           const page = automaticPageProfiles.find((profile) => profile.pageId === selected.definition.pageId);
           if (!page) continue;
           const goal = buildPageAgentGoal(page);

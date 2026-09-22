@@ -6,8 +6,17 @@ import {
 } from '../src/modules/agents/agent.execution-command.js';
 import { normalizedCommandsForRecord } from '../src/modules/agents/agent-execution.worker.js';
 import { providerRequirementForAgentCommand } from '../src/modules/agents/agent.provider-requirements.js';
+import { canRunAutomaticallyWithFunding } from '../src/modules/agents/agent-funding-policy.js';
 
 describe('agent execution commands', () => {
+  it('keeps non-paid-agent automation active when the separate ad wallet is empty', () => {
+    for (const module of ['general', 'marketing', 'crm', 'finance', 'website'] as const) {
+      assert.equal(canRunAutomaticallyWithFunding(module, false), true, `${module} should remain active`);
+    }
+    assert.equal(canRunAutomaticallyWithFunding('ads', false), false);
+    assert.equal(canRunAutomaticallyWithFunding('ads', true), true);
+  });
+
   it('registers CRM company synchronization as a provider-gated autonomous command', () => {
     const [command] = normalizeAgentExecutionCommands([], {
       module: 'crm', targetSystem: 'crm', actionResourceType: 'crm_companies',
