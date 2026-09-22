@@ -22,6 +22,14 @@ export type CatalogEvidenceDraft = {
   metadata: Record<string, unknown>;
 };
 
+export type CatalogTextBlock = {
+  text: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
 const MAX_PDF_PAGES = 80;
 const MAX_PDF_IMAGES = 24;
 const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
@@ -95,9 +103,22 @@ async function pageImageData(page: unknown, objectName: string) {
   }
 }
 
-function pageText(content: unknown) {
-  const items = (content as { items?: Array<{ str?: unknown }> }).items ?? [];
-  return items.map((item) => typeof item.str === 'string' ? item.str : '').join(' ').replace(/\s+/g, ' ').trim();
+/** Keeps bounded PDF.js text geometry so product facts can be reviewed against the source page. */
+export function catalogTextBlocks(content: unknown): CatalogTextBlock[] {
+  const items = (content as { items?: Array<{ str?: unknown; transform?: unknown; width?: unknown; height?: unknown }> }).items ?? [];
+  return items.flatMap((item) => {
+    const text = typeof item.str === 'string' ? item.str.replace(/\s+/g, ' ').trim() : '';
+    const transform = Array.isArray(item.transform) ? item.transform : [];
+    const x = typeof transform[4] === 'number' && Number.isFinite(transform[4]) ? transform[4] : 0;
+    const y = typeof transform[5] === 'number' && Number.isFinite(transform[5]) ? transform[5] : 0;
+    const width = typeof item.width === 'number' && Number.isFinite(item.width) ? Math.max(0, item.width) : 0;
+    const height = typeof item.height === 'number' && Number.isFinite(item.height) ? Math.max(0, item.height) : 0;
+    return text ? [{ text: text.slice(0, 2_000), x, y, width, height }] : [];
+  }).slice(0, 250);
+}
+
+function pageText(blocks: CatalogTextBlock[]) {
+  return blocks.map((block) => block.text).join(' ').replace(/\s+/g, ' ').trim();
 }
 
 async function describeCatalogImage(content: Buffer, mimeType: string) {
@@ -125,12 +146,22 @@ export async function collectCatalogEvidence(documents: CatalogSourceDocument[])
       const pageLimit = Math.min(pdf.numPages, MAX_PDF_PAGES);
       for (let pageNumber = 1; pageNumber <= pageLimit; pageNumber += 1) {
         const page = await pdf.getPage(pageNumber);
-        const text = pageText(await page.getTextContent());
+        const textBlocks = catalogTextBlocks(await page.getTextContent());
+        const text = pageText(textBlocks);
         if (text) {
+          const viewport = page.getViewport({ scale: 1 });
           evidence.push({
             assetId: `document:${document.id}:page:${pageNumber}:text`, sourceDocumentId: document.id, kind: 'PDF_PAGE_TEXT', pageNumber,
             mimeType: 'application/pdf', content: null, sourceStorageReference: document.storageKey, extractedText: text,
-            metadata: { fileName: document.fileName, origin: 'pdf-text' },
+            metadata: {
+              fileName: document.fileName,
+              origin: 'pdf-text',
+              evidenceVersion: 2,
+              pageWidth: Number.isFinite(viewport.width) ? viewport.width : null,
+              pageHeight: Number.isFinite(viewport.height) ? viewport.height : null,
+              textBlockCount: textBlocks.length,
+              textBlocks,
+            },
           });
         }
         if (extractedImageCount >= MAX_PDF_IMAGES) continue;

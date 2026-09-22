@@ -55,6 +55,7 @@ const EnvSchema = z
     PROVIDER_CREDENTIAL_KEY_VERSION: z.string().regex(/^[a-zA-Z0-9_-]{1,32}$/).default('1'),
     PROVIDER_CREDENTIAL_PREVIOUS_KEYS: z.string().optional(),
     PROVIDER_CREDENTIAL_LEGACY_KEY: z.string().min(32).optional(),
+    MFA_SECRET_KEY: z.string().regex(/^[a-fA-F0-9]{64}$/).optional(),
     DOMAIN_VERIFICATION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(168),
     REFRESH_COOKIE_SAME_SITE: z.enum(['lax', 'strict', 'none']).optional(),
     BCRYPT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
@@ -331,6 +332,9 @@ const EnvSchema = z
     // than falling back to the JWT signing secret for new writes.
     if (data.PROVIDER_CREDENTIAL_KEY && crypto.createHash('sha256').update(data.JWT_SECRET, 'utf8').digest('hex').toLowerCase() === data.PROVIDER_CREDENTIAL_KEY.toLowerCase()) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['PROVIDER_CREDENTIAL_KEY'], message: 'PROVIDER_CREDENTIAL_KEY must be independent from JWT_SECRET' });
+    }
+    if (data.MFA_SECRET_KEY && crypto.createHash('sha256').update(data.JWT_SECRET, 'utf8').digest('hex').toLowerCase() === data.MFA_SECRET_KEY.toLowerCase()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['MFA_SECRET_KEY'], message: 'MFA_SECRET_KEY must be independent from JWT_SECRET' });
     }
 
     const required: Array<keyof typeof data> = ['DATABASE_URL', 'CORS_ORIGIN'];

@@ -9,6 +9,7 @@ process.env.DATABASE_URL='postgres://test:test@127.0.0.1:1/security_tests_only';
 process.env.JWT_SECRET='security-tests-only-not-a-production-key';
 process.env.BCRYPT_ROUNDS='10';
 process.env.PROVIDER_CREDENTIAL_KEY='42'.repeat(32);
+process.env.MFA_SECRET_KEY='43'.repeat(32);
 process.env.ADMIN_MFA_ENABLED='true';
 const { pool }=await import('../src/db/pool.js');
 const auth=await import('../src/modules/auth/auth.repo.js');
@@ -18,6 +19,7 @@ const admin=await import('../src/modules/admin/admin.authorization.js');
 const { createSecretBox }=await import('../src/utils/secret-box.js');
 const { safeSecurityMetadata }=await import('../src/modules/security/security-event.service.js');
 const { verifyToken }=await import('../src/utils/jwt.js');
+const { totpCode }=await import('../src/utils/totp.js');
 const { checkDnsChallenge, verifyDomainOwnership }=await import('../src/modules/websites/domain-verification.service.js');
 const website=await import('../src/modules/websites/website.repo.js');
 const bcrypt=await import('bcryptjs');
@@ -187,6 +189,32 @@ describe('sessions and refresh families',()=>{
     assert.equal(sessions.length,2);
     assert.ok(sessions.some(row=>row.deviceLabel==='Chrome'));
     assert.ok(!JSON.stringify(sessions).includes('192.0.2.1'));
+  });
+  it('supports customer TOTP setup, challenge login, recovery codes, and session revocation',async()=>{
+    const user=await newUser(true);
+    const setup=await service.startMfaSetup(user.id);
+    assert.match(setup.otpauthUri,/^otpauth:\/\/totp\//);
+    const enabled=await service.confirmMfaSetup(user.id,totpCode(setup.secret));
+    assert.equal(enabled.enabled,true);
+    assert.equal(enabled.recoveryCodes.length,8);
+
+    const challenged=await service.loginUser(user.email,'Test-password-2026!');
+    assert.equal('mfaRequired' in challenged,true);
+    if (!('mfaRequired' in challenged) || !challenged.challengeId) throw new Error('Expected a customer MFA challenge');
+    assert.equal((await db.query(`SELECT id FROM auth_sessions WHERE user_id=$1`,[user.id])).rows.length,0);
+    assert.deepEqual(await service.completeUserMfaLogin(challenged.challengeId!,'000000'),{invalidMfa:true});
+    const completed=await service.completeUserMfaLogin(challenged.challengeId!,totpCode(setup.secret));
+    assert.equal('ok' in completed,true);
+
+    const recoveryChallenge=await service.loginUser(user.email,'Test-password-2026!');
+    assert.equal('mfaRequired' in recoveryChallenge,true);
+    if (!('mfaRequired' in recoveryChallenge) || !recoveryChallenge.challengeId) throw new Error('Expected a recovery MFA challenge');
+    const recoveryLogin=await service.completeUserMfaLogin(recoveryChallenge.challengeId!,enabled.recoveryCodes[0]!);
+    assert.equal('ok' in recoveryLogin,true);
+    const disabled=await service.disableUserMfa(user.id,'Test-password-2026!',totpCode(setup.secret));
+    assert.equal(disabled.requiresReauthentication,true);
+    assert.equal((await auth.getMfaState(user.id)).enabled,false);
+    assert.equal((await db.query(`SELECT id FROM auth_sessions WHERE user_id=$1 AND revoked_at IS NULL`,[user.id])).rows.length,0);
   });
   it('rotation is single use, wrong validator cannot revoke, reuse revokes replacement too',async()=>{
     const user=await newUser(true);

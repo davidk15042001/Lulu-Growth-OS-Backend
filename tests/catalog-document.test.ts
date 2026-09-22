@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { catalogImageDataToPng } from '../src/modules/onboarding/catalog-document.service.js';
+import { catalogImageDataToPng, catalogTextBlocks } from '../src/modules/onboarding/catalog-document.service.js';
 
 describe('catalog PDF image evidence', () => {
   it('encodes decoded PDF RGBA data as a bounded PNG asset', () => {
@@ -22,5 +22,17 @@ describe('catalog PDF image evidence', () => {
   it('does not accept malformed or tiny PDF image objects as product evidence', () => {
     assert.equal(catalogImageDataToPng({ width: 8, height: 8, data: new Uint8Array(8 * 8 * 4) }), null);
     assert.equal(catalogImageDataToPng({ width: 32, height: 32, data: new Uint8Array(32) }), null);
+  });
+
+  it('keeps bounded text geometry for source-page review', () => {
+    const blocks = catalogTextBlocks({ items: [
+      { str: '  Green screw  ', transform: [1, 0, 0, 12, 48, 720], width: 84, height: 12 },
+      { str: '5 cm', transform: [1, 0, 0, 12, 48, 700], width: 24, height: 12 },
+      { str: '', transform: [1, 0, 0, 12, 48, 680], width: 24, height: 12 },
+    ] });
+    assert.deepEqual(blocks, [
+      { text: 'Green screw', x: 48, y: 720, width: 84, height: 12 },
+      { text: '5 cm', x: 48, y: 700, width: 24, height: 12 },
+    ]);
   });
 });

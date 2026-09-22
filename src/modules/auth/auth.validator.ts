@@ -62,3 +62,15 @@ export const adminMfaSchema=z.object({
   email:z.string().trim().email().transform(value=>value.toLowerCase()),
   code:z.string().regex(/^\d{6}$/),
 });
+
+export const mfaChallengeSchema = z.object({
+  challengeId: z.string().uuid(),
+  code: z.string().trim().min(6).max(20),
+});
+
+export const mfaCodeSchema = z.object({ code: z.string().trim().regex(/^\d{6}$/) });
+
+export const mfaDisableSchema = z.object({
+  password: z.string().min(1).max(128),
+  code: z.string().trim().min(6).max(20),
+});

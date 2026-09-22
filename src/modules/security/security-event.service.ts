@@ -7,9 +7,10 @@ export type SecurityEventType = 'API_ERROR' | 'LOGIN_SUCCESS' | 'LOGIN_FAILURE' 
   | 'AUTHORIZATION_DENIED' | 'HIGH_RISK_ACTION_BLOCKED' | 'PROVIDER_CREDENTIAL_CHANGED'
   | 'DOMAIN_VERIFIED' | 'DOMAIN_VERIFICATION_FAILED' | 'DOMAIN_VERIFICATION_ISSUED' | 'PROVIDER_ACTION'
   | 'PASSWORD_CHANGED' | 'ADMIN_MFA_CHALLENGE_ISSUED' | 'ADMIN_MFA_CHALLENGE_FAILED' | 'ADMIN_MFA_CHALLENGE_COMPLETED'
+  | 'MFA_CHALLENGE_ISSUED' | 'MFA_CHALLENGE_FAILED' | 'MFA_CHALLENGE_COMPLETED' | 'MFA_ENABLED' | 'MFA_DISABLED'
   | 'AGENT_APPROVAL_REQUESTED' | 'AGENT_APPROVAL_APPROVED' | 'AGENT_APPROVAL_REJECTED';
 export type ExtendedSecurityEventType = SecurityEventType | 'WORKSPACE_MEMBER_INVITED' | 'WORKSPACE_MEMBER_ACCEPTED' | 'WORKSPACE_MEMBER_ROLE_CHANGED' | 'WORKSPACE_MEMBER_REMOVED' | 'WORKSPACE_OWNERSHIP_TRANSFERRED' | 'ENTITLEMENT_OVERRIDE_ADDED' | 'ENTITLEMENT_OVERRIDE_REMOVED';
-const metadataKeys = new Set(['sessionId','action','reason','outcome','targetId','capability','role','agentId','runId','stepId','recordId','domainId','siteId','provider','keyVersion','approvalId']);
+const metadataKeys = new Set(['sessionId','action','reason','outcome','targetId','capability','role','agentId','runId','stepId','recordId','domainId','siteId','provider','keyVersion','approvalId','challengeId','recoveryCode']);
 export function safeSecurityMetadata(value: Record<string, unknown> = {}) {
   return Object.fromEntries(Object.entries(value).filter(([key, item]) => metadataKeys.has(key)
     && (typeof item === 'boolean' || typeof item === 'number' || (typeof item === 'string' && item.length <= 200))));

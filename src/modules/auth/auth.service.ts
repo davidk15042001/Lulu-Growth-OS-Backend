@@ -7,6 +7,9 @@ import * as repo from './auth.repo.js';
 import { env } from '../../config/env.js';
 import { logger } from '../../config/logger.js';
 import { ensureAgentMemoryUser } from '../agent-memory/agent-memory.service.js';
+import { createRecoveryCodes, generateTotpSecret, totpSecretUri, verifyTotp } from '../../utils/totp.js';
+import { decryptMfaSecret, encryptMfaSecret } from '../../utils/mfa-secret-box.js';
+import { AppError } from '../../utils/app-error.js';
 
 export type RegisterResult = { ok: true; userId: string; verificationRequired: false } | { conflict: true };
 type SessionUser = {
@@ -73,7 +76,7 @@ export async function verifyEmailOtp(email: string, code: string): Promise<Verif
   return repo.consumeOtp(email,code,'verify_email');
 }
 
-export type LoginResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { unverified: true } | { mfaRequired:true; email:string };
+export type LoginResult = { ok: true; token: string; refreshToken: string; user: SessionUser } | { invalid: true } | { unverified: true } | { mfaRequired:true; email:string; challengeId?:string; method?:'totp' };
 
 type LoginOptions={userAgent?:string|null;ipAddress?:string|null;sendAdminCode?:(email:string,code:string)=>Promise<void>};
 async function createLoginSession(user: NonNullable<Awaited<ReturnType<typeof repo.getUserByEmail>>>, email:string, options?: LoginOptions):Promise<LoginResult> {
@@ -107,7 +110,95 @@ export async function loginUser(email: string, password: string, options?: Login
     return {mfaRequired:true,email:user.email};
   }
 
+  if (user.mfa_enabled) {
+    const challenge = await repo.createMfaChallenge(user.id);
+    await recordSecurityEvent({ eventType: 'MFA_CHALLENGE_ISSUED', userId: user.id, metadata: { challengeId: challenge.id } });
+    return { mfaRequired: true, email: user.email, challengeId: challenge.id, method: 'totp' };
+  }
+
   return createLoginSession(user,email,options);
+}
+
+export async function completeUserMfaLogin(challengeId: string, code: string, options?: { userAgent?: string | null; ipAddress?: string | null }) {
+  const challenge = await repo.getMfaChallenge(challengeId);
+  if (!challenge || challenge.usedAt || new Date(challenge.expiresAt).getTime() <= Date.now()) return { invalidMfa: true } as const;
+  const stored = await repo.getMfaSecretAndRecoveryCodes(challenge.userId);
+  if (!stored?.secretEncrypted) return { invalidMfa: true } as const;
+  let valid = false;
+  let usedRecoveryIndex: number | null = null;
+  try {
+    valid = verifyTotp(decryptMfaSecret(stored.secretEncrypted), code);
+  } catch {
+    valid = false;
+  }
+  if (!valid) {
+    for (let index = 0; index < stored.recoveryCodeHashes.length; index += 1) {
+      if (await bcrypt.compare(code.trim().toUpperCase(), stored.recoveryCodeHashes[index]!)) {
+        valid = true;
+        usedRecoveryIndex = index;
+        break;
+      }
+    }
+  }
+  if (!valid || !await repo.consumeMfaChallenge(challengeId, challenge.userId)) {
+    await recordSecurityEvent({ eventType: 'MFA_CHALLENGE_FAILED', userId: challenge.userId, metadata: { challengeId } });
+    return { invalidMfa: true } as const;
+  }
+  if (usedRecoveryIndex !== null) await repo.consumeRecoveryCode(challenge.userId, usedRecoveryIndex);
+  const user = await repo.getUserById(challenge.userId);
+  if (!user) return { invalidMfa: true } as const;
+  await recordSecurityEvent({ eventType: 'MFA_CHALLENGE_COMPLETED', userId: user.id, metadata: { challengeId, recoveryCode: usedRecoveryIndex !== null } });
+  const session = await createLoginSession(user, user.email, options);
+  return 'ok' in session ? session : { invalidMfa: true } as const;
+}
+
+export async function getMfaStatus(userId: string) {
+  const state = await repo.getMfaState(userId);
+  return { enabled: state.enabled, setupAvailable: Boolean(env.MFA_SECRET_KEY), pendingSetup: Boolean(await repo.getMfaSetup(userId)) };
+}
+
+export async function startMfaSetup(userId: string) {
+  if (!env.MFA_SECRET_KEY) throw new AppError(503, 'MFA_NOT_CONFIGURED', 'Customer MFA is not configured on this server.');
+  const state = await repo.getMfaState(userId);
+  if (state.enabled) throw new AppError(409, 'MFA_ALREADY_ENABLED', 'MFA is already enabled for this account.');
+  const user = await repo.getUserById(userId);
+  if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'User not found.');
+  const secret = generateTotpSecret();
+  const setup = await repo.saveMfaSetup(userId, encryptMfaSecret(secret));
+  return { secret, otpauthUri: totpSecretUri(secret, user.email), expiresAt: setup.expiresAt };
+}
+
+export async function confirmMfaSetup(userId: string, code: string) {
+  const setup = await repo.getMfaSetup(userId);
+  if (!setup) throw new AppError(409, 'MFA_SETUP_EXPIRED', 'MFA setup has expired. Start setup again.');
+  if (!verifyTotp(decryptMfaSecret(setup.secretEncrypted), code)) throw new AppError(400, 'MFA_CODE_INVALID', 'The authenticator code is invalid.');
+  const recoveryCodes = createRecoveryCodes();
+  const hashes = await Promise.all(recoveryCodes.map((value) => bcrypt.hash(value, env.BCRYPT_ROUNDS)));
+  await repo.enableMfa(userId, setup.secretEncrypted, hashes);
+  await recordSecurityEvent({ eventType: 'MFA_ENABLED', userId });
+  return { enabled: true, recoveryCodes };
+}
+
+export async function disableUserMfa(userId: string, password: string, code: string) {
+  const user = await repo.getUserById(userId);
+  if (!user || !await bcrypt.compare(password, user.password_hash)) throw new AppError(400, 'MFA_PASSWORD_INVALID', 'The account password is invalid.');
+  const stored = await repo.getMfaSecretAndRecoveryCodes(userId);
+  if (!stored?.secretEncrypted) throw new AppError(409, 'MFA_NOT_ENABLED', 'MFA is not enabled for this account.');
+  let valid = false;
+  try { valid = verifyTotp(decryptMfaSecret(stored.secretEncrypted), code); } catch { valid = false; }
+  if (!valid) {
+    for (let index = 0; index < stored.recoveryCodeHashes.length; index += 1) {
+      if (await bcrypt.compare(code.trim().toUpperCase(), stored.recoveryCodeHashes[index]!)) {
+        valid = true;
+        await repo.consumeRecoveryCode(userId, index);
+        break;
+      }
+    }
+  }
+  if (!valid) throw new AppError(400, 'MFA_CODE_INVALID', 'The authenticator or recovery code is invalid.');
+  await repo.disableMfa(userId);
+  await recordSecurityEvent({ eventType: 'MFA_DISABLED', userId });
+  return { enabled: false, requiresReauthentication: true };
 }
 
 export async function completeAdminLogin(email:string,code:string,options?:{userAgent?:string|null;ipAddress?:string|null}):Promise<LoginResult|{invalidMfa:true}> {

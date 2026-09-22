@@ -15,6 +15,13 @@ This document is the implementation register for the additional production-grade
 | 137–138 | Frontend API-contract audit and backend resource catalog prevent accidental UI/API drift | frontend `scripts/audit-api-contracts.mjs`, `src/domain/resource-catalog.ts` |
 | 147 | Request IDs and event correlation IDs are persisted through HTTP, logs, and durable events | request middleware, `domain_events.metadata`, audit records |
 | 150–152 | Release/check commands provide a repeatable definition-of-done gate | `package.json` `check` script and this register |
+| 152 | Customer TOTP MFA with encrypted secrets, expiring challenges, single-use recovery codes, session revocation, and security events | `src/modules/auth`, `src/utils/totp.ts`, `src/utils/mfa-secret-box.ts`, `src/database/migrations/0152_user_mfa.sql`, `tests/totp.test.ts` |
+
+## Directly implemented follow-up controls
+
+Customer accounts can now opt into authenticator-app MFA from the profile surface. Login challenges are short-lived and single-use; recovery codes are stored only as bcrypt hashes, while the TOTP secret is encrypted with the dedicated `MFA_SECRET_KEY`. Disabling MFA increments the user token version and revokes the user's refresh-session family. The server exposes setup status as unavailable until the encryption key is configured.
+
+Catalog PDF text evidence now stores bounded text blocks with page coordinates, page dimensions, and an evidence version next to the extracted text. This provides reviewable source context for product facts without pretending that scanned-page OCR or table understanding is complete.
 
 ## Partial or requires an environment decision
 

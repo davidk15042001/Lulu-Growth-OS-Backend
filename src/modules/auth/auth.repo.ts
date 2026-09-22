@@ -9,8 +9,8 @@ import { recordSecurityEvent } from '../security/security-event.service.js';
 
 export type ImpersonationActor = { userId: string; email: string };
 export type SessionOptions = { userAgent?: string | null; ipAddress?: string | null; impersonator?: ImpersonationActor | null };
-type User = { id: string; email: string; password_hash: string; verified_at: string | null; token_version: number; first_name: string | null; last_name: string | null; role: 'user' | 'admin' };
-const userColumns = 'id,email,password_hash,verified_at,token_version,first_name,last_name,role';
+type User = { id: string; email: string; password_hash: string; verified_at: string | null; token_version: number; first_name: string | null; last_name: string | null; role: 'user' | 'admin'; mfa_enabled: boolean };
+const userColumns = 'id,email,password_hash,verified_at,token_version,first_name,last_name,role,mfa_enabled';
 export async function getUserByEmail(email: string) {
   return (await query<User>(`SELECT ${userColumns} FROM users WHERE lower(email)=lower($1) AND deleted_at IS NULL`,[email])).rows[0];
 }
@@ -23,6 +23,103 @@ export async function markUserVerified(id: string) {
 export async function updateUserProfile(id: string, input: { firstName?: string | undefined; lastName?: string | undefined }) {
   await query('UPDATE users SET first_name=COALESCE($2,first_name),last_name=COALESCE($3,last_name) WHERE id=$1 AND deleted_at IS NULL',[id,input.firstName ?? null,input.lastName ?? null]);
   return getUserById(id);
+}
+
+export async function getMfaState(userId: string) {
+  return (await query<{ enabled: boolean; hasSecret: boolean }>(
+    `SELECT mfa_enabled AS enabled, (mfa_secret_encrypted IS NOT NULL) AS "hasSecret"
+       FROM users WHERE id=$1 AND deleted_at IS NULL`,
+    [userId],
+  )).rows[0] ?? { enabled: false, hasSecret: false };
+}
+
+export async function saveMfaSetup(userId: string, secretEncrypted: string) {
+  return (await query<{ id: string; expiresAt: string }>(
+    `INSERT INTO auth_mfa_setups(user_id,secret_encrypted,expires_at)
+     VALUES($1,$2,NOW()+INTERVAL '15 minutes')
+     ON CONFLICT (user_id) DO UPDATE SET secret_encrypted=EXCLUDED.secret_encrypted,expires_at=EXCLUDED.expires_at,created_at=NOW()
+     RETURNING id,expires_at AS "expiresAt"`,
+    [userId, secretEncrypted],
+  )).rows[0]!;
+}
+
+export async function getMfaSetup(userId: string) {
+  return (await query<{ secretEncrypted: string; expiresAt: string }>(
+    `SELECT secret_encrypted AS "secretEncrypted",expires_at AS "expiresAt"
+       FROM auth_mfa_setups WHERE user_id=$1 AND expires_at>NOW()`,
+    [userId],
+  )).rows[0] ?? null;
+}
+
+export async function enableMfa(userId: string, secretEncrypted: string, recoveryCodeHashes: string[]) {
+  await withTransaction(async (client) => {
+    await query(
+      `UPDATE users SET mfa_enabled=TRUE,mfa_secret_encrypted=$2,mfa_recovery_code_hashes=$3::jsonb,updated_at=NOW()
+         WHERE id=$1 AND deleted_at IS NULL`,
+      [userId, secretEncrypted, JSON.stringify(recoveryCodeHashes)],
+      client,
+    );
+    await query('DELETE FROM auth_mfa_setups WHERE user_id=$1', [userId], client);
+  });
+}
+
+export async function disableMfa(userId: string) {
+  await withTransaction(async (client) => {
+    await query(
+      `UPDATE users SET mfa_enabled=FALSE,mfa_secret_encrypted=NULL,mfa_recovery_code_hashes='[]'::jsonb,token_version=token_version+1,updated_at=NOW()
+         WHERE id=$1 AND deleted_at IS NULL`,
+      [userId],
+      client,
+    );
+    await revokeSessionsInTransaction(userId, null, 'mfa_disabled', client);
+    await query('DELETE FROM auth_mfa_setups WHERE user_id=$1', [userId], client);
+  });
+}
+
+export async function getMfaSecretAndRecoveryCodes(userId: string) {
+  return (await query<{ secretEncrypted: string; recoveryCodeHashes: string[] }>(
+    `SELECT mfa_secret_encrypted AS "secretEncrypted",mfa_recovery_code_hashes AS "recoveryCodeHashes"
+       FROM users WHERE id=$1 AND deleted_at IS NULL AND mfa_enabled=TRUE`,
+    [userId],
+  )).rows[0] ?? null;
+}
+
+export async function consumeRecoveryCode(userId: string, index: number) {
+  return withTransaction(async (client) => {
+    const row = (await query<{ hashes: string[] }>(
+      `SELECT mfa_recovery_code_hashes AS hashes FROM users WHERE id=$1 AND mfa_enabled=TRUE FOR UPDATE`,
+      [userId],
+      client,
+    )).rows[0];
+    if (!row || !Array.isArray(row.hashes) || !row.hashes[index]) return false;
+    const remaining = row.hashes.filter((_, position) => position !== index);
+    await query('UPDATE users SET mfa_recovery_code_hashes=$2::jsonb,updated_at=NOW() WHERE id=$1', [userId, JSON.stringify(remaining)], client);
+    return true;
+  });
+}
+
+export async function createMfaChallenge(userId: string) {
+  return (await query<{ id: string; expiresAt: string }>(
+    `INSERT INTO auth_mfa_challenges(user_id,expires_at) VALUES($1,NOW()+INTERVAL '10 minutes') RETURNING id,expires_at AS "expiresAt"`,
+    [userId],
+  )).rows[0]!;
+}
+
+export async function getMfaChallenge(challengeId: string) {
+  return (await query<{ userId: string; expiresAt: string; usedAt: string | null }>(
+    `SELECT user_id AS "userId",expires_at AS "expiresAt",used_at AS "usedAt"
+       FROM auth_mfa_challenges WHERE id=$1`,
+    [challengeId],
+  )).rows[0] ?? null;
+}
+
+export async function consumeMfaChallenge(challengeId: string, userId: string) {
+  return (await query<{ id: string }>(
+    `UPDATE auth_mfa_challenges SET used_at=NOW()
+       WHERE id=$1 AND user_id=$2 AND used_at IS NULL AND expires_at>NOW()
+       RETURNING id`,
+    [challengeId, userId],
+  )).rowCount > 0;
 }
 
 export async function changeUserPassword(id: string, passwordHash: string) {
@@ -214,7 +311,7 @@ export async function rotateRefreshToken(selector:string,validator:string,_optio
   return withTransaction(async client=>{
     // Authenticate before revocation: knowledge of a selector alone cannot revoke.
     const current=(await query<{id:string;user_id:string;session_id:string;token_hash:string;revoked:boolean;rotated_at:string|null;expires_at:string;impersonated_by_user_id:string|null;impersonated_by_email:string|null}>(
-      'SELECT * FROM refresh_tokens WHERE selector=$1',[selector],client)).rows[0];
+      'SELECT id,user_id,session_id,token_hash,revoked,rotated_at,expires_at,impersonated_by_user_id,impersonated_by_email FROM refresh_tokens WHERE selector=$1',[selector],client)).rows[0];
     if(!current || !await bcrypt.compare(validator,current.token_hash)) return {status:'invalid'} as const;
     // The session row serializes rotations and revocations for the entire family.
     const session=(await query<{expires_at:string;revoked_at:string|null}>('SELECT expires_at,revoked_at FROM auth_sessions WHERE id=$1 AND user_id=$2 FOR UPDATE',[current.session_id,current.user_id],client)).rows[0];

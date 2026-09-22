@@ -74,6 +74,15 @@ router.route('/admin-mfa')
   .post(otpLimiter, verificationAccountLimiter, controller.adminMfa)
   .all(methodNotAllowed);
 
+router.route('/mfa/verify')
+  .post(otpLimiter, controller.mfaVerify)
+  .all(methodNotAllowed);
+
+router.route('/mfa/status').get(requireAuth, controller.mfaStatus).all(methodNotAllowed);
+router.route('/mfa/setup').post(requireAuth, controller.mfaSetup).all(methodNotAllowed);
+router.route('/mfa/confirm').post(requireAuth, otpLimiter, controller.mfaConfirm).all(methodNotAllowed);
+router.route('/mfa/disable').post(requireAuth, otpLimiter, controller.mfaDisable).all(methodNotAllowed);
+
 router.route('/change-password')
   .post(requireAuth, controller.changePassword)
   .all(methodNotAllowed);

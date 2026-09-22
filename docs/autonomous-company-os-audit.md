@@ -193,6 +193,8 @@ Office and Workspace are views over the same services and records. Digital Emplo
 6. Manual and autonomous actions must call the same domain service. The actor type, causation, and source differ; the business object does not.
 7. Lulu's ledger is an operational subledger unless jurisdiction-specific accounting configuration and compliance verification are explicitly supplied. It must not claim statutory books by default.
 8. Executive cycles are evidence-based summaries, not authority to mutate a business record. Their proposals remain plan-only until a human decision and the existing canonical domain controls allow later work.
+9. Customer MFA is an opt-in account control backed by encrypted TOTP secrets, single-use recovery codes, expiring login challenges, session-family revocation on disable, and security events. It is unavailable until `MFA_SECRET_KEY` is configured; the application must never silently claim that setup is available without that key.
+10. Product facts imported from PDFs retain bounded page geometry and source-page metadata alongside extracted text. Scanned-page OCR and visual/table interpretation remain explicit capability gates; extracted text alone must not be presented as verified source evidence.
 
 ## Release gates
 
@@ -210,4 +212,6 @@ Office and Workspace are views over the same services and records. Digital Emplo
 - Airwallex invoice top-ups credit wallets only after exact, in-band, provider-processed Billing Transactions prove the expected net CNY payment.
 - Google Ads keeps the full authorized cap reserved until provider cost observations settle actual spend and final matching billing coverage permits release of the remainder.
 - Provider sandboxes/live test accounts verify webhooks, send/publish mutations, retries, idempotency, and status callbacks before that provider is marketed as production-ready.
+- Customer TOTP MFA requires a separately managed `MFA_SECRET_KEY`, recovery-code handling, challenge expiry/rate limits, and a live login/setup/disable smoke test before enabling it for customer workspaces.
+- Catalog imports retain source-document/page references and bounded text geometry for review; scanned PDFs, OCR, table extraction, and image-to-variant matching require dedicated acceptance tests before being treated as fully automated.
 - Security, privacy, retention, backup/restore, incident response, and jurisdictional compliance receive a separate launch review.

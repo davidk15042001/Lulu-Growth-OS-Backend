@@ -18,6 +18,9 @@ import {
   resendOtpSchema,
   updateProfileSchema,
   changePasswordSchema,
+  mfaChallengeSchema,
+  mfaCodeSchema,
+  mfaDisableSchema,
 } from './auth.validator.js';
 
 const RT_COOKIE_NAME = 'rt';
@@ -88,7 +91,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     
     if ('invalid' in result) return jsonError(res, 401, 'INVALID_CREDENTIALS', 'Invalid email or password');
     if ('unverified' in result) return jsonError(res, 403, 'ACCOUNT_UNVERIFIED', 'Verify your email to continue');
-    if ('mfaRequired' in result) return res.status(202).json({success:true,message:'Administrator verification required',data:{mfaRequired:true,email:result.email}});
+    if ('mfaRequired' in result) return res.status(202).json({success:true,message:result.method === 'totp' ? 'Authenticator verification required' : 'Administrator verification required',data:{mfaRequired:true,email:result.email,challengeId:result.challengeId ?? null,method:result.method ?? 'email'}});
     
     setRefreshTokenCookie(res, result.refreshToken);
     
@@ -260,6 +263,39 @@ export async function adminMfa(req:Request,res:Response,next:NextFunction){
     setRefreshTokenCookie(res,result.refreshToken);
     return res.json({success:true,message:'Administrator verified',data:{token:result.token,user:result.user}});
   }catch(error){next(error);}
+}
+
+export async function mfaVerify(req: Request, res: Response, next: NextFunction) {
+  try {
+    const body = mfaChallengeSchema.parse(req.body);
+    const userAgent = typeof req.headers['user-agent'] === 'string' ? req.headers['user-agent'] : null;
+    const result = await service.completeUserMfaLogin(body.challengeId, body.code, { userAgent, ipAddress: req.ip ?? null });
+    if ('invalidMfa' in result) return jsonError(res, 401, 'MFA_INVALID', 'The authenticator or recovery code is invalid or expired');
+    setRefreshTokenCookie(res, result.refreshToken);
+    return res.json({ success: true, message: 'MFA verified', data: { token: result.token, user: result.user } });
+  } catch (error) { next(error); }
+}
+
+export async function mfaStatus(req: AuthedRequest, res: Response, next: NextFunction) {
+  try { return res.json({ success: true, data: await service.getMfaStatus(req.user!.id) }); } catch (error) { next(error); }
+}
+
+export async function mfaSetup(req: AuthedRequest, res: Response, next: NextFunction) {
+  try { return res.status(201).json({ success: true, data: await service.startMfaSetup(req.user!.id) }); } catch (error) { next(error); }
+}
+
+export async function mfaConfirm(req: AuthedRequest, res: Response, next: NextFunction) {
+  try { return res.json({ success: true, data: await service.confirmMfaSetup(req.user!.id, mfaCodeSchema.parse(req.body).code) }); } catch (error) { next(error); }
+}
+
+export async function mfaDisable(req: AuthedRequest, res: Response, next: NextFunction) {
+  try {
+    if (req.impersonator) return jsonError(res, 403, 'FORBIDDEN', 'End impersonation before changing MFA settings');
+    const input = mfaDisableSchema.parse(req.body);
+    const result = await service.disableUserMfa(req.user!.id, input.password, input.code);
+    res.clearCookie(RT_COOKIE_NAME, RT_COOKIE_OPTS);
+    return res.json({ success: true, data: result });
+  } catch (error) { next(error); }
 }
 
 export async function changePassword(req: AuthedRequest, res: Response, next: NextFunction) {
