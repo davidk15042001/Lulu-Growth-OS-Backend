@@ -65,7 +65,7 @@ Parameters:
     MaxValue: 86400
   DatabaseBackupRetentionDays:
     Type: Number
-    Default: 7
+    Default: 1
     MinValue: 1
     MaxValue: 35
   DeletionProtection:
