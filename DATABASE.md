@@ -2,7 +2,7 @@
 
 ## Current inventory
 
-The migration directory currently contains 149 ordered migrations, about 249
+The migration directory currently contains 151 ordered migrations, about 250
 table definitions and 369 declared indexes (counts from the read-only
 architecture audit; generated/provider-specific SQL may change the exact live
 catalog). The schema is PostgreSQL-first and migrations are serialized with an

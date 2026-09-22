@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import OpenAI from 'openai';
 import { env, hasOpenAI } from '../../config/env.js';
-import { AppError, notFoundError } from '../../utils/app-error.js';
+import { AppError, conflictError, notFoundError } from '../../utils/app-error.js';
 import { recordMeteredUsage } from '../usage/usage.service.js';
 import * as repo from './voice.repo.js';
 import type { CloseVoiceSessionInput, CreateVoiceSessionInput, VoiceSpeechInput, VoiceTranscriptInput } from './voice.validator.js';
@@ -87,15 +87,38 @@ export async function createSession(workspaceId: string, userId: string, input: 
 export async function addTranscript(workspaceId: string, userId: string, sessionId: string, input: VoiceTranscriptInput) {
   const session = await repo.findSession(workspaceId, userId, sessionId);
   if (!session) throw notFoundError('Voice session not found');
+  if (session.endedAt) throw conflictError('The voice session is already closed');
   const transcript = await repo.addTranscript(workspaceId, userId, sessionId, input);
   if (!transcript) throw notFoundError('Voice session not found');
+  if (transcript.content !== input.content.trim()
+    || transcript.direction !== input.direction
+    || Number(transcript.sequenceNumber) !== input.sequenceNumber) {
+    throw conflictError('The voice transcript event ID is already linked to different content');
+  }
   return transcript;
+}
+
+export async function getSession(workspaceId: string, userId: string, sessionId: string) {
+  const session = await repo.findSession(workspaceId, userId, sessionId);
+  if (!session) throw notFoundError('Voice session not found');
+  return { session };
+}
+
+export async function getTranscripts(workspaceId: string, userId: string, sessionId: string) {
+  const session = await repo.findSession(workspaceId, userId, sessionId);
+  if (!session) throw notFoundError('Voice session not found');
+  return { items: await repo.listTranscripts(workspaceId, userId, sessionId) };
+}
+
+export async function deleteSession(workspaceId: string, userId: string, sessionId: string) {
+  const deleted = await repo.deleteSession(workspaceId, userId, sessionId);
+  if (!deleted) throw notFoundError('Voice session not found');
+  return { id: deleted.id, deleted: true };
 }
 
 export async function closeSession(workspaceId: string, userId: string, sessionId: string, input: CloseVoiceSessionInput) {
   const session = await repo.findSession(workspaceId, userId, sessionId);
   if (!session) throw notFoundError('Voice session not found');
-  const closed = await repo.finishSession(workspaceId, userId, sessionId, input);
   if (session.provider === 'openai-realtime' && session.status === 'active' && env.VOICE_REALTIME_COST_USD_PER_MINUTE > 0) {
     const startedAt = Date.parse(session.startedAt);
     const durationMinutes = Math.max(0, (Date.now() - (Number.isFinite(startedAt) ? startedAt : Date.now())) / 60_000);
@@ -112,7 +135,10 @@ export async function closeSession(workspaceId: string, userId: string, sessionI
       metadata: { kind: 'voice_realtime', sessionId: session.id, durationMinutes },
     });
   }
-  return closed;
+  // Meter before marking the session complete. If billing evidence cannot be
+  // persisted, the session stays retryable; the stable response ID makes a
+  // later close request safe after a successful meter/failed update race.
+  return repo.finishSession(workspaceId, userId, sessionId, input);
 }
 
 export async function synthesizeSpeech(workspaceId: string, userId: string, input: VoiceSpeechInput) {
@@ -131,7 +157,7 @@ export async function synthesizeSpeech(workspaceId: string, userId: string, inpu
     speed: input.speed,
   } as never);
   const audio = Buffer.from(await response.arrayBuffer());
-  const responseId = `voice-tts:${crypto.randomUUID()}`;
+  const responseId = input.requestId ? `voice-tts:${input.requestId}` : `voice-tts:${crypto.randomUUID()}`;
   const providerCostUsd = (input.text.length / 1_000) * env.VOICE_TTS_COST_USD_PER_1K_CHARS;
   if (providerCostUsd > 0) {
     await recordMeteredUsage({

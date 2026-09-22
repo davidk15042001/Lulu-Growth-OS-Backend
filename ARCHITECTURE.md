@@ -147,7 +147,7 @@ provider rates; unset rates do not invent financial data.
 
 ## Known boundaries and target improvements
 
-- The current application has 149 migrations and approximately 249 relational
+- The current application has 151 migrations and approximately 250 relational
   table definitions. The existing `docs/autonomous-company-os-audit.md` is the source-led
   capability matrix and production release evidence.
 - PostgreSQL row-level security is not currently the tenant boundary; service

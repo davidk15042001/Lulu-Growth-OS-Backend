@@ -10,7 +10,13 @@ router.route('/sessions')
   .all(methodNotAllowed);
 
 router.route('/sessions/:sessionId/transcripts')
+  .get(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.getTranscripts)
   .post(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.addTranscript)
+  .all(methodNotAllowed);
+
+router.route('/sessions/:sessionId')
+  .get(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.getSession)
+  .delete(requireWorkspaceEditor, requireWorkspaceEntitlement('ai.enabled'), controller.deleteSession)
   .all(methodNotAllowed);
 
 router.route('/sessions/:sessionId/close')

@@ -22,6 +22,24 @@ export async function addTranscript(req: WorkspaceRequest, res: Response, next: 
   } catch (error) { next(error); }
 }
 
+export async function getSession(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    return successResponse(res, 'Voice session loaded', await service.getSession(req.workspaceAccess!.id, req.user!.id, sessionId(req)));
+  } catch (error) { next(error); }
+}
+
+export async function getTranscripts(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    return successResponse(res, 'Voice transcripts loaded', await service.getTranscripts(req.workspaceAccess!.id, req.user!.id, sessionId(req)));
+  } catch (error) { next(error); }
+}
+
+export async function deleteSession(req: WorkspaceRequest, res: Response, next: NextFunction) {
+  try {
+    return successResponse(res, 'Voice session deleted', await service.deleteSession(req.workspaceAccess!.id, req.user!.id, sessionId(req)));
+  } catch (error) { next(error); }
+}
+
 export async function closeSession(req: WorkspaceRequest, res: Response, next: NextFunction) {
   try {
     const input = closeVoiceSessionSchema.parse(req.body ?? {});

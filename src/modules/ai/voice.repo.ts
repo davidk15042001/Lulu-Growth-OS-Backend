@@ -5,6 +5,7 @@ export type VoiceSession = {
   id: string;
   workspaceId: string;
   userId: string;
+  clientSessionId: string | null;
   conversationId: string | null;
   transport: 'webrtc' | 'browser_fallback';
   provider: string;
@@ -25,6 +26,7 @@ const sessionSelect = `
   id,
   workspace_id AS "workspaceId",
   user_id AS "userId",
+  client_session_id AS "clientSessionId",
   conversation_id AS "conversationId",
   transport,
   provider,
@@ -51,8 +53,11 @@ export async function createSession(
   const { rows } = await query<VoiceSession>(
     `INSERT INTO ai_voice_sessions (
        workspace_id, user_id, conversation_id, transport, provider,
-       language, voice, speed, mode, metadata
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       language, voice, speed, mode, metadata, client_session_id
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+     ON CONFLICT (workspace_id, user_id, client_session_id)
+       WHERE client_session_id IS NOT NULL
+       DO NOTHING
      RETURNING ${sessionSelect}`,
     [
       workspaceId,
@@ -65,9 +70,18 @@ export async function createSession(
       input.speed,
       input.mode,
       input.metadata ?? {},
+      input.clientSessionId ?? null,
     ],
   );
-  return rows[0];
+  if (rows[0]) return rows[0];
+  const existing = await query<VoiceSession>(
+    `SELECT ${sessionSelect}
+       FROM ai_voice_sessions
+      WHERE workspace_id=$1 AND user_id=$2 AND client_session_id=$3
+      LIMIT 1`,
+    [workspaceId, userId, input.clientSessionId],
+  );
+  return existing.rows[0];
 }
 
 export async function findSession(workspaceId: string, userId: string, sessionId: string) {
@@ -126,11 +140,14 @@ export async function addTranscript(
   const { rows } = await query<Record<string, unknown>>(
     `INSERT INTO ai_voice_transcripts (
        workspace_id, session_id, conversation_id, direction, content,
-       sequence_number, is_final, source, started_at, ended_at, metadata
+       sequence_number, is_final, source, started_at, ended_at, metadata, client_event_id
      )
-     SELECT $1, s.id, s.conversation_id, $4, $5, $6, $7, $8, $9, $10, $11
+     SELECT $1, s.id, s.conversation_id, $4, $5, $6, $7, $8, $9, $10, $11, $12
        FROM ai_voice_sessions s
-      WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.id=$3
+      WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.id=$3 AND s.ended_at IS NULL
+     ON CONFLICT (workspace_id, session_id, direction, client_event_id)
+       WHERE client_event_id IS NOT NULL
+       DO NOTHING
      RETURNING id,
        session_id AS "sessionId",
        conversation_id AS "conversationId",
@@ -138,7 +155,7 @@ export async function addTranscript(
        sequence_number AS "sequenceNumber",
        is_final AS "isFinal",
        source, started_at AS "startedAt", ended_at AS "endedAt",
-       metadata, created_at AS "createdAt"`,
+       metadata, client_event_id AS "clientEventId", created_at AS "createdAt"`,
     [
       workspaceId,
       userId,
@@ -151,9 +168,62 @@ export async function addTranscript(
       input.startedAt ?? null,
       input.endedAt ?? null,
       input.metadata ?? {},
+      input.clientEventId ?? null,
     ],
   );
-  return rows[0];
+  if (rows[0]) return rows[0];
+  if (input.clientEventId) {
+    const existing = await query<Record<string, unknown>>(
+      `SELECT id,
+              session_id AS "sessionId",
+              conversation_id AS "conversationId",
+              direction, content,
+              sequence_number AS "sequenceNumber",
+              is_final AS "isFinal",
+              source, started_at AS "startedAt", ended_at AS "endedAt",
+              metadata, client_event_id AS "clientEventId", created_at AS "createdAt"
+         FROM ai_voice_transcripts
+        WHERE workspace_id=$1 AND session_id=$2 AND direction=$3 AND client_event_id=$4
+        LIMIT 1`,
+      [workspaceId, sessionId, input.direction, input.clientEventId],
+    );
+    return existing.rows[0];
+  }
+  return undefined;
+}
+
+export async function listTranscripts(workspaceId: string, userId: string, sessionId: string, limit = 500) {
+  const boundedLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const { rows } = await query<Record<string, unknown>>(
+    `SELECT id,
+            session_id AS "sessionId",
+            conversation_id AS "conversationId",
+            direction, content,
+            sequence_number AS "sequenceNumber",
+            is_final AS "isFinal",
+            source, started_at AS "startedAt", ended_at AS "endedAt",
+            metadata, client_event_id AS "clientEventId", created_at AS "createdAt"
+       FROM ai_voice_transcripts
+      WHERE workspace_id=$1 AND session_id=$2
+        AND EXISTS (
+          SELECT 1 FROM ai_voice_sessions s
+           WHERE s.id=$2 AND s.workspace_id=$1 AND s.user_id=$3
+        )
+      ORDER BY sequence_number ASC, created_at ASC, id ASC
+      LIMIT $4`,
+    [workspaceId, sessionId, userId, boundedLimit],
+  );
+  return rows;
+}
+
+export async function deleteSession(workspaceId: string, userId: string, sessionId: string) {
+  const { rows } = await query<{ id: string }>(
+    `DELETE FROM ai_voice_sessions
+      WHERE workspace_id=$1 AND user_id=$2 AND id=$3
+      RETURNING id`,
+    [workspaceId, userId, sessionId],
+  );
+  return rows[0] ?? null;
 }
 
 export async function finishSession(

@@ -19,7 +19,7 @@ const workspaceId = process.env.RETENTION_WORKSPACE_ID?.trim() || null;
 const apply = process.env.RETENTION_APPLY === '1';
 const dryRun = process.env.RETENTION_DRY_RUN !== '0';
 const batchSize = Math.min(5000, Math.max(1, Number.parseInt(process.env.RETENTION_BATCH_SIZE ?? '1000', 10) || 1000));
-const allowedTables = new Set(['onboarding_documents', 'domain_events', 'agent_run_events']);
+const allowedTables = new Set(['onboarding_documents', 'domain_events', 'agent_run_events', 'ai_voice_sessions']);
 
 function identifier(value: string) {
   if (!/^[a-z][a-z0-9_]*$/.test(value)) throw new Error(`Unsafe SQL identifier: ${value}`);

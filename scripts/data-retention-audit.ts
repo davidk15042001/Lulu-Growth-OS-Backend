@@ -15,7 +15,7 @@ type Policy = {
 
 const databaseUrl = process.env.RETENTION_DATABASE_URL ?? process.env.DATABASE_URL;
 const workspaceId = process.env.RETENTION_WORKSPACE_ID?.trim() || null;
-const allowedTables = new Set(['onboarding_documents', 'provider_webhook_events', 'domain_events', 'agent_run_events', 'audit_log', 'financial_ledger_entries']);
+const allowedTables = new Set(['onboarding_documents', 'provider_webhook_events', 'domain_events', 'agent_run_events', 'audit_log', 'financial_ledger_entries', 'ai_voice_sessions']);
 
 function identifier(value: string) {
   if (!/^[a-z][a-z0-9_]*$/.test(value)) throw new Error(`Unsafe SQL identifier: ${value}`);

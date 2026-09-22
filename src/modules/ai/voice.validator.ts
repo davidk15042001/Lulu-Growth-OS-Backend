@@ -17,6 +17,7 @@ export const createVoiceSessionSchema = voiceSettings.extend({
 });
 
 export const voiceTranscriptSchema = z.object({
+  clientEventId: z.string().uuid().nullable().optional(),
   direction: z.enum(['input', 'output']),
   content: z.string().trim().min(1).max(100_000),
   sequenceNumber: z.coerce.number().int().min(0).max(1_000_000),
@@ -34,6 +35,7 @@ export const closeVoiceSessionSchema = z.object({
 
 export const voiceSpeechSchema = z.object({
   sessionId: z.string().uuid().nullable().optional(),
+  requestId: z.string().uuid().nullable().optional(),
   text: z.string().trim().min(1).max(8_000),
   language: z.string().trim().min(2).max(20).default('en-US'),
   voice: z.string().trim().min(1).max(80).default('marin'),

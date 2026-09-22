@@ -27,7 +27,7 @@
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
-    "test": "tsx --test --test-force-exit",
+    "test": "tsx --test --test-force-exit --test-concurrency=1",
     "test:migrations": "tsx scripts/verify-migrations.ts",
     "test:schema-contracts": "tsx scripts/verify-schema-contracts.ts",
     "benchmark:performance": "tsx scripts/performance-benchmark.ts",
